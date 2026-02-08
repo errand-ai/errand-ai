@@ -46,9 +46,21 @@ openspec schemas --json                   # List available workflow schemas
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)
+backend/
+  main.py              # FastAPI app (API endpoints)
+  models.py            # SQLAlchemy models
+  database.py          # DB engine/session setup
+  worker.py            # Worker process entrypoint
+  alembic/             # Database migrations
+  Dockerfile
+frontend/
+  src/                 # Vue 3 app source
+  Dockerfile
+helm/
+  content-manager/     # Helm chart for K8s deployment
+.github/
+  workflows/build.yml  # CI: build images + Helm chart, push to GHCR
 ```
-
-Source code directories will be created as the project develops.
 
 ## Tech Stack
 
@@ -70,6 +82,15 @@ docker compose up --build  # Rebuild images after Dockerfile changes
 ```
 
 **Always test changes locally before pushing to GitHub.** The CI pipeline builds images and ArgoCD deploys them — verify locally first.
+
+## Serena (Code Intelligence)
+
+This project uses a Serena MCP server for semantic code navigation. Config: `.serena/project.yml`
+
+- Languages: Python (pylsp) + Vue — Python listed first so `.py` files use pylsp, not Vue LSP
+- `pylsp` is installed into Serena's uv-managed Python, not the system Python
+- After changing `.serena/project.yml`, restart Serena via `/mcp` in Claude Code, then `activate_project`
+- Verify Python LSP: `get_symbols_overview` on a `.py` file should return Python symbols, not `{"Module": ["script setup"]}`
 
 ## Memory (Hindsight)
 
@@ -98,3 +119,10 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 ### Debugging
 
 - Hindsight REST API is available at `https://hindsight.coward.cloud/api/` (e.g. `/api/banks` lists memory banks)
+
+## Current State
+
+- Version: `0.1.0` (in `VERSION` file)
+- MVP scaffold complete (archived as `mvp-project-scaffold` change)
+- No tests yet
+- 7 component specs in `openspec/specs/`: ci-pipelines, database-migrations, helm-deployment, kanban-frontend, local-dev-environment, task-api, task-worker

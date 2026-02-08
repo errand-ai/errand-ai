@@ -26,6 +26,7 @@ project_name: "content-manager"
 # The first language is the default language and the respective language server will be used as a fallback.
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 languages:
+- python
 - vue
 
 # the encoding used by text files in the project
@@ -86,7 +87,7 @@ read_only: false
 excluded_tools: []
 
 # list of tools to include that would otherwise be disabled (particularly optional tools that are disabled by default)
-included_optional_tools: []
+included_optional_tools: [restart_language_server]
 
 # fixed set of tools to use as the base tool set (if non-empty), replacing Serena's default set of tools.
 # This cannot be combined with non-empty excluded_tools or included_optional_tools.
