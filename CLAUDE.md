@@ -11,9 +11,11 @@ This is the **content-manager** project. It is in early development — the repo
 This project uses the `openspec` CLI (v1.1.1) with the `spec-driven` schema. Changes follow an artifact-driven workflow:
 
 1. **Create a change**: `openspec new change "<name>"` — scaffolds `openspec/changes/<name>/`
-2. **Create artifacts in order**: proposal → specs → design → tasks (each builds on the previous)
+2. **Create artifacts in order**: proposal → design + specs (parallel, both depend on proposal) → tasks
 3. **Implement**: Work through tasks, marking `- [ ]` → `- [x]` as each is completed
 4. **Archive**: Once all tasks are done, archive the change
+
+When updating a design decision across artifacts, grep the change directory for the old term to ensure all references are updated (proposal, design, specs, and tasks must stay in sync).
 
 ### Key Commands
 
@@ -47,6 +49,27 @@ openspec/
 ```
 
 Source code directories will be created as the project develops.
+
+## Tech Stack
+
+- **Frontend**: Vue 3 + Vite + Tailwind CSS (with Pinia for state management)
+- **Backend**: Python FastAPI + SQLAlchemy + Alembic
+- **Worker**: Python (shared codebase with backend, separate entrypoint)
+- **Database**: PostgreSQL (external, app manages migrations via Alembic)
+- **Deployment**: Helm chart on Kubernetes, KEDA for worker autoscaling, ArgoCD
+- **CI/CD**: GitHub Actions, immutable versioning from `VERSION` file
+
+## Local Development
+
+Run the full stack locally with Docker Compose before committing any changes:
+
+```bash
+docker compose up        # Start all services (postgres, migrations, backend, worker, frontend)
+docker compose down      # Stop and remove containers
+docker compose up --build  # Rebuild images after Dockerfile changes
+```
+
+**Always test changes locally before pushing to GitHub.** The CI pipeline builds images and ArgoCD deploys them — verify locally first.
 
 ## Memory (Hindsight)
 
