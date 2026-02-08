@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.29.0
+alembic==1.13.3
+psycopg2-binary==2.9.9
+pydantic==2.9.2

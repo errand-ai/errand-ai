@@ -1,0 +1,21 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "content-manager.fullname" . }}-worker
+  labels:
+    {{- include "content-manager.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "content-manager.fullname" . }}-worker
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: {{ .Values.keda.threshold | quote }}
+        url: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/api/metrics/queue"
+        valueLocation: "queue_depth"
+{{- end }}

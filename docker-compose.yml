@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: content_manager
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build: ./backend
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend:/app
+
+  worker:
+    build: ./backend
+    command: python worker.py
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend

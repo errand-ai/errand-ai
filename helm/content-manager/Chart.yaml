@@ -1,0 +1,6 @@
+apiVersion: v2
+name: content-manager
+description: Kanban-style task processing application
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

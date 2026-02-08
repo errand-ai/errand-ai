@@ -1,0 +1,39 @@
+frontend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/OWNER/content-manager-frontend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 80
+
+backend:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/OWNER/content-manager-backend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+
+worker:
+  replicaCount: 0
+
+database:
+  existingSecret: content-manager-db
+  secretKey: DATABASE_URL
+
+keda:
+  enabled: true
+  pollingInterval: 10
+  cooldownPeriod: 60
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  threshold: "1"
+
+ingress:
+  enabled: true
+  host: tasks.example.com
+  tls:
+    enabled: false
+    secretName: ""

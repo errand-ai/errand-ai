@@ -1,0 +1,79 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  REGISTRY: ghcr.io
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
+  BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TAG="${VERSION}-pr${{ github.event.pull_request.number }}"
+          else
+            TAG="${VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check immutable version (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          for IMAGE in "${{ env.FRONTEND_IMAGE }}" "${{ env.BACKEND_IMAGE }}"; do
+            if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
+              echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
+              exit 1
+            fi
+          done
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package Helm chart
+        run: |
+          helm package helm/content-manager \
+            --version "${{ steps.version.outputs.tag }}" \
+            --app-version "${{ steps.version.outputs.tag }}"
+
+      - name: Push Helm chart (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          helm push content-manager-${{ steps.version.outputs.tag }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository }}/charts
