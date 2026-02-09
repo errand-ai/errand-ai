@@ -48,9 +48,9 @@ The polling approach means UI updates lag by up to 5 seconds and every connected
 
 ### 3. Event publishing from both API and worker
 
-**Decision**: Both `main.py` (API endpoints) and `worker.py` publish task events to a Valkey channel after successful database writes.
+**Decision**: Both `main.py` (API endpoints) and `worker.py` publish task events to a Valkey channel after successful database writes. The Valkey client is exposed as a FastAPI dependency (`get_valkey()`) in `events.py`, making it overridable in tests via the same `app.dependency_overrides` pattern used for `get_session` and `get_current_user`.
 
-**Rationale**: The worker bypasses the API and writes directly to PostgreSQL. If only the API published events, worker-driven transitions (pending → running → completed) would not be pushed to frontends. Both processes need a Valkey client.
+**Rationale**: The worker bypasses the API and writes directly to PostgreSQL. If only the API published events, worker-driven transitions (pending → running → completed) would not be pushed to frontends. Both processes need a Valkey client. Making the client a FastAPI dependency follows the established testing pattern in `conftest.py` where dependencies are overridden with test doubles.
 
 **Event publish points**:
 - `POST /api/tasks` → publish `task_created` after commit
@@ -85,7 +85,19 @@ The polling approach means UI updates lag by up to 5 seconds and every connected
 
 **Rationale**: Ensures the app remains functional during rollout and in degraded network conditions. Polling is already implemented and tested.
 
-### 7. Valkey Helm deployment
+### 7. Testing strategy
+
+**Decision**: Follow the established test patterns from `add-scenario-tests`: pytest + httpx AsyncClient for backend, Vitest + Vue Test Utils for frontend. Use `fakeredis[aioredis]` to mock Valkey in backend tests. Use a mock WebSocket in frontend tests.
+
+**Backend — Valkey mocking**: The `events.py` module exposes a `get_valkey()` dependency (async Redis client). In tests, `conftest.py` overrides this dependency with a `fakeredis.aioredis.FakeRedis` instance. This allows tests to verify that events are published to the correct channel with the correct payload without needing a real Valkey instance. The same `fakeredis` instance can be used to subscribe and assert on published messages.
+
+**Backend — WebSocket endpoint testing**: Use Starlette's `TestClient` WebSocket support (`client.websocket_connect("/api/ws/tasks?token=...")`) to test the WebSocket lifecycle. The test creates a task via the REST API, then asserts that the WebSocket receives the corresponding event. Auth rejection tests verify that missing/invalid tokens result in a 4001 close code. The `fakeredis` pub/sub ensures events flow from REST endpoint → Valkey → WebSocket in-process.
+
+**Frontend — WebSocket mocking**: Mock the global `WebSocket` constructor in Vitest to simulate connection, message delivery, and disconnection. Test that the task store applies `task_created`/`task_updated` events correctly and that polling fallback activates on WebSocket failure.
+
+**CI**: Add `fakeredis[aioredis]` to `requirements-test.txt`. No real Valkey needed in CI — all tests use fakes. The existing CI `test` job structure (pip install + pytest, npm ci + npm test) remains unchanged.
+
+### 8. Valkey Helm deployment
 
 **Decision**: Add Valkey as a subchart dependency in the Helm chart using the Bitnami Valkey chart (`oci://registry-1.docker.io/bitnamicharts/valkey`).
 

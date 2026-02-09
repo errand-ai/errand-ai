@@ -220,4 +220,4 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
 - Tests: 27 backend (pytest) + 17 frontend (vitest) — CI `test` job gates both build jobs
-- 12 component specs in `openspec/specs/`
+- 14 component specs in `openspec/specs/`
