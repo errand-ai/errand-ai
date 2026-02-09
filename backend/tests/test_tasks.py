@@ -1,11 +1,11 @@
 import pytest
 from httpx import AsyncClient
 
-VALID_STATUSES = ["new", "need-input", "scheduled", "pending", "running", "review", "completed"]
+VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed"]
 
 
-async def create_task(client: AsyncClient, title: str = "Test task") -> dict:
-    resp = await client.post("/api/tasks", json={"title": title})
+async def create_task(client: AsyncClient, input_text: str = "Test task") -> dict:
+    resp = await client.post("/api/tasks", json={"input": input_text})
     assert resp.status_code == 201
     return resp.json()
 
@@ -34,25 +34,36 @@ async def test_list_tasks_ordered_by_creation_desc(client: AsyncClient):
 # --- POST /api/tasks ---
 
 
-async def test_create_task_success(client: AsyncClient):
-    resp = await client.post("/api/tasks", json={"title": "Run analysis"})
+async def test_create_task_short_input(client: AsyncClient):
+    """Short input (<=5 words) becomes the title directly with Needs Info tag."""
+    resp = await client.post("/api/tasks", json={"input": "Run analysis"})
     assert resp.status_code == 201
     data = resp.json()
     assert data["title"] == "Run analysis"
     assert data["status"] == "new"
+    assert data["description"] is None
+    assert "Needs Info" in data["tags"]
     assert "id" in data
     assert "created_at" in data
     assert "updated_at" in data
 
 
-async def test_create_task_missing_title(client: AsyncClient):
+async def test_create_task_missing_input(client: AsyncClient):
     resp = await client.post("/api/tasks", json={})
     assert resp.status_code == 422
 
 
-async def test_create_task_empty_title(client: AsyncClient):
-    resp = await client.post("/api/tasks", json={"title": ""})
+async def test_create_task_empty_input(client: AsyncClient):
+    resp = await client.post("/api/tasks", json={"input": ""})
     assert resp.status_code == 422
+
+
+async def test_create_task_response_includes_description_and_tags(client: AsyncClient):
+    """Every task response includes description and tags fields."""
+    task = await create_task(client, "Quick task")
+    assert "description" in task
+    assert "tags" in task
+    assert isinstance(task["tags"], list)
 
 
 # --- GET /api/tasks/{id} ---
@@ -62,7 +73,10 @@ async def test_get_task_found(client: AsyncClient):
     task = await create_task(client, "Find me")
     resp = await client.get(f"/api/tasks/{task['id']}")
     assert resp.status_code == 200
-    assert resp.json()["title"] == "Find me"
+    data = resp.json()
+    assert data["title"] == "Find me"
+    assert "description" in data
+    assert "tags" in data
 
 
 async def test_get_task_not_found(client: AsyncClient):
@@ -119,6 +133,15 @@ async def test_update_task_empty_title(client: AsyncClient):
     assert resp.status_code == 422
 
 
+async def test_update_task_description(client: AsyncClient):
+    task = await create_task(client)
+    resp = await client.patch(
+        f"/api/tasks/{task['id']}", json={"description": "Some details here"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["description"] == "Some details here"
+
+
 # --- Valid status enforcement ---
 
 
@@ -133,4 +156,11 @@ async def test_all_valid_statuses_accepted(client: AsyncClient, status: str):
 async def test_invalid_status_failed_rejected(client: AsyncClient):
     task = await create_task(client)
     resp = await client.patch(f"/api/tasks/{task['id']}", json={"status": "failed"})
+    assert resp.status_code == 422
+
+
+async def test_need_input_status_rejected(client: AsyncClient):
+    """need-input is no longer a valid status (replaced by tags)."""
+    task = await create_task(client)
+    resp = await client.patch(f"/api/tasks/{task['id']}", json={"status": "need-input"})
     assert resp.status_code == 422

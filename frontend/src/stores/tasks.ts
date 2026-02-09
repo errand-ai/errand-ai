@@ -65,9 +65,9 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function addTask(title: string) {
+  async function addTask(input: string) {
     try {
-      await createTask(title)
+      await createTask(input)
       error.value = null
       await load()
     } catch (e) {
@@ -76,7 +76,7 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function updateTask(id: string, data: { title?: string; status?: TaskStatus }) {
+  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[] }) {
     try {
       await apiUpdateTask(id, data)
       error.value = null

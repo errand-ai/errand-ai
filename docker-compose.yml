@@ -44,6 +44,8 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
       OIDC_ROLES_CLAIM: resource_access.content-manager.roles
       VALKEY_URL: redis://valkey:6379
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

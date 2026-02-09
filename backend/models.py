@@ -1,13 +1,22 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-from sqlalchemy import DateTime, Text, text
+from sqlalchemy import Column, DateTime, ForeignKey, Table, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+task_tags = Table(
+    "task_tags",
+    Base.metadata,
+    Column("task_id", UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class Task(Base):
@@ -17,6 +26,7 @@ class Task(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'new'")
     )
@@ -33,6 +43,17 @@ class Task(Base):
         server_default=text("now()"),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    tasks: Mapped[list["Task"]] = relationship(secondary=task_tags, back_populates="tags", lazy="raise")
 
 
 class Setting(Base):

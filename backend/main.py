@@ -13,15 +13,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 import auth as auth_module
 from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from models import Setting, Task
+from llm import init_llm_client, get_llm_client, generate_title
+from models import Setting, Tag, Task, task_tags
 
 security = HTTPBearer()
 
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
     auth_module.oidc = OIDCConfig.from_env()
     await auth_module.oidc.discover()
     await init_valkey()
+    init_llm_client()
     yield
     await close_valkey()
     await engine.dispose()
@@ -92,16 +95,18 @@ async def require_admin(
 
 # --- Schemas ---
 
-VALID_STATUSES = ["new", "need-input", "scheduled", "pending", "running", "review", "completed"]
+VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed"]
 
 
 class TaskCreate(BaseModel):
-    title: str = Field(..., min_length=1)
+    input: str = Field(..., min_length=1)
 
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1)
+    description: Optional[str] = None
     status: Optional[str] = None
+    tags: Optional[list[str]] = None
 
     def model_post_init(self, __context):
         if self.status is not None and self.status not in VALID_STATUSES:
@@ -111,9 +116,30 @@ class TaskUpdate(BaseModel):
 class TaskResponse(BaseModel):
     id: uuid.UUID
     title: str
+    description: Optional[str] = None
     status: str
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_task(cls, task: Task) -> "TaskResponse":
+        return cls(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            status=task.status,
+            tags=sorted([t.name for t in task.tags]),
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+        )
+
+
+class TagResponse(BaseModel):
+    id: uuid.UUID
+    name: str
 
     model_config = {"from_attributes": True}
 
@@ -121,13 +147,51 @@ class TaskResponse(BaseModel):
 # --- Protected /api endpoints ---
 
 
+@app.get("/api/tags", response_model=list[TagResponse])
+async def list_tags(
+    q: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    query = select(Tag)
+    if q:
+        query = query.where(Tag.name.ilike(f"{q}%"))
+    query = query.order_by(Tag.name).limit(10)
+    result = await session.execute(query)
+    return result.scalars().all()
+
+
+async def _sync_tags(session: AsyncSession, task: Task, tag_names: list[str]) -> None:
+    """Replace task's tags with the given names, creating any that don't exist."""
+    # Clear existing associations
+    await session.execute(delete(task_tags).where(task_tags.c.task_id == task.id))
+
+    if not tag_names:
+        return
+
+    # Find or create tags, then insert associations directly
+    for name in tag_names:
+        result = await session.execute(select(Tag).where(Tag.name == name))
+        tag = result.scalar_one_or_none()
+        if tag is None:
+            tag = Tag(name=name)
+            session.add(tag)
+            await session.flush()
+        await session.execute(
+            task_tags.insert().values(task_id=task.id, tag_id=tag.id)
+        )
+
+
 @app.get("/api/tasks", response_model=list[TaskResponse])
 async def list_tasks(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    result = await session.execute(select(Task).order_by(Task.created_at.desc()))
-    return result.scalars().all()
+    result = await session.execute(
+        select(Task).options(selectinload(Task.tags)).order_by(Task.created_at.desc())
+    )
+    tasks = result.scalars().all()
+    return [TaskResponse.from_task(t) for t in tasks]
 
 
 @app.post("/api/tasks", response_model=TaskResponse, status_code=201)
@@ -136,12 +200,32 @@ async def create_task(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    task = Task(title=body.title)
+    input_text = body.input.strip()
+    words = input_text.split()
+    tag_names: list[str] = []
+
+    if len(words) > 5:
+        title, success = await generate_title(input_text, session)
+        description = input_text
+        if not success:
+            tag_names.append("Needs Info")
+    else:
+        title = input_text
+        description = None
+        tag_names.append("Needs Info")
+
+    task = Task(title=title, description=description)
     session.add(task)
+    await session.flush()
+
+    if tag_names:
+        await _sync_tags(session, task, tag_names)
+
     await session.commit()
-    await session.refresh(task)
-    await publish_event("task_created", TaskResponse.model_validate(task).model_dump(mode="json"))
-    return task
+    await session.refresh(task, ["tags"])
+    resp = TaskResponse.from_task(task)
+    await publish_event("task_created", resp.model_dump(mode="json"))
+    return resp
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -150,11 +234,13 @@ async def get_task(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    result = await session.execute(select(Task).where(Task.id == task_id))
+    result = await session.execute(
+        select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+    )
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    return TaskResponse.from_task(task)
 
 
 @app.patch("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -164,18 +250,43 @@ async def update_task(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    result = await session.execute(select(Task).where(Task.id == task_id))
+    result = await session.execute(
+        select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+    )
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if body.title is not None:
         task.title = body.title
+    if body.description is not None:
+        task.description = body.description
     if body.status is not None:
         task.status = body.status
+    if body.tags is not None:
+        await _sync_tags(session, task, body.tags)
     await session.commit()
-    await session.refresh(task)
-    await publish_event("task_updated", TaskResponse.model_validate(task).model_dump(mode="json"))
-    return task
+    await session.refresh(task, ["tags"])
+    resp = TaskResponse.from_task(task)
+    await publish_event("task_updated", resp.model_dump(mode="json"))
+    return resp
+
+
+# --- LLM endpoints ---
+
+
+@app.get("/api/llm/models")
+async def list_llm_models(
+    _user: dict = Depends(require_admin),
+):
+    client = get_llm_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="LLM provider not configured")
+    try:
+        models = await client.models.list()
+        model_ids = sorted([m.id for m in models.data])
+        return model_ids
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
 
 
 # --- Admin settings endpoints ---

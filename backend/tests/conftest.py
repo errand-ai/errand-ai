@@ -38,6 +38,7 @@ _TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     title TEXT NOT NULL,
+    description TEXT,
     status TEXT DEFAULT 'new' NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -52,11 +53,28 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """
 
+_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+)
+"""
+
+_TASK_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, tag_id)
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_SETTINGS_TABLE_SQL))
+        await conn.execute(text(_TAGS_TABLE_SQL))
+        await conn.execute(text(_TASK_TAGS_TABLE_SQL))
 
 
 @pytest.fixture()

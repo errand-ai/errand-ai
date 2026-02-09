@@ -2,7 +2,7 @@ from httpx import AsyncClient
 
 
 async def create_task_with_status(client: AsyncClient, title: str, status: str) -> dict:
-    resp = await client.post("/api/tasks", json={"title": title})
+    resp = await client.post("/api/tasks", json={"input": title})
     assert resp.status_code == 201
     task = resp.json()
     if status != "new":

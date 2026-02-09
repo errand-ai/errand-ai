@@ -17,13 +17,15 @@ vi.mock('../../composables/useApi', async () => {
   }
 })
 
-const COLUMN_LABELS = ['New', 'Need Input', 'Scheduled', 'Pending', 'Running', 'Review', 'Completed']
+const COLUMN_LABELS = ['New', 'Scheduled', 'Pending', 'Running', 'Review', 'Completed']
 
 function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
   return overrides.map((o, i) => ({
     id: String(i + 1),
     title: `Task ${i + 1}`,
+    description: null,
     status: 'new' as const,
+    tags: [],
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
     ...o,
@@ -45,7 +47,7 @@ describe('KanbanBoard', () => {
     setActivePinia(createPinia())
   })
 
-  it('renders 7 columns with correct labels', () => {
+  it('renders 6 columns with correct labels', () => {
     const wrapper = mount(KanbanBoard)
     const headings = wrapper.findAll('h2')
     const labels = headings.map((h) => h.text().replace(/\(\d+\)/, '').trim())
@@ -62,17 +64,17 @@ describe('KanbanBoard', () => {
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
     // New column (index 0) should contain Alpha
     expect(columns[0].text()).toContain('Alpha')
-    // Running column (index 4) should contain Beta
-    expect(columns[4].text()).toContain('Beta')
-    // Completed column (index 6) should contain Gamma
-    expect(columns[6].text()).toContain('Gamma')
+    // Running column (index 3) should contain Beta
+    expect(columns[3].text()).toContain('Beta')
+    // Completed column (index 5) should contain Gamma
+    expect(columns[5].text()).toContain('Gamma')
   })
 
   it('shows "No tasks" placeholder in empty columns', () => {
     const { wrapper } = mountWithTasks([])
 
     const placeholders = wrapper.findAll('p.italic')
-    expect(placeholders.length).toBe(7)
+    expect(placeholders.length).toBe(6)
     placeholders.forEach((p) => {
       expect(p.text()).toBe('No tasks')
     })
@@ -85,11 +87,11 @@ describe('KanbanBoard', () => {
     store.updateTask = vi.fn().mockResolvedValue(undefined)
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Simulate drop on "Scheduled" column (index 2)
+    // Simulate drop on "Scheduled" column (index 1)
     const dropEvent = new Event('drop', { bubbles: true }) as any
     dropEvent.dataTransfer = { getData: () => '42' }
     dropEvent.preventDefault = vi.fn()
-    columns[2].element.dispatchEvent(dropEvent)
+    columns[1].element.dispatchEvent(dropEvent)
     await nextTick()
 
     expect(store.updateTask).toHaveBeenCalledWith('42', { status: 'scheduled' })
@@ -116,11 +118,11 @@ describe('KanbanBoard', () => {
     const wrapper = mount(KanbanBoard)
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    await columns[2].trigger('dragenter')
+    await columns[1].trigger('dragenter')
     await nextTick()
 
     // After dragenter, the column should have the highlight ring class
-    expect(columns[2].classes()).toContain('ring-2')
-    expect(columns[2].classes()).toContain('ring-blue-400')
+    expect(columns[1].classes()).toContain('ring-2')
+    expect(columns[1].classes()).toContain('ring-blue-400')
   })
 })

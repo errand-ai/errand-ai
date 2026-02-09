@@ -23,8 +23,8 @@ vi.mock('../../composables/useWebSocket', () => ({
 // Mock useApi to prevent actual fetch calls
 vi.mock('../../composables/useApi', () => ({
   fetchTasks: vi.fn().mockResolvedValue([]),
-  createTask: vi.fn().mockResolvedValue({ id: 'new-1', title: 'New', status: 'new', created_at: '', updated_at: '' }),
-  updateTask: vi.fn().mockResolvedValue({ id: '1', title: 'Test', status: 'running', created_at: '', updated_at: '' }),
+  createTask: vi.fn().mockResolvedValue({ id: 'new-1', title: 'New', description: null, status: 'new', tags: [], created_at: '', updated_at: '' }),
+  updateTask: vi.fn().mockResolvedValue({ id: '1', title: 'Test', description: null, status: 'running', tags: [], created_at: '', updated_at: '' }),
 }))
 
 import { useTaskStore } from '../../stores/tasks'
@@ -46,7 +46,7 @@ describe('TaskStore WebSocket integration', () => {
 
     capturedOptions!.onMessage({
       event: 'task_created',
-      task: { id: 'ws-1', title: 'WebSocket task', status: 'new', created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
+      task: { id: 'ws-1', title: 'WebSocket task', description: null, status: 'new', tags: [], created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
     })
 
     expect(store.tasks).toHaveLength(1)
@@ -57,12 +57,12 @@ describe('TaskStore WebSocket integration', () => {
   it('updates an existing task on task_updated event', () => {
     const store = useTaskStore()
     store.tasks = [
-      { id: 'existing-1', title: 'Existing', status: 'new', created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
+      { id: 'existing-1', title: 'Existing', description: null, status: 'new', tags: [], created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
     ]
 
     capturedOptions!.onMessage({
       event: 'task_updated',
-      task: { id: 'existing-1', title: 'Existing', status: 'running', created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:01' },
+      task: { id: 'existing-1', title: 'Existing', description: null, status: 'running', tags: [], created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:01' },
     })
 
     expect(store.tasks[0].status).toBe('running')
@@ -71,7 +71,7 @@ describe('TaskStore WebSocket integration', () => {
   it('does not duplicate task on repeated task_created', () => {
     const store = useTaskStore()
 
-    const task = { id: 'dup-1', title: 'Dup', status: 'new' as const, created_at: '', updated_at: '' }
+    const task = { id: 'dup-1', title: 'Dup', description: null, status: 'new' as const, tags: [] as string[], created_at: '', updated_at: '' }
     capturedOptions!.onMessage({ event: 'task_created', task })
     capturedOptions!.onMessage({ event: 'task_created', task })
 

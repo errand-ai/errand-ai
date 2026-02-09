@@ -6,9 +6,16 @@ import type { TaskData } from '../../composables/useApi'
 const task: TaskData = {
   id: '1',
   title: 'Process report',
+  description: null,
   status: 'running',
+  tags: [],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
+}
+
+const taskWithTags: TaskData = {
+  ...task,
+  tags: ['urgent', 'backend'],
 }
 
 describe('TaskCard', () => {
@@ -33,5 +40,25 @@ describe('TaskCard', () => {
     const wrapper = mount(TaskCard, { props: { task } })
     await wrapper.find('button[title="Edit task"]').trigger('click')
     expect(wrapper.emitted('edit')).toHaveLength(1)
+  })
+
+  it('does not show status text', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    // Status should not be displayed (it's implied by the column)
+    expect(wrapper.text()).not.toContain('running')
+  })
+
+  it('displays tags as pills when present', () => {
+    const wrapper = mount(TaskCard, { props: { task: taskWithTags } })
+    expect(wrapper.text()).toContain('urgent')
+    expect(wrapper.text()).toContain('backend')
+    const pills = wrapper.findAll('span.inline-block')
+    expect(pills).toHaveLength(2)
+  })
+
+  it('does not render tag section when tags are empty', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    const pills = wrapper.findAll('span.inline-block')
+    expect(pills).toHaveLength(0)
   })
 })
