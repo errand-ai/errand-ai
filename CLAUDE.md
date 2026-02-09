@@ -108,6 +108,8 @@ docker compose up --build  # Build and start all services (postgres, migrations,
 docker compose down        # Stop and remove containers
 ```
 
+Local URLs: frontend at `http://localhost:3000`, backend API at `http://localhost:8000`.
+
 **Every commit must pass local testing.** Do not commit code that hasn't been verified with `docker compose up --build`. The CI pipeline builds images and ArgoCD deploys them — broken commits on a branch waste CI resources and risk bad deployments.
 
 ### 4. Push and create a pull request
@@ -183,6 +185,11 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Kubernetes Deployment
 
+- **ArgoCD version**: v3.3.0 (image tag `latest`) — RBAC model follows v3 conventions
+- **ArgoCD app name**: `content-manager` (not `content-manager-rancher` — the `-rancher` suffix is only on the values file)
+- **ArgoCD gotcha**: Non-existent app names return `PermissionDenied` (not `NotFound`) — always verify the app name with `list_applications` before debugging RBAC
+- **ArgoCD RBAC testing**: `kubectl -n argocd exec deploy/argocd-server -- argocd admin settings rbac can <user> <action> <resource> '<project>/<app>' --namespace argocd`
+- **ArgoCD MCP account**: `mcpserver` local account (apiKey auth), role `readonly-user` (get, sync, restart deployments)
 - **Cluster context**: `devops-consultants` / namespace: `content-manager`
 - **Ingress**: nginx ingress controller (class `nginx`) — routes `/api` and `/auth` to backend, `/` to frontend
 - **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
@@ -192,11 +199,25 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - **ArgoCD values**: Override values at `~/github/argocd/apps/content-manager-rancher-values.yaml`
 - **KEDA**: Disabled for now (CRDs not installed on cluster)
 
+## Helm Chart
+
+- Image tags in templates default to `.Chart.AppVersion` when `values.image.tag` is empty
+- CI sets `appVersion` via `helm package --app-version` from the VERSION file
+- PR builds get tags like `0.4.0-pr2`; main builds get `0.4.0`
+- Static assets in `frontend/public/` must have `chmod 644` or nginx returns 403 (Docker copies permissions as-is)
+
+## Frontend Layout
+
+- App.vue `<main>` has no max-width — content fills viewport width
+- Header inner div has no max-width — logo left-aligned, user controls right-aligned
+- KanbanBoard wraps TaskForm in `max-w-7xl mx-auto` to keep it constrained
+- Kanban columns use `flex-1` to expand to fill available width
+- Local dev frontend runs on port 3000 (nginx), backend on 8000
+
 ## Current State
 
-- Version: `0.3.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.4.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
-- Keycloak SSO implemented and deployed to K8s (`add-keycloak-sso` change — ready to archive)
 - Deployed at: https://content-manager.devops-consultants.net
 - No tests yet
 - 9 component specs in `openspec/specs/`
