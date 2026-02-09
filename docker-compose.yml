@@ -13,6 +13,16 @@ services:
       timeout: 5s
       retries: 5
 
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   migrate:
     build: ./backend
     command: alembic upgrade head
@@ -33,9 +43,12 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
       OIDC_ROLES_CLAIM: resource_access.content-manager.roles
+      VALKEY_URL: redis://valkey:6379
     depends_on:
       migrate:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
     volumes:
       - ./backend:/app
 
@@ -44,9 +57,12 @@ services:
     command: python worker.py
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
+      VALKEY_URL: redis://valkey:6379
     depends_on:
       migrate:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
     volumes:
       - ./backend:/app
 

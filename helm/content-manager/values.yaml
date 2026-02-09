@@ -38,10 +38,24 @@ keycloak:
   discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
   rolesClaim: resource_access.content-manager.roles
 
+valkey:
+  enabled: true
+  standalone:
+    persistence:
+      enabled: false
+  resources:
+    limits:
+      cpu: 250m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
 ingress:
   enabled: true
   host: tasks.example.com
-  annotations: {}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
   tls:
     enabled: false
     secretName: ""

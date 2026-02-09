@@ -28,3 +28,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.secretKey }}
+            {{- if .Values.valkey.enabled }}
+            - name: VALKEY_URL
+              value: "redis://{{ .Release.Name }}-valkey:6379"
+            {{- end }}
