@@ -6,6 +6,8 @@ import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from typing import Optional
+
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,9 +67,20 @@ async def get_current_user(
 
 # --- Schemas ---
 
+VALID_STATUSES = ["new", "need-input", "scheduled", "pending", "running", "review", "completed"]
+
 
 class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1)
+
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1)
+    status: Optional[str] = None
+
+    def model_post_init(self, __context):
+        if self.status is not None and self.status not in VALID_STATUSES:
+            raise ValueError(f"Invalid status '{self.status}'. Must be one of: {', '.join(VALID_STATUSES)}")
 
 
 class TaskResponse(BaseModel):
@@ -115,6 +128,26 @@ async def get_task(
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@app.patch("/api/tasks/{task_id}", response_model=TaskResponse)
+async def update_task(
+    task_id: uuid.UUID,
+    body: TaskUpdate,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    result = await session.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if body.title is not None:
+        task.title = body.title
+    if body.status is not None:
+        task.status = body.status
+    await session.commit()
+    await session.refresh(task)
     return task
 
 

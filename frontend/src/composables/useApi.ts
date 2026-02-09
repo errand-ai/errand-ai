@@ -1,6 +1,6 @@
 import { useAuthStore } from '../stores/auth'
 
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type TaskStatus = 'new' | 'need-input' | 'scheduled' | 'pending' | 'running' | 'review' | 'completed'
 
 export interface TaskData {
   id: string
@@ -51,5 +51,15 @@ export async function createTask(title: string): Promise<TaskData> {
     body: JSON.stringify({ title }),
   })
   if (!res.ok) throw new Error(`Failed to create task: ${res.status}`)
+  return res.json()
+}
+
+export async function updateTask(id: string, data: { title?: string; status?: TaskStatus }): Promise<TaskData> {
+  const res = await authFetch(`${BASE}/tasks/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(`Failed to update task: ${res.status}`)
   return res.json()
 }

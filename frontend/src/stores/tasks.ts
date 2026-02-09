@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import { fetchTasks, createTask, type TaskData } from '../composables/useApi'
+import { ref } from 'vue'
+import { fetchTasks, createTask, updateTask as apiUpdateTask, type TaskData, type TaskStatus } from '../composables/useApi'
 
 const POLL_INTERVAL = 5000
 
@@ -10,10 +10,9 @@ export const useTaskStore = defineStore('tasks', () => {
   const error = ref<string | null>(null)
   let pollTimer: ReturnType<typeof setInterval> | null = null
 
-  const pending = computed(() => tasks.value.filter((t) => t.status === 'pending'))
-  const running = computed(() => tasks.value.filter((t) => t.status === 'running'))
-  const completed = computed(() => tasks.value.filter((t) => t.status === 'completed'))
-  const failed = computed(() => tasks.value.filter((t) => t.status === 'failed'))
+  function tasksByStatus(status: TaskStatus): TaskData[] {
+    return tasks.value.filter((t) => t.status === status)
+  }
 
   async function load() {
     loading.value = true
@@ -38,6 +37,17 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  async function updateTask(id: string, data: { title?: string; status?: TaskStatus }) {
+    try {
+      await apiUpdateTask(id, data)
+      error.value = null
+      await load()
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update task'
+      throw e
+    }
+  }
+
   function startPolling() {
     if (pollTimer) return
     load()
@@ -51,5 +61,5 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  return { tasks, loading, error, pending, running, completed, failed, load, addTask, startPolling, stopPolling }
+  return { tasks, loading, error, tasksByStatus, load, addTask, updateTask, startPolling, stopPolling }
 })

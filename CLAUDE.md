@@ -199,4 +199,4 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Keycloak SSO implemented and deployed to K8s (`add-keycloak-sso` change — ready to archive)
 - Deployed at: https://content-manager.devops-consultants.net
 - No tests yet
-- 7 component specs in `openspec/specs/`
+- 9 component specs in `openspec/specs/`
