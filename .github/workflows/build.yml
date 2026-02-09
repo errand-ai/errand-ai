@@ -52,6 +52,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: "sqlite+aiosqlite://"
+          PYTHONPATH: "."
         run: |
           pip install -r requirements.txt -r requirements-test.txt -q
           pytest tests/ -v
