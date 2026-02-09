@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import events as events_module
 from models import Base, Task
-from main import app, get_current_user
+from main import app, get_current_user, require_admin
 from database import get_session
 
 FAKE_USER_CLAIMS = {
@@ -22,7 +22,18 @@ FAKE_USER_CLAIMS = {
     },
 }
 
-# SQLite-compatible DDL for the tasks table (replaces now() with CURRENT_TIMESTAMP)
+FAKE_ADMIN_CLAIMS = {
+    "sub": "admin-user-id",
+    "preferred_username": "adminuser",
+    "email": "admin@example.com",
+    "resource_access": {
+        "content-manager": {
+            "roles": ["user", "admin"],
+        }
+    },
+}
+
+# SQLite-compatible DDL (replaces now() with CURRENT_TIMESTAMP, JSONB with TEXT)
 _TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -33,10 +44,19 @@ CREATE TABLE IF NOT EXISTS tasks (
 )
 """
 
+_SETTINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_TASKS_TABLE_SQL))
+        await conn.execute(text(_SETTINGS_TABLE_SQL))
 
 
 @pytest.fixture()
@@ -64,6 +84,44 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_get_current_user
+
+    # Non-admin: require_admin should reject
+    from fastapi import HTTPException
+
+    async def override_require_admin_reject():
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    app.dependency_overrides[require_admin] = override_require_admin_reject
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+
+@pytest.fixture()
+async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
+    """Client authenticated as an admin user."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    await _create_tables(engine)
+
+    test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_session():
+        async with test_session() as session:
+            yield session
+
+    async def override_get_current_user():
+        return FAKE_ADMIN_CLAIMS
+
+    async def override_require_admin():
+        return FAKE_ADMIN_CLAIMS
+
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[require_admin] = override_require_admin
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
