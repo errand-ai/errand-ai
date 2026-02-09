@@ -34,8 +34,11 @@ function logout() {
 <template>
   <div class="min-h-screen bg-gray-100" v-if="auth.isAuthenticated">
     <header class="bg-white shadow">
-      <div class="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-        <h1 class="text-2xl font-bold text-gray-900">Content Manager</h1>
+      <div class="flex items-center justify-between px-4 py-4">
+        <div class="flex items-center gap-3">
+          <img src="/logo.png" alt="Logo" class="h-8 w-auto" />
+          <h1 class="text-2xl font-bold text-gray-900">Content Manager</h1>
+        </div>
         <div class="flex items-center gap-4">
           <span v-if="auth.userDisplay" class="text-sm text-gray-600">{{ auth.userDisplay }}</span>
           <button
@@ -47,7 +50,7 @@ function logout() {
         </div>
       </div>
     </header>
-    <main class="mx-auto max-w-7xl px-4 py-6">
+    <main class="px-4 py-6">
       <AccessDenied v-if="auth.accessDenied" />
       <KanbanBoard v-else />
     </main>

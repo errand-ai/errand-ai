@@ -18,7 +18,7 @@ class Task(Base):
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'pending'")
+        Text, nullable=False, server_default=text("'new'")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
