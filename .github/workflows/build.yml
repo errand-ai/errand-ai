@@ -152,6 +152,7 @@ jobs:
       - name: Package and push Helm chart
         run: |
           TAG="${{ needs.version.outputs.tag }}"
+          helm dependency build helm/content-manager
           helm package helm/content-manager \
             --version "${TAG}" \
             --app-version "${TAG}"
