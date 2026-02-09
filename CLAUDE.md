@@ -48,6 +48,8 @@ openspec/
   changes/             # Active changes (created by openspec new)
 backend/
   main.py              # FastAPI app (API endpoints)
+  auth.py              # OIDC config, JWT validation, role extraction
+  auth_routes.py       # /auth/login, /auth/callback, /auth/logout
   models.py            # SQLAlchemy models
   database.py          # DB engine/session setup
   worker.py            # Worker process entrypoint
@@ -55,6 +57,7 @@ backend/
   Dockerfile
 frontend/
   src/                 # Vue 3 app source
+  src/stores/auth.ts   # Pinia auth store (token, idToken, roles)
   Dockerfile
 helm/
   content-manager/     # Helm chart for K8s deployment
@@ -70,6 +73,7 @@ helm/
 - **Database**: PostgreSQL (external, app manages migrations via Alembic)
 - **Deployment**: Helm chart on Kubernetes, KEDA for worker autoscaling, ArgoCD
 - **CI/CD**: GitHub Actions, immutable versioning from `VERSION` file
+- **Auth**: Keycloak OIDC (Authorization Code flow, confidential client)
 
 ## Local Development
 
@@ -120,9 +124,29 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 - Hindsight REST API is available at `https://hindsight.coward.cloud/api/` (e.g. `/api/banks` lists memory banks)
 
+## Authentication (Keycloak SSO)
+
+- OIDC Authorization Code flow: backend is the confidential client, handles code exchange
+- JWT audience validation disabled — Keycloak sets `aud: "account"`, not the client_id
+- Roles claim: `resource_access.content-manager.roles` (client-specific, not `realm_access.roles`)
+- Logout requires `id_token_hint` parameter to Keycloak end-session endpoint
+- Token + id_token delivered to frontend via URL fragment from `/auth/callback`
+
+## Kubernetes Deployment
+
+- **Cluster context**: `devops-consultants` / namespace: `content-manager`
+- **Ingress**: nginx ingress controller (class `nginx`) — routes `/api` and `/auth` to backend, `/` to frontend
+- **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
+- **Database**: CloudNativePG — secret `content-manager-postgres-app`, key `uri`
+- **Frontend in K8s**: nginx serves static files only (no proxy_pass); ingress handles path routing
+- **Proxy headers**: uvicorn runs with `--proxy-headers --forwarded-allow-ips *` so `request.base_url` returns `https://` behind TLS-terminating ingress
+- **ArgoCD values**: Override values at `~/github/argocd/apps/content-manager-rancher-values.yaml`
+- **KEDA**: Disabled for now (CRDs not installed on cluster)
+
 ## Current State
 
-- Version: `0.1.0` (in `VERSION` file)
-- MVP scaffold complete (archived as `mvp-project-scaffold` change)
+- Version: `0.3.0` (in `VERSION` file) — bump VERSION before pushing (CI enforces immutable tags)
+- Keycloak SSO implemented and deployed to K8s (`add-keycloak-sso` change — ready to archive)
+- Deployed at: https://content-manager.devops-consultants.net
 - No tests yet
-- 7 component specs in `openspec/specs/`: ci-pipelines, database-migrations, helm-deployment, kanban-frontend, local-dev-environment, task-api, task-worker
+- 7 component specs in `openspec/specs/`
