@@ -7,16 +7,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
-  BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
 
 jobs:
-  build:
+  version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,8 +25,33 @@ jobs:
           else
             TAG="${VERSION}"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Check immutable version (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          for IMAGE in "ghcr.io/${{ github.repository }}-frontend" "ghcr.io/${{ github.repository }}-backend"; do
+            if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
+              echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
+              exit 1
+            fi
+          done
+
+  build-frontend:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to container registry
         uses: docker/login-action@v3
@@ -39,41 +60,67 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check immutable version (main only)
-        if: github.ref == 'refs/heads/main'
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          for IMAGE in "${{ env.FRONTEND_IMAGE }}" "${{ env.BACKEND_IMAGE }}"; do
-            if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
-              echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
-              exit 1
-            fi
-          done
-
       - name: Build and push frontend image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository }}-frontend:${{ needs.version.outputs.tag }}
+
+  build-backend:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push backend image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository }}-backend:${{ needs.version.outputs.tag }}
+
+  helm:
+    needs: [version, build-frontend, build-backend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Package Helm chart
-        run: |
-          helm package helm/content-manager \
-            --version "${{ steps.version.outputs.tag }}" \
-            --app-version "${{ steps.version.outputs.tag }}"
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push Helm chart (main only)
-        if: github.ref == 'refs/heads/main'
+      - name: Package and push Helm chart
         run: |
-          helm push content-manager-${{ steps.version.outputs.tag }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository }}/charts
+          TAG="${{ needs.version.outputs.tag }}"
+          helm package helm/content-manager \
+            --version "${TAG}" \
+            --app-version "${TAG}"
+          helm push "content-manager-${TAG}.tgz" "oci://${{ env.REGISTRY }}/${{ github.repository }}/charts"

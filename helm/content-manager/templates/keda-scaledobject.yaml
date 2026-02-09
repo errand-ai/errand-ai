@@ -16,6 +16,6 @@ spec:
     - type: metrics-api
       metadata:
         targetValue: {{ .Values.keda.threshold | quote }}
-        url: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/api/metrics/queue"
+        url: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/metrics/queue"
         valueLocation: "queue_depth"
 {{- end }}

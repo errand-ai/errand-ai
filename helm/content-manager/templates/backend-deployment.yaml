@@ -29,3 +29,17 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.secretKey }}
+            - name: OIDC_DISCOVERY_URL
+              value: {{ .Values.keycloak.discoveryUrl | quote }}
+            - name: OIDC_ROLES_CLAIM
+              value: {{ .Values.keycloak.rolesClaim | quote }}
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.existingSecret }}
+                  key: {{ .Values.keycloak.secretKeyClientId }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.existingSecret }}
+                  key: {{ .Values.keycloak.secretKeyClientSecret }}
