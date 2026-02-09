@@ -21,7 +21,7 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from models import Task
+from models import Setting, Task
 
 security = HTTPBearer()
 
@@ -68,6 +68,24 @@ async def get_current_user(
             status_code=403,
             detail="No roles assigned. Contact your administrator for access.",
         )
+
+    return claims
+
+
+async def require_admin(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict:
+    token = credentials.credentials
+    try:
+        claims = auth_module.oidc.decode_token(token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    roles = auth_module.oidc.extract_roles(claims)
+    if "admin" not in roles:
+        raise HTTPException(status_code=403, detail="Admin role required")
 
     return claims
 
@@ -158,6 +176,39 @@ async def update_task(
     await session.refresh(task)
     await publish_event("task_updated", TaskResponse.model_validate(task).model_dump(mode="json"))
     return task
+
+
+# --- Admin settings endpoints ---
+
+
+@app.get("/api/settings")
+async def get_settings(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(Setting))
+    settings = result.scalars().all()
+    return {s.key: s.value for s in settings}
+
+
+@app.put("/api/settings")
+async def update_settings(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    for key, value in body.items():
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.value = value
+        else:
+            session.add(Setting(key=key, value=value))
+    await session.commit()
+
+    result = await session.execute(select(Setting))
+    settings = result.scalars().all()
+    return {s.key: s.value for s in settings}
 
 
 # --- Unprotected endpoints ---

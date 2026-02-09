@@ -18,6 +18,19 @@ export const useAuthStore = defineStore('auth', () => {
     }
   })
 
+  const roles = computed<string[]>(() => {
+    if (!token.value) return []
+    try {
+      const payload = JSON.parse(atob(token.value.split('.')[1]))
+      const clientRoles = payload?.resource_access?.['content-manager']?.roles
+      return Array.isArray(clientRoles) ? clientRoles : []
+    } catch {
+      return []
+    }
+  })
+
+  const isAdmin = computed(() => roles.value.includes('admin'))
+
   function setToken(t: string, id?: string) {
     token.value = t
     idToken.value = id ?? null
@@ -33,5 +46,5 @@ export const useAuthStore = defineStore('auth', () => {
     accessDenied.value = true
   }
 
-  return { token, idToken, isAuthenticated, accessDenied, userDisplay, setToken, clearToken, setAccessDenied }
+  return { token, idToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, setToken, clearToken, setAccessDenied }
 })
