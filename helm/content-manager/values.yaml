@@ -8,7 +8,7 @@ frontend:
     port: 80
 
 backend:
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: ghcr.io/OWNER/content-manager-backend
     tag: "0.1.0"
@@ -31,9 +31,17 @@ keda:
   maxReplicaCount: 5
   threshold: "1"
 
+keycloak:
+  existingSecret: content-manager-keycloak
+  secretKeyClientId: OIDC_CLIENT_ID
+  secretKeyClientSecret: OIDC_CLIENT_SECRET
+  discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
+  rolesClaim: resource_access.content-manager.roles
+
 ingress:
   enabled: true
   host: tasks.example.com
+  annotations: {}
   tls:
     enabled: false
     secretName: ""
