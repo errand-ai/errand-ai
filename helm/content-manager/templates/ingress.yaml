@@ -5,6 +5,10 @@ metadata:
   name: {{ include "content-manager.fullname" . }}
   labels:
     {{- include "content-manager.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   {{- if .Values.ingress.tls.enabled }}
   tls:
