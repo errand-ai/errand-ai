@@ -77,8 +77,8 @@ function onCancel() {
   editingTask.value = null
 }
 
-onMounted(() => store.startPolling())
-onUnmounted(() => store.stopPolling())
+onMounted(() => store.start())
+onUnmounted(() => store.stop())
 </script>
 
 <template>

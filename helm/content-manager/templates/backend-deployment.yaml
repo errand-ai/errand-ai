@@ -43,3 +43,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.keycloak.existingSecret }}
                   key: {{ .Values.keycloak.secretKeyClientSecret }}
+            {{- if .Values.valkey.enabled }}
+            - name: VALKEY_URL
+              value: "redis://{{ .Release.Name }}-valkey:6379"
+            {{- end }}

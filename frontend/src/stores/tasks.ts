@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { fetchTasks, createTask, updateTask as apiUpdateTask, type TaskData, type TaskStatus } from '../composables/useApi'
+import { useWebSocket, type WebSocketStatus } from '../composables/useWebSocket'
+import { useAuthStore } from './auth'
 
 const POLL_INTERVAL = 5000
 
@@ -9,6 +11,43 @@ export const useTaskStore = defineStore('tasks', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
   let pollTimer: ReturnType<typeof setInterval> | null = null
+
+  const auth = useAuthStore()
+
+  // --- WebSocket integration ---
+
+  function handleWsMessage(data: unknown) {
+    const msg = data as { event: string; task: TaskData }
+    if (!msg?.event || !msg?.task) return
+
+    if (msg.event === 'task_created') {
+      // Add if not already present
+      const exists = tasks.value.some((t) => t.id === msg.task.id)
+      if (!exists) {
+        tasks.value = [msg.task, ...tasks.value]
+      }
+    } else if (msg.event === 'task_updated') {
+      tasks.value = tasks.value.map((t) =>
+        t.id === msg.task.id ? msg.task : t
+      )
+    }
+  }
+
+  const { status: wsStatus, connect: wsConnect, disconnect: wsDisconnect } = useWebSocket({
+    onMessage: handleWsMessage,
+    getToken: () => auth.token,
+  })
+
+  // Watch WebSocket status for polling fallback
+  watch(wsStatus, (newStatus: WebSocketStatus) => {
+    if (newStatus === 'connected') {
+      stopPolling()
+    } else if (newStatus === 'disconnected') {
+      startPolling()
+    }
+  })
+
+  // --- Core data operations ---
 
   function tasksByStatus(status: TaskStatus): TaskData[] {
     return tasks.value.filter((t) => t.status === status)
@@ -48,6 +87,8 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  // --- Polling (fallback) ---
+
   function startPolling() {
     if (pollTimer) return
     load()
@@ -61,5 +102,17 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  return { tasks, loading, error, tasksByStatus, load, addTask, updateTask, startPolling, stopPolling }
+  // --- Lifecycle ---
+
+  function start() {
+    load()
+    wsConnect()
+  }
+
+  function stop() {
+    wsDisconnect()
+    stopPolling()
+  }
+
+  return { tasks, loading, error, wsStatus, tasksByStatus, load, addTask, updateTask, start, stop, startPolling, stopPolling }
 })

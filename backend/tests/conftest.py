@@ -1,10 +1,12 @@
 from collections.abc import AsyncGenerator
 
 import pytest
+from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import events as events_module
 from models import Base, Task
 from main import app, get_current_user
 from database import get_session
@@ -38,7 +40,16 @@ async def _create_tables(engine):
 
 
 @pytest.fixture()
-async def client() -> AsyncGenerator[AsyncClient, None]:
+async def fake_valkey() -> AsyncGenerator[FakeRedis, None]:
+    redis = FakeRedis(decode_responses=True)
+    events_module._valkey = redis
+    yield redis
+    events_module._valkey = None
+    await redis.aclose()
+
+
+@pytest.fixture()
+async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     await _create_tables(engine)
 
@@ -63,7 +74,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture()
-async def unauth_client() -> AsyncGenerator[AsyncClient, None]:
+async def unauth_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     """Client without auth override — requests will be rejected."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     await _create_tables(engine)

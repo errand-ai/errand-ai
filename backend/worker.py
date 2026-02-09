@@ -3,11 +3,13 @@ import logging
 import os
 import signal
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, engine
+from events import init_valkey, close_valkey, publish_event
 from models import Task
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 
 shutdown_requested = False
-shutdown_event: asyncio.Event | None = None
+shutdown_event: Optional[asyncio.Event] = None
 
 
 def handle_sigterm(*_args):
@@ -39,6 +41,16 @@ async def dequeue_task(session: AsyncSession) -> Task | None:
     return result.scalar_one_or_none()
 
 
+def _task_to_dict(task: Task) -> dict:
+    return {
+        "id": str(task.id),
+        "title": task.title,
+        "status": task.status,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+
+
 async def process_task(task: Task) -> None:
     logger.info("Processing task %s: %s", task.id, task.title)
     # MVP placeholder: simulate work
@@ -50,6 +62,7 @@ async def run() -> None:
     shutdown_event = asyncio.Event()
 
     signal.signal(signal.SIGTERM, handle_sigterm)
+    await init_valkey()
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 
     while not shutdown_requested:
@@ -68,6 +81,8 @@ async def run() -> None:
             # Set status to running
             task.status = "running"
             await session.commit()
+            await session.refresh(task)
+            await publish_event("task_updated", _task_to_dict(task))
 
         # Process outside the dequeue transaction
         try:
@@ -79,6 +94,10 @@ async def run() -> None:
                     )
                 )
                 await session.commit()
+                # Re-read for accurate event payload
+                result = await session.execute(select(Task).where(Task.id == task.id))
+                updated_task = result.scalar_one()
+                await publish_event("task_updated", _task_to_dict(updated_task))
             logger.info("Task %s completed", task.id)
         except Exception:
             logger.exception("Task %s failed", task.id)
@@ -89,7 +108,11 @@ async def run() -> None:
                     )
                 )
                 await session.commit()
+                result = await session.execute(select(Task).where(Task.id == task.id))
+                failed_task = result.scalar_one()
+                await publish_event("task_updated", _task_to_dict(failed_task))
 
+    await close_valkey()
     await engine.dispose()
     logger.info("Worker shutting down")
 

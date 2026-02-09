@@ -4,3 +4,9 @@ description: Kanban-style task processing application
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+
+dependencies:
+  - name: valkey
+    version: "0.9.x"
+    repository: https://valkey.io/valkey-helm/
+    condition: valkey.enabled

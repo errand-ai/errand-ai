@@ -2,8 +2,12 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import asyncio
+import json
+import logging
+
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional
@@ -16,6 +20,7 @@ import auth as auth_module
 from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import engine, get_session
+from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from models import Task
 
 security = HTTPBearer()
@@ -25,7 +30,9 @@ security = HTTPBearer()
 async def lifespan(app: FastAPI):
     auth_module.oidc = OIDCConfig.from_env()
     await auth_module.oidc.discover()
+    await init_valkey()
     yield
+    await close_valkey()
     await engine.dispose()
 
 
@@ -115,6 +122,7 @@ async def create_task(
     session.add(task)
     await session.commit()
     await session.refresh(task)
+    await publish_event("task_created", TaskResponse.model_validate(task).model_dump(mode="json"))
     return task
 
 
@@ -148,6 +156,7 @@ async def update_task(
         task.status = body.status
     await session.commit()
     await session.refresh(task)
+    await publish_event("task_updated", TaskResponse.model_validate(task).model_dump(mode="json"))
     return task
 
 
@@ -169,3 +178,69 @@ async def health(session: AsyncSession = Depends(get_session)):
         return {"status": "ok"}
     except Exception:
         raise HTTPException(status_code=503, detail="Database unreachable")
+
+
+# --- WebSocket endpoint ---
+
+logger = logging.getLogger(__name__)
+
+PING_INTERVAL = 30
+PONG_TIMEOUT = 10
+
+
+@app.websocket("/api/ws/tasks")
+async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
+    # Authenticate via query parameter
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        claims = auth_module.oidc.decode_token(token)
+        roles = auth_module.oidc.extract_roles(claims)
+        if not roles:
+            await websocket.close(code=4001, reason="No roles")
+            return
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    await websocket.accept()
+
+    valkey = get_valkey()
+    if valkey is None:
+        await websocket.close(code=1011, reason="Event bus unavailable")
+        return
+
+    pubsub = valkey.pubsub()
+    await pubsub.subscribe(CHANNEL)
+
+    async def forward_events():
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg["type"] == "message":
+                    await websocket.send_text(msg["data"])
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+
+    async def keepalive():
+        try:
+            while True:
+                await asyncio.sleep(PING_INTERVAL)
+                await websocket.send_json({"event": "ping"})
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+
+    forward_task = asyncio.create_task(forward_events())
+    ping_task = asyncio.create_task(keepalive())
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        forward_task.cancel()
+        ping_task.cancel()
+        await pubsub.unsubscribe(CHANNEL)
+        await pubsub.aclose()
