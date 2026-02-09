@@ -216,8 +216,8 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Current State
 
-- Version: `0.4.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.4.1` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- No tests yet
-- 9 component specs in `openspec/specs/`
+- Tests: 27 backend (pytest) + 17 frontend (vitest) — CI `test` job gates both build jobs
+- 12 component specs in `openspec/specs/`
