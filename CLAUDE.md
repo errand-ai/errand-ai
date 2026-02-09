@@ -75,17 +75,66 @@ helm/
 - **CI/CD**: GitHub Actions, immutable versioning from `VERSION` file
 - **Auth**: Keycloak OIDC (Authorization Code flow, confidential client)
 
-## Local Development
+## Development Workflow
 
-Run the full stack locally with Docker Compose before committing any changes:
+All new feature development **must** use git worktrees. Each feature gets its own branch and worktree, keeping `main` clean and allowing parallel work on multiple features.
+
+### 1. Create a feature branch with a git worktree
 
 ```bash
-docker compose up        # Start all services (postgres, migrations, backend, worker, frontend)
-docker compose down      # Stop and remove containers
-docker compose up --build  # Rebuild images after Dockerfile changes
+# From the main repo directory
+git worktree add ../content-manager-<feature-name> -b <feature-name>
+cd ../content-manager-<feature-name>
 ```
 
-**Always test changes locally before pushing to GitHub.** The CI pipeline builds images and ArgoCD deploys them — verify locally first.
+Use descriptive branch names (e.g. `add-task-queue`, `fix-auth-redirect`, `update-helm-probes`).
+
+### 2. Bump the VERSION file (semantic versioning)
+
+Before any code changes, increment the version in `VERSION` following [semver](https://semver.org/):
+
+- **MAJOR** (X.0.0) — breaking API or data model changes
+- **MINOR** (0.X.0) — new features, backwards-compatible additions
+- **PATCH** (0.0.X) — bug fixes, minor corrections, config tweaks
+
+CI enforces immutable tags — if you forget to bump, the pipeline will fail on duplicate tags.
+
+### 3. Develop and test locally
+
+Run the full stack locally with Docker Compose and verify changes **before committing**:
+
+```bash
+docker compose up --build  # Build and start all services (postgres, migrations, backend, worker, frontend)
+docker compose down        # Stop and remove containers
+```
+
+**Every commit must pass local testing.** Do not commit code that hasn't been verified with `docker compose up --build`. The CI pipeline builds images and ArgoCD deploys them — broken commits on a branch waste CI resources and risk bad deployments.
+
+### 4. Push and create a pull request
+
+```bash
+git push -u origin <feature-name>
+gh pr create --title "<short description>" --body "<details>"
+```
+
+### 5. Verify the PR deployment before merging
+
+After pushing, CI builds container images and the Helm chart. **Before merging the PR**:
+
+- Confirm the GitHub Actions build completes successfully (images + Helm chart pushed to GHCR)
+- Verify the built images and Helm chart deploy cleanly on Kubernetes (ArgoCD sync or manual `helm upgrade --dry-run`)
+- Check the running deployment is functional (pod health, ingress routing, basic smoke test)
+
+**Do not merge a PR until the built artifacts have been validated on Kubernetes.** A green CI build alone is not sufficient — the deployment must work end-to-end.
+
+### 6. Clean up after merge
+
+```bash
+# After the PR is merged, remove the worktree
+cd /Users/rob/github/content-manager
+git worktree remove ../content-manager-<feature-name>
+git branch -d <feature-name>  # delete local branch (remote is deleted by GitHub on merge)
+```
 
 ## Serena (Code Intelligence)
 
@@ -145,7 +194,8 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Current State
 
-- Version: `0.3.0` (in `VERSION` file) — bump VERSION before pushing (CI enforces immutable tags)
+- Version: `0.3.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
 - Keycloak SSO implemented and deployed to K8s (`add-keycloak-sso` change — ready to archive)
 - Deployed at: https://content-manager.devops-consultants.net
 - No tests yet
