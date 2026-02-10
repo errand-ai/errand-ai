@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { TaskData } from '../composables/useApi'
 import { formatRelativeTime } from '../composables/useRelativeTime'
 
-defineProps<{
+const props = defineProps<{
   task: TaskData
   columnStatus?: string
 }>()
@@ -10,7 +11,13 @@ defineProps<{
 defineEmits<{
   edit: []
   delete: []
+  'view-output': []
 }>()
+
+const showOutputButton = computed(() => {
+  const col = props.columnStatus
+  return (col === 'review' || col === 'completed' || col === 'scheduled') && !!props.task.output
+})
 </script>
 
 <template>
@@ -18,6 +25,17 @@ defineEmits<{
     <div class="flex items-start justify-between gap-2">
       <p class="text-sm text-gray-800">{{ task.title }}</p>
       <div class="flex shrink-0 gap-0.5">
+        <button
+          v-if="showOutputButton"
+          class="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+          title="View output"
+          @click.stop="$emit('view-output')"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+            <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+          </svg>
+        </button>
         <button
           class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
           title="Edit task"

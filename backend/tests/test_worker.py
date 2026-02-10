@@ -49,19 +49,38 @@ def test_truncate_output_unicode():
 # --- _task_to_dict ---
 
 
+def _make_mock_task(**overrides):
+    """Create a mock Task with all fields populated for _task_to_dict tests."""
+    task = MagicMock(spec=Task)
+    task.id = overrides.get("id", "abc-123")
+    task.title = overrides.get("title", "Test task")
+    task.description = overrides.get("description", "Task description text")
+    task.status = overrides.get("status", "pending")
+    task.position = overrides.get("position", 3)
+    task.category = overrides.get("category", "immediate")
+    task.execute_at = overrides.get("execute_at", None)
+    task.repeat_interval = overrides.get("repeat_interval", None)
+    task.repeat_until = overrides.get("repeat_until", None)
+    task.output = overrides.get("output", None)
+    task.retry_count = overrides.get("retry_count", 0)
+    # Tags: list of mock Tag objects with .name attribute
+    tags = overrides.get("tags", [])
+    mock_tags = []
+    for t in tags:
+        tag = MagicMock()
+        tag.name = t
+        mock_tags.append(tag)
+    task.tags = mock_tags
+    task.created_at = MagicMock()
+    task.created_at.isoformat.return_value = overrides.get("created_at_iso", "2026-01-01T00:00:00")
+    task.updated_at = MagicMock()
+    task.updated_at.isoformat.return_value = overrides.get("updated_at_iso", "2026-01-01T00:01:00")
+    return task
+
+
 def test_task_to_dict_includes_output():
     """_task_to_dict includes the output field."""
-    task = MagicMock(spec=Task)
-    task.id = "abc-123"
-    task.title = "Test task"
-    task.status = "review"
-    task.output = "Container output here"
-    task.retry_count = 0
-    task.created_at = MagicMock()
-    task.created_at.isoformat.return_value = "2026-01-01T00:00:00"
-    task.updated_at = MagicMock()
-    task.updated_at.isoformat.return_value = "2026-01-01T00:01:00"
-
+    task = _make_mock_task(status="review", output="Container output here")
     result = _task_to_dict(task)
     assert result["output"] == "Container output here"
     assert result["status"] == "review"
@@ -70,20 +89,67 @@ def test_task_to_dict_includes_output():
 
 def test_task_to_dict_null_output():
     """_task_to_dict handles None output."""
-    task = MagicMock(spec=Task)
-    task.id = "abc-123"
-    task.title = "Test task"
-    task.status = "pending"
-    task.output = None
-    task.retry_count = 2
-    task.created_at = MagicMock()
-    task.created_at.isoformat.return_value = "2026-01-01T00:00:00"
-    task.updated_at = MagicMock()
-    task.updated_at.isoformat.return_value = "2026-01-01T00:01:00"
-
+    task = _make_mock_task(status="pending", output=None, retry_count=2)
     result = _task_to_dict(task)
     assert result["output"] is None
     assert result["retry_count"] == 2
+
+
+def test_task_to_dict_includes_description_and_tags():
+    """_task_to_dict includes description, position, category, and tags."""
+    task = _make_mock_task(
+        description="Fix the login bug",
+        position=5,
+        category="scheduled",
+        tags=["urgent", "backend"],
+    )
+    result = _task_to_dict(task)
+    assert result["description"] == "Fix the login bug"
+    assert result["position"] == 5
+    assert result["category"] == "scheduled"
+    assert result["tags"] == ["backend", "urgent"]  # sorted
+
+
+# --- WebSocket event payload schema regression ---
+
+
+def test_task_to_dict_keys_match_task_response():
+    """_task_to_dict keys must exactly match TaskResponse schema fields.
+
+    This test fails if a field is added to TaskResponse but not _task_to_dict,
+    or vice versa. Prevents regressions where WebSocket events have partial data.
+    """
+    from main import TaskResponse
+
+    task = _make_mock_task(tags=["test"])
+    result = _task_to_dict(task)
+
+    expected_keys = set(TaskResponse.model_fields.keys())
+    actual_keys = set(result.keys())
+    assert actual_keys == expected_keys, (
+        f"Key mismatch between _task_to_dict and TaskResponse.\n"
+        f"Missing from _task_to_dict: {expected_keys - actual_keys}\n"
+        f"Extra in _task_to_dict: {actual_keys - expected_keys}"
+    )
+
+
+def test_task_to_dict_preserves_fields_across_status_transitions():
+    """Description, tags, and position are preserved regardless of task status.
+
+    Simulates the worker updating status from pending→running→review and
+    asserts critical fields are always present in the payload.
+    """
+    for status in ["pending", "running", "review", "scheduled", "completed"]:
+        task = _make_mock_task(
+            status=status,
+            description="Important task details",
+            position=7,
+            tags=["deploy", "ci"],
+        )
+        result = _task_to_dict(task)
+        assert result["description"] == "Important task details", f"description lost at status={status}"
+        assert result["position"] == 7, f"position lost at status={status}"
+        assert result["tags"] == ["ci", "deploy"], f"tags lost at status={status}"
 
 
 # --- put_archive ---

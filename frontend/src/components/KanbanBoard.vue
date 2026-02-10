@@ -5,6 +5,7 @@ import type { TaskStatus, TaskData } from '../composables/useApi'
 import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
 import TaskEditModal from './TaskEditModal.vue'
+import TaskOutputModal from './TaskOutputModal.vue'
 
 const REORDERABLE_COLUMNS: TaskStatus[] = ['new', 'pending']
 
@@ -28,6 +29,9 @@ const dragSourceStatus = ref<TaskStatus | null>(null)
 // Delete confirmation modal state
 const deleteConfirmTask = ref<TaskData | null>(null)
 const deleteDialogRef = ref<HTMLDialogElement | null>(null)
+
+// Output viewer modal state
+const outputTask = ref<TaskData | null>(null)
 
 function onDragStart(e: DragEvent, task: TaskData) {
   e.dataTransfer!.effectAllowed = 'move'
@@ -196,6 +200,10 @@ function onModalDelete() {
   showDeleteConfirm(editingTask.value)
 }
 
+function onViewOutput(task: TaskData) {
+  outputTask.value = task
+}
+
 function onCancel() {
   editingTask.value = null
 }
@@ -237,6 +245,7 @@ onUnmounted(() => store.stop())
             @dragend="onDragEnd"
             @edit="onEdit(task)"
             @delete="onDelete(task)"
+            @view-output="onViewOutput(task)"
           />
         </template>
         <div
@@ -255,6 +264,13 @@ onUnmounted(() => store.stop())
     @save="onSave"
     @cancel="onCancel"
     @delete="onModalDelete"
+  />
+
+  <TaskOutputModal
+    v-if="outputTask"
+    :title="outputTask.title"
+    :output="outputTask.output ?? null"
+    @close="outputTask = null"
   />
 
   <!-- Delete confirmation modal -->

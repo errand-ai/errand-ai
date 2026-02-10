@@ -68,3 +68,38 @@ async def test_update_task_output_in_event(client: AsyncClient, fake_valkey):
 
     await pubsub.unsubscribe("task_events")
     await pubsub.aclose()
+
+
+async def test_websocket_event_contains_all_task_response_fields(client: AsyncClient, fake_valkey):
+    """WebSocket task_updated event payload must contain all TaskResponse fields.
+
+    Regression test: ensures the event payload matches the API schema so the
+    frontend never receives partial data that overwrites existing fields.
+    """
+    from main import TaskResponse
+
+    task = await create_task(client, "Schema test task")
+
+    pubsub = fake_valkey.pubsub()
+    await pubsub.subscribe("task_events")
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await client.patch(
+        f"/api/tasks/{task['id']}", json={"status": "pending"}
+    )
+
+    msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+    assert msg is not None
+    data = json.loads(msg["data"])
+    assert data["event"] == "task_updated"
+
+    expected_keys = set(TaskResponse.model_fields.keys())
+    actual_keys = set(data["task"].keys())
+    assert actual_keys == expected_keys, (
+        f"WebSocket event payload key mismatch with TaskResponse.\n"
+        f"Missing: {expected_keys - actual_keys}\n"
+        f"Extra: {actual_keys - expected_keys}"
+    )
+
+    await pubsub.unsubscribe("task_events")
+    await pubsub.aclose()

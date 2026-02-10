@@ -48,6 +48,7 @@ const saving = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
 
 const showRepeatFields = computed(() => category.value === 'repeating')
+const isCompletedStatus = computed(() => ['review', 'completed'].includes(props.task.status))
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -64,6 +65,16 @@ function toLocalDatetime(iso: string | null | undefined): string {
 function toUtcIso(localDatetime: string): string | undefined {
   if (!localDatetime) return undefined
   return new Date(localDatetime).toISOString()
+}
+
+function formatDatetime(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
 }
 
 onMounted(() => {
@@ -209,7 +220,13 @@ function onTagBlur() {
         </select>
       </div>
 
-      <div class="mb-4">
+      <div v-if="isCompletedStatus" class="mb-4">
+        <label class="mb-1 block text-sm font-medium text-gray-700">Completed at</label>
+        <p class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+          {{ formatDatetime(task.updated_at) || 'Unknown' }}
+        </p>
+      </div>
+      <div v-else class="mb-4">
         <label for="edit-execute-at" class="mb-1 block text-sm font-medium text-gray-700">Execute at</label>
         <input
           id="edit-execute-at"

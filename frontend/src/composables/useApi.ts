@@ -12,6 +12,8 @@ export interface TaskData {
   execute_at: string | null
   repeat_interval: string | null
   repeat_until: string | null
+  output: string | null
+  retry_count: number
   tags: string[]
   created_at: string
   updated_at: string

@@ -13,6 +13,7 @@ import docker
 from docker.errors import DockerException, APIError, ImageNotFound
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import async_session, engine
 from events import init_valkey, close_valkey, publish_event
@@ -118,6 +119,7 @@ async def read_settings(session: AsyncSession) -> tuple[dict, list[dict]]:
 async def dequeue_task(session: AsyncSession) -> Task | None:
     result = await session.execute(
         select(Task)
+        .options(selectinload(Task.tags))
         .where(Task.status == "pending")
         .order_by(Task.position.asc(), Task.created_at.asc())
         .limit(1)
@@ -130,10 +132,16 @@ def _task_to_dict(task: Task) -> dict:
     return {
         "id": str(task.id),
         "title": task.title,
+        "description": task.description,
         "status": task.status,
+        "position": task.position,
+        "category": task.category,
+        "execute_at": task.execute_at.isoformat() if task.execute_at else None,
+        "repeat_interval": task.repeat_interval,
+        "repeat_until": task.repeat_until.isoformat() if task.repeat_until else None,
         "output": task.output,
         "retry_count": task.retry_count,
-        "execute_at": task.execute_at.isoformat() if task.execute_at else None,
+        "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
@@ -222,7 +230,9 @@ async def _schedule_retry(task: Task, output: str | None = None) -> None:
             update(Task).where(Task.id == task.id).values(**values)
         )
         await session.commit()
-        result = await session.execute(select(Task).where(Task.id == task.id))
+        result = await session.execute(
+            select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
+        )
         retried_task = result.scalar_one()
         await publish_event("task_updated", _task_to_dict(retried_task))
         logger.info(
@@ -285,7 +295,9 @@ async def run() -> None:
                         )
                     )
                     await session.commit()
-                    result = await session.execute(select(Task).where(Task.id == task.id))
+                    result = await session.execute(
+                        select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
+                    )
                     updated_task = result.scalar_one()
                     await publish_event("task_updated", _task_to_dict(updated_task))
                 logger.info("Task %s completed (exit code 0), moved to review", task.id)
