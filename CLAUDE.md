@@ -78,14 +78,12 @@ helm/
 
 ## Development Workflow
 
-All new feature development **must** use git worktrees. Each feature gets its own branch and worktree, keeping `main` clean and allowing parallel work on multiple features.
+Changes are implemented sequentially — one change at a time, branching from `main`. Do not start implementing a new change until the current one is merged.
 
-### 1. Create a feature branch with a git worktree
+### 1. Create a feature branch
 
 ```bash
-# From the main repo directory
-git worktree add ../content-manager-<feature-name> -b <feature-name>
-cd ../content-manager-<feature-name>
+git checkout -b <feature-name>
 ```
 
 Use descriptive branch names (e.g. `add-task-queue`, `fix-auth-redirect`, `update-helm-probes`).
@@ -133,9 +131,8 @@ After pushing, CI builds container images and the Helm chart. **Before merging t
 ### 6. Clean up after merge
 
 ```bash
-# After the PR is merged, remove the worktree
-cd /Users/rob/github/content-manager
-git worktree remove ../content-manager-<feature-name>
+git checkout main
+git pull origin main
 git branch -d <feature-name>  # delete local branch (remote is deleted by GitHub on merge)
 ```
 
@@ -218,7 +215,7 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 ## Current State
 
 - Version: `0.8.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
-- All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
+- Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
 - Tests: 85 backend (pytest) + 84 frontend (vitest) — CI `test` job gates both build jobs
 - 19 component specs in `openspec/specs/`
