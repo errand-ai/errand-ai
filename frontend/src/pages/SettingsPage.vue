@@ -8,7 +8,11 @@ const auth = useAuthStore()
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
 const systemPrompt = ref('')
-const mcpServers = ref<unknown>(null)
+const mcpServersText = ref('')
+const mcpExpanded = ref(false)
+const mcpError = ref<string | null>(null)
+const mcpSaving = ref(false)
+const mcpSuccess = ref(false)
 const llmModel = ref(DEFAULT_MODEL)
 const llmModels = ref<string[]>([])
 const llmModelsError = ref<string | null>(null)
@@ -44,7 +48,7 @@ async function loadSettings() {
     }
     const data = await res.json()
     systemPrompt.value = data.system_prompt ?? ''
-    mcpServers.value = data.mcp_servers ?? null
+    mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
@@ -77,6 +81,48 @@ async function saveSystemPrompt() {
     error.value = 'Failed to save settings. Please check your connection.'
   } finally {
     saving.value = false
+  }
+}
+
+async function saveMcpServers() {
+  mcpError.value = null
+  mcpSuccess.value = false
+
+  // Validate JSON
+  let parsed: unknown
+  const trimmed = mcpServersText.value.trim()
+  if (trimmed === '') {
+    parsed = {}
+  } else {
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      mcpError.value = 'Invalid JSON. Please check syntax and try again.'
+      return
+    }
+  }
+
+  mcpSaving.value = true
+  try {
+    const res = await settingsFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcp_servers: parsed }),
+    })
+    if (res.status === 403) {
+      mcpError.value = 'Access denied — admin role required.'
+      return
+    }
+    if (!res.ok) {
+      mcpError.value = `Failed to save MCP configuration (HTTP ${res.status})`
+      return
+    }
+    mcpSuccess.value = true
+    setTimeout(() => { mcpSuccess.value = false }, 3000)
+  } catch {
+    mcpError.value = 'Failed to save MCP configuration. Please check your connection.'
+  } finally {
+    mcpSaving.value = false
   }
 }
 
@@ -162,12 +208,39 @@ onMounted(async () => {
 
       <!-- MCP Server Configuration -->
       <div class="rounded-lg bg-white p-6 shadow">
-        <h3 class="text-lg font-semibold text-gray-800 mb-3">MCP Server Configuration</h3>
-        <p class="text-sm text-gray-500 mb-3">
-          MCP server configuration will be available in a future update.
-        </p>
-        <div v-if="mcpServers" class="rounded-md bg-gray-50 p-4">
-          <pre class="text-xs text-gray-700 overflow-auto">{{ JSON.stringify(mcpServers, null, 2) }}</pre>
+        <button
+          @click="mcpExpanded = !mcpExpanded"
+          class="flex w-full items-center justify-between text-left"
+        >
+          <h3 class="text-lg font-semibold text-gray-800">MCP Server Configuration</h3>
+          <svg
+            :class="{ 'rotate-180': mcpExpanded }"
+            class="h-5 w-5 text-gray-500 transition-transform"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        <div v-if="mcpExpanded" class="mt-3">
+          <div v-if="mcpError" class="mb-2 text-sm text-red-600">{{ mcpError }}</div>
+          <textarea
+            v-model="mcpServersText"
+            rows="10"
+            class="w-full rounded-md border border-gray-300 p-3 font-mono text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            placeholder='{"servers": []}'
+          ></textarea>
+          <div class="mt-3 flex items-center gap-3">
+            <button
+              @click="saveMcpServers"
+              :disabled="mcpSaving"
+              class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {{ mcpSaving ? 'Saving...' : 'Save MCP Config' }}
+            </button>
+            <span v-if="mcpSuccess" class="text-sm text-green-600">MCP configuration saved.</span>
+          </div>
         </div>
       </div>
     </template>

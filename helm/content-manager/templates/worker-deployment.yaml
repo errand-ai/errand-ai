@@ -32,3 +32,14 @@ spec:
             - name: VALKEY_URL
               value: "redis://{{ .Release.Name }}-valkey:6379"
             {{- end }}
+            - name: DOCKER_HOST
+              value: "tcp://localhost:2375"
+            - name: TASK_RUNNER_IMAGE
+              value: "{{ .Values.taskRunner.image.repository }}:{{ .Values.taskRunner.image.tag | default .Chart.AppVersion }}"
+        - name: dind
+          image: {{ .Values.dind.image }}
+          securityContext:
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""

@@ -19,6 +19,15 @@ backend:
 worker:
   replicaCount: 0
 
+taskRunner:
+  image:
+    repository: ghcr.io/devops-consultants/content-manager-task-runner
+    tag: ""
+    pullPolicy: IfNotPresent
+
+dind:
+  image: docker:27-dind
+
 database:
   existingSecret: content-manager-db
   secretKey: DATABASE_URL
