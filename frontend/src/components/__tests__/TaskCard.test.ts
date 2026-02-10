@@ -8,6 +8,10 @@ const task: TaskData = {
   title: 'Process report',
   description: null,
   status: 'running',
+  category: 'immediate',
+  execute_at: null,
+  repeat_interval: null,
+  repeat_until: null,
   tags: [],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
@@ -16,6 +20,13 @@ const task: TaskData = {
 const taskWithTags: TaskData = {
   ...task,
   tags: ['urgent', 'backend'],
+}
+
+const scheduledTask: TaskData = {
+  ...task,
+  status: 'scheduled',
+  category: 'scheduled',
+  execute_at: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
 }
 
 describe('TaskCard', () => {
@@ -60,5 +71,47 @@ describe('TaskCard', () => {
     const wrapper = mount(TaskCard, { props: { task } })
     const pills = wrapper.findAll('span.inline-block')
     expect(pills).toHaveLength(0)
+  })
+
+  // --- execute_at display ---
+
+  it('shows execute_at as relative time when columnStatus is scheduled', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task: scheduledTask, columnStatus: 'scheduled' },
+    })
+    // The relative time text should be rendered (e.g. "in 1h")
+    const timeEl = wrapper.find('.text-blue-600')
+    expect(timeEl.exists()).toBe(true)
+    expect(timeEl.text()).toBeTruthy()
+  })
+
+  it('hides execute_at when columnStatus is not scheduled', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task: scheduledTask, columnStatus: 'pending' },
+    })
+    const timeEl = wrapper.find('.text-blue-600')
+    expect(timeEl.exists()).toBe(false)
+  })
+
+  it('hides execute_at when execute_at is null even in scheduled column', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'scheduled' },
+    })
+    const timeEl = wrapper.find('.text-blue-600')
+    expect(timeEl.exists()).toBe(false)
+  })
+
+  // --- Delete button ---
+
+  it('renders a delete button', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    const button = wrapper.find('button[title="Delete task"]')
+    expect(button.exists()).toBe(true)
+  })
+
+  it('emits delete event when delete button is clicked', async () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    await wrapper.find('button[title="Delete task"]').trigger('click')
+    expect(wrapper.emitted('delete')).toHaveLength(1)
   })
 })

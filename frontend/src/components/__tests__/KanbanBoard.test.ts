@@ -14,6 +14,7 @@ vi.mock('../../composables/useApi', async () => {
     fetchTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn().mockResolvedValue({}),
     updateTask: vi.fn().mockResolvedValue({}),
+    deleteTask: vi.fn().mockResolvedValue(undefined),
   }
 })
 
@@ -25,6 +26,10 @@ function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
     title: `Task ${i + 1}`,
     description: null,
     status: 'new' as const,
+    category: 'immediate',
+    execute_at: null,
+    repeat_interval: null,
+    repeat_until: null,
     tags: [],
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
