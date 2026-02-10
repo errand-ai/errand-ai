@@ -10,7 +10,6 @@ const store = useTaskStore()
 
 const columns: { key: TaskStatus; label: string; color: string }[] = [
   { key: 'new', label: 'New', color: 'bg-sky-100' },
-  { key: 'need-input', label: 'Need Input', color: 'bg-orange-100' },
   { key: 'scheduled', label: 'Scheduled', color: 'bg-purple-100' },
   { key: 'pending', label: 'Pending', color: 'bg-yellow-100' },
   { key: 'running', label: 'Running', color: 'bg-blue-100' },
@@ -62,7 +61,7 @@ function onEdit(task: TaskData) {
   editingTask.value = { ...task }
 }
 
-async function onSave(data: { title: string; status: TaskStatus }) {
+async function onSave(data: { title: string; description?: string; status: TaskStatus; tags?: string[] }) {
   if (!editingTask.value) return
   try {
     await store.updateTask(editingTask.value.id, data)

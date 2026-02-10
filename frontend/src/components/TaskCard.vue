@@ -24,6 +24,14 @@ defineEmits<{
         </svg>
       </button>
     </div>
-    <p class="mt-1 text-xs text-gray-500 capitalize">{{ task.status }}</p>
+    <div v-if="task.tags && task.tags.length > 0" class="mt-1.5 flex flex-wrap gap-1">
+      <span
+        v-for="tag in task.tags"
+        :key="tag"
+        class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+      >
+        {{ tag }}
+      </span>
+    </div>
   </div>
 </template>

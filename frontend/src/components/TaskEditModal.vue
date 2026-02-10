@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import type { TaskData, TaskStatus } from '../composables/useApi'
+import { fetchTags } from '../composables/useApi'
 
 const props = defineProps<{
   task: TaskData
 }>()
 
 const emit = defineEmits<{
-  save: [data: { title: string; status: TaskStatus }]
+  save: [data: { title: string; description?: string; status: TaskStatus; tags: string[] }]
   cancel: []
 }>()
 
 const statuses: { key: TaskStatus; label: string }[] = [
   { key: 'new', label: 'New' },
-  { key: 'need-input', label: 'Need Input' },
   { key: 'scheduled', label: 'Scheduled' },
   { key: 'pending', label: 'Pending' },
   { key: 'running', label: 'Running' },
@@ -22,10 +22,17 @@ const statuses: { key: TaskStatus; label: string }[] = [
 ]
 
 const title = ref(props.task.title)
+const description = ref(props.task.description || '')
 const status = ref<TaskStatus>(props.task.status)
+const tags = ref<string[]>([...(props.task.tags || [])])
+const tagInput = ref('')
+const tagSuggestions = ref<string[]>([])
+const showSuggestions = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
 onMounted(() => {
   dialogRef.value?.showModal()
@@ -44,12 +51,66 @@ async function onSave() {
   error.value = null
   saving.value = true
   try {
-    await emit('save', { title: title.value.trim(), status: status.value })
+    await emit('save', {
+      title: title.value.trim(),
+      description: description.value || undefined,
+      status: status.value,
+      tags: tags.value,
+    })
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to save'
   } finally {
     saving.value = false
   }
+}
+
+function onTagInputChange() {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  const q = tagInput.value.trim()
+  if (!q) {
+    tagSuggestions.value = []
+    showSuggestions.value = false
+    return
+  }
+  debounceTimer = setTimeout(async () => {
+    try {
+      const results = await fetchTags(q)
+      tagSuggestions.value = results
+        .map((t) => t.name)
+        .filter((name) => !tags.value.includes(name))
+      showSuggestions.value = tagSuggestions.value.length > 0
+    } catch {
+      tagSuggestions.value = []
+      showSuggestions.value = false
+    }
+  }, 200)
+}
+
+function addTag(name: string) {
+  const trimmed = name.trim()
+  if (trimmed && !tags.value.includes(trimmed)) {
+    tags.value.push(trimmed)
+  }
+  tagInput.value = ''
+  tagSuggestions.value = []
+  showSuggestions.value = false
+}
+
+function removeTag(name: string) {
+  tags.value = tags.value.filter((t) => t !== name)
+}
+
+function onTagKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    if (tagInput.value.trim()) {
+      addTag(tagInput.value)
+    }
+  }
+}
+
+function onTagBlur() {
+  setTimeout(() => { showSuggestions.value = false }, 150)
 }
 </script>
 
@@ -59,7 +120,7 @@ async function onSave() {
     class="rounded-lg p-0 shadow-xl backdrop:bg-black/50"
     @cancel.prevent="onCancel"
   >
-    <form method="dialog" class="w-96 p-6" @submit.prevent="onSave">
+    <form method="dialog" class="w-[28rem] p-6" @submit.prevent="onSave">
       <h3 class="mb-4 text-lg font-semibold text-gray-800">Edit Task</h3>
 
       <div class="mb-4">
@@ -73,6 +134,16 @@ async function onSave() {
       </div>
 
       <div class="mb-4">
+        <label for="edit-description" class="mb-1 block text-sm font-medium text-gray-700">Description</label>
+        <textarea
+          id="edit-description"
+          v-model="description"
+          rows="3"
+          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      </div>
+
+      <div class="mb-4">
         <label for="edit-status" class="mb-1 block text-sm font-medium text-gray-700">Status</label>
         <select
           id="edit-status"
@@ -81,6 +152,50 @@ async function onSave() {
         >
           <option v-for="s in statuses" :key="s.key" :value="s.key">{{ s.label }}</option>
         </select>
+      </div>
+
+      <div class="mb-4">
+        <label class="mb-1 block text-sm font-medium text-gray-700">Tags</label>
+        <div class="flex flex-wrap gap-1 mb-2" v-if="tags.length > 0">
+          <span
+            v-for="tag in tags"
+            :key="tag"
+            class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700"
+          >
+            {{ tag }}
+            <button
+              type="button"
+              class="text-blue-400 hover:text-blue-600"
+              @click="removeTag(tag)"
+            >
+              &times;
+            </button>
+          </span>
+        </div>
+        <div class="relative">
+          <input
+            v-model="tagInput"
+            type="text"
+            placeholder="Add tag..."
+            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            @input="onTagInputChange"
+            @keydown="onTagKeydown"
+            @blur="onTagBlur"
+          />
+          <ul
+            v-if="showSuggestions"
+            class="absolute z-10 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-40 overflow-y-auto"
+          >
+            <li
+              v-for="suggestion in tagSuggestions"
+              :key="suggestion"
+              class="cursor-pointer px-3 py-2 text-sm hover:bg-blue-50"
+              @mousedown.prevent="addTag(suggestion)"
+            >
+              {{ suggestion }}
+            </li>
+          </ul>
+        </div>
       </div>
 
       <p v-if="error" class="mb-3 text-sm text-red-600">{{ error }}</p>

@@ -47,3 +47,17 @@ spec:
             - name: VALKEY_URL
               value: "redis://{{ .Release.Name }}-valkey:6379"
             {{- end }}
+            {{- if .Values.litellm.baseUrl }}
+            - name: LITELLM_BASE_URL
+              value: {{ .Values.litellm.baseUrl | quote }}
+            {{- end }}
+            {{- if .Values.litellm.existingSecret }}
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.litellm.existingSecret }}
+                  key: {{ .Values.litellm.secretKeyApiKey }}
+            {{- else if .Values.litellm.apiKey }}
+            - name: LITELLM_API_KEY
+              value: {{ .Values.litellm.apiKey | quote }}
+            {{- end }}

@@ -21,7 +21,7 @@ async def _subscribe(fake_valkey: FakeRedis):
 async def test_create_task_publishes_event(client: AsyncClient, fake_valkey: FakeRedis):
     pubsub = await _subscribe(fake_valkey)
 
-    resp = await client.post("/api/tasks", json={"title": "Event test"})
+    resp = await client.post("/api/tasks", json={"input": "Event test"})
     assert resp.status_code == 201
     task = resp.json()
 
@@ -41,7 +41,7 @@ async def test_create_task_publishes_event(client: AsyncClient, fake_valkey: Fak
 
 
 async def test_update_task_publishes_event(client: AsyncClient, fake_valkey: FakeRedis):
-    resp = await client.post("/api/tasks", json={"title": "To update"})
+    resp = await client.post("/api/tasks", json={"input": "To update"})
     task_id = resp.json()["id"]
 
     pubsub = await _subscribe(fake_valkey)
@@ -66,7 +66,7 @@ async def test_update_task_publishes_event(client: AsyncClient, fake_valkey: Fak
 async def test_no_event_on_create_validation_failure(client: AsyncClient, fake_valkey: FakeRedis):
     pubsub = await _subscribe(fake_valkey)
 
-    resp = await client.post("/api/tasks", json={"title": ""})
+    resp = await client.post("/api/tasks", json={"input": ""})
     assert resp.status_code == 422
 
     msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
@@ -93,7 +93,7 @@ async def test_no_event_on_update_not_found(client: AsyncClient, fake_valkey: Fa
 
 
 async def test_no_event_on_update_invalid_status(client: AsyncClient, fake_valkey: FakeRedis):
-    resp = await client.post("/api/tasks", json={"title": "For invalid status"})
+    resp = await client.post("/api/tasks", json={"input": "For invalid status"})
     task_id = resp.json()["id"]
 
     pubsub = await _subscribe(fake_valkey)
