@@ -6,6 +6,8 @@ import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
 import TaskEditModal from './TaskEditModal.vue'
 
+const REORDERABLE_COLUMNS: TaskStatus[] = ['new', 'pending']
+
 const store = useTaskStore()
 
 const columns: { key: TaskStatus; label: string; color: string }[] = [
@@ -19,15 +21,47 @@ const columns: { key: TaskStatus; label: string; color: string }[] = [
 
 const dragOverColumn = ref<TaskStatus | null>(null)
 const editingTask = ref<TaskData | null>(null)
+const dropIndicatorIndex = ref<number | null>(null)
+const dropIndicatorColumn = ref<TaskStatus | null>(null)
+const dragSourceStatus = ref<TaskStatus | null>(null)
 
-function onDragStart(e: DragEvent, taskId: string) {
+// Delete confirmation modal state
+const deleteConfirmTask = ref<TaskData | null>(null)
+const deleteDialogRef = ref<HTMLDialogElement | null>(null)
+
+function onDragStart(e: DragEvent, task: TaskData) {
   e.dataTransfer!.effectAllowed = 'move'
-  e.dataTransfer!.setData('text/plain', taskId)
+  e.dataTransfer!.setData('text/plain', task.id)
+  dragSourceStatus.value = task.status
 }
 
-function onDragOver(e: DragEvent) {
+function onDragOver(e: DragEvent, columnKey: TaskStatus) {
   e.preventDefault()
   e.dataTransfer!.dropEffect = 'move'
+
+  // Show drop indicator for intra-column reorder in reorderable columns
+  if (
+    dragSourceStatus.value === columnKey &&
+    REORDERABLE_COLUMNS.includes(columnKey)
+  ) {
+    const columnEl = (e.currentTarget as HTMLElement).querySelector('[data-card-list]')
+    if (columnEl) {
+      const cards = Array.from(columnEl.children) as HTMLElement[]
+      let insertIndex = cards.length
+      for (let i = 0; i < cards.length; i++) {
+        const rect = cards[i].getBoundingClientRect()
+        if (e.clientY < rect.top + rect.height / 2) {
+          insertIndex = i
+          break
+        }
+      }
+      dropIndicatorIndex.value = insertIndex
+      dropIndicatorColumn.value = columnKey
+    }
+  } else {
+    dropIndicatorIndex.value = null
+    dropIndicatorColumn.value = null
+  }
 }
 
 function onDragEnter(columnKey: TaskStatus) {
@@ -41,20 +75,68 @@ function onDragLeave(e: DragEvent, columnKey: TaskStatus) {
     if (dragOverColumn.value === columnKey) {
       dragOverColumn.value = null
     }
+    if (dropIndicatorColumn.value === columnKey) {
+      dropIndicatorIndex.value = null
+      dropIndicatorColumn.value = null
+    }
   }
 }
 
 async function onDrop(e: DragEvent, targetStatus: TaskStatus) {
   e.preventDefault()
   dragOverColumn.value = null
+  dropIndicatorIndex.value = null
+  dropIndicatorColumn.value = null
+
   const taskId = e.dataTransfer!.getData('text/plain')
   const task = store.tasks.find((t) => t.id === taskId)
-  if (!task || task.status === targetStatus) return
+  if (!task) return
+
+  if (task.status === targetStatus) {
+    // Intra-column reorder (only for reorderable columns)
+    if (!REORDERABLE_COLUMNS.includes(targetStatus)) return
+
+    const columnEl = (e.currentTarget as HTMLElement).querySelector('[data-card-list]')
+    if (!columnEl) return
+
+    const cards = Array.from(columnEl.children) as HTMLElement[]
+    const columnTasks = store.tasksByStatus(targetStatus)
+    let insertIndex = cards.length
+    for (let i = 0; i < cards.length; i++) {
+      const rect = cards[i].getBoundingClientRect()
+      if (e.clientY < rect.top + rect.height / 2) {
+        insertIndex = i
+        break
+      }
+    }
+
+    // Calculate the target position value
+    const targetPosition = insertIndex < columnTasks.length
+      ? columnTasks[insertIndex].position
+      : (columnTasks.length > 0 ? columnTasks[columnTasks.length - 1].position + 1 : 1)
+
+    if (targetPosition === task.position) return
+
+    try {
+      await store.updateTask(taskId, { position: targetPosition })
+    } catch {
+      // Error is set in store; reverts on next refresh
+    }
+    return
+  }
+
+  // Cross-column move
   try {
     await store.updateTask(taskId, { status: targetStatus })
   } catch {
     // Error is set in store; card reverts on next poll
   }
+}
+
+function onDragEnd() {
+  dragSourceStatus.value = null
+  dropIndicatorIndex.value = null
+  dropIndicatorColumn.value = null
 }
 
 function onEdit(task: TaskData) {
@@ -72,23 +154,46 @@ async function onSave(data: { title: string; description?: string; status: TaskS
   }
 }
 
-async function onModalDelete() {
-  if (!editingTask.value) return
+function showDeleteConfirm(task: TaskData) {
+  deleteConfirmTask.value = task
+  // Use nextTick-like approach: showModal after DOM update
+  setTimeout(() => deleteDialogRef.value?.showModal(), 0)
+}
+
+async function confirmDelete() {
+  if (!deleteConfirmTask.value) return
+  const taskId = deleteConfirmTask.value.id
+  deleteDialogRef.value?.close()
+  deleteConfirmTask.value = null
+  // Close edit modal if open
+  editingTask.value = null
   try {
-    await store.removeTask(editingTask.value.id)
-    editingTask.value = null
+    await store.removeTask(taskId)
   } catch {
     // Error is set in store
   }
 }
 
-async function onDelete(task: TaskData) {
-  if (!confirm('Delete this task?')) return
-  try {
-    await store.removeTask(task.id)
-  } catch {
-    // Error is set in store
+function cancelDelete() {
+  deleteDialogRef.value?.close()
+  deleteConfirmTask.value = null
+}
+
+function onDeleteDialogClick(e: MouseEvent) {
+  // Close on backdrop click
+  const dialog = deleteDialogRef.value
+  if (dialog && e.target === dialog) {
+    cancelDelete()
   }
+}
+
+function onDelete(task: TaskData) {
+  showDeleteConfirm(task)
+}
+
+function onModalDelete() {
+  if (!editingTask.value) return
+  showDeleteConfirm(editingTask.value)
 }
 
 function onCancel() {
@@ -110,7 +215,7 @@ onUnmounted(() => store.stop())
       v-for="col in columns"
       :key="col.key"
       :class="[col.color, 'rounded-lg p-4 min-w-[100px] flex-1', dragOverColumn === col.key ? 'ring-2 ring-blue-400 ring-inset' : '']"
-      @dragover="onDragOver"
+      @dragover="onDragOver($event, col.key)"
       @dragenter="onDragEnter(col.key)"
       @dragleave="onDragLeave($event, col.key)"
       @drop="onDrop($event, col.key)"
@@ -119,17 +224,26 @@ onUnmounted(() => store.stop())
         {{ col.label }}
         <span class="ml-1 text-gray-500">({{ store.tasksByStatus(col.key).length }})</span>
       </h2>
-      <TransitionGroup name="task" tag="div" class="flex flex-col gap-2">
-        <TaskCard
-          v-for="task in store.tasksByStatus(col.key)"
-          :key="task.id"
-          :task="task"
-          :column-status="col.key"
-          @dragstart="onDragStart($event, task.id)"
-          @edit="onEdit(task)"
-          @delete="onDelete(task)"
+      <div data-card-list class="flex flex-col gap-2">
+        <template v-for="(task, index) in store.tasksByStatus(col.key)" :key="task.id">
+          <div
+            v-if="dropIndicatorColumn === col.key && dropIndicatorIndex === index"
+            class="h-1 rounded bg-blue-400"
+          />
+          <TaskCard
+            :task="task"
+            :column-status="col.key"
+            @dragstart="onDragStart($event, task)"
+            @dragend="onDragEnd"
+            @edit="onEdit(task)"
+            @delete="onDelete(task)"
+          />
+        </template>
+        <div
+          v-if="dropIndicatorColumn === col.key && dropIndicatorIndex === store.tasksByStatus(col.key).length"
+          class="h-1 rounded bg-blue-400"
         />
-      </TransitionGroup>
+      </div>
       <p v-if="store.tasksByStatus(col.key).length === 0" class="text-xs text-gray-400 italic">
         No tasks
       </p>
@@ -142,6 +256,35 @@ onUnmounted(() => store.stop())
     @cancel="onCancel"
     @delete="onModalDelete"
   />
+
+  <!-- Delete confirmation modal -->
+  <dialog
+    ref="deleteDialogRef"
+    class="rounded-lg p-0 shadow-xl backdrop:bg-black/50"
+    @cancel.prevent="cancelDelete"
+    @click="onDeleteDialogClick"
+  >
+    <div class="w-80 p-6">
+      <h3 class="mb-2 text-lg font-semibold text-gray-800">Delete this task?</h3>
+      <p v-if="deleteConfirmTask" class="mb-4 text-sm text-gray-600">{{ deleteConfirmTask.title }}</p>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          @click="cancelDelete"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="rounded-md bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700"
+          @click="confirmDelete"
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  </dialog>
 </template>
 
 <style scoped>

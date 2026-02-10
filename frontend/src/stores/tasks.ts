@@ -21,10 +21,10 @@ export const useTaskStore = defineStore('tasks', () => {
     if (!msg?.event || !msg?.task) return
 
     if (msg.event === 'task_created') {
-      // Add if not already present
+      // Add at end if not already present (position ordering is preserved)
       const exists = tasks.value.some((t) => t.id === msg.task.id)
       if (!exists) {
-        tasks.value = [msg.task, ...tasks.value]
+        tasks.value = [...tasks.value, msg.task]
       }
     } else if (msg.event === 'task_updated') {
       tasks.value = tasks.value.map((t) =>
@@ -52,7 +52,21 @@ export const useTaskStore = defineStore('tasks', () => {
   // --- Core data operations ---
 
   function tasksByStatus(status: TaskStatus): TaskData[] {
-    return tasks.value.filter((t) => t.status === status)
+    const filtered = tasks.value.filter((t) => t.status === status)
+    if (status === 'scheduled') {
+      // Scheduled column: sort by execute_at ascending, nulls last
+      return filtered.sort((a, b) => {
+        if (!a.execute_at && !b.execute_at) return 0
+        if (!a.execute_at) return 1
+        if (!b.execute_at) return -1
+        return new Date(a.execute_at).getTime() - new Date(b.execute_at).getTime()
+      })
+    }
+    // All other columns: sort by position ascending, tie-break by created_at ascending
+    return filtered.sort((a, b) => {
+      if (a.position !== b.position) return a.position - b.position
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    })
   }
 
   async function load() {
@@ -78,7 +92,7 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
+  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
     try {
       await apiUpdateTask(id, data)
       error.value = null

@@ -17,6 +17,7 @@ const task: TaskData = {
   title: 'Process report',
   description: 'A longer description of the task',
   status: 'running',
+  position: 1,
   category: 'immediate',
   execute_at: null,
   repeat_interval: null,
@@ -253,26 +254,11 @@ describe('TaskEditModal', () => {
     expect(deleteBtn!.classes()).toContain('text-red-600')
   })
 
-  it('emits delete on confirm', async () => {
-    // Mock window.confirm to return true
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true)
-
+  it('emits delete when delete button is clicked', async () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
     const deleteBtn = wrapper.findAll('button[type="button"]').find((b) => b.text() === 'Delete')!
     await deleteBtn.trigger('click')
 
     expect(wrapper.emitted('delete')).toHaveLength(1)
-    vi.restoreAllMocks()
-  })
-
-  it('does not emit delete when confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(false)
-
-    const wrapper = mount(TaskEditModal, { props: { task } })
-    const deleteBtn = wrapper.findAll('button[type="button"]').find((b) => b.text() === 'Delete')!
-    await deleteBtn.trigger('click')
-
-    expect(wrapper.emitted('delete')).toBeUndefined()
-    vi.restoreAllMocks()
   })
 })

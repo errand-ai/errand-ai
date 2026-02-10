@@ -34,7 +34,7 @@ async def dequeue_task(session: AsyncSession) -> Task | None:
     result = await session.execute(
         select(Task)
         .where(Task.status == "pending")
-        .order_by(Task.created_at)
+        .order_by(Task.position.asc(), Task.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
     )

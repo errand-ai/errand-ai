@@ -35,15 +35,17 @@ async def test_list_tasks_empty(client: AsyncClient):
     assert resp.json() == []
 
 
-async def test_list_tasks_ordered_by_creation_desc(client: AsyncClient):
+async def test_list_tasks_ordered_by_position_asc(client: AsyncClient):
     t1 = await create_task(client, "First")
     t2 = await create_task(client, "Second")
     resp = await client.get("/api/tasks")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
-    assert data[0]["id"] == t2["id"]
-    assert data[1]["id"] == t1["id"]
+    # Both are "new" status, t1 gets position 1, t2 gets position 2
+    assert data[0]["id"] == t1["id"]
+    assert data[1]["id"] == t2["id"]
+    assert data[0]["position"] < data[1]["position"]
 
 
 # --- POST /api/tasks ---
@@ -345,3 +347,75 @@ async def test_delete_task_publishes_event(client: AsyncClient, fake_valkey):
 
     await pubsub.unsubscribe("task_events")
     await pubsub.aclose()
+
+
+# --- Task position ---
+
+
+async def test_create_task_assigns_position(client: AsyncClient):
+    """New tasks get incrementing positions within their status column."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+    t3 = await create_task(client, "Third")
+    assert t1["position"] == 1
+    assert t2["position"] == 2
+    assert t3["position"] == 3
+
+
+async def test_create_task_response_includes_position(client: AsyncClient):
+    """Task response includes the position field."""
+    task = await create_task(client, "Quick task")
+    assert "position" in task
+    assert isinstance(task["position"], int)
+
+
+async def test_status_change_assigns_bottom_position(client: AsyncClient):
+    """Changing status assigns position at bottom of target column."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+
+    # Move t1 to scheduled — it should get position 1 in that column
+    resp = await client.patch(f"/api/tasks/{t1['id']}", json={"status": "scheduled"})
+    assert resp.status_code == 200
+    assert resp.json()["position"] == 1
+
+    # Move t2 to scheduled — it should get position 2
+    resp = await client.patch(f"/api/tasks/{t2['id']}", json={"status": "scheduled"})
+    assert resp.status_code == 200
+    assert resp.json()["position"] == 2
+
+
+async def test_reorder_task_within_column(client: AsyncClient):
+    """PATCH with position reorders task within its column."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+    t3 = await create_task(client, "Third")
+
+    # Move t3 (position 3) to position 1
+    resp = await client.patch(f"/api/tasks/{t3['id']}", json={"position": 1})
+    assert resp.status_code == 200
+    assert resp.json()["position"] == 1
+
+    # Verify ordering: t3 at 1, t1 shifted to 2, t2 shifted to 3
+    resp = await client.get("/api/tasks")
+    data = resp.json()
+    ids_in_order = [d["id"] for d in data]
+    assert ids_in_order == [t3["id"], t1["id"], t2["id"]]
+
+
+async def test_reorder_task_down(client: AsyncClient):
+    """PATCH with position moves task down within its column."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+    t3 = await create_task(client, "Third")
+
+    # Move t1 (position 1) to position 3
+    resp = await client.patch(f"/api/tasks/{t1['id']}", json={"position": 3})
+    assert resp.status_code == 200
+    assert resp.json()["position"] == 3
+
+    # Verify ordering: t2 shifted to 1, t3 shifted to 2, t1 at 3
+    resp = await client.get("/api/tasks")
+    data = resp.json()
+    ids_in_order = [d["id"] for d in data]
+    assert ids_in_order == [t2["id"], t3["id"], t1["id"]]

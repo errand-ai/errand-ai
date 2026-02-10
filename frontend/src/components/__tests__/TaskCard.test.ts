@@ -8,6 +8,7 @@ const task: TaskData = {
   title: 'Process report',
   description: null,
   status: 'running',
+  position: 1,
   category: 'immediate',
   execute_at: null,
   repeat_interval: null,
