@@ -50,8 +50,9 @@ backend/
   main.py              # FastAPI app (API endpoints)
   auth.py              # OIDC config, JWT validation, role extraction
   auth_routes.py       # /auth/login, /auth/callback, /auth/logout
-  models.py            # SQLAlchemy models
+  models.py            # SQLAlchemy models (Task, Tag, Setting)
   database.py          # DB engine/session setup
+  llm.py               # OpenAI SDK client, LLM title generation
   worker.py            # Worker process entrypoint
   alembic/             # Database migrations
   Dockerfile
@@ -216,8 +217,8 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Current State
 
-- Version: `0.6.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.7.1` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - All feature work uses git worktrees + feature branches + PRs (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 42 backend (pytest) + 47 frontend (vitest) — CI `test` job gates both build jobs
-- 16 component specs in `openspec/specs/`
+- Tests: 60 backend (pytest) + 65 frontend (vitest) — CI `test` job gates both build jobs
+- 18 component specs in `openspec/specs/`
