@@ -1,83 +1,68 @@
-## Requirements
-
-### Requirement: Each task card has an edit button
-Each task card on the kanban board SHALL display an edit button. Clicking the edit button SHALL open the task edit modal for that task.
-
-#### Scenario: Edit button visible on card
-- **WHEN** a task card is rendered on the board
-- **THEN** the card displays an edit button (pencil icon or similar)
-
-#### Scenario: Clicking edit opens modal
-- **WHEN** the user clicks the edit button on a task card
-- **THEN** the task edit modal opens, pre-populated with the task's current title and status
+## MODIFIED Requirements
 
 ### Requirement: Task edit modal displays editable fields
-The task edit modal SHALL be implemented as a `<dialog>` element. It SHALL display editable fields for the task title, description, status, and tags, along with Save and Cancel buttons.
+The task edit modal SHALL be implemented as a `<dialog>` element. It SHALL display editable fields for the task title, description, status, tags, category, execute_at, repeat_interval, and repeat_until, along with Save, Cancel, and Delete buttons.
 
 #### Scenario: Modal shows current task data
-- **WHEN** the edit modal opens for a task with title "Process report", description "Generate the quarterly report from the data warehouse", status "running", and tags "urgent"
-- **THEN** the title input contains "Process report", the description textarea contains the description text, the status selector shows "Running", and the tag "urgent" is displayed
+- **WHEN** the edit modal opens for a task with title "Process report", description "Generate the quarterly report from the data warehouse", status "running", tags "urgent", category "immediate", execute_at "2026-02-10T14:00:00Z", and repeat_interval null
+- **THEN** the title input contains "Process report", the description textarea contains the description text, the status selector shows "Running", the tag "urgent" is displayed, the category selector shows "Immediate", the execute_at datetime picker shows the datetime in local time, and the repeat_interval field is empty
 
 #### Scenario: Status selector shows all valid statuses
 - **WHEN** the edit modal is open
 - **THEN** the status field SHALL present six statuses as selectable options: New, Scheduled, Pending, Running, Review, Completed
 
-### Requirement: Description field in edit modal
-The edit modal SHALL display a textarea for the task description below the title field. The description is optional -- the textarea MAY be empty. Changes to the description SHALL be included in the PATCH request when saving.
+#### Scenario: Category selector shows all valid categories
+- **WHEN** the edit modal is open
+- **THEN** the category field SHALL present three categories as selectable options: Immediate, Scheduled, Repeating
 
-#### Scenario: Edit description
-- **WHEN** the user modifies the description text and clicks Save
-- **THEN** the frontend sends `PATCH /api/tasks/{id}` with the updated description
+#### Scenario: Execute_at uses datetime picker
+- **WHEN** the edit modal is open
+- **THEN** the execute_at field SHALL be a native datetime-local input displaying the value in the user's local time zone
 
-#### Scenario: Empty description
-- **WHEN** the user clears the description and clicks Save
-- **THEN** the frontend sends `PATCH /api/tasks/{id}` with `{"description": ""}` (or null)
+#### Scenario: Execute_at field editable
+- **WHEN** the user modifies the execute_at datetime via the picker and clicks Save
+- **THEN** the frontend sends `PATCH /api/tasks/{id}` with the updated execute_at value in UTC ISO 8601 format
 
-### Requirement: Tag input with autocomplete
-The edit modal SHALL display a tag input area below the description. Existing tags for the task SHALL be shown as removable pills/badges. A text input SHALL allow adding new tags. As the user types, a dropdown SHALL appear showing matching existing tags from `GET /api/tags?q=<prefix>` (debounced at 200ms). The user MAY select a tag from the dropdown or press Enter to create a new tag with the typed text.
+#### Scenario: Repeat_interval with guided input
+- **WHEN** the edit modal is open for a task with category "repeating"
+- **THEN** the repeat_interval field is visible with helper text showing accepted formats: simple intervals (15m, 1h, 1d, 1w) and crontab expressions (e.g. "0 9 * * MON-FRI")
 
-#### Scenario: Autocomplete shows matching tags
-- **WHEN** the user types "urg" in the tag input
-- **THEN** a dropdown appears showing tags that start with "urg" (e.g., "urgent")
+#### Scenario: Repeat_interval quick-select buttons
+- **WHEN** the edit modal is open for a task with category "repeating"
+- **THEN** quick-select buttons for common intervals (15m, 1h, 1d, 1w) are displayed and clicking one populates the repeat_interval input
 
-#### Scenario: Select tag from dropdown
-- **WHEN** the user clicks a tag in the autocomplete dropdown
-- **THEN** the tag is added to the task's tag list as a pill and the input is cleared
+#### Scenario: Repeat_interval field editable
+- **WHEN** the user modifies the repeat_interval and clicks Save
+- **THEN** the frontend sends `PATCH /api/tasks/{id}` with the updated repeat_interval value
 
-#### Scenario: Create new tag by pressing Enter
-- **WHEN** the user types "new-tag" and presses Enter (and no dropdown selection is active)
-- **THEN** "new-tag" is added to the task's tag list as a pill and the input is cleared
+#### Scenario: Repeat_interval hidden for non-repeating tasks
+- **WHEN** the edit modal is open for a task with category "immediate" or "scheduled"
+- **THEN** the repeat_interval field and quick-select buttons are hidden
 
-#### Scenario: Remove a tag
-- **WHEN** the user clicks the remove button on a tag pill
-- **THEN** the tag is removed from the task's tag list
+#### Scenario: Repeat_until uses datetime picker
+- **WHEN** the edit modal is open for a task with category "repeating"
+- **THEN** a "Repeat until" field is visible with a native datetime-local input
 
-#### Scenario: Save includes tags
-- **WHEN** the user modifies tags and clicks Save
-- **THEN** the frontend sends `PATCH /api/tasks/{id}` with `{"tags": ["tag1", "tag2"]}` containing the full current tag list
+#### Scenario: Repeat_until field editable
+- **WHEN** the user sets a repeat_until datetime and clicks Save
+- **THEN** the frontend sends `PATCH /api/tasks/{id}` with the updated repeat_until value in UTC ISO 8601 format
 
-### Requirement: Save button persists changes
-Clicking Save SHALL send the updated task data to `PATCH /api/tasks/{id}` and close the modal. The board SHALL reflect the updated task on the next poll or immediately after a successful response.
+#### Scenario: Repeat_until hidden for non-repeating tasks
+- **WHEN** the edit modal is open for a task with category "immediate" or "scheduled"
+- **THEN** the repeat_until field is hidden
 
-#### Scenario: Successful save
-- **WHEN** the user changes the title to "Updated report" and clicks Save
-- **THEN** the frontend sends `PATCH /api/tasks/{id}` with `{"title": "Updated report"}`, the modal closes, and the task list reloads
+#### Scenario: Delete button in modal
+- **WHEN** the edit modal is open
+- **THEN** a "Delete" button is displayed, styled as a danger action, separate from Save and Cancel
 
-#### Scenario: Save with validation error
-- **WHEN** the user clears the title field and clicks Save
-- **THEN** the frontend displays a validation error and does not send the request
+#### Scenario: Delete button shows confirmation
+- **WHEN** the user clicks the Delete button in the edit modal
+- **THEN** a confirmation dialog appears asking "Are you sure you want to delete this task?"
 
-#### Scenario: Save API failure
-- **WHEN** the user clicks Save and the PATCH request returns an error
-- **THEN** the modal remains open and displays an error message
+#### Scenario: Confirm delete in modal
+- **WHEN** the user confirms the deletion
+- **THEN** the frontend sends `DELETE /api/tasks/{id}`, the modal closes, and the task is removed from the board
 
-### Requirement: Cancel button discards changes
-Clicking Cancel SHALL close the modal without sending any API request. Any edits made in the modal SHALL be discarded.
-
-#### Scenario: Cancel discards edits
-- **WHEN** the user modifies the title and clicks Cancel
-- **THEN** the modal closes and no API request is made
-
-#### Scenario: Escape key closes modal
-- **WHEN** the edit modal is open and the user presses the Escape key
-- **THEN** the modal closes without saving, equivalent to clicking Cancel
+#### Scenario: Cancel delete in modal
+- **WHEN** the user cancels the deletion
+- **THEN** the modal remains open and no API call is made

@@ -1,48 +1,48 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: List all tasks
-The backend SHALL expose `GET /api/tasks` returning all tasks as a JSON array. Each task object SHALL include `id`, `title`, `description`, `status`, `tags`, `created_at`, and `updated_at` fields.
+The backend SHALL expose `GET /api/tasks` returning all tasks as a JSON array. Each task object SHALL include `id`, `title`, `description`, `status`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `tags`, `created_at`, and `updated_at` fields.
 
 #### Scenario: Retrieve tasks
 - **WHEN** a client sends `GET /api/tasks`
-- **THEN** the backend returns HTTP 200 with a JSON array of all tasks ordered by creation time descending, each including tags
+- **THEN** the backend returns HTTP 200 with a JSON array of all tasks ordered by creation time descending, each including tags, category, execute_at, repeat_interval, and repeat_until
 
 #### Scenario: No tasks exist
 - **WHEN** a client sends `GET /api/tasks` and no tasks exist
 - **THEN** the backend returns HTTP 200 with an empty JSON array
 
 ### Requirement: Create a task
-The backend SHALL expose `POST /api/tasks` accepting a JSON body with an `input` field. The backend SHALL count the words in the input. If the input has more than 5 words, it SHALL be stored as the `description` and the backend SHALL call the LLM to generate a short title; if the LLM call fails, the first 5 words plus "..." SHALL be used as the title and a "Needs Info" tag SHALL be applied. If the input has 5 or fewer words, it SHALL be stored as the `title` (with null description) and a "Needs Info" tag SHALL be applied. After successful creation, the backend SHALL publish a `task_created` event to the Valkey pub/sub channel containing the full task object including tags.
+The backend SHALL expose `POST /api/tasks` accepting a JSON body with an `input` field. The backend SHALL count the words in the input. If the input has more than 5 words, it SHALL be stored as the `description` and the backend SHALL call the LLM to generate a short title, categorise the task, and extract timing information; if the LLM call fails, the first 5 words plus "..." SHALL be used as the title, category SHALL default to `immediate`, and a "Needs Info" tag SHALL be applied. If the input has 5 or fewer words, it SHALL be stored as the `title` (with null description) and a "Needs Info" tag SHALL be applied. After categorisation, the backend SHALL auto-route the task based on its category and tags. After successful creation, the backend SHALL publish a `task_created` event to the Valkey pub/sub channel containing the full task object including tags and categorisation fields.
 
-#### Scenario: Long input creates task with LLM title
+#### Scenario: Long input creates task with LLM title and categorisation
 - **WHEN** a client sends `POST /api/tasks` with `{"input": "The login page throws a 500 error when users with special characters try to reset"}`
-- **THEN** the backend calls the LLM, stores the LLM response as `title`, stores the input as `description`, and returns HTTP 201 with the created task object including tags
+- **THEN** the backend calls the LLM, stores the LLM-generated title, category, execute_at, and repeat_interval, auto-routes based on category, and returns HTTP 201 with the created task object
 
 #### Scenario: Short input creates task with title directly
 - **WHEN** a client sends `POST /api/tasks` with `{"input": "Fix login bug"}`
-- **THEN** the backend stores "Fix login bug" as `title`, sets `description` to null, applies the "Needs Info" tag, and returns HTTP 201
+- **THEN** the backend stores "Fix login bug" as `title`, sets `description` to null, sets category to `immediate`, applies the "Needs Info" tag, keeps status as `new`, and returns HTTP 201
 
 #### Scenario: Event published after creation
 - **WHEN** a task is successfully created
-- **THEN** the backend publishes a `task_created` event to the Valkey `task_events` channel with the serialized task object including tags
+- **THEN** the backend publishes a `task_created` event to the Valkey `task_events` channel with the serialized task object including tags and categorisation fields
 
 #### Scenario: Missing input
 - **WHEN** a client sends `POST /api/tasks` with an empty or missing `input`
 - **THEN** the backend returns HTTP 422 with a validation error and no event is published
 
 ### Requirement: Get a single task
-The backend SHALL expose `GET /api/tasks/{id}` returning the task with the given ID, including `description` and `tags` fields.
+The backend SHALL expose `GET /api/tasks/{id}` returning the task with the given ID, including `description`, `tags`, `category`, `execute_at`, `repeat_interval`, and `repeat_until` fields.
 
 #### Scenario: Task found
 - **WHEN** a client sends `GET /api/tasks/123` and task 123 exists
-- **THEN** the backend returns HTTP 200 with the task object including description and tags
+- **THEN** the backend returns HTTP 200 with the task object including description, tags, category, execute_at, repeat_interval, and repeat_until
 
 #### Scenario: Task not found
 - **WHEN** a client sends `GET /api/tasks/999` and task 999 does not exist
 - **THEN** the backend returns HTTP 404
 
 ### Requirement: Update a task
-The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with optional `title`, `description`, `status`, and `tags` fields. The endpoint SHALL update only the provided fields and return the updated task object. After successful update, the backend SHALL publish a `task_updated` event to the Valkey pub/sub channel containing the full updated task object including tags.
+The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with optional `title`, `description`, `status`, `tags`, `category`, `execute_at`, `repeat_interval`, and `repeat_until` fields. The endpoint SHALL update only the provided fields and return the updated task object. If the update triggers auto-promotion (see task-categorisation spec), the status and tags SHALL be adjusted accordingly. After successful update, the backend SHALL publish a `task_updated` event to the Valkey pub/sub channel containing the full updated task object including tags and categorisation fields.
 
 #### Scenario: Update task status
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"status": "scheduled"}`
@@ -56,6 +56,18 @@ The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with opti
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"tags": ["urgent", "bug"]}`
 - **THEN** the backend returns HTTP 200 with the updated task object showing the new tags
 
+#### Scenario: Update task category
+- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"category": "scheduled", "execute_at": "2026-02-15T17:00:00Z"}`
+- **THEN** the backend returns HTTP 200 with the updated task object showing the new category and execute_at
+
+#### Scenario: Update task repeat_interval
+- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"repeat_interval": "1d"}`
+- **THEN** the backend returns HTTP 200 with the updated task object showing the new repeat_interval
+
+#### Scenario: Update task repeat_until
+- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"repeat_until": "2026-03-01T00:00:00Z"}`
+- **THEN** the backend returns HTTP 200 with the updated task object showing the new repeat_until
+
 #### Scenario: Task not found
 - **WHEN** a client sends `PATCH /api/tasks/999` and task 999 does not exist
 - **THEN** the backend returns HTTP 404 and no event is published
@@ -68,68 +80,27 @@ The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with opti
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"title": ""}`
 - **THEN** the backend returns HTTP 422 with a validation error and no event is published
 
-### Requirement: Valid task statuses
-The backend SHALL accept only the following status values: `new`, `scheduled`, `pending`, `running`, `review`, `completed`. Any other status value SHALL be rejected with HTTP 422.
+#### Scenario: Invalid category value
+- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"category": "invalid"}`
+- **THEN** the backend returns HTTP 422 with a validation error listing the valid categories and no event is published
 
-#### Scenario: All valid statuses accepted
-- **WHEN** a client sends `PATCH /api/tasks/{id}` with each of the six valid statuses
-- **THEN** the backend returns HTTP 200 for each request
+## ADDED Requirements
 
-#### Scenario: Invalid status rejected
-- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"status": "need-input"}`
-- **THEN** the backend returns HTTP 422 with a validation error
+### Requirement: Delete a task
+The backend SHALL expose `DELETE /api/tasks/{id}` requiring authentication. The endpoint SHALL delete the task and its tag associations, publish a `task_deleted` event to the Valkey pub/sub channel, and return HTTP 204 with no body.
 
-### Requirement: Database migration for task description and status changes
-An Alembic migration SHALL add a `description` column (nullable text) to the `tasks` table, create the `tags` and `task_tags` tables, and migrate existing tasks with `need-input` status to `new` status with a "Needs Info" tag.
+#### Scenario: Successful deletion
+- **WHEN** a client sends `DELETE /api/tasks/{id}` and the task exists
+- **THEN** the backend deletes the task and its tag associations, publishes a `task_deleted` event to Valkey, and returns HTTP 204
 
-#### Scenario: Migration adds description column
-- **WHEN** the migration runs
-- **THEN** the `tasks` table gains a `description` column (nullable text)
+#### Scenario: Task not found
+- **WHEN** a client sends `DELETE /api/tasks/999` and task 999 does not exist
+- **THEN** the backend returns HTTP 404
 
-#### Scenario: Need-input tasks migrated
-- **WHEN** the migration runs against a database with tasks in status `need-input`
-- **THEN** those tasks are updated to status `new` and tagged with "Needs Info"
+#### Scenario: Event published after deletion
+- **WHEN** a task is successfully deleted
+- **THEN** the backend publishes a `task_deleted` event to the Valkey `task_events` channel with `{"event": "task_deleted", "task": {"id": "<task-id>"}}`
 
-### Requirement: Queue metrics endpoint for KEDA
-The backend SHALL expose `GET /metrics/queue` returning a JSON object with `queue_depth` set to the count of tasks with status `pending`. This endpoint SHALL NOT require authentication and SHALL NOT be prefixed with `/api`.
-
-#### Scenario: Tasks pending
-- **WHEN** there are 5 tasks with status `pending`
-- **THEN** `GET /metrics/queue` returns `{"queue_depth": 5}`
-
-#### Scenario: No tasks pending
-- **WHEN** there are no tasks with status `pending`
-- **THEN** `GET /metrics/queue` returns `{"queue_depth": 0}`
-
-#### Scenario: No authentication required
-- **WHEN** a request to `/metrics/queue` has no Authorization header
-- **THEN** the endpoint returns the metrics normally
-
-### Requirement: Health check endpoint
-The backend SHALL expose `GET /api/health` returning HTTP 200 with `{"status": "ok"}` when the service is running and can connect to the database.
-
-#### Scenario: Healthy service
-- **WHEN** the backend is running and the database is reachable
-- **THEN** `GET /api/health` returns HTTP 200 with `{"status": "ok"}`
-
-#### Scenario: Database unreachable
-- **WHEN** the backend cannot connect to the database
-- **THEN** `GET /api/health` returns HTTP 503
-
-### Requirement: Backend is stateless
-The backend SHALL store all state in PostgreSQL. No in-memory state SHALL be shared between requests. Multiple backend replicas MUST be able to serve requests concurrently without coordination.
-
-#### Scenario: Multiple replicas serve requests
-- **WHEN** two backend replicas are running
-- **THEN** both can serve `GET /api/tasks` and return identical results
-
-### Requirement: All /api/* endpoints require authentication
-All endpoints under `/api/*` (except `/api/health`) SHALL require a valid Bearer token in the Authorization header. Requests without a valid token SHALL receive HTTP 401.
-
-#### Scenario: Authenticated request succeeds
-- **WHEN** a request to `GET /api/tasks` includes a valid Bearer token
-- **THEN** the endpoint processes the request normally
-
-#### Scenario: Unauthenticated request rejected
-- **WHEN** a request to `POST /api/tasks` has no Authorization header
-- **THEN** the endpoint returns HTTP 401
+#### Scenario: Unauthenticated request
+- **WHEN** a client sends `DELETE /api/tasks/{id}` without a valid Bearer token
+- **THEN** the backend returns HTTP 401
