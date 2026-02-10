@@ -43,6 +43,16 @@ class Task(Base):
         server_default=text("now()"),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    category: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, server_default=text("'immediate'")
+    )
+    execute_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    repeat_interval: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    repeat_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
 
 

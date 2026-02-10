@@ -7,6 +7,10 @@ export interface TaskData {
   title: string
   description: string | null
   status: TaskStatus
+  category: string | null
+  execute_at: string | null
+  repeat_interval: string | null
+  repeat_until: string | null
   tags: string[]
   created_at: string
   updated_at: string
@@ -61,7 +65,7 @@ export async function createTask(input: string): Promise<TaskData> {
   return res.json()
 }
 
-export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[] }): Promise<TaskData> {
+export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }): Promise<TaskData> {
   const res = await authFetch(`${BASE}/tasks/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -69,6 +73,13 @@ export async function updateTask(id: string, data: { title?: string; description
   })
   if (!res.ok) throw new Error(`Failed to update task: ${res.status}`)
   return res.json()
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/tasks/${id}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`Failed to delete task: ${res.status}`)
 }
 
 export async function fetchTags(query: string): Promise<TagData[]> {

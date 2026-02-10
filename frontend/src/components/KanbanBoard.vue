@@ -61,7 +61,7 @@ function onEdit(task: TaskData) {
   editingTask.value = { ...task }
 }
 
-async function onSave(data: { title: string; description?: string; status: TaskStatus; tags?: string[] }) {
+async function onSave(data: { title: string; description?: string; status: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
   if (!editingTask.value) return
   try {
     await store.updateTask(editingTask.value.id, data)
@@ -69,6 +69,25 @@ async function onSave(data: { title: string; description?: string; status: TaskS
   } catch {
     // Error shown by modal via rejection
     throw new Error(store.error || 'Failed to save')
+  }
+}
+
+async function onModalDelete() {
+  if (!editingTask.value) return
+  try {
+    await store.removeTask(editingTask.value.id)
+    editingTask.value = null
+  } catch {
+    // Error is set in store
+  }
+}
+
+async function onDelete(task: TaskData) {
+  if (!confirm('Delete this task?')) return
+  try {
+    await store.removeTask(task.id)
+  } catch {
+    // Error is set in store
   }
 }
 
@@ -105,8 +124,10 @@ onUnmounted(() => store.stop())
           v-for="task in store.tasksByStatus(col.key)"
           :key="task.id"
           :task="task"
+          :column-status="col.key"
           @dragstart="onDragStart($event, task.id)"
           @edit="onEdit(task)"
+          @delete="onDelete(task)"
         />
       </TransitionGroup>
       <p v-if="store.tasksByStatus(col.key).length === 0" class="text-xs text-gray-400 italic">
@@ -119,6 +140,7 @@ onUnmounted(() => store.stop())
     :task="editingTask"
     @save="onSave"
     @cancel="onCancel"
+    @delete="onModalDelete"
   />
 </template>
 

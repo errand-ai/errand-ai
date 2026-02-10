@@ -22,7 +22,7 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client, generate_title
+from llm import init_llm_client, get_llm_client, generate_title, LLMResult, VALID_CATEGORIES
 from models import Setting, Tag, Task, task_tags
 
 security = HTTPBearer()
@@ -107,10 +107,16 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     tags: Optional[list[str]] = None
+    category: Optional[str] = None
+    execute_at: Optional[str] = None
+    repeat_interval: Optional[str] = None
+    repeat_until: Optional[str] = None
 
     def model_post_init(self, __context):
         if self.status is not None and self.status not in VALID_STATUSES:
             raise ValueError(f"Invalid status '{self.status}'. Must be one of: {', '.join(VALID_STATUSES)}")
+        if self.category is not None and self.category not in VALID_CATEGORIES:
+            raise ValueError(f"Invalid category '{self.category}'. Must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
 
 
 class TaskResponse(BaseModel):
@@ -118,6 +124,10 @@ class TaskResponse(BaseModel):
     title: str
     description: Optional[str] = None
     status: str
+    category: Optional[str] = None
+    execute_at: Optional[datetime] = None
+    repeat_interval: Optional[str] = None
+    repeat_until: Optional[datetime] = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -131,6 +141,10 @@ class TaskResponse(BaseModel):
             title=task.title,
             description=task.description,
             status=task.status,
+            category=task.category,
+            execute_at=task.execute_at,
+            repeat_interval=task.repeat_interval,
+            repeat_until=task.repeat_until,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -205,21 +219,59 @@ async def create_task(
     tag_names: list[str] = []
 
     if len(words) > 5:
-        title, success = await generate_title(input_text, session)
+        llm_result = await generate_title(input_text, session)
+        title = llm_result.title
         description = input_text
-        if not success:
+        category = llm_result.category
+        execute_at_str = llm_result.execute_at
+        repeat_interval = llm_result.repeat_interval
+        repeat_until_str = llm_result.repeat_until
+        if not llm_result.success:
             tag_names.append("Needs Info")
     else:
         title = input_text
         description = None
+        category = "immediate"
+        execute_at_str = None
+        repeat_interval = None
+        repeat_until_str = None
         tag_names.append("Needs Info")
 
-    task = Task(title=title, description=description)
+    # Parse datetime strings from LLM
+    execute_at = None
+    if execute_at_str:
+        try:
+            execute_at = datetime.fromisoformat(execute_at_str)
+        except (ValueError, TypeError):
+            pass
+
+    repeat_until = None
+    if repeat_until_str:
+        try:
+            repeat_until = datetime.fromisoformat(repeat_until_str)
+        except (ValueError, TypeError):
+            pass
+
+    task = Task(
+        title=title,
+        description=description,
+        category=category,
+        execute_at=execute_at,
+        repeat_interval=repeat_interval,
+        repeat_until=repeat_until,
+    )
     session.add(task)
     await session.flush()
 
     if tag_names:
         await _sync_tags(session, task, tag_names)
+
+    # Auto-routing: if no "Needs Info" tag, route based on category
+    if "Needs Info" not in tag_names:
+        if category == "immediate":
+            task.status = "pending"
+        elif category in ("scheduled", "repeating"):
+            task.status = "scheduled"
 
     await session.commit()
     await session.refresh(task, ["tags"])
@@ -262,13 +314,62 @@ async def update_task(
         task.description = body.description
     if body.status is not None:
         task.status = body.status
+    if body.category is not None:
+        task.category = body.category
+    if body.execute_at is not None:
+        try:
+            task.execute_at = datetime.fromisoformat(body.execute_at)
+        except (ValueError, TypeError):
+            task.execute_at = None
+    if body.repeat_interval is not None:
+        task.repeat_interval = body.repeat_interval
+    if body.repeat_until is not None:
+        try:
+            task.repeat_until = datetime.fromisoformat(body.repeat_until)
+        except (ValueError, TypeError):
+            task.repeat_until = None
     if body.tags is not None:
         await _sync_tags(session, task, body.tags)
+
+    # Auto-promotion: new + "Needs Info" + description + scheduling → scheduled
+    has_needs_info = any(t.name == "Needs Info" for t in task.tags)
+    if (
+        task.status == "new"
+        and has_needs_info
+        and body.description is not None
+        and body.description.strip()
+        and (body.execute_at is not None or body.repeat_interval is not None)
+    ):
+        task.status = "scheduled"
+        # Remove "Needs Info" tag
+        current_tags = [t.name for t in task.tags if t.name != "Needs Info"]
+        await _sync_tags(session, task, current_tags)
+
     await session.commit()
     await session.refresh(task, ["tags"])
     resp = TaskResponse.from_task(task)
     await publish_event("task_updated", resp.model_dump(mode="json"))
     return resp
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+async def delete_task(
+    task_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    result = await session.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task_id_str = str(task.id)
+    await session.execute(delete(task_tags).where(task_tags.c.task_id == task.id))
+    await session.delete(task)
+    await session.commit()
+    await publish_event("task_deleted", {"id": task_id_str})
 
 
 # --- LLM endpoints ---

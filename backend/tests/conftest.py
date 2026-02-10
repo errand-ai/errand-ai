@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'new' NOT NULL,
+    category TEXT DEFAULT 'immediate',
+    execute_at DATETIME,
+    repeat_interval TEXT,
+    repeat_until DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

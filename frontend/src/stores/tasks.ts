@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import { fetchTasks, createTask, updateTask as apiUpdateTask, type TaskData, type TaskStatus } from '../composables/useApi'
+import { fetchTasks, createTask, updateTask as apiUpdateTask, deleteTask as apiDeleteTask, type TaskData, type TaskStatus } from '../composables/useApi'
 import { useWebSocket, type WebSocketStatus } from '../composables/useWebSocket'
 import { useAuthStore } from './auth'
 
@@ -30,6 +30,8 @@ export const useTaskStore = defineStore('tasks', () => {
       tasks.value = tasks.value.map((t) =>
         t.id === msg.task.id ? msg.task : t
       )
+    } else if (msg.event === 'task_deleted') {
+      tasks.value = tasks.value.filter((t) => t.id !== msg.task.id)
     }
   }
 
@@ -76,13 +78,24 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[] }) {
+  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
     try {
       await apiUpdateTask(id, data)
       error.value = null
       await load()
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update task'
+      throw e
+    }
+  }
+
+  async function removeTask(id: string) {
+    try {
+      await apiDeleteTask(id)
+      tasks.value = tasks.value.filter((t) => t.id !== id)
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to delete task'
       throw e
     }
   }
@@ -114,5 +127,5 @@ export const useTaskStore = defineStore('tasks', () => {
     stopPolling()
   }
 
-  return { tasks, loading, error, wsStatus, tasksByStatus, load, addTask, updateTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, wsStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
 })
