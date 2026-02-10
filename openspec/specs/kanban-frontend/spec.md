@@ -3,6 +3,8 @@
 ### Requirement: Task cards display summary information
 Each task card SHALL display the task title and any associated tags. Tags SHALL be displayed as small pills/badges below the title. Cards SHALL NOT display the task status text. Cards SHALL have an edit button and a delete icon. Cards SHALL have `draggable="true"` to support drag-and-drop interaction. Cards in the Scheduled column SHALL additionally display the `execute_at` value as a human-readable relative time string (e.g. "in 15 minutes", "at 5:00 PM today", "tomorrow at 9:00 AM") between the title and the tags.
 
+Cards in the Review, Completed, or Scheduled columns SHALL display a "View Output" button (eye icon) when the task has a non-null `output` field. Clicking this button SHALL open the task output viewer popup. For Scheduled column cards (failed retries), the button SHALL also be shown when `output` contains error information.
+
 #### Scenario: Task card with title and tags
 - **WHEN** a task exists with title "Fix auth bug" and tags "urgent" and "bug"
 - **THEN** the card shows the title, two tag pills labeled "urgent" and "bug", an edit button, and a delete icon
@@ -22,6 +24,22 @@ Each task card SHALL display the task title and any associated tags. Tags SHALL 
 #### Scenario: Non-scheduled task card hides execute_at
 - **WHEN** a task in the Pending or Running column has an execute_at value
 - **THEN** the card does not display the execution time
+
+#### Scenario: Review task card shows output button
+- **WHEN** a task in the Review column has a non-null output field
+- **THEN** the card displays a "View Output" button (eye icon) that opens the output viewer popup
+
+#### Scenario: Completed task card shows output button
+- **WHEN** a task in the Completed column has a non-null output field
+- **THEN** the card displays a "View Output" button (eye icon) that opens the output viewer popup
+
+#### Scenario: Scheduled retry task card shows output button
+- **WHEN** a task in the Scheduled column has a non-null output field (from a failed execution)
+- **THEN** the card displays a "View Output" button (eye icon) that opens the output viewer popup
+
+#### Scenario: Task card without output hides button
+- **WHEN** a task in the Review column has a null output field
+- **THEN** the card does not display the "View Output" button
 
 #### Scenario: Delete icon shows styled confirmation modal
 - **WHEN** the user clicks the delete icon on a task card

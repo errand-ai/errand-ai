@@ -3,9 +3,23 @@
 ### Requirement: Task edit modal displays editable fields
 The task edit modal SHALL be implemented as a `<dialog>` element. It SHALL display editable fields for the task title, description, status, tags, category, execute_at, repeat_interval, and repeat_until, along with Save, Cancel, and Delete buttons.
 
+For tasks in `review` or `completed` status, the modal SHALL display the `updated_at` value with the label "Completed at" as a read-only formatted datetime, instead of the editable `execute_at` datetime picker. For all other statuses, the modal SHALL display the `execute_at` field as before.
+
 #### Scenario: Modal shows current task data
 - **WHEN** the edit modal opens for a task with title "Process report", description "Generate the quarterly report from the data warehouse", status "running", tags "urgent", category "immediate", execute_at "2026-02-10T14:00:00Z", and repeat_interval null
 - **THEN** the title input contains "Process report", the description textarea contains the description text, the status selector shows "Running", the tag "urgent" is displayed, the category selector shows "Immediate", the execute_at datetime picker shows the datetime in local time, and the repeat_interval field is empty
+
+#### Scenario: Review task shows completion time
+- **WHEN** the edit modal opens for a task with status "review" and updated_at "2026-02-10T15:30:00Z"
+- **THEN** the modal displays "Completed at" with the formatted datetime "10 Feb 2026, 15:30" (in local time) as read-only text, and does not show the execute_at datetime picker
+
+#### Scenario: Completed task shows completion time
+- **WHEN** the edit modal opens for a task with status "completed" and updated_at "2026-02-10T16:00:00Z"
+- **THEN** the modal displays "Completed at" with the formatted datetime as read-only text, and does not show the execute_at datetime picker
+
+#### Scenario: Pending task shows execute_at picker
+- **WHEN** the edit modal opens for a task with status "pending"
+- **THEN** the modal displays the execute_at datetime picker as usual, not the completion time
 
 #### Scenario: Status selector shows all valid statuses
 - **WHEN** the edit modal is open
@@ -16,7 +30,7 @@ The task edit modal SHALL be implemented as a `<dialog>` element. It SHALL displ
 - **THEN** the category field SHALL present three categories as selectable options: Immediate, Scheduled, Repeating
 
 #### Scenario: Execute_at uses datetime picker
-- **WHEN** the edit modal is open
+- **WHEN** the edit modal is open for a task not in review or completed status
 - **THEN** the execute_at field SHALL be a native datetime-local input displaying the value in the user's local time zone
 
 #### Scenario: Execute_at field editable
