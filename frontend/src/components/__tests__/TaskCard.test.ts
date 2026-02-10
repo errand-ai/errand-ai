@@ -13,6 +13,8 @@ const task: TaskData = {
   execute_at: null,
   repeat_interval: null,
   repeat_until: null,
+  output: null,
+  retry_count: 0,
   tags: [],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
@@ -100,6 +102,50 @@ describe('TaskCard', () => {
     })
     const timeEl = wrapper.find('.text-blue-600')
     expect(timeEl.exists()).toBe(false)
+  })
+
+  // --- Output button ---
+
+  it('shows output button when columnStatus is review and task has output', () => {
+    const reviewTask: TaskData = { ...task, status: 'review', output: 'some output' }
+    const wrapper = mount(TaskCard, { props: { task: reviewTask, columnStatus: 'review' } })
+    const btn = wrapper.find('button[title="View output"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('shows output button when columnStatus is completed and task has output', () => {
+    const completedTask: TaskData = { ...task, status: 'completed', output: 'result data' }
+    const wrapper = mount(TaskCard, { props: { task: completedTask, columnStatus: 'completed' } })
+    const btn = wrapper.find('button[title="View output"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('shows output button when columnStatus is scheduled and task has output', () => {
+    const failedScheduled: TaskData = { ...scheduledTask, output: 'error log' }
+    const wrapper = mount(TaskCard, { props: { task: failedScheduled, columnStatus: 'scheduled' } })
+    const btn = wrapper.find('button[title="View output"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('hides output button when task output is null', () => {
+    const reviewTask: TaskData = { ...task, status: 'review', output: null }
+    const wrapper = mount(TaskCard, { props: { task: reviewTask, columnStatus: 'review' } })
+    const btn = wrapper.find('button[title="View output"]')
+    expect(btn.exists()).toBe(false)
+  })
+
+  it('hides output button in non-output columns even with output', () => {
+    const runningTask: TaskData = { ...task, status: 'running', output: 'some output' }
+    const wrapper = mount(TaskCard, { props: { task: runningTask, columnStatus: 'running' } })
+    const btn = wrapper.find('button[title="View output"]')
+    expect(btn.exists()).toBe(false)
+  })
+
+  it('emits view-output event when output button is clicked', async () => {
+    const reviewTask: TaskData = { ...task, status: 'review', output: 'output text' }
+    const wrapper = mount(TaskCard, { props: { task: reviewTask, columnStatus: 'review' } })
+    await wrapper.find('button[title="View output"]').trigger('click')
+    expect(wrapper.emitted('view-output')).toHaveLength(1)
   })
 
   // --- Delete button ---

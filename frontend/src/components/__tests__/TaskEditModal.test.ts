@@ -22,6 +22,8 @@ const task: TaskData = {
   execute_at: null,
   repeat_interval: null,
   repeat_until: null,
+  output: null,
+  retry_count: 0,
   tags: ['urgent'],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
@@ -243,6 +245,40 @@ describe('TaskEditModal', () => {
     const wrapper = mount(TaskEditModal, { props: { task: repeatingTask } })
     const input = wrapper.find('#edit-repeat-interval').element as HTMLInputElement
     expect(input.value).toBe('1d')
+  })
+
+  // --- Completed at / execute_at conditional display ---
+
+  it('shows "Completed at" with formatted updated_at for review tasks', () => {
+    const reviewTask: TaskData = { ...task, status: 'review', updated_at: '2026-02-10T15:30:00Z' }
+    const wrapper = mount(TaskEditModal, { props: { task: reviewTask } })
+
+    expect(wrapper.text()).toContain('Completed at')
+    expect(wrapper.find('#edit-execute-at').exists()).toBe(false)
+  })
+
+  it('shows "Completed at" with formatted updated_at for completed tasks', () => {
+    const completedTask: TaskData = { ...task, status: 'completed', updated_at: '2026-02-10T16:00:00Z' }
+    const wrapper = mount(TaskEditModal, { props: { task: completedTask } })
+
+    expect(wrapper.text()).toContain('Completed at')
+    expect(wrapper.find('#edit-execute-at').exists()).toBe(false)
+  })
+
+  it('shows execute_at picker for pending tasks (not "Completed at")', () => {
+    const pendingTask: TaskData = { ...task, status: 'pending' }
+    const wrapper = mount(TaskEditModal, { props: { task: pendingTask } })
+
+    expect(wrapper.text()).not.toContain('Completed at')
+    expect(wrapper.find('#edit-execute-at').exists()).toBe(true)
+  })
+
+  it('shows execute_at picker for scheduled tasks (not "Completed at")', () => {
+    const scheduledTask: TaskData = { ...task, status: 'scheduled' }
+    const wrapper = mount(TaskEditModal, { props: { task: scheduledTask } })
+
+    expect(wrapper.text()).not.toContain('Completed at')
+    expect(wrapper.find('#edit-execute-at').exists()).toBe(true)
   })
 
   // --- Delete button ---
