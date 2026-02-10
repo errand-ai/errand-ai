@@ -23,6 +23,17 @@ services:
       timeout: 5s
       retries: 5
 
+  dind:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   migrate:
     build: ./backend
     command: alembic upgrade head
@@ -60,10 +71,14 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
       VALKEY_URL: redis://valkey:6379
+      DOCKER_HOST: tcp://dind:2375
+      TASK_RUNNER_IMAGE: content-manager-task-runner:latest
     depends_on:
       migrate:
         condition: service_completed_successfully
       valkey:
+        condition: service_healthy
+      dind:
         condition: service_healthy
     volumes:
       - ./backend:/app

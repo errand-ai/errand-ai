@@ -56,6 +56,7 @@ class Task(Base):
     position: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+    output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
 
 

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     repeat_interval TEXT,
     repeat_until DATETIME,
     position INTEGER DEFAULT 0 NOT NULL,
+    output TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

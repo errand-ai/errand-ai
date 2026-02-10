@@ -1,0 +1,68 @@
+import json
+
+import pytest
+from httpx import AsyncClient
+
+
+async def create_task(client: AsyncClient, input_text: str = "Test task") -> dict:
+    resp = await client.post("/api/tasks", json={"input": input_text})
+    assert resp.status_code == 201
+    return resp.json()
+
+
+async def test_create_task_response_includes_output(client: AsyncClient):
+    """Task response includes the output field (null by default)."""
+    task = await create_task(client, "Quick task")
+    assert "output" in task
+    assert task["output"] is None
+
+
+async def test_list_tasks_includes_output(client: AsyncClient):
+    """List tasks response includes output field."""
+    await create_task(client, "Task one")
+    resp = await client.get("/api/tasks")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert "output" in data[0]
+    assert data[0]["output"] is None
+
+
+async def test_get_task_includes_output(client: AsyncClient):
+    """Get single task response includes output field."""
+    task = await create_task(client, "Task one")
+    resp = await client.get(f"/api/tasks/{task['id']}")
+    assert resp.status_code == 200
+    assert "output" in resp.json()
+
+
+async def test_update_task_output(client: AsyncClient):
+    """PATCH with output field stores the output."""
+    task = await create_task(client, "Task one")
+    resp = await client.patch(
+        f"/api/tasks/{task['id']}", json={"output": "Hello from container"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["output"] == "Hello from container"
+
+
+async def test_update_task_output_in_event(client: AsyncClient, fake_valkey):
+    """task_updated event includes output field."""
+    task = await create_task(client, "Task one")
+
+    pubsub = fake_valkey.pubsub()
+    await pubsub.subscribe("task_events")
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await client.patch(
+        f"/api/tasks/{task['id']}", json={"output": "Container output"}
+    )
+
+    msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+    assert msg is not None
+    data = json.loads(msg["data"])
+    assert data["event"] == "task_updated"
+    assert data["task"]["output"] == "Container output"
+
+    await pubsub.unsubscribe("task_events")
+    await pubsub.aclose()

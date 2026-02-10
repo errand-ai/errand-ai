@@ -112,6 +112,7 @@ class TaskUpdate(BaseModel):
     execute_at: Optional[str] = None
     repeat_interval: Optional[str] = None
     repeat_until: Optional[str] = None
+    output: Optional[str] = None
 
     def model_post_init(self, __context):
         if self.status is not None and self.status not in VALID_STATUSES:
@@ -130,6 +131,7 @@ class TaskResponse(BaseModel):
     execute_at: Optional[datetime] = None
     repeat_interval: Optional[str] = None
     repeat_until: Optional[datetime] = None
+    output: Optional[str] = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -148,6 +150,7 @@ class TaskResponse(BaseModel):
             execute_at=task.execute_at,
             repeat_interval=task.repeat_interval,
             repeat_until=task.repeat_until,
+            output=task.output,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -356,6 +359,8 @@ async def update_task(
             )
         task.position = new_pos
 
+    if body.output is not None:
+        task.output = body.output
     if body.category is not None:
         task.category = body.category
     if body.execute_at is not None:

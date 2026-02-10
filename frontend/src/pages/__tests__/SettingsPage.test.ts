@@ -122,18 +122,135 @@ describe('SettingsPage', () => {
     expect(wrapper.text()).toContain('Failed to load settings')
   })
 
-  it('displays MCP servers as formatted JSON when present', async () => {
+  // --- MCP Server Configuration ---
+
+  it('MCP section is collapsed by default', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ mcp_servers: [{ name: 'test-server' }] }),
+      json: () => Promise.resolve({ mcp_servers: { servers: [] } }),
     })
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('test-server')
-    expect(wrapper.find('pre').exists()).toBe(true)
+    // The MCP textarea should not be visible when collapsed
+    const textareas = wrapper.findAll('textarea')
+    // Only the system prompt textarea should be visible
+    expect(textareas.length).toBe(1)
+    expect(wrapper.text()).toContain('MCP Server Configuration')
+  })
+
+  it('MCP section expands on click', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_servers: { servers: [] } }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Click the MCP header button to expand
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    expect(mcpButton).toBeTruthy()
+    await mcpButton!.trigger('click')
+
+    // Now the MCP textarea should be visible (2 textareas total)
+    const textareas = wrapper.findAll('textarea')
+    expect(textareas.length).toBe(2)
+  })
+
+  it('loads MCP servers into text box when expanded', async () => {
+    const mcpConfig = { servers: [{ name: 'test-server' }] }
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_servers: mcpConfig }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand MCP section
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    expect((mcpTextarea.element as HTMLTextAreaElement).value).toContain('test-server')
+  })
+
+  it('shows JSON validation error for invalid JSON', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand MCP section
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    // Enter invalid JSON
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue('not valid json {{{')
+
+    // Click save
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Invalid JSON')
+  })
+
+  it('saves valid MCP JSON configuration', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand MCP section
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    // Enter valid JSON
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue('{"servers": []}')
+
+    // Click save
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    // Verify the PUT was called with parsed JSON
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT'
+    )
+    expect(putCall).toBeTruthy()
+    expect(JSON.parse(putCall![1].body as string)).toEqual({ mcp_servers: { servers: [] } })
+    expect(wrapper.text()).toContain('MCP configuration saved.')
   })
 
   // --- LLM Model Dropdown ---
