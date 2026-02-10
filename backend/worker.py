@@ -11,7 +11,7 @@ from typing import Optional
 
 import docker
 from docker.errors import DockerException, APIError, ImageNotFound
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, engine
@@ -116,15 +116,9 @@ async def read_settings(session: AsyncSession) -> tuple[dict, list[dict]]:
 
 
 async def dequeue_task(session: AsyncSession) -> Task | None:
-    now = datetime.now(timezone.utc)
     result = await session.execute(
         select(Task)
-        .where(
-            or_(
-                Task.status == "pending",
-                (Task.status == "scheduled") & (Task.execute_at <= now),
-            )
-        )
+        .where(Task.status == "pending")
         .order_by(Task.position.asc(), Task.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -139,6 +133,7 @@ def _task_to_dict(task: Task) -> dict:
         "status": task.status,
         "output": task.output,
         "retry_count": task.retry_count,
+        "execute_at": task.execute_at.isoformat() if task.execute_at else None,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
