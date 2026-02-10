@@ -57,6 +57,9 @@ class Task(Base):
         Integer, nullable=False, server_default=text("0")
     )
     output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
 
 

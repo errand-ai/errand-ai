@@ -6,12 +6,12 @@ import os
 import signal
 import tarfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import docker
 from docker.errors import DockerException, APIError, ImageNotFound
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, engine
@@ -116,9 +116,15 @@ async def read_settings(session: AsyncSession) -> tuple[dict, list[dict]]:
 
 
 async def dequeue_task(session: AsyncSession) -> Task | None:
+    now = datetime.now(timezone.utc)
     result = await session.execute(
         select(Task)
-        .where(Task.status == "pending")
+        .where(
+            or_(
+                Task.status == "pending",
+                (Task.status == "scheduled") & (Task.execute_at <= now),
+            )
+        )
         .order_by(Task.position.asc(), Task.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -132,6 +138,7 @@ def _task_to_dict(task: Task) -> dict:
         "title": task.title,
         "status": task.status,
         "output": task.output,
+        "retry_count": task.retry_count,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
     }
@@ -192,6 +199,40 @@ def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[d
         active_container_id = None
 
 
+async def _schedule_retry(task: Task, output: str | None = None) -> None:
+    """Move a failed task back to scheduled with exponential backoff on execute_at."""
+    async with async_session() as session:
+        # Read current retry_count from DB (task object may be stale)
+        result = await session.execute(select(Task).where(Task.id == task.id))
+        current = result.scalar_one()
+        new_retry = current.retry_count + 1
+        backoff_minutes = 2 ** (current.retry_count)  # 1, 2, 4, 8, 16, ...
+        execute_at = datetime.now(timezone.utc) + timedelta(minutes=backoff_minutes)
+        new_position = await _next_position(session, "scheduled")
+
+        values = {
+            "status": "scheduled",
+            "position": new_position,
+            "retry_count": new_retry,
+            "execute_at": execute_at,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if output is not None:
+            values["output"] = output
+
+        await session.execute(
+            update(Task).where(Task.id == task.id).values(**values)
+        )
+        await session.commit()
+        result = await session.execute(select(Task).where(Task.id == task.id))
+        retried_task = result.scalar_one()
+        await publish_event("task_updated", _task_to_dict(retried_task))
+        logger.info(
+            "Task %s scheduled for retry %d in %d min (execute_at=%s)",
+            task.id, new_retry, backoff_minutes, execute_at.isoformat(),
+        )
+
+
 async def run() -> None:
     global shutdown_event, docker_client
     shutdown_event = asyncio.Event()
@@ -233,55 +274,34 @@ async def run() -> None:
                 None, process_task_in_container, task, mcp_servers, credentials
             )
 
-            async with async_session() as session:
-                if exit_code == 0:
-                    new_status = "review"
+            if exit_code == 0:
+                async with async_session() as session:
                     new_position = await _next_position(session, "review")
-                else:
-                    new_status = "failed"
-                    new_position = await _next_position(session, "failed")
-
-                await session.execute(
-                    update(Task).where(Task.id == task.id).values(
-                        status=new_status,
-                        position=new_position,
-                        output=output,
-                        updated_at=datetime.now(timezone.utc),
+                    await session.execute(
+                        update(Task).where(Task.id == task.id).values(
+                            status="review",
+                            position=new_position,
+                            output=output,
+                            retry_count=0,
+                            updated_at=datetime.now(timezone.utc),
+                        )
                     )
-                )
-                await session.commit()
-                result = await session.execute(select(Task).where(Task.id == task.id))
-                updated_task = result.scalar_one()
-                await publish_event("task_updated", _task_to_dict(updated_task))
-            logger.info("Task %s %s (exit code %d)", task.id, new_status, exit_code)
+                    await session.commit()
+                    result = await session.execute(select(Task).where(Task.id == task.id))
+                    updated_task = result.scalar_one()
+                    await publish_event("task_updated", _task_to_dict(updated_task))
+                logger.info("Task %s completed (exit code 0), moved to review", task.id)
+            else:
+                logger.warning("Task %s container exited with code %d", task.id, exit_code)
+                await _schedule_retry(task, output=output)
 
         except (ImageNotFound, APIError) as e:
             logger.error("Docker error for task %s: %s", task.id, e)
-            async with async_session() as session:
-                await session.execute(
-                    update(Task).where(Task.id == task.id).values(
-                        status="failed",
-                        output=f"Docker error: {e}",
-                        updated_at=datetime.now(timezone.utc),
-                    )
-                )
-                await session.commit()
-                result = await session.execute(select(Task).where(Task.id == task.id))
-                failed_task = result.scalar_one()
-                await publish_event("task_updated", _task_to_dict(failed_task))
+            await _schedule_retry(task, output=f"Docker error: {e}")
 
         except Exception:
             logger.exception("Task %s failed", task.id)
-            async with async_session() as session:
-                await session.execute(
-                    update(Task).where(Task.id == task.id).values(
-                        status="failed", updated_at=datetime.now(timezone.utc)
-                    )
-                )
-                await session.commit()
-                result = await session.execute(select(Task).where(Task.id == task.id))
-                failed_task = result.scalar_one()
-                await publish_event("task_updated", _task_to_dict(failed_task))
+            await _schedule_retry(task)
 
     _cleanup_active_container()
     await close_valkey()

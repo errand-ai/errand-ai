@@ -11,10 +11,12 @@ async def create_task(client: AsyncClient, input_text: str = "Test task") -> dic
 
 
 async def test_create_task_response_includes_output(client: AsyncClient):
-    """Task response includes the output field (null by default)."""
+    """Task response includes the output and retry_count fields (defaults)."""
     task = await create_task(client, "Quick task")
     assert "output" in task
     assert task["output"] is None
+    assert "retry_count" in task
+    assert task["retry_count"] == 0
 
 
 async def test_list_tasks_includes_output(client: AsyncClient):

@@ -132,6 +132,7 @@ class TaskResponse(BaseModel):
     repeat_interval: Optional[str] = None
     repeat_until: Optional[datetime] = None
     output: Optional[str] = None
+    retry_count: int = 0
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -151,6 +152,7 @@ class TaskResponse(BaseModel):
             repeat_interval=task.repeat_interval,
             repeat_until=task.repeat_until,
             output=task.output,
+            retry_count=task.retry_count,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,

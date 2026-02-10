@@ -1,15 +1,17 @@
-"""Worker unit tests: settings reader, output truncation, task_to_dict."""
+"""Worker unit tests: settings reader, output truncation, task_to_dict, retry scheduling."""
 import json
+import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from models import Setting, Task
 
 # Import worker functions under test
-from worker import read_settings, truncate_output, _task_to_dict, put_archive
+from worker import read_settings, truncate_output, _task_to_dict, put_archive, _schedule_retry
 
 
 # --- Output truncation ---
@@ -54,6 +56,7 @@ def test_task_to_dict_includes_output():
     task.title = "Test task"
     task.status = "review"
     task.output = "Container output here"
+    task.retry_count = 0
     task.created_at = MagicMock()
     task.created_at.isoformat.return_value = "2026-01-01T00:00:00"
     task.updated_at = MagicMock()
@@ -62,6 +65,7 @@ def test_task_to_dict_includes_output():
     result = _task_to_dict(task)
     assert result["output"] == "Container output here"
     assert result["status"] == "review"
+    assert result["retry_count"] == 0
 
 
 def test_task_to_dict_null_output():
@@ -71,6 +75,7 @@ def test_task_to_dict_null_output():
     task.title = "Test task"
     task.status = "pending"
     task.output = None
+    task.retry_count = 2
     task.created_at = MagicMock()
     task.created_at.isoformat.return_value = "2026-01-01T00:00:00"
     task.updated_at = MagicMock()
@@ -78,6 +83,7 @@ def test_task_to_dict_null_output():
 
     result = _task_to_dict(task)
     assert result["output"] is None
+    assert result["retry_count"] == 2
 
 
 # --- put_archive ---
@@ -113,12 +119,163 @@ async def db_session():
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
         """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'new' NOT NULL,
+                category TEXT DEFAULT 'immediate',
+                execute_at DATETIME,
+                repeat_interval TEXT,
+                repeat_until DATETIME,
+                position INTEGER DEFAULT 0 NOT NULL,
+                output TEXT,
+                retry_count INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS task_tags (
+                task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (task_id, tag_id)
+            )
+        """))
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         yield session
 
     await engine.dispose()
+
+
+@pytest.fixture()
+async def retry_session_factory(db_session):
+    """Create a session factory for retry tests that shares the same engine."""
+    # db_session is already connected to an in-memory SQLite with tables created.
+    # We need a session factory that worker._schedule_retry can use.
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'new' NOT NULL,
+                category TEXT DEFAULT 'immediate',
+                execute_at DATETIME,
+                repeat_interval TEXT,
+                repeat_until DATETIME,
+                position INTEGER DEFAULT 0 NOT NULL,
+                output TEXT,
+                retry_count INTEGER DEFAULT 0 NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS task_tags (
+                task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (task_id, tag_id)
+            )
+        """))
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    yield engine, factory
+    await engine.dispose()
+
+
+# --- Retry scheduling ---
+
+
+async def _insert_task(factory, **kwargs):
+    """Insert a task using the ORM model and return its id."""
+    task = Task(**kwargs)
+    async with factory() as session:
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        return task.id
+
+
+async def test_schedule_retry_first_failure(retry_session_factory):
+    """First failure schedules retry in 1 minute with retry_count=1."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="Docker error: not found")
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        updated = result.scalar_one()
+        assert updated.status == "scheduled"
+        assert updated.retry_count == 1
+        assert updated.execute_at is not None
+        assert updated.output == "Docker error: not found"
+
+
+async def test_schedule_retry_exponential_backoff(retry_session_factory):
+    """Third failure (retry_count=2) schedules retry in 4 minutes."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=2)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+    before = datetime.now(timezone.utc)
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        updated = result.scalar_one()
+        assert updated.retry_count == 3
+        assert updated.execute_at is not None
+        # execute_at should be ~4 minutes in the future (2^2 = 4)
+        # SQLite returns naive datetimes, so strip tzinfo for comparison
+        delta = updated.execute_at.replace(tzinfo=None) - before.replace(tzinfo=None)
+        assert delta >= timedelta(minutes=3, seconds=50)
+        assert delta <= timedelta(minutes=5)
+
+
+async def test_schedule_retry_preserves_output_when_none(retry_session_factory):
+    """When no output is provided, existing output is preserved."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0, output="previous output")
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        updated = result.scalar_one()
+        assert updated.output == "previous output"
 
 
 async def test_read_settings_defaults(db_session):
