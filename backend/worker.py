@@ -158,6 +158,9 @@ def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[d
         if isinstance(cred, dict) and "key" in cred and "value" in cred:
             env_vars[cred["key"]] = cred["value"]
 
+    # Pull image (DinD sidecar starts with empty image cache)
+    docker_client.images.pull(TASK_RUNNER_IMAGE)
+
     # Create container (not started)
     container = docker_client.containers.create(
         image=TASK_RUNNER_IMAGE,
