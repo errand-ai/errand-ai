@@ -1,52 +1,45 @@
 ## MODIFIED Requirements
 
 ### Requirement: List all tasks
-The backend SHALL expose `GET /api/tasks` returning all tasks as a JSON array. Each task object SHALL include `id`, `title`, `description`, `status`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `tags`, `created_at`, and `updated_at` fields.
+The backend SHALL expose `GET /api/tasks` returning all tasks as a JSON array. Each task object SHALL include `id`, `title`, `description`, `status`, `position`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `tags`, `created_at`, and `updated_at` fields. Tasks SHALL be ordered by `position` ascending, with ties broken by `created_at` ascending.
 
 #### Scenario: Retrieve tasks
 - **WHEN** a client sends `GET /api/tasks`
-- **THEN** the backend returns HTTP 200 with a JSON array of all tasks ordered by creation time descending, each including tags, category, execute_at, repeat_interval, and repeat_until
+- **THEN** the backend returns HTTP 200 with a JSON array of all tasks ordered by position ascending then created_at ascending, each including position, tags, category, execute_at, repeat_interval, and repeat_until
 
 #### Scenario: No tasks exist
 - **WHEN** a client sends `GET /api/tasks` and no tasks exist
 - **THEN** the backend returns HTTP 200 with an empty JSON array
 
 ### Requirement: Create a task
-The backend SHALL expose `POST /api/tasks` accepting a JSON body with an `input` field. The backend SHALL count the words in the input. If the input has more than 5 words, it SHALL be stored as the `description` and the backend SHALL call the LLM to generate a short title, categorise the task, and extract timing information; if the LLM call fails, the first 5 words plus "..." SHALL be used as the title, category SHALL default to `immediate`, and a "Needs Info" tag SHALL be applied. If the input has 5 or fewer words, it SHALL be stored as the `title` (with null description) and a "Needs Info" tag SHALL be applied. After categorisation, the backend SHALL auto-route the task based on its category and tags. After successful creation, the backend SHALL publish a `task_created` event to the Valkey pub/sub channel containing the full task object including tags and categorisation fields.
+The backend SHALL expose `POST /api/tasks` accepting a JSON body with an `input` field. The backend SHALL count the words in the input. If the input has more than 5 words, it SHALL be stored as the `description` and the backend SHALL call the LLM to generate a short title, categorise the task, and extract timing information; if the LLM call fails, the first 5 words plus "..." SHALL be used as the title, category SHALL default to `immediate`, and a "Needs Info" tag SHALL be applied. If the input has 5 or fewer words, it SHALL be stored as the `title` (with null description) and a "Needs Info" tag SHALL be applied. After categorisation, the backend SHALL auto-route the task based on its category and tags. The backend SHALL assign the task a `position` value equal to one greater than the maximum position among tasks with the same target status (or 1 if no tasks exist in that status). After successful creation, the backend SHALL publish a `task_created` event to the Valkey pub/sub channel containing the full task object including tags, categorisation fields, and position.
 
 #### Scenario: Long input creates task with LLM title and categorisation
 - **WHEN** a client sends `POST /api/tasks` with `{"input": "The login page throws a 500 error when users with special characters try to reset"}`
-- **THEN** the backend calls the LLM, stores the LLM-generated title, category, execute_at, and repeat_interval, auto-routes based on category, and returns HTTP 201 with the created task object
+- **THEN** the backend calls the LLM, stores the LLM-generated title, category, execute_at, and repeat_interval, auto-routes based on category, assigns position at the bottom of the target column, and returns HTTP 201 with the created task object including position
 
 #### Scenario: Short input creates task with title directly
 - **WHEN** a client sends `POST /api/tasks` with `{"input": "Fix login bug"}`
-- **THEN** the backend stores "Fix login bug" as `title`, sets `description` to null, sets category to `immediate`, applies the "Needs Info" tag, keeps status as `new`, and returns HTTP 201
+- **THEN** the backend stores "Fix login bug" as `title`, sets `description` to null, sets category to `immediate`, applies the "Needs Info" tag, keeps status as `new`, assigns position at the bottom of the New column, and returns HTTP 201
 
 #### Scenario: Event published after creation
 - **WHEN** a task is successfully created
-- **THEN** the backend publishes a `task_created` event to the Valkey `task_events` channel with the serialized task object including tags and categorisation fields
+- **THEN** the backend publishes a `task_created` event to the Valkey `task_events` channel with the serialized task object including tags, categorisation fields, and position
 
 #### Scenario: Missing input
 - **WHEN** a client sends `POST /api/tasks` with an empty or missing `input`
 - **THEN** the backend returns HTTP 422 with a validation error and no event is published
 
-### Requirement: Get a single task
-The backend SHALL expose `GET /api/tasks/{id}` returning the task with the given ID, including `description`, `tags`, `category`, `execute_at`, `repeat_interval`, and `repeat_until` fields.
-
-#### Scenario: Task found
-- **WHEN** a client sends `GET /api/tasks/123` and task 123 exists
-- **THEN** the backend returns HTTP 200 with the task object including description, tags, category, execute_at, repeat_interval, and repeat_until
-
-#### Scenario: Task not found
-- **WHEN** a client sends `GET /api/tasks/999` and task 999 does not exist
-- **THEN** the backend returns HTTP 404
-
 ### Requirement: Update a task
-The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with optional `title`, `description`, `status`, `tags`, `category`, `execute_at`, `repeat_interval`, and `repeat_until` fields. The endpoint SHALL update only the provided fields and return the updated task object. If the update triggers auto-promotion (see task-categorisation spec), the status and tags SHALL be adjusted accordingly. After successful update, the backend SHALL publish a `task_updated` event to the Valkey pub/sub channel containing the full updated task object including tags and categorisation fields.
+The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with optional `title`, `description`, `status`, `position`, `tags`, `category`, `execute_at`, `repeat_interval`, and `repeat_until` fields. The endpoint SHALL update only the provided fields and return the updated task object. When `status` is changed, the task SHALL be assigned a new position at the bottom of the target column. When `position` is provided (without a status change), the backend SHALL reorder tasks within the same status column: all tasks in that status with position >= the new value SHALL have their position incremented by 1, and the task SHALL be set to the new position. After successful update, the backend SHALL publish a `task_updated` event to the Valkey pub/sub channel containing the full updated task object including tags, categorisation fields, and position.
 
 #### Scenario: Update task status
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"status": "scheduled"}`
-- **THEN** the backend returns HTTP 200 with the updated task object showing status `scheduled`
+- **THEN** the backend assigns a new position at the bottom of the Scheduled column and returns HTTP 200 with the updated task object showing status `scheduled` and the new position
+
+#### Scenario: Reorder task within column
+- **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"position": 2}` and the task is currently at position 5 in the New column
+- **THEN** the backend shifts tasks in the New column with position >= 2 up by 1, sets the task's position to 2, and returns HTTP 200 with the updated task object
 
 #### Scenario: Update task description
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"description": "Detailed info about the task"}`
@@ -83,24 +76,3 @@ The backend SHALL expose `PATCH /api/tasks/{id}` accepting a JSON body with opti
 #### Scenario: Invalid category value
 - **WHEN** a client sends `PATCH /api/tasks/{id}` with `{"category": "invalid"}`
 - **THEN** the backend returns HTTP 422 with a validation error listing the valid categories and no event is published
-
-## ADDED Requirements
-
-### Requirement: Delete a task
-The backend SHALL expose `DELETE /api/tasks/{id}` requiring authentication. The endpoint SHALL delete the task and its tag associations, publish a `task_deleted` event to the Valkey pub/sub channel, and return HTTP 204 with no body.
-
-#### Scenario: Successful deletion
-- **WHEN** a client sends `DELETE /api/tasks/{id}` and the task exists
-- **THEN** the backend deletes the task and its tag associations, publishes a `task_deleted` event to Valkey, and returns HTTP 204
-
-#### Scenario: Task not found
-- **WHEN** a client sends `DELETE /api/tasks/999` and task 999 does not exist
-- **THEN** the backend returns HTTP 404
-
-#### Scenario: Event published after deletion
-- **WHEN** a task is successfully deleted
-- **THEN** the backend publishes a `task_deleted` event to the Valkey `task_events` channel with `{"event": "task_deleted", "task": {"id": "<task-id>"}}`
-
-#### Scenario: Unauthenticated request
-- **WHEN** a client sends `DELETE /api/tasks/{id}` without a valid Bearer token
-- **THEN** the backend returns HTTP 401

@@ -214,8 +214,8 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Current State
 
-- Version: `0.8.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.9.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 85 backend (pytest) + 84 frontend (vitest) — CI `test` job gates both build jobs
-- 19 component specs in `openspec/specs/`
+- Tests: 90 backend (pytest) + 93 frontend (vitest) — CI `test` job gates both build jobs
+- 21 component specs in `openspec/specs/`

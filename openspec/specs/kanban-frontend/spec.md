@@ -23,14 +23,14 @@ Each task card SHALL display the task title and any associated tags. Tags SHALL 
 - **WHEN** a task in the Pending or Running column has an execute_at value
 - **THEN** the card does not display the execution time
 
-#### Scenario: Delete icon shows confirmation
+#### Scenario: Delete icon shows styled confirmation modal
 - **WHEN** the user clicks the delete icon on a task card
-- **THEN** a confirmation dialog appears asking "Delete this task?"
+- **THEN** a Tailwind-styled delete confirmation modal appears asking "Delete this task?" with the task title, a red "Delete" button, and a "Cancel" button
 
 #### Scenario: Confirm delete removes task
-- **WHEN** the user confirms the deletion in the dialog
+- **WHEN** the user confirms the deletion in the styled modal
 - **THEN** the frontend sends `DELETE /api/tasks/{id}` and removes the task card from the board
 
 #### Scenario: Cancel delete keeps task
-- **WHEN** the user cancels the deletion in the dialog
+- **WHEN** the user cancels the deletion in the styled modal
 - **THEN** no API call is made and the task card remains on the board
