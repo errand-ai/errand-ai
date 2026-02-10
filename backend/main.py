@@ -13,7 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -106,6 +106,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1)
     description: Optional[str] = None
     status: Optional[str] = None
+    position: Optional[int] = None
     tags: Optional[list[str]] = None
     category: Optional[str] = None
     execute_at: Optional[str] = None
@@ -124,6 +125,7 @@ class TaskResponse(BaseModel):
     title: str
     description: Optional[str] = None
     status: str
+    position: int = 0
     category: Optional[str] = None
     execute_at: Optional[datetime] = None
     repeat_interval: Optional[str] = None
@@ -141,6 +143,7 @@ class TaskResponse(BaseModel):
             title=task.title,
             description=task.description,
             status=task.status,
+            position=task.position,
             category=task.category,
             execute_at=task.execute_at,
             repeat_interval=task.repeat_interval,
@@ -159,6 +162,16 @@ class TagResponse(BaseModel):
 
 
 # --- Protected /api endpoints ---
+
+
+async def _next_position(session: AsyncSession, status: str, exclude_id=None) -> int:
+    """Return the next position value for a task in the given status column."""
+    query = select(func.max(Task.position)).where(Task.status == status)
+    if exclude_id is not None:
+        query = query.where(Task.id != exclude_id)
+    result = await session.execute(query)
+    max_pos = result.scalar()
+    return (max_pos or 0) + 1
 
 
 @app.get("/api/tags", response_model=list[TagResponse])
@@ -202,7 +215,7 @@ async def list_tasks(
     _user: dict = Depends(get_current_user),
 ):
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).order_by(Task.created_at.desc())
+        select(Task).options(selectinload(Task.tags)).order_by(Task.position.asc(), Task.created_at.asc())
     )
     tasks = result.scalars().all()
     return [TaskResponse.from_task(t) for t in tasks]
@@ -273,6 +286,9 @@ async def create_task(
         elif category in ("scheduled", "repeating"):
             task.status = "scheduled"
 
+    # Assign position at the bottom of the target column
+    task.position = await _next_position(session, task.status)
+
     await session.commit()
     await session.refresh(task, ["tags"])
     resp = TaskResponse.from_task(task)
@@ -312,8 +328,34 @@ async def update_task(
         task.title = body.title
     if body.description is not None:
         task.description = body.description
+
+    status_changed = body.status is not None and body.status != task.status
     if body.status is not None:
         task.status = body.status
+
+    if status_changed:
+        # Moving to a new column — assign bottom position (exclude self from max query)
+        task.position = await _next_position(session, task.status, exclude_id=task.id)
+    elif body.position is not None and body.position != task.position:
+        # Intra-column reorder: shift other tasks to make room
+        new_pos = body.position
+        old_pos = task.position
+        if new_pos < old_pos:
+            # Moving up: shift tasks in [new_pos, old_pos) down by 1
+            await session.execute(
+                update(Task)
+                .where(Task.status == task.status, Task.position >= new_pos, Task.position < old_pos, Task.id != task.id)
+                .values(position=Task.position + 1)
+            )
+        else:
+            # Moving down: shift tasks in (old_pos, new_pos] up by 1
+            await session.execute(
+                update(Task)
+                .where(Task.status == task.status, Task.position > old_pos, Task.position <= new_pos, Task.id != task.id)
+                .values(position=Task.position - 1)
+            )
+        task.position = new_pos
+
     if body.category is not None:
         task.category = body.category
     if body.execute_at is not None:

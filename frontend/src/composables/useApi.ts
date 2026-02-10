@@ -7,6 +7,7 @@ export interface TaskData {
   title: string
   description: string | null
   status: TaskStatus
+  position: number
   category: string | null
   execute_at: string | null
   repeat_interval: string | null
@@ -65,7 +66,7 @@ export async function createTask(input: string): Promise<TaskData> {
   return res.json()
 }
 
-export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }): Promise<TaskData> {
+export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }): Promise<TaskData> {
   const res = await authFetch(`${BASE}/tasks/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

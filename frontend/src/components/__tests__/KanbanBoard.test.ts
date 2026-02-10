@@ -26,6 +26,7 @@ function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
     title: `Task ${i + 1}`,
     description: null,
     status: 'new' as const,
+    position: i + 1,
     category: 'immediate',
     execute_at: null,
     repeat_interval: null,
@@ -102,18 +103,18 @@ describe('KanbanBoard', () => {
     expect(store.updateTask).toHaveBeenCalledWith('42', { status: 'scheduled' })
   })
 
-  it('does not call store.updateTask on same-column drop', async () => {
+  it('does not call store.updateTask on same-column drop in non-reorderable column', async () => {
     const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '42', title: 'Stay here', status: 'new' }])
+      makeTasks([{ id: '42', title: 'Stay here', status: 'completed' }])
     )
     store.updateTask = vi.fn()
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Drop on "New" column (index 0) — same as current status
+    // Drop on "Completed" column (index 5) — same as current status, non-reorderable
     const dropEvent = new Event('drop', { bubbles: true }) as any
     dropEvent.dataTransfer = { getData: () => '42' }
     dropEvent.preventDefault = vi.fn()
-    columns[0].element.dispatchEvent(dropEvent)
+    columns[5].element.dispatchEvent(dropEvent)
     await nextTick()
 
     expect(store.updateTask).not.toHaveBeenCalled()
@@ -129,5 +130,89 @@ describe('KanbanBoard', () => {
     // After dragenter, the column should have the highlight ring class
     expect(columns[1].classes()).toContain('ring-2')
     expect(columns[1].classes()).toContain('ring-blue-400')
+  })
+
+  // --- Delete confirmation modal ---
+
+  it('shows delete confirmation dialog when delete is triggered on a card', async () => {
+    const { wrapper } = mountWithTasks(
+      makeTasks([{ id: '10', title: 'Delete me' }])
+    )
+
+    // Click the delete button on the TaskCard
+    const deleteBtn = wrapper.find('button[title="Delete task"]')
+    await deleteBtn.trigger('click')
+    await nextTick()
+
+    // The delete dialog should contain the task title
+    const dialog = wrapper.find('dialog')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.text()).toContain('Delete this task?')
+    expect(dialog.text()).toContain('Delete me')
+  })
+
+  it('calls store.removeTask when delete is confirmed', async () => {
+    const { wrapper, store } = mountWithTasks(
+      makeTasks([{ id: '10', title: 'Delete me' }])
+    )
+    store.removeTask = vi.fn().mockResolvedValue(undefined)
+
+    // Open the delete modal
+    const deleteBtn = wrapper.find('button[title="Delete task"]')
+    await deleteBtn.trigger('click')
+    await nextTick()
+
+    // Click the confirm "Delete" button in the dialog
+    const dialog = wrapper.find('dialog')
+    const confirmBtn = dialog.findAll('button').find((b) => b.text() === 'Delete')!
+    await confirmBtn.trigger('click')
+    await nextTick()
+
+    expect(store.removeTask).toHaveBeenCalledWith('10')
+  })
+
+  it('does not call store.removeTask when delete is cancelled', async () => {
+    const { wrapper, store } = mountWithTasks(
+      makeTasks([{ id: '10', title: 'Keep me' }])
+    )
+    store.removeTask = vi.fn()
+
+    // Open the delete modal
+    const deleteBtn = wrapper.find('button[title="Delete task"]')
+    await deleteBtn.trigger('click')
+    await nextTick()
+
+    // Click Cancel in the dialog
+    const dialog = wrapper.find('dialog')
+    const cancelBtn = dialog.findAll('button').find((b) => b.text() === 'Cancel')!
+    await cancelBtn.trigger('click')
+    await nextTick()
+
+    expect(store.removeTask).not.toHaveBeenCalled()
+  })
+
+  // --- Intra-column reorder ---
+
+  it('calls store.updateTask with position on same-column drop in reorderable column', async () => {
+    const { wrapper, store } = mountWithTasks(
+      makeTasks([
+        { id: '1', title: 'First', status: 'new', position: 1 },
+        { id: '2', title: 'Second', status: 'new', position: 2 },
+      ])
+    )
+    store.updateTask = vi.fn().mockResolvedValue(undefined)
+
+    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
+    // Drop task '1' (position 1) on the New column (same status, reorderable)
+    // In jsdom getBoundingClientRect returns zeros, so insertIndex = cards.length = 2
+    // targetPosition = lastTask.position + 1 = 3, which differs from task.position = 1
+    const dropEvent = new Event('drop', { bubbles: true }) as any
+    dropEvent.dataTransfer = { getData: () => '1' }
+    dropEvent.preventDefault = vi.fn()
+    dropEvent.clientY = 9999 // below all cards
+    columns[0].element.dispatchEvent(dropEvent)
+    await nextTick()
+
+    expect(store.updateTask).toHaveBeenCalledWith('1', { position: 3 })
   })
 })

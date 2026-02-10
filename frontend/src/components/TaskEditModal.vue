@@ -101,10 +101,7 @@ async function onSave() {
 }
 
 function onDeleteClick() {
-  if (confirm('Are you sure you want to delete this task?')) {
-    dialogRef.value?.close()
-    emit('delete')
-  }
+  emit('delete')
 }
 
 function setQuickInterval(interval: string) {
