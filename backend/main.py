@@ -24,6 +24,7 @@ from database import engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import init_llm_client, get_llm_client, generate_title, LLMResult, VALID_CATEGORIES
 from models import Setting, Tag, Task, task_tags
+from scheduler import run_scheduler, release_lock
 
 security = HTTPBearer()
 
@@ -34,7 +35,14 @@ async def lifespan(app: FastAPI):
     await auth_module.oidc.discover()
     await init_valkey()
     init_llm_client()
+    scheduler_task = asyncio.create_task(run_scheduler())
     yield
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+    await release_lock()
     await close_valkey()
     await engine.dispose()
 
