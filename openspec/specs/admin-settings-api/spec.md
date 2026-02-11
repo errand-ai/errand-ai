@@ -74,8 +74,8 @@ The backend SHALL expose `GET /api/llm/models` requiring the `admin` role. The e
 - **WHEN** an admin requests `GET /api/llm/models`
 - **THEN** the backend returns HTTP 200 with a JSON array of model ID strings (e.g., `["claude-haiku-4-5-20251001", "gpt-4o-mini"]`)
 
-#### Scenario: LiteLLM unavailable
-- **WHEN** an admin requests `GET /api/llm/models` and the LiteLLM API call fails
+#### Scenario: LLM provider unavailable
+- **WHEN** an admin requests `GET /api/llm/models` and the LLM API call fails
 - **THEN** the backend returns HTTP 502 with `{"detail": "Failed to fetch models from LLM provider"}`
 
 #### Scenario: Non-admin user

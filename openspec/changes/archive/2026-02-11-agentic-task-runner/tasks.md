@@ -28,7 +28,7 @@
 - [x] 4.1 Define a Pydantic model `TaskRunnerOutput` with fields: `status` (Literal["completed", "needs_input"]), `result` (str), `questions` (list[str]) in the worker module
 - [x] 4.2 Update the worker to parse stdout as JSON matching `TaskRunnerOutput` after container exit code 0 — on parse failure, treat as error and schedule retry
 - [x] 4.3 When parsed status is `needs_input`, move task to `review` and add "Input Needed" tag
-- [x] 4.4 When parsed status is `completed`, move task to `review` with result stored in `output`
+- [x] 4.4 When parsed status is `completed`, move task to `completed` with result stored in `output`
 - [x] 4.5 Add backend tests for structured output parsing: valid completed, valid needs_input, invalid JSON, non-zero exit code
 
 ## 5. Task runner Dockerfile and Python app

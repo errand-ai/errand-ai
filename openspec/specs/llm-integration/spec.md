@@ -3,6 +3,8 @@
 ### Requirement: LLM title generation from task description
 When a new task is created with an input longer than 5 words, the backend SHALL call the LLM to generate a short title (2-5 words), categorise the task as `immediate`, `scheduled`, or `repeating`, and extract timing information. The LLM call SHALL use the `chat.completions.create` method with the model from the `llm_model` setting (default: `claude-haiku-4-5-20251001`). The system prompt SHALL instruct the model to return a JSON object with fields: `title` (string, 2-5 words), `category` (immediate|scheduled|repeating), `execute_at` (ISO 8601 datetime string or null), `repeat_interval` (string like "15m", "1h", "1d", or crontab expression, or null), `repeat_until` (ISO 8601 datetime string or null). The call SHALL have a 5-second timeout.
 
+The LLM client SHALL be initialised using `OPENAI_BASE_URL` and `OPENAI_API_KEY` environment variables (replacing the previous `LITELLM_BASE_URL` and `LITELLM_API_KEY` names).
+
 #### Scenario: Successful title and categorisation
 - **WHEN** a task is created with input "The login page throws a 500 error when users with special characters try to reset their password"
 - **THEN** the backend calls the LLM and receives a JSON response with title, category `immediate`, execute_at set to approximately now, and repeat_interval null

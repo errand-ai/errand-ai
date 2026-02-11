@@ -7,7 +7,7 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 
 #### Scenario: Successful task execution with completed status
 - **WHEN** the worker processes a pending task and the task runner exits with code 0 and stdout contains `{"status": "completed", "result": "Task done", "questions": []}`
-- **THEN** the worker stores the result in the task's `output` field and moves the task to `review` status
+- **THEN** the worker stores the result in the task's `output` field and moves the task to `completed` status
 
 #### Scenario: Task runner returns needs_input status
 - **WHEN** the worker processes a task and the task runner exits with code 0 and stdout contains `{"status": "needs_input", "result": "Need more details", "questions": ["What format?", "Which date range?"]}`

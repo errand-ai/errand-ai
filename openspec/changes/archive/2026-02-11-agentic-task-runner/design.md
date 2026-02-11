@@ -38,7 +38,7 @@ The task runner currently echoes back the prompt text — it has no LLM processi
 **Alternative:** Use exit codes to signal different states. Rejected because exit codes can't carry structured data and limit extensibility.
 
 ### Decision 4: Worker parses structured output to determine next action
-**Choice:** After the container exits, the worker parses stdout as JSON matching the output schema. If `status` is `needs_input`, the worker moves the task to `review` and adds an "Input Needed" tag. If `status` is `completed`, the worker moves the task to `review` with the result stored in `output`. If parsing fails, the worker treats it as a failure and stores raw output.
+**Choice:** After the container exits, the worker parses stdout as JSON matching the output schema. If `status` is `completed`, the worker moves the task to `completed` with the result stored in `output`. If `status` is `needs_input`, the worker moves the task to `review` and adds an "Input Needed" tag. If parsing fails, the worker treats it as a failure and schedules a retry.
 **Alternative:** Have the task runner call back to the API directly. Rejected because the task runner should be stateless and not need API credentials or network access to the backend.
 
 ### Decision 5: Python distroless base image
