@@ -121,6 +121,35 @@ def test_task_runner_output_default_questions():
     assert output.questions == []
 
 
+# --- Markdown fence stripping (main.py strips fences before parsing) ---
+
+
+def test_strip_markdown_fences_from_json():
+    """TaskRunnerOutput parses correctly after stripping ```json fences."""
+    fenced = '```json\n{"status": "completed", "result": "Done", "questions": []}\n```'
+    stripped = fenced.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        if lines[-1].strip() == "```":
+            stripped = "\n".join(lines[1:-1]).strip()
+    parsed = TaskRunnerOutput.model_validate_json(stripped)
+    assert parsed.status == "completed"
+    assert parsed.result == "Done"
+
+
+def test_strip_plain_markdown_fences():
+    """Strips ``` fences without language tag."""
+    fenced = '```\n{"status": "needs_input", "result": "Need info", "questions": ["What?"]}\n```'
+    stripped = fenced.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        if lines[-1].strip() == "```":
+            stripped = "\n".join(lines[1:-1]).strip()
+    parsed = TaskRunnerOutput.model_validate_json(stripped)
+    assert parsed.status == "needs_input"
+    assert parsed.questions == ["What?"]
+
+
 # --- Overarching prompt ---
 
 

@@ -333,18 +333,28 @@ async def run() -> None:
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout
 
             if exit_code == 0:
+                # Strip markdown code fences that LLMs sometimes wrap around JSON
+                clean_stdout = stdout.strip()
+                if clean_stdout.startswith("```"):
+                    lines = clean_stdout.split("\n")
+                    if lines[-1].strip() == "```":
+                        clean_stdout = "\n".join(lines[1:-1]).strip()
+
                 # Parse structured output from task runner (stdout only)
                 try:
-                    parsed = TaskRunnerOutput.model_validate_json(stdout)
+                    parsed = TaskRunnerOutput.model_validate_json(clean_stdout)
                 except (ValidationError, ValueError) as e:
                     logger.warning("Task %s: failed to parse structured output: %s", task.id, e)
                     await _schedule_retry(task, output=full_output)
                     continue
 
+                # completed → completed column, needs_input → review column
+                target_status = "completed" if parsed.status == "completed" else "review"
+
                 async with async_session() as session:
-                    new_position = await _next_position(session, "review")
+                    new_position = await _next_position(session, target_status)
                     values = {
-                        "status": "review",
+                        "status": target_status,
                         "position": new_position,
                         "output": parsed.result,
                         "retry_count": 0,
@@ -376,7 +386,7 @@ async def run() -> None:
                     updated_task = result.scalar_one()
                     await publish_event("task_updated", _task_to_dict(updated_task))
                 logger.info(
-                    "Task %s moved to review (status=%s)", task.id, parsed.status,
+                    "Task %s moved to %s (runner_status=%s)", task.id, target_status, parsed.status,
                 )
             else:
                 logger.warning("Task %s container exited with code %d", task.id, exit_code)

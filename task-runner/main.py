@@ -168,9 +168,17 @@ async def main():
             result = await Runner.run(agent, user_prompt)
             raw_output = result.final_output
 
+            # Strip markdown code fences that LLMs often wrap around JSON
+            stripped = raw_output.strip()
+            if stripped.startswith("```"):
+                lines = stripped.split("\n")
+                # Remove first line (```json or ```) and last line (```)
+                if lines[-1].strip() == "```":
+                    stripped = "\n".join(lines[1:-1]).strip()
+
             # Try to parse as structured JSON
             try:
-                parsed = TaskRunnerOutput.model_validate_json(raw_output)
+                parsed = TaskRunnerOutput.model_validate_json(stripped)
                 output = parsed.model_dump_json()
             except Exception:
                 # If agent didn't produce valid JSON, wrap as completed
