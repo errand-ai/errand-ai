@@ -14,6 +14,7 @@ const task: TaskData = {
   repeat_interval: null,
   repeat_until: null,
   output: null,
+  runner_logs: null,
   retry_count: 0,
   tags: [],
   created_at: '2024-01-01T00:00:00Z',

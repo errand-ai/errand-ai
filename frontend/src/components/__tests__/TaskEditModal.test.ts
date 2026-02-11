@@ -23,6 +23,7 @@ const task: TaskData = {
   repeat_interval: null,
   repeat_until: null,
   output: null,
+  runner_logs: null,
   retry_count: 0,
   tags: ['urgent'],
   created_at: '2024-01-01T00:00:00Z',
@@ -296,5 +297,30 @@ describe('TaskEditModal', () => {
     await deleteBtn.trigger('click')
 
     expect(wrapper.emitted('delete')).toHaveLength(1)
+  })
+
+  // --- Task Runner Logs section ---
+
+  it('hides runner logs section when runner_logs is null', () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    expect(wrapper.find('details').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Task Runner Logs')
+  })
+
+  it('shows runner logs section when runner_logs is present', () => {
+    const taskWithLogs: TaskData = { ...task, runner_logs: '2026-02-10 INFO Starting agent execution' }
+    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
+    expect(wrapper.find('details').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Task Runner Logs')
+  })
+
+  it('displays runner logs content in a pre block', () => {
+    const logs = '2026-02-10 INFO Starting agent\n2026-02-10 INFO Connected to MCP'
+    const taskWithLogs: TaskData = { ...task, runner_logs: logs }
+    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
+    const pre = wrapper.find('details pre')
+    expect(pre.exists()).toBe(true)
+    expect(pre.text()).toContain('2026-02-10 INFO Starting agent')
+    expect(pre.text()).toContain('2026-02-10 INFO Connected to MCP')
   })
 })

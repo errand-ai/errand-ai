@@ -342,6 +342,13 @@ function onTagBlur() {
           </button>
         </div>
       </div>
+
+      <details v-if="task.runner_logs" class="mt-4">
+        <summary class="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
+          Task Runner Logs
+        </summary>
+        <pre class="mt-2 max-h-64 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 whitespace-pre">{{ task.runner_logs }}</pre>
+      </details>
     </form>
   </dialog>
 </template>

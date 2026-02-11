@@ -163,6 +163,7 @@ def _task_to_dict(task: Task) -> dict:
         "repeat_interval": task.repeat_interval,
         "repeat_until": task.repeat_until.isoformat() if task.repeat_until else None,
         "output": task.output,
+        "runner_logs": task.runner_logs,
         "retry_count": task.retry_count,
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -253,7 +254,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         active_container_id = None
 
 
-async def _schedule_retry(task: Task, output: str | None = None) -> None:
+async def _schedule_retry(task: Task, output: str | None = None, runner_logs: str | None = None) -> None:
     """Move a failed task back to scheduled with exponential backoff on execute_at."""
     async with async_session() as session:
         # Read current retry_count from DB (task object may be stale)
@@ -273,6 +274,8 @@ async def _schedule_retry(task: Task, output: str | None = None) -> None:
         }
         if output is not None:
             values["output"] = output
+        if runner_logs is not None:
+            values["runner_logs"] = runner_logs
 
         await session.execute(
             update(Task).where(Task.id == task.id).values(**values)
@@ -345,7 +348,7 @@ async def run() -> None:
                     parsed = TaskRunnerOutput.model_validate_json(clean_stdout)
                 except (ValidationError, ValueError) as e:
                     logger.warning("Task %s: failed to parse structured output: %s", task.id, e)
-                    await _schedule_retry(task, output=full_output)
+                    await _schedule_retry(task, output=full_output, runner_logs=stderr)
                     continue
 
                 # completed → completed column, needs_input → review column
@@ -357,6 +360,7 @@ async def run() -> None:
                         "status": target_status,
                         "position": new_position,
                         "output": parsed.result,
+                        "runner_logs": stderr,
                         "retry_count": 0,
                         "updated_at": datetime.now(timezone.utc),
                     }
@@ -390,7 +394,7 @@ async def run() -> None:
                 )
             else:
                 logger.warning("Task %s container exited with code %d", task.id, exit_code)
-                await _schedule_retry(task, output=full_output)
+                await _schedule_retry(task, output=full_output, runner_logs=stderr)
 
         except (ImageNotFound, APIError) as e:
             logger.error("Docker error for task %s: %s", task.id, e)

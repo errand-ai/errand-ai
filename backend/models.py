@@ -57,6 +57,7 @@ class Task(Base):
         Integer, nullable=False, server_default=text("0")
     )
     output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    runner_logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
