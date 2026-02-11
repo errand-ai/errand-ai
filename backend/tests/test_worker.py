@@ -66,6 +66,7 @@ def _make_mock_task(**overrides):
     task.repeat_interval = overrides.get("repeat_interval", None)
     task.repeat_until = overrides.get("repeat_until", None)
     task.output = overrides.get("output", None)
+    task.runner_logs = overrides.get("runner_logs", None)
     task.retry_count = overrides.get("retry_count", 0)
     # Tags: list of mock Tag objects with .name attribute
     tags = overrides.get("tags", [])
@@ -80,6 +81,20 @@ def _make_mock_task(**overrides):
     task.updated_at = MagicMock()
     task.updated_at.isoformat.return_value = overrides.get("updated_at_iso", "2026-01-01T00:01:00")
     return task
+
+
+def test_task_to_dict_includes_runner_logs():
+    """_task_to_dict includes the runner_logs field."""
+    task = _make_mock_task(status="review", runner_logs="2026-02-10 INFO Agent started")
+    result = _task_to_dict(task)
+    assert result["runner_logs"] == "2026-02-10 INFO Agent started"
+
+
+def test_task_to_dict_null_runner_logs():
+    """_task_to_dict handles None runner_logs."""
+    task = _make_mock_task(status="pending", runner_logs=None)
+    result = _task_to_dict(task)
+    assert result["runner_logs"] is None
 
 
 def test_task_to_dict_includes_output():
@@ -201,6 +216,7 @@ async def db_session():
                 repeat_until DATETIME,
                 position INTEGER DEFAULT 0 NOT NULL,
                 output TEXT,
+                runner_logs TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -247,6 +263,7 @@ async def retry_session_factory(db_session):
                 repeat_until DATETIME,
                 position INTEGER DEFAULT 0 NOT NULL,
                 output TEXT,
+                runner_logs TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -328,6 +345,43 @@ async def test_schedule_retry_exponential_backoff(retry_session_factory):
         delta = updated.execute_at.replace(tzinfo=None) - before.replace(tzinfo=None)
         assert delta >= timedelta(minutes=3, seconds=50)
         assert delta <= timedelta(minutes=5)
+
+
+async def test_schedule_retry_stores_runner_logs(retry_session_factory):
+    """Retry stores runner_logs when provided."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="full output", runner_logs="stderr logs here")
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        updated = result.scalar_one()
+        assert updated.runner_logs == "stderr logs here"
+        assert updated.output == "full output"
+
+
+async def test_schedule_retry_preserves_runner_logs_when_none(retry_session_factory):
+    """When no runner_logs provided, existing value is preserved."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="some output")
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        updated = result.scalar_one()
+        assert updated.runner_logs is None
 
 
 async def test_schedule_retry_preserves_output_when_none(retry_session_factory):

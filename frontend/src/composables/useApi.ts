@@ -13,6 +13,7 @@ export interface TaskData {
   repeat_interval: string | null
   repeat_until: string | null
   output: string | null
+  runner_logs: string | null
   retry_count: number
   tags: string[]
   created_at: string

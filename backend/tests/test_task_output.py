@@ -70,6 +70,23 @@ async def test_update_task_output_in_event(client: AsyncClient, fake_valkey):
     await pubsub.aclose()
 
 
+async def test_create_task_response_includes_runner_logs(client: AsyncClient):
+    """Task response includes the runner_logs field (defaults to null)."""
+    task = await create_task(client, "Quick task")
+    assert "runner_logs" in task
+    assert task["runner_logs"] is None
+
+
+async def test_runner_logs_not_writable_via_patch(client: AsyncClient):
+    """PATCH with runner_logs field is ignored (read-only)."""
+    task = await create_task(client, "Quick task")
+    resp = await client.patch(
+        f"/api/tasks/{task['id']}", json={"runner_logs": "injected logs"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["runner_logs"] is None
+
+
 async def test_websocket_event_contains_all_task_response_fields(client: AsyncClient, fake_valkey):
     """WebSocket task_updated event payload must contain all TaskResponse fields.
 

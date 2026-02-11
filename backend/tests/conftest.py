@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     repeat_until DATETIME,
     position INTEGER DEFAULT 0 NOT NULL,
     output TEXT,
+    runner_logs TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
