@@ -106,3 +106,13 @@ export async function saveLlmModel(model: string): Promise<Record<string, unknow
   if (!res.ok) throw new Error(`Failed to save model: ${res.status}`)
   return res.json()
 }
+
+export async function saveTaskProcessingModel(model: string): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_processing_model: model }),
+  })
+  if (!res.ok) throw new Error(`Failed to save task processing model: ${res.status}`)
+  return res.json()
+}

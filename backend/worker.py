@@ -7,17 +7,24 @@ import signal
 import tarfile
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import docker
 from docker.errors import DockerException, APIError, ImageNotFound
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import async_session, engine
 from events import init_valkey, close_valkey, publish_event
-from models import Setting, Task
+from models import Setting, Tag, Task, task_tags
+
+
+class TaskRunnerOutput(BaseModel):
+    status: Literal["completed", "needs_input"]
+    result: str
+    questions: list[str] = []
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,21 +106,37 @@ def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     return truncated + "\n\n--- OUTPUT TRUNCATED (exceeded %d bytes) ---" % max_bytes
 
 
-async def read_settings(session: AsyncSession) -> tuple[dict, list[dict]]:
-    """Read mcp_servers and credentials from settings table."""
-    mcp_servers = {}
-    credentials = []
+DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
+
+
+async def read_settings(session: AsyncSession) -> dict:
+    """Read task processing settings from the settings table.
+
+    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt.
+    """
+    settings: dict = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
 
     result = await session.execute(
-        select(Setting).where(Setting.key.in_(["mcp_servers", "credentials"]))
+        select(Setting).where(
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt"])
+        )
     )
     for setting in result.scalars().all():
         if setting.key == "mcp_servers":
-            mcp_servers = setting.value if isinstance(setting.value, dict) else {}
+            settings["mcp_servers"] = setting.value if isinstance(setting.value, dict) else {}
         elif setting.key == "credentials":
-            credentials = setting.value if isinstance(setting.value, list) else []
+            settings["credentials"] = setting.value if isinstance(setting.value, list) else []
+        elif setting.key == "task_processing_model":
+            settings["task_processing_model"] = str(setting.value) if setting.value else DEFAULT_TASK_PROCESSING_MODEL
+        elif setting.key == "system_prompt":
+            settings["system_prompt"] = str(setting.value) if setting.value else ""
 
-    return mcp_servers, credentials
+    return settings
 
 
 async def dequeue_task(session: AsyncSession) -> Task | None:
@@ -156,9 +179,14 @@ async def _next_position(session: AsyncSession, status: str) -> int:
     return (max_pos or 0) + 1
 
 
-def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[dict]) -> tuple[int, str]:
-    """Run task in a Docker container via DinD. Returns (exit_code, output)."""
+def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
+    """Run task in a Docker container via DinD. Returns (exit_code, stdout, stderr)."""
     global active_container_id
+
+    mcp_servers = settings.get("mcp_servers", {})
+    credentials = settings.get("credentials", [])
+    task_processing_model = settings.get("task_processing_model", DEFAULT_TASK_PROCESSING_MODEL)
+    system_prompt = settings.get("system_prompt", "")
 
     # Build environment variables from credentials
     env_vars = {}
@@ -166,8 +194,25 @@ def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[d
         if isinstance(cred, dict) and "key" in cred and "value" in cred:
             env_vars[cred["key"]] = cred["value"]
 
-    # Pull image (DinD sidecar starts with empty image cache)
-    docker_client.images.pull(TASK_RUNNER_IMAGE)
+    # Add task runner env vars
+    openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_base_url:
+        env_vars["OPENAI_BASE_URL"] = openai_base_url
+    if openai_api_key:
+        env_vars["OPENAI_API_KEY"] = openai_api_key
+    env_vars["OPENAI_MODEL"] = task_processing_model
+    env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
+    env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
+    env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
+
+    # Ensure image is available (try local first, pull only if not found)
+    try:
+        docker_client.images.get(TASK_RUNNER_IMAGE)
+        logger.info("Image %s found locally", TASK_RUNNER_IMAGE)
+    except ImageNotFound:
+        logger.info("Image %s not found locally, pulling...", TASK_RUNNER_IMAGE)
+        docker_client.images.pull(TASK_RUNNER_IMAGE)
 
     # Create container (not started)
     container = docker_client.containers.create(
@@ -183,6 +228,7 @@ def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[d
         prompt_text = task.description or task.title
         files = {
             "prompt.txt": prompt_text,
+            "system_prompt.txt": system_prompt,
             "mcp.json": json.dumps(mcp_servers),
         }
         put_archive(container, files)
@@ -192,11 +238,13 @@ def process_task_in_container(task: Task, mcp_servers: dict, credentials: list[d
         result = container.wait()
         exit_code = result.get("StatusCode", -1)
 
-        # Capture logs
-        output = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
-        output = truncate_output(output)
+        # Capture stdout (structured JSON) and stderr (logs) separately
+        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+        stdout = truncate_output(stdout)
+        stderr = truncate_output(stderr)
 
-        return exit_code, output
+        return exit_code, stdout, stderr
     finally:
         try:
             container.remove(force=True)
@@ -268,7 +316,7 @@ async def run() -> None:
                 continue
 
             # Read settings for this task
-            mcp_servers, credentials = await read_settings(session)
+            settings = await read_settings(session)
 
             # Set status to running
             task.status = "running"
@@ -278,32 +326,61 @@ async def run() -> None:
 
         # Process outside the dequeue transaction
         try:
-            exit_code, output = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, mcp_servers, credentials
+            exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+                None, process_task_in_container, task, settings
             )
+            # Combine for display/storage; use stdout only for parsing
+            full_output = (stderr + "\n" + stdout).strip() if stderr else stdout
 
             if exit_code == 0:
+                # Parse structured output from task runner (stdout only)
+                try:
+                    parsed = TaskRunnerOutput.model_validate_json(stdout)
+                except (ValidationError, ValueError) as e:
+                    logger.warning("Task %s: failed to parse structured output: %s", task.id, e)
+                    await _schedule_retry(task, output=full_output)
+                    continue
+
                 async with async_session() as session:
                     new_position = await _next_position(session, "review")
+                    values = {
+                        "status": "review",
+                        "position": new_position,
+                        "output": parsed.result,
+                        "retry_count": 0,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
                     await session.execute(
-                        update(Task).where(Task.id == task.id).values(
-                            status="review",
-                            position=new_position,
-                            output=output,
-                            retry_count=0,
-                            updated_at=datetime.now(timezone.utc),
-                        )
+                        update(Task).where(Task.id == task.id).values(**values)
                     )
+
+                    # If needs_input, add "Input Needed" tag
+                    if parsed.status == "needs_input":
+                        result = await session.execute(
+                            select(Tag).where(Tag.name == "Input Needed")
+                        )
+                        tag = result.scalar_one_or_none()
+                        if tag is None:
+                            tag = Tag(name="Input Needed")
+                            session.add(tag)
+                            await session.flush()
+                        # Add tag to task via association table
+                        await session.execute(
+                            task_tags.insert().values(task_id=task.id, tag_id=tag.id)
+                        )
+
                     await session.commit()
                     result = await session.execute(
                         select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
                     )
                     updated_task = result.scalar_one()
                     await publish_event("task_updated", _task_to_dict(updated_task))
-                logger.info("Task %s completed (exit code 0), moved to review", task.id)
+                logger.info(
+                    "Task %s moved to review (status=%s)", task.id, parsed.status,
+                )
             else:
                 logger.warning("Task %s container exited with code %d", task.id, exit_code)
-                await _schedule_retry(task, output=output)
+                await _schedule_retry(task, output=full_output)
 
         except (ImageNotFound, APIError) as e:
             logger.error("Docker error for task %s: %s", task.id, e)

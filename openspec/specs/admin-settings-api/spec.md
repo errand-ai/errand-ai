@@ -83,5 +83,5 @@ The backend SHALL expose `GET /api/llm/models` requiring the `admin` role. The e
 - **THEN** the backend returns HTTP 403 with `{"detail": "Admin role required"}`
 
 #### Scenario: LLM client not configured
-- **WHEN** an admin requests `GET /api/llm/models` but `LITELLM_BASE_URL` is not configured
+- **WHEN** an admin requests `GET /api/llm/models` but `OPENAI_BASE_URL` is not configured
 - **THEN** the backend returns HTTP 503 with `{"detail": "LLM provider not configured"}`

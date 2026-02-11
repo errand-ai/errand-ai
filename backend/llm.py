@@ -21,14 +21,14 @@ _client: AsyncOpenAI | None = None
 
 def init_llm_client() -> None:
     global _client
-    base_url = os.environ.get("LITELLM_BASE_URL")
-    api_key = os.environ.get("LITELLM_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if base_url and api_key:
         _client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         logger.info("LLM client initialized (base_url=%s)", base_url)
     else:
         _client = None
-        logger.warning("LLM client not configured: LITELLM_BASE_URL or LITELLM_API_KEY missing")
+        logger.warning("LLM client not configured: OPENAI_BASE_URL or OPENAI_API_KEY missing")
 
 
 def get_llm_client() -> AsyncOpenAI | None:
