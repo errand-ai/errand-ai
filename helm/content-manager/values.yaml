@@ -47,11 +47,11 @@ keycloak:
   discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
   rolesClaim: resource_access.content-manager.roles
 
-litellm:
+openai:
   baseUrl: ""
   apiKey: ""
   existingSecret: ""
-  secretKeyApiKey: LITELLM_API_KEY
+  secretKeyApiKey: OPENAI_API_KEY
 
 valkey:
   enabled: true

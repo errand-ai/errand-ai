@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from models import Setting, Task
 
 # Import worker functions under test
-from worker import read_settings, truncate_output, _task_to_dict, put_archive, _schedule_retry
+from worker import (
+    read_settings, truncate_output, _task_to_dict, put_archive,
+    _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
+    TaskRunnerOutput,
+)
 
 
 # --- Output truncation ---
@@ -346,9 +350,11 @@ async def test_schedule_retry_preserves_output_when_none(retry_session_factory):
 
 async def test_read_settings_defaults(db_session):
     """When no settings exist, returns empty defaults."""
-    mcp_servers, credentials = await read_settings(db_session)
-    assert mcp_servers == {}
-    assert credentials == []
+    settings = await read_settings(db_session)
+    assert settings["mcp_servers"] == {}
+    assert settings["credentials"] == []
+    assert settings["task_processing_model"] == DEFAULT_TASK_PROCESSING_MODEL
+    assert settings["system_prompt"] == ""
 
 
 async def test_read_settings_with_mcp(db_session):
@@ -359,9 +365,9 @@ async def test_read_settings_with_mcp(db_session):
     )
     await db_session.commit()
 
-    mcp_servers, credentials = await read_settings(db_session)
-    assert mcp_servers == {"servers": [{"name": "test"}]}
-    assert credentials == []
+    settings = await read_settings(db_session)
+    assert settings["mcp_servers"] == {"servers": [{"name": "test"}]}
+    assert settings["credentials"] == []
 
 
 async def test_read_settings_with_credentials(db_session):
@@ -373,6 +379,157 @@ async def test_read_settings_with_credentials(db_session):
     )
     await db_session.commit()
 
-    mcp_servers, credentials = await read_settings(db_session)
-    assert mcp_servers == {}
-    assert credentials == [{"key": "API_KEY", "value": "secret123"}]
+    settings = await read_settings(db_session)
+    assert settings["mcp_servers"] == {}
+    assert settings["credentials"] == [{"key": "API_KEY", "value": "secret123"}]
+
+
+async def test_read_settings_with_task_processing_model(db_session):
+    """Reads task_processing_model from settings table."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "task_processing_model", "value": json.dumps("gpt-4o")},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["task_processing_model"] == "gpt-4o"
+
+
+async def test_read_settings_with_system_prompt(db_session):
+    """Reads system_prompt from settings table."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "system_prompt", "value": json.dumps("You are a helpful assistant.")},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["system_prompt"] == "You are a helpful assistant."
+
+
+# --- Container environment variables ---
+
+
+def test_process_task_container_env_vars():
+    """process_task_in_container sets correct env vars on the container."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {"mcpServers": {"test": {"url": "http://localhost/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "http://litellm:4000", "OPENAI_API_KEY": "sk-test"}):
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Check container was created with correct env vars
+    create_call = mock_client.containers.create.call_args
+    env = create_call[1]["environment"]
+    assert env["OPENAI_BASE_URL"] == "http://litellm:4000"
+    assert env["OPENAI_API_KEY"] == "sk-test"
+    assert env["OPENAI_MODEL"] == "gpt-4o"
+    assert env["USER_PROMPT_PATH"] == "/workspace/prompt.txt"
+    assert env["SYSTEM_PROMPT_PATH"] == "/workspace/system_prompt.txt"
+    assert env["MCP_CONFIGURATION_PATH"] == "/workspace/mcp.json"
+    assert exit_code == 0
+
+
+def test_process_task_container_copies_three_files():
+    """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
+    task = _make_mock_task(description="My task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "System instructions",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-456"
+    mock_container.short_id = "cont456"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b"output"
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # put_archive is called on the container with tar data
+    mock_container.put_archive.assert_called_once()
+    call_args = mock_container.put_archive.call_args[0]
+    assert call_args[0] == "/workspace"
+
+
+# --- Structured output parsing ---
+
+
+def test_task_runner_output_valid_completed():
+    """Valid completed output parses correctly."""
+    raw = '{"status": "completed", "result": "Task done successfully", "questions": []}'
+    parsed = TaskRunnerOutput.model_validate_json(raw)
+    assert parsed.status == "completed"
+    assert parsed.result == "Task done successfully"
+    assert parsed.questions == []
+
+
+def test_task_runner_output_valid_needs_input():
+    """Valid needs_input output parses correctly."""
+    raw = '{"status": "needs_input", "result": "Need clarification", "questions": ["What scope?", "Which env?"]}'
+    parsed = TaskRunnerOutput.model_validate_json(raw)
+    assert parsed.status == "needs_input"
+    assert parsed.result == "Need clarification"
+    assert parsed.questions == ["What scope?", "Which env?"]
+
+
+def test_task_runner_output_invalid_json():
+    """Invalid JSON raises ValidationError."""
+    with pytest.raises(Exception):  # ValidationError or ValueError
+        TaskRunnerOutput.model_validate_json("not json at all")
+
+
+def test_task_runner_output_invalid_status():
+    """Invalid status value raises ValidationError."""
+    raw = '{"status": "unknown", "result": "test", "questions": []}'
+    with pytest.raises(Exception):
+        TaskRunnerOutput.model_validate_json(raw)
+
+
+def test_task_runner_output_missing_result():
+    """Missing required result field raises ValidationError."""
+    raw = '{"status": "completed", "questions": []}'
+    with pytest.raises(Exception):
+        TaskRunnerOutput.model_validate_json(raw)
+
+
+def test_task_runner_output_default_questions():
+    """Questions field defaults to empty list when omitted."""
+    raw = '{"status": "completed", "result": "done"}'
+    parsed = TaskRunnerOutput.model_validate_json(raw)
+    assert parsed.questions == []

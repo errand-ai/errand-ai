@@ -11,10 +11,11 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     ...actual,
     fetchLlmModels: vi.fn().mockResolvedValue([]),
     saveLlmModel: vi.fn().mockResolvedValue({}),
+    saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
   }
 })
 
-import { fetchLlmModels, saveLlmModel } from '../../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -38,6 +39,7 @@ describe('SettingsPage', () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchLlmModels).mockResolvedValue([])
     vi.mocked(saveLlmModel).mockResolvedValue({})
+    vi.mocked(saveTaskProcessingModel).mockResolvedValue({})
   })
 
   afterEach(() => {
@@ -236,7 +238,7 @@ describe('SettingsPage', () => {
     // Enter valid JSON
     const textareas = wrapper.findAll('textarea')
     const mcpTextarea = textareas[textareas.length - 1]
-    await mcpTextarea.setValue('{"servers": []}')
+    await mcpTextarea.setValue('{"mcpServers": {"test": {"url": "http://localhost:4000/mcp"}}}')
 
     // Click save
     const saveButtons = wrapper.findAll('button')
@@ -249,13 +251,15 @@ describe('SettingsPage', () => {
       (call: any[]) => call[1]?.method === 'PUT'
     )
     expect(putCall).toBeTruthy()
-    expect(JSON.parse(putCall![1].body as string)).toEqual({ mcp_servers: { servers: [] } })
+    expect(JSON.parse(putCall![1].body as string)).toEqual({
+      mcp_servers: { mcpServers: { test: { url: 'http://localhost:4000/mcp' } } },
+    })
     expect(wrapper.text()).toContain('MCP configuration saved.')
   })
 
   // --- LLM Model Dropdown ---
 
-  it('renders LLM Model section', async () => {
+  it('renders LLM Models section with both dropdowns', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -265,7 +269,9 @@ describe('SettingsPage', () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('LLM Model')
+    expect(wrapper.text()).toContain('LLM Models')
+    expect(wrapper.text()).toContain('Title Generation Model')
+    expect(wrapper.text()).toContain('Task Processing Model')
   })
 
   it('loads models from fetchLlmModels and populates dropdown', async () => {
@@ -285,7 +291,7 @@ describe('SettingsPage', () => {
     expect(modelOptions).toContain('gpt-4o')
   })
 
-  it('pre-selects current model from settings', async () => {
+  it('pre-selects current title generation model from settings', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -296,13 +302,12 @@ describe('SettingsPage', () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Find the LLM model select (second select on the page, after status selects)
     const selects = wrapper.findAll('select')
-    const llmSelect = selects[selects.length - 1]
-    expect((llmSelect.element as HTMLSelectElement).value).toBe('gpt-4o')
+    // First select is title generation model
+    expect((selects[0].element as HTMLSelectElement).value).toBe('gpt-4o')
   })
 
-  it('saves model on selection change via saveLlmModel', async () => {
+  it('saves title generation model on selection change via saveLlmModel', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -314,8 +319,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const llmSelect = selects[selects.length - 1]
-    await llmSelect.setValue('gpt-4o')
+    await selects[0].setValue('gpt-4o')
     await flushPromises()
 
     expect(saveLlmModel).toHaveBeenCalledWith('gpt-4o')
@@ -345,9 +349,233 @@ describe('SettingsPage', () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // With no models loaded, the dropdown shows the default
     const selects = wrapper.findAll('select')
-    const llmSelect = selects[selects.length - 1]
-    expect((llmSelect.element as HTMLSelectElement).value).toBe('claude-haiku-4-5-20251001')
+    expect((selects[0].element as HTMLSelectElement).value).toBe('claude-haiku-4-5-20251001')
+  })
+
+  // --- Task Processing Model Dropdown ---
+
+  it('loads task processing model from settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ task_processing_model: 'gpt-4o' }),
+    })
+    vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    // Second select is task processing model
+    expect((selects[1].element as HTMLSelectElement).value).toBe('gpt-4o')
+  })
+
+  it('defaults task processing model to claude-sonnet when not in settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    expect((selects[1].element as HTMLSelectElement).value).toBe('claude-sonnet-4-5-20250929')
+  })
+
+  it('saves task processing model on selection change via saveTaskProcessingModel', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    await selects[1].setValue('gpt-4o')
+    await flushPromises()
+
+    expect(saveTaskProcessingModel).toHaveBeenCalledWith('gpt-4o')
+  })
+
+  it('disables both dropdowns when models endpoint fails', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchLlmModels).mockRejectedValue(new Error('Failed'))
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    expect((selects[0].element as HTMLSelectElement).disabled).toBe(true)
+    expect((selects[1].element as HTMLSelectElement).disabled).toBe(true)
+  })
+
+  // --- MCP Configuration Validation ---
+
+  it('rejects STDIO MCP server configuration', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand MCP section
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    // Enter STDIO config
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue(JSON.stringify({
+      mcpServers: { local: { command: 'npx', args: ['-y', 'some-mcp-server'] } },
+    }))
+
+    // Click save
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('STDIO transport')
+    expect(wrapper.text()).toContain("Server 'local'")
+  })
+
+  it('rejects MCP server entry missing url field', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue(JSON.stringify({
+      mcpServers: { test: { headers: { key: 'value' } } },
+    }))
+
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("missing required 'url' field")
+    expect(wrapper.text()).toContain("Server 'test'")
+  })
+
+  it('rejects mixed valid and STDIO servers', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue(JSON.stringify({
+      mcpServers: {
+        argocd: { url: 'http://localhost:4000/argocd/mcp' },
+        local: { command: 'npx', args: ['-y', 'some-server'] },
+      },
+    }))
+
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('STDIO transport')
+    expect(wrapper.text()).toContain("Server 'local'")
+  })
+
+  it('accepts valid HTTP Streaming MCP configuration', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue(JSON.stringify({
+      mcpServers: {
+        argocd: {
+          url: 'http://localhost:4000/argocd/mcp',
+          headers: { 'x-litellm-api-key': 'Bearer sk-1234' },
+        },
+      },
+    }))
+
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('MCP configuration saved.')
+  })
+
+  it('rejects malformed JSON in MCP config', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
+    await mcpButton!.trigger('click')
+
+    const textareas = wrapper.findAll('textarea')
+    const mcpTextarea = textareas[textareas.length - 1]
+    await mcpTextarea.setValue('{invalid json}}}')
+
+    const saveButtons = wrapper.findAll('button')
+    const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
+    await saveMcpButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Invalid JSON')
   })
 })

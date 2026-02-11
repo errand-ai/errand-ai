@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Task runner Dockerfile
 The repository SHALL include a `task-runner/Dockerfile` that produces a minimal, hardened container image for executing tasks inside DinD. The Dockerfile SHALL use a multi-stage build: the first stage uses a Python slim image to install dependencies via pip into a target directory, and the final stage uses `gcr.io/distroless/python3-debian12:nonroot` as the base. The installed Python packages and the application source (`main.py`) SHALL be copied into the final image. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["python3", "/app/main.py"]`.

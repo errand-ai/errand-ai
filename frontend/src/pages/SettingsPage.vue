@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import { fetchLlmModels, saveLlmModel } from '../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel } from '../composables/useApi'
 
 const auth = useAuthStore()
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
+const DEFAULT_TASK_PROCESSING_MODEL = 'claude-sonnet-4-5-20250929'
 
 const systemPrompt = ref('')
 const mcpServersText = ref('')
@@ -18,6 +19,9 @@ const llmModels = ref<string[]>([])
 const llmModelsError = ref<string | null>(null)
 const llmModelSaving = ref(false)
 const llmModelSuccess = ref(false)
+const taskProcessingModel = ref(DEFAULT_TASK_PROCESSING_MODEL)
+const taskProcessingModelSaving = ref(false)
+const taskProcessingModelSuccess = ref(false)
 const loading = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -50,6 +54,7 @@ async function loadSettings() {
     systemPrompt.value = data.system_prompt ?? ''
     mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
+    taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -84,6 +89,45 @@ async function saveSystemPrompt() {
   }
 }
 
+function validateMcpConfig(parsed: unknown): string | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return 'MCP configuration must be a JSON object.'
+  }
+
+  const config = parsed as Record<string, unknown>
+  const servers = config.mcpServers
+  if (servers === undefined) {
+    // Allow empty object with no mcpServers key
+    if (Object.keys(config).length === 0) return null
+    return 'MCP configuration must have a "mcpServers" key.'
+  }
+
+  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) {
+    return '"mcpServers" must be an object mapping server names to configurations.'
+  }
+
+  const serverEntries = servers as Record<string, unknown>
+  for (const [name, entry] of Object.entries(serverEntries)) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return `Server '${name}' must be an object with a 'url' field.`
+    }
+
+    const serverEntry = entry as Record<string, unknown>
+
+    // Reject STDIO pattern
+    if ('command' in serverEntry || 'args' in serverEntry) {
+      return `Only HTTP Streaming MCP servers are supported. Server '${name}' uses STDIO transport (command/args) which is not allowed.`
+    }
+
+    // Require url field
+    if (!('url' in serverEntry) || typeof serverEntry.url !== 'string' || !serverEntry.url) {
+      return `Server '${name}' is missing required 'url' field.`
+    }
+  }
+
+  return null
+}
+
 async function saveMcpServers() {
   mcpError.value = null
   mcpSuccess.value = false
@@ -100,6 +144,13 @@ async function saveMcpServers() {
       mcpError.value = 'Invalid JSON. Please check syntax and try again.'
       return
     }
+  }
+
+  // Validate MCP config structure
+  const validationError = validateMcpConfig(parsed)
+  if (validationError) {
+    mcpError.value = validationError
+    return
   }
 
   mcpSaving.value = true
@@ -149,6 +200,20 @@ async function onModelChange() {
   }
 }
 
+async function onTaskProcessingModelChange() {
+  taskProcessingModelSaving.value = true
+  taskProcessingModelSuccess.value = false
+  try {
+    await saveTaskProcessingModel(taskProcessingModel.value)
+    taskProcessingModelSuccess.value = true
+    setTimeout(() => { taskProcessingModelSuccess.value = false }, 3000)
+  } catch {
+    error.value = 'Failed to save task processing model selection.'
+  } finally {
+    taskProcessingModelSaving.value = false
+  }
+}
+
 onMounted(async () => {
   await loadSettings()
   await loadModels()
@@ -187,22 +252,43 @@ onMounted(async () => {
         </div>
       </div>
 
-      <!-- LLM Model -->
+      <!-- LLM Models -->
       <div class="mb-6 rounded-lg bg-white p-6 shadow">
-        <h3 class="text-lg font-semibold text-gray-800 mb-3">LLM Model</h3>
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">LLM Models</h3>
         <div v-if="llmModelsError" class="text-sm text-red-600 mb-2">{{ llmModelsError }}</div>
-        <div class="flex items-center gap-3">
-          <select
-            v-model="llmModel"
-            :disabled="llmModels.length === 0 || llmModelSaving"
-            class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-            @change="onModelChange"
-          >
-            <option v-if="llmModels.length === 0" :value="llmModel">{{ llmModel }}</option>
-            <option v-for="m in llmModels" :key="m" :value="m">{{ m }}</option>
-          </select>
-          <span v-if="llmModelSaving" class="text-sm text-gray-500">Saving...</span>
-          <span v-if="llmModelSuccess" class="text-sm text-green-600">Model saved.</span>
+
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-700 mb-1">Title Generation Model</label>
+          <div class="flex items-center gap-3">
+            <select
+              v-model="llmModel"
+              :disabled="llmModels.length === 0 || llmModelSaving"
+              class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+              @change="onModelChange"
+            >
+              <option v-if="llmModels.length === 0" :value="llmModel">{{ llmModel }}</option>
+              <option v-for="m in llmModels" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <span v-if="llmModelSaving" class="text-sm text-gray-500">Saving...</span>
+            <span v-if="llmModelSuccess" class="text-sm text-green-600">Model saved.</span>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Task Processing Model</label>
+          <div class="flex items-center gap-3">
+            <select
+              v-model="taskProcessingModel"
+              :disabled="llmModels.length === 0 || taskProcessingModelSaving"
+              class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+              @change="onTaskProcessingModelChange"
+            >
+              <option v-if="llmModels.length === 0" :value="taskProcessingModel">{{ taskProcessingModel }}</option>
+              <option v-for="m in llmModels" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <span v-if="taskProcessingModelSaving" class="text-sm text-gray-500">Saving...</span>
+            <span v-if="taskProcessingModelSuccess" class="text-sm text-green-600">Model saved.</span>
+          </div>
         </div>
       </div>
 
