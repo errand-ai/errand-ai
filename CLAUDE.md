@@ -212,10 +212,31 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Kanban columns use `flex-1` to expand to fill available width
 - Local dev frontend runs on port 3000 (nginx), backend on 8000
 
+## Python Environment
+
+The macOS system Python is 3.9.6 (`/usr/bin/python3`) — too old for this project (requires 3.12+). Always use the backend venv:
+
+```bash
+# Backend tests (from repo root)
+DATABASE_URL="sqlite+aiosqlite:///:memory:" backend/.venv/bin/python -m pytest backend/tests/ -v
+
+# Running any Python script
+backend/.venv/bin/python <script.py>
+```
+
+Never use bare `python3` or `python` — they resolve to the system 3.9 which lacks required language features (e.g. `X | Y` union types, `match` statements). The backend venv at `backend/.venv/` has Python 3.12 with all project dependencies installed.
+
+Homebrew provides newer Python versions at `/opt/homebrew/bin/python3.{12,13,14}`. To recreate the venv with a specific version:
+
+```bash
+/opt/homebrew/bin/python3.12 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+```
+
 ## Current State
 
-- Version: `0.14.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.18.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 148 backend (pytest) + 125 frontend (vitest) — CI `test` job gates both build jobs
-- 25 component specs in `openspec/specs/`
+- Tests: 175 backend (pytest) + 138 frontend (vitest) — CI `test` job gates both build jobs
+- 26 component specs in `openspec/specs/`
