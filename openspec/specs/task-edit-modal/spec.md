@@ -1,24 +1,26 @@
 ### Requirement: Task edit modal displays editable fields
 The task edit modal SHALL be implemented as a `<dialog>` element with a maximum width of `max-w-3xl` (768px) and `w-full`, bounded to `max-h-[85vh]` with `overflow-y-auto`. It SHALL display editable fields for the task title, description, status, tags, category, execute_at, repeat_interval, and repeat_until, along with Save, Cancel, and Delete buttons.
 
-The modal SHALL use a two-column CSS Grid layout (`grid grid-cols-1 md:grid-cols-2 gap-6`) at viewports 768px and above. Below 768px, the grid SHALL collapse to a single column.
+The modal SHALL use a two-column CSS Grid layout (`grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-6`) at viewports 768px and above, producing an approximate 35:65 column ratio. Below 768px, the grid SHALL collapse to a single column.
 
 **Layout assignment:**
-- **Full-width (spanning both columns):** Title input at the top; error message and action buttons (Delete, Cancel, Save) at the bottom
+- **Full-width (spanning both columns):** Title input at the top; runner logs panel (conditional); error message and action buttons (Delete, Cancel, Save) at the bottom
 - **Left column:** Status selector, Category selector, Execute at / Completed at, Repeat interval (conditional), Repeat until (conditional), Tags
-- **Right column:** Description textarea (8 rows), Runner Logs read-only panel (conditional)
+- **Right column:** Description textarea (stretches to fill the full height of the right column, minimum 8 rows)
+
+The right column SHALL use a flex column layout (`flex flex-col`) so the description textarea grows to fill the available vertical space, with a minimum height equivalent to 8 rows of text.
 
 For tasks in `review` or `completed` status, the modal SHALL display the `updated_at` value with the label "Completed at" as a read-only formatted datetime, instead of the editable `execute_at` datetime picker. For all other statuses, the modal SHALL display the `execute_at` field as before.
 
-When `task.runner_logs` is present, the modal SHALL display the logs in an always-visible read-only `<pre>` block in the right column below the description, with a "Task Runner Logs" heading label, `max-h-48` height constraint, and `overflow-auto` for scrolling. The logs SHALL NOT be wrapped in a collapsible `<details>` element.
+When `task.runner_logs` is present, the modal SHALL display the logs in an always-visible read-only `<pre>` block spanning both columns as a full-width row, positioned below the two content columns and above the action buttons row. The logs SHALL have a "Task Runner Logs" heading label, `max-h-48` height constraint, and `overflow-auto` for scrolling. The logs SHALL NOT be wrapped in a collapsible `<details>` element.
 
 #### Scenario: Modal shows current task data
 - **WHEN** the edit modal opens for a task with title "Process report", description "Generate the quarterly report from the data warehouse", status "running", tags "urgent", category "immediate", execute_at "2026-02-10T14:00:00Z", and repeat_interval null
 - **THEN** the title input contains "Process report", the description textarea contains the description text, the status selector shows "Running", the tag "urgent" is displayed, the category selector shows "Immediate", the execute_at datetime picker shows the datetime in local time, and the repeat_interval field is empty
 
-#### Scenario: Two-column layout on desktop
+#### Scenario: Two-column layout on desktop with 35:65 ratio
 - **WHEN** the edit modal opens on a viewport 768px or wider
-- **THEN** the modal displays in a two-column grid layout with metadata fields (status, category, dates, tags) in the left column and content fields (description, runner logs) in the right column, with the title spanning both columns
+- **THEN** the modal displays in a two-column grid layout with approximately 35:65 ratio, metadata fields (status, category, dates, tags) in the left column, and the description textarea filling the full height of the right column, with the title spanning both columns at the top
 
 #### Scenario: Single-column layout on narrow viewport
 - **WHEN** the edit modal opens on a viewport narrower than 768px
@@ -28,13 +30,13 @@ When `task.runner_logs` is present, the modal SHALL display the logs in an alway
 - **WHEN** the edit modal opens and the content exceeds 85% of the viewport height
 - **THEN** the modal content scrolls vertically within the `max-h-[85vh]` constraint
 
-#### Scenario: Description textarea has expanded height
-- **WHEN** the edit modal opens
-- **THEN** the description textarea displays with 8 rows of height
+#### Scenario: Description textarea fills right column height
+- **WHEN** the edit modal opens on a viewport 768px or wider
+- **THEN** the description textarea stretches to fill the full height of the right column, with a minimum height of 8 rows
 
-#### Scenario: Runner logs displayed as visible panel
+#### Scenario: Runner logs displayed full-width at bottom
 - **WHEN** the edit modal opens for a task with runner_logs containing log text
-- **THEN** the logs are displayed in an always-visible read-only `<pre>` block below the description in the right column, with a "Task Runner Logs" heading, without a collapsible toggle
+- **THEN** the logs are displayed in an always-visible read-only `<pre>` block spanning both columns as a full-width row below the content columns and above the action buttons, with a "Task Runner Logs" heading, without a collapsible toggle
 
 #### Scenario: Runner logs hidden when absent
 - **WHEN** the edit modal opens for a task with runner_logs null
@@ -128,7 +130,7 @@ When the edit modal opens for a task with `status = "running"`, all form fields 
 
 #### Scenario: Runner logs visible in read-only mode
 - **WHEN** the edit modal opens in read-only mode for a running task with runner_logs
-- **THEN** the "Task Runner Logs" section is visible in the right column
+- **THEN** the "Task Runner Logs" section is visible as a full-width row below the content columns
 
 ### Requirement: Edit modal read-only for viewer users
 
