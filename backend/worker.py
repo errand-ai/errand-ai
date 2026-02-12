@@ -202,6 +202,27 @@ async def _next_position(session: AsyncSession, status: str) -> int:
     return (max_pos or 0) + 1
 
 
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def substitute_env_vars(obj, environ=None):
+    """Recursively substitute $VAR and ${VAR} placeholders in string values."""
+    if environ is None:
+        environ = os.environ
+
+    def _replace_match(m):
+        var_name = m.group(1) or m.group(2)
+        return environ.get(var_name, m.group(0))
+
+    if isinstance(obj, str):
+        return _ENV_VAR_RE.sub(_replace_match, obj)
+    if isinstance(obj, dict):
+        return {k: substitute_env_vars(v, environ) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [substitute_env_vars(item, environ) for item in obj]
+    return obj
+
+
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
     """Run task in a Docker container via DinD. Returns (exit_code, stdout, stderr)."""
     global active_container_id
@@ -252,7 +273,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         files = {
             "prompt.txt": prompt_text,
             "system_prompt.txt": system_prompt,
-            "mcp.json": json.dumps(mcp_servers),
+            "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
         }
         put_archive(container, files)
 

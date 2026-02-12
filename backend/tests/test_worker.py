@@ -16,6 +16,7 @@ from worker import (
     read_settings, truncate_output, _task_to_dict, put_archive,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
+    substitute_env_vars,
 )
 
 
@@ -49,6 +50,64 @@ def test_truncate_output_unicode():
     text = "\U0001f600" * 100  # emoji, 4 bytes each
     result = truncate_output(text, max_bytes=50)
     assert "--- OUTPUT TRUNCATED" in result
+
+
+# --- Environment variable substitution ---
+
+
+def test_substitute_env_vars_dollar_syntax():
+    """$VAR syntax is substituted from the provided mapping."""
+    obj = {"headers": {"x-api-key": "Bearer $API_KEY"}}
+    result = substitute_env_vars(obj, environ={"API_KEY": "sk-secret-123"})
+    assert result == {"headers": {"x-api-key": "Bearer sk-secret-123"}}
+
+
+def test_substitute_env_vars_braced_syntax():
+    """${VAR} syntax is substituted from the provided mapping."""
+    obj = {"headers": {"Authorization": "${AUTH_TOKEN}"}}
+    result = substitute_env_vars(obj, environ={"AUTH_TOKEN": "Bearer abc-456"})
+    assert result == {"headers": {"Authorization": "Bearer abc-456"}}
+
+
+def test_substitute_env_vars_missing_variable():
+    """Missing environment variable leaves placeholder unchanged."""
+    obj = {"headers": {"x-api-key": "$MISSING_KEY"}}
+    result = substitute_env_vars(obj, environ={})
+    assert result == {"headers": {"x-api-key": "$MISSING_KEY"}}
+
+
+def test_substitute_env_vars_nested():
+    """Variables at various depths in nested structures are substituted."""
+    obj = {
+        "mcpServers": {
+            "svc1": {"url": "http://host/mcp", "headers": {"key": "$DB_PASSWORD"}},
+            "svc2": {"nested": {"deep": {"value": "$DB_PASSWORD"}}},
+        }
+    }
+    result = substitute_env_vars(obj, environ={"DB_PASSWORD": "s3cret"})
+    assert result["mcpServers"]["svc1"]["headers"]["key"] == "s3cret"
+    assert result["mcpServers"]["svc2"]["nested"]["deep"]["value"] == "s3cret"
+
+
+def test_substitute_env_vars_non_string_values():
+    """Numbers, booleans, and nulls pass through unchanged."""
+    obj = {"port": 8080, "enabled": True, "extra": None, "items": [1, False, "val"]}
+    result = substitute_env_vars(obj, environ={"val": "x"})
+    assert result == {"port": 8080, "enabled": True, "extra": None, "items": [1, False, "val"]}
+
+
+def test_substitute_env_vars_multiple_in_single_string():
+    """Multiple variables in a single string value are all substituted."""
+    obj = {"url": "$SCHEME://$HOST:$PORT/mcp"}
+    result = substitute_env_vars(obj, environ={"SCHEME": "https", "HOST": "api.example.com", "PORT": "8443"})
+    assert result == {"url": "https://api.example.com:8443/mcp"}
+
+
+def test_substitute_env_vars_no_variables():
+    """Config with no variable references passes through unchanged."""
+    obj = {"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {}}}}
+    result = substitute_env_vars(obj, environ={"UNUSED": "value"})
+    assert result == {"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {}}}}
 
 
 # --- _task_to_dict ---
