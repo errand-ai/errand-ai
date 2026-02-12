@@ -622,6 +622,7 @@ async def test_read_settings_defaults(db_session):
     assert settings["credentials"] == []
     assert settings["task_processing_model"] == DEFAULT_TASK_PROCESSING_MODEL
     assert settings["system_prompt"] == ""
+    assert settings["task_runner_log_level"] == ""
 
 
 async def test_read_settings_with_mcp(db_session):
@@ -675,6 +676,18 @@ async def test_read_settings_with_system_prompt(db_session):
     assert settings["system_prompt"] == "You are a helpful assistant."
 
 
+async def test_read_settings_with_task_runner_log_level(db_session):
+    """Reads task_runner_log_level from settings table."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "task_runner_log_level", "value": json.dumps("DEBUG")},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["task_runner_log_level"] == "DEBUG"
+
+
 # --- Container environment variables ---
 
 
@@ -719,14 +732,15 @@ def test_process_task_container_env_vars():
     assert exit_code == 0
 
 
-def test_process_task_container_passes_log_level():
-    """TASK_RUNNER_LOG_LEVEL is forwarded as LOG_LEVEL to the container."""
+def test_process_task_container_passes_log_level_from_settings():
+    """task_runner_log_level from settings is forwarded as LOG_LEVEL to the container."""
     task = _make_mock_task(description="Do the thing")
     settings = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "",
+        "task_runner_log_level": "DEBUG",
     }
 
     mock_container = MagicMock()
@@ -746,7 +760,6 @@ def test_process_task_container_passes_log_level():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "TASK_RUNNER_LOG_LEVEL": "DEBUG",
         }):
             process_task_in_container(task, settings)
     finally:
@@ -756,14 +769,53 @@ def test_process_task_container_passes_log_level():
     assert env["LOG_LEVEL"] == "DEBUG"
 
 
-def test_process_task_container_omits_log_level_when_unset():
-    """LOG_LEVEL is not set in the container when TASK_RUNNER_LOG_LEVEL is absent."""
+def test_process_task_container_log_level_env_fallback():
+    """TASK_RUNNER_LOG_LEVEL env var is used when settings value is empty."""
     task = _make_mock_task(description="Do the thing")
     settings = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "",
+        "task_runner_log_level": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "TASK_RUNNER_LOG_LEVEL": "WARNING",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert env["LOG_LEVEL"] == "WARNING"
+
+
+def test_process_task_container_omits_log_level_when_unset():
+    """LOG_LEVEL is not set when both settings and env var are absent."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "task_runner_log_level": "",
     }
 
     mock_container = MagicMock()

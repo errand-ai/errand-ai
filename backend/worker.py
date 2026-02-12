@@ -113,18 +113,19 @@ DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 async def read_settings(session: AsyncSession) -> dict:
     """Read task processing settings from the settings table.
 
-    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt.
+    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level.
     """
     settings: dict = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
         "system_prompt": "",
+        "task_runner_log_level": "",
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level"])
         )
     )
     for setting in result.scalars().all():
@@ -136,6 +137,8 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["task_processing_model"] = str(setting.value) if setting.value else DEFAULT_TASK_PROCESSING_MODEL
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
+        elif setting.key == "task_runner_log_level":
+            settings["task_runner_log_level"] = str(setting.value) if setting.value else ""
 
     return settings
 
@@ -249,7 +252,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
     env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
     env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
     env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
-    task_runner_log_level = os.environ.get("TASK_RUNNER_LOG_LEVEL")
+    task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
     if task_runner_log_level:
         env_vars["LOG_LEVEL"] = task_runner_log_level
 
