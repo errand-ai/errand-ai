@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useTaskStore } from '../stores/tasks'
+import { useAuthStore } from '../stores/auth'
 import type { TaskStatus, TaskData } from '../composables/useApi'
 import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
@@ -10,6 +11,7 @@ import TaskOutputModal from './TaskOutputModal.vue'
 const REORDERABLE_COLUMNS: TaskStatus[] = ['new', 'pending']
 
 const store = useTaskStore()
+const auth = useAuthStore()
 
 const columns: { key: TaskStatus; label: string; color: string }[] = [
   { key: 'new', label: 'New', color: 'bg-sky-100' },
@@ -213,7 +215,7 @@ onUnmounted(() => store.stop())
 </script>
 
 <template>
-  <div class="mb-6 mx-auto max-w-7xl">
+  <div v-if="!auth.isViewer" class="mb-6 mx-auto max-w-7xl">
     <TaskForm />
   </div>
   <p v-if="store.error" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ store.error }}</p>
@@ -222,7 +224,7 @@ onUnmounted(() => store.stop())
     <div
       v-for="col in columns"
       :key="col.key"
-      :class="[col.color, 'rounded-lg p-4 min-w-[100px] flex-1', dragOverColumn === col.key ? 'ring-2 ring-blue-400 ring-inset' : '']"
+      :class="[col.color, 'rounded-lg p-4 min-w-[100px] flex-1', !auth.isViewer && dragOverColumn === col.key ? 'ring-2 ring-blue-400 ring-inset' : '']"
       @dragover="onDragOver($event, col.key)"
       @dragenter="onDragEnter(col.key)"
       @dragleave="onDragLeave($event, col.key)"
@@ -241,6 +243,8 @@ onUnmounted(() => store.stop())
           <TaskCard
             :task="task"
             :column-status="col.key"
+            :hide-delete="auth.isViewer || col.key === 'running'"
+            :disable-drag="auth.isViewer"
             @dragstart="onDragStart($event, task)"
             @dragend="onDragEnd"
             @edit="onEdit(task)"
@@ -261,6 +265,7 @@ onUnmounted(() => store.stop())
   <TaskEditModal
     v-if="editingTask"
     :task="editingTask"
+    :read-only="auth.isViewer || editingTask.status === 'running'"
     @save="onSave"
     @cancel="onCancel"
     @delete="onModalDelete"

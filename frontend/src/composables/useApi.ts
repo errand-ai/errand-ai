@@ -116,6 +116,12 @@ export async function deleteTask(id: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete task: ${res.status}`)
 }
 
+export async function fetchArchivedTasks(): Promise<TaskData[]> {
+  const res = await authFetch(`${BASE}/tasks/archived`)
+  if (!res.ok) throw new Error(`Failed to fetch archived tasks: ${res.status}`)
+  return res.json()
+}
+
 export async function fetchTags(query: string): Promise<TagData[]> {
   const res = await authFetch(`${BASE}/tags?q=${encodeURIComponent(query)}`)
   if (!res.ok) throw new Error(`Failed to fetch tags: ${res.status}`)

@@ -284,15 +284,15 @@ async def test_auto_promotion_scheduling_only_stays_new(client: AsyncClient):
 async def test_auto_promotion_non_new_task_unaffected(client: AsyncClient):
     """Auto-promotion only applies to tasks in new status."""
     task = await create_task(client, "Fix login")
-    # Move to running first
-    await client.patch(f"/api/tasks/{task['id']}", json={"status": "running"})
+    # Move to pending first (not running, since running tasks reject PATCH)
+    await client.patch(f"/api/tasks/{task['id']}", json={"status": "pending"})
 
     resp = await client.patch(
         f"/api/tasks/{task['id']}",
         json={"description": "Details", "execute_at": "2026-02-15T17:00:00Z"},
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "running"
+    assert resp.json()["status"] == "pending"
 
 
 # --- Valid status enforcement ---
@@ -310,14 +310,15 @@ async def test_all_valid_statuses_accepted(client: AsyncClient, status: str):
 
 
 async def test_delete_task_success(client: AsyncClient):
-    """DELETE returns 204 and task is gone."""
+    """DELETE returns 204 and task status changes to 'deleted' (soft delete)."""
     task = await create_task(client, "Delete me")
     resp = await client.delete(f"/api/tasks/{task['id']}")
     assert resp.status_code == 204
 
-    # Verify it's gone
+    # Task still exists but with deleted status
     resp = await client.get(f"/api/tasks/{task['id']}")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
 
 
 async def test_delete_task_not_found(client: AsyncClient):

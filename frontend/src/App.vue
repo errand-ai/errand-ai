@@ -40,6 +40,11 @@ function closeDropdown() {
   dropdownOpen.value = false
 }
 
+function goToArchived() {
+  closeDropdown()
+  router.push('/archived')
+}
+
 function goToSettings() {
   closeDropdown()
   router.push('/settings')
@@ -67,8 +72,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
           </router-link>
         </div>
         <div class="flex items-center gap-4">
-          <!-- Admin: dropdown menu -->
-          <template v-if="auth.isAdmin && auth.userDisplay">
+          <template v-if="auth.userDisplay">
             <div class="relative dropdown-trigger">
               <button
                 @click="toggleDropdown"
@@ -84,6 +88,13 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                 class="absolute right-0 mt-2 w-48 rounded-md bg-white py-1 shadow-lg ring-1 ring-black/5 z-50"
               >
                 <button
+                  @click="goToArchived"
+                  class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  Archived Tasks
+                </button>
+                <button
+                  v-if="auth.isAdmin"
                   @click="goToSettings"
                   class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                 >
@@ -98,9 +109,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
               </div>
             </div>
           </template>
-          <!-- Non-admin: static layout -->
           <template v-else>
-            <span v-if="auth.userDisplay" class="text-sm text-gray-600">{{ auth.userDisplay }}</span>
             <button
               @click="logout"
               class="rounded-md bg-gray-800 px-3 py-1.5 text-sm text-white hover:bg-gray-700"

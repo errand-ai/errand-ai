@@ -7,6 +7,7 @@ type Category = 'immediate' | 'scheduled' | 'repeating'
 
 const props = defineProps<{
   task: TaskData
+  readOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -186,7 +187,8 @@ function onTagBlur() {
             id="edit-title"
             v-model="title"
             type="text"
-            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            :disabled="readOnly"
+            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
           />
         </div>
 
@@ -197,7 +199,8 @@ function onTagBlur() {
             <select
               id="edit-status"
               v-model="status"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             >
               <option v-for="s in statuses" :key="s.key" :value="s.key">{{ s.label }}</option>
             </select>
@@ -208,7 +211,8 @@ function onTagBlur() {
             <select
               id="edit-category"
               v-model="category"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             >
               <option v-for="c in categories" :key="c.key" :value="c.key">{{ c.label }}</option>
             </select>
@@ -226,7 +230,8 @@ function onTagBlur() {
               id="edit-execute-at"
               v-model="executeAtLocal"
               type="datetime-local"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
           </div>
 
@@ -237,7 +242,8 @@ function onTagBlur() {
               v-model="repeatInterval"
               type="text"
               placeholder="e.g. 15m, 1h, 1d, 1w, or 0 9 * * MON-FRI"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
             <p class="mt-1 text-xs text-gray-500">
               Simple intervals (15m, 1h, 1d, 1w) or crontab (e.g. 0 9 * * MON-FRI)
@@ -261,7 +267,8 @@ function onTagBlur() {
               id="edit-repeat-until"
               v-model="repeatUntilLocal"
               type="datetime-local"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
           </div>
 
@@ -275,6 +282,7 @@ function onTagBlur() {
               >
                 {{ tag }}
                 <button
+                  v-if="!readOnly"
                   type="button"
                   class="text-blue-400 hover:text-blue-600"
                   @click="removeTag(tag)"
@@ -283,7 +291,7 @@ function onTagBlur() {
                 </button>
               </span>
             </div>
-            <div class="relative">
+            <div v-if="!readOnly" class="relative">
               <input
                 v-model="tagInput"
                 type="text"
@@ -318,7 +326,8 @@ function onTagBlur() {
               id="edit-description"
               v-model="description"
               rows="8"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
           </div>
 
@@ -334,21 +343,24 @@ function onTagBlur() {
 
           <div class="flex items-center justify-between">
             <button
+              v-if="!readOnly"
               type="button"
               class="rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
               @click="onDeleteClick"
             >
               Delete
             </button>
+            <div v-else></div>
             <div class="flex gap-2">
               <button
                 type="button"
                 class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                 @click="onCancel"
               >
-                Cancel
+                {{ readOnly ? 'Close' : 'Cancel' }}
               </button>
               <button
+                v-if="!readOnly"
                 type="submit"
                 class="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                 :disabled="saving"
