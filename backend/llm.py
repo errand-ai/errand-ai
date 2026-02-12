@@ -43,6 +43,14 @@ async def _get_model(session: AsyncSession) -> str:
     return DEFAULT_MODEL
 
 
+async def _get_timezone(session: AsyncSession) -> str:
+    result = await session.execute(select(Setting).where(Setting.key == "timezone"))
+    setting = result.scalar_one_or_none()
+    if setting and setting.value:
+        return str(setting.value)
+    return "UTC"
+
+
 def _fallback_title(description: str) -> str:
     words = description.split()
     return " ".join(words[:5]) + "..."
@@ -101,17 +109,22 @@ def _parse_llm_response(raw: str) -> LLMResult | None:
     )
 
 
-async def generate_title(description: str, session: AsyncSession) -> LLMResult:
+async def generate_title(description: str, session: AsyncSession, now: datetime | None = None) -> LLMResult:
     """Generate a short title and categorisation from a task description using the LLM.
 
     Returns an LLMResult with title, category, timing fields, and success flag.
     On failure, success=False and category defaults to 'immediate'.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
     client = get_llm_client()
     if client is None:
         return LLMResult(title=_fallback_title(description), success=False)
 
     model = await _get_model(session)
+    tz = await _get_timezone(session)
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
         response = await client.chat.completions.create(
@@ -137,7 +150,8 @@ async def generate_title(description: str, session: AsyncSession) -> LLMResult:
                         "- 'repeating': recurring pattern mentioned (e.g. 'every day', 'weekly')\n"
                         "- execute_at: when to run next (ISO 8601 UTC), null if unknown\n"
                         "- repeat_interval: e.g. '15m', '1h', '1d', '1w', or crontab like '0 9 * * MON-FRI'\n"
-                        "- repeat_until: end date for repeating tasks (ISO 8601 UTC), null if indefinite"
+                        "- repeat_until: end date for repeating tasks (ISO 8601 UTC), null if indefinite\n"
+                        f"- The current date and time is: {now_str} (UTC). The user's local timezone is: {tz}."
                     ),
                 },
                 {"role": "user", "content": f"Classify this task:\n\n{description}"},

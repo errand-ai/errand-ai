@@ -1,6 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import asyncio
 import json
@@ -247,7 +247,7 @@ async def create_task(
     tag_names: list[str] = []
 
     if len(words) > 5:
-        llm_result = await generate_title(input_text, session)
+        llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
         title = llm_result.title
         description = input_text
         category = llm_result.category
@@ -279,6 +279,10 @@ async def create_task(
             repeat_until = datetime.fromisoformat(repeat_until_str)
         except (ValueError, TypeError):
             pass
+
+    # For immediate tasks, backend sets execute_at to current server time
+    if category == "immediate":
+        execute_at = datetime.now(timezone.utc)
 
     task = Task(
         title=title,

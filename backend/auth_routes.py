@@ -16,7 +16,7 @@ async def login(request: Request):
         "client_id": auth_module.oidc.client_id,
         "redirect_uri": f"{base_url}/auth/callback",
         "response_type": "code",
-        "scope": "openid",
+        "scope": "openid offline_access",
     }
     return RedirectResponse(
         url=f"{auth_module.oidc.authorization_endpoint}?{urlencode(params)}"
@@ -58,8 +58,49 @@ async def callback(request: Request, code: str = "", error: str = "", error_desc
     id_token = tokens.get("id_token")
     if id_token:
         fragment += f"&id_token={id_token}"
+    refresh_token = tokens.get("refresh_token")
+    if refresh_token:
+        fragment += f"&refresh_token={refresh_token}"
 
     return RedirectResponse(url=f"/#{fragment}")
+
+
+@router.post("/refresh")
+async def refresh(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    refresh_token = body.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Missing refresh_token")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                auth_module.oidc.token_endpoint,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": auth_module.oidc.client_id,
+                    "client_secret": auth_module.oidc.client_secret,
+                    "refresh_token": refresh_token,
+                },
+                timeout=10,
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Token refresh failed")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Refresh token expired or revoked")
+
+    tokens = resp.json()
+    result = {"access_token": tokens["access_token"]}
+    if "id_token" in tokens:
+        result["id_token"] = tokens["id_token"]
+    if "refresh_token" in tokens:
+        result["refresh_token"] = tokens["refresh_token"]
+    return result
 
 
 @router.get("/logout")

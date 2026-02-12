@@ -27,6 +27,27 @@ export interface TagData {
 
 const BASE = '/api'
 
+async function tryRefresh(): Promise<boolean> {
+  const auth = useAuthStore()
+  if (!auth.refreshToken) return false
+
+  try {
+    const resp = await fetch('/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: auth.refreshToken }),
+    })
+
+    if (!resp.ok) return false
+
+    const data = await resp.json()
+    auth.setToken(data.access_token, data.id_token, data.refresh_token)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const auth = useAuthStore()
   const headers: Record<string, string> = {
@@ -40,6 +61,15 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
   const res = await fetch(url, { ...options, headers })
 
   if (res.status === 401) {
+    // Attempt token refresh and retry once
+    if (await tryRefresh()) {
+      const retryHeaders: Record<string, string> = {
+        ...(options.headers as Record<string, string> || {}),
+        'Authorization': `Bearer ${auth.token}`,
+      }
+      return fetch(url, { ...options, headers: retryHeaders })
+    }
+
     auth.clearToken()
     window.location.href = '/auth/login'
     throw new Error('Unauthorized')

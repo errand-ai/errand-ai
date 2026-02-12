@@ -578,4 +578,83 @@ describe('SettingsPage', () => {
 
     expect(wrapper.text()).toContain('Invalid JSON')
   })
+
+  // --- Timezone Selector ---
+
+  it('displays timezone selector on settings page', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Timezone')
+    // Find the timezone select (third select after title generation and task processing model)
+    const selects = wrapper.findAll('select')
+    expect(selects.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('timezone populated from settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ timezone: 'Europe/London' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    const tzSelect = selects[2]
+    expect((tzSelect.element as HTMLSelectElement).value).toBe('Europe/London')
+  })
+
+  it('timezone defaults to UTC when no setting exists', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    // Third select is timezone
+    const tzSelect = selects[2]
+    expect((tzSelect.element as HTMLSelectElement).value).toBe('UTC')
+  })
+
+  it('selecting a timezone triggers save to API', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ timezone: 'Europe/London' }),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const selects = wrapper.findAll('select')
+    const tzSelect = selects[2]
+    await tzSelect.setValue('Europe/London')
+    await flushPromises()
+
+    // Verify the PUT call
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('timezone')
+    )
+    expect(putCall).toBeTruthy()
+    expect(JSON.parse(putCall![1].body as string)).toEqual({ timezone: 'Europe/London' })
+    expect(wrapper.text()).toContain('Timezone saved.')
+  })
 })

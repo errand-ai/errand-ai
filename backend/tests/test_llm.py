@@ -1,10 +1,15 @@
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import llm as llm_module
-from llm import LLMResult, _parse_llm_response, _strip_markdown_fences
+from llm import LLMResult, _parse_llm_response, _strip_markdown_fences, generate_title
+from models import Setting
 
 
 async def create_task(client: AsyncClient, input_text: str = "Test task") -> dict:
@@ -326,3 +331,113 @@ async def test_llm_models_provider_error_502(admin_client: AsyncClient):
 
     assert resp.status_code == 502
     assert "Failed to fetch" in resp.json()["detail"]
+
+
+# --- Session fixture for direct generate_title tests ---
+
+_SETTINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+
+@pytest.fixture()
+async def db_session():
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    async with engine.begin() as conn:
+        await conn.execute(text(_SETTINGS_TABLE_SQL))
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+    await engine.dispose()
+
+
+# --- 4.1 generate_title includes injected now datetime in system prompt ---
+
+
+async def test_generate_title_includes_now_in_system_prompt(db_session: AsyncSession):
+    """generate_title includes the injected now datetime in the system prompt."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+    test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
+
+    with patch.object(llm_module, "_client", mock_client):
+        await generate_title("some long enough description for the test", db_session, now=test_now)
+
+    call_args = mock_client.chat.completions.create.call_args
+    system_content = call_args.kwargs["messages"][0]["content"]
+    assert "2026-02-11T14:30:00Z" in system_content
+
+
+# --- 4.2 generate_title includes configured timezone in system prompt ---
+
+
+async def test_generate_title_includes_timezone_in_system_prompt(db_session: AsyncSession):
+    """generate_title includes the configured timezone in the system prompt."""
+    # Set timezone in DB
+    db_session.add(Setting(key="timezone", value="Europe/London"))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+    test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
+
+    with patch.object(llm_module, "_client", mock_client):
+        await generate_title("some long enough description for the test", db_session, now=test_now)
+
+    call_args = mock_client.chat.completions.create.call_args
+    system_content = call_args.kwargs["messages"][0]["content"]
+    assert "Europe/London" in system_content
+
+
+# --- 4.3 generate_title defaults to UTC when no timezone setting exists ---
+
+
+async def test_generate_title_defaults_to_utc_timezone(db_session: AsyncSession):
+    """generate_title defaults to UTC when no timezone setting exists."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+    test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
+
+    with patch.object(llm_module, "_client", mock_client):
+        await generate_title("some long enough description for the test", db_session, now=test_now)
+
+    call_args = mock_client.chat.completions.create.call_args
+    system_content = call_args.kwargs["messages"][0]["content"]
+    assert "timezone is: UTC" in system_content
+
+
+# --- 4.4 task creation with immediate category sets execute_at to now ---
+
+
+async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
+    """Task creation with category immediate sets execute_at to approximately now."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Fix Auth Bug", "immediate")
+    )
+
+    with patch.object(llm_module, "_client", mock_client):
+        resp = await client.post(
+            "/api/tasks",
+            json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["category"] == "immediate"
+    assert data["execute_at"] is not None
+    # Verify it's approximately now (within 10 seconds)
+    execute_at = datetime.fromisoformat(data["execute_at"])
+    now = datetime.now(timezone.utc)
+    delta = abs((now - execute_at).total_seconds())
+    assert delta < 10, f"execute_at is {delta}s away from now"

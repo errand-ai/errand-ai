@@ -4,7 +4,9 @@ import { defineStore } from 'pinia'
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(null)
   const idToken = ref<string | null>(null)
+  const refreshToken = ref<string | null>(null)
   const accessDenied = ref(false)
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
   const isAuthenticated = computed(() => token.value !== null)
 
@@ -31,20 +33,79 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAdmin = computed(() => roles.value.includes('admin'))
 
-  function setToken(t: string, id?: string) {
+  function scheduleRefresh() {
+    cancelRefresh()
+    if (!token.value || !refreshToken.value) return
+
+    try {
+      const payload = JSON.parse(atob(token.value.split('.')[1]))
+      const exp = payload.exp
+      if (!exp) return
+
+      const msUntilExpiry = exp * 1000 - Date.now()
+      const msUntilRefresh = msUntilExpiry - 30_000 // 30 seconds before expiry
+
+      if (msUntilRefresh <= 0) {
+        // Token already near expiry — refresh immediately
+        doRefresh()
+        return
+      }
+
+      refreshTimer = setTimeout(doRefresh, msUntilRefresh)
+    } catch {
+      // Can't decode token — skip scheduling
+    }
+  }
+
+  function cancelRefresh() {
+    if (refreshTimer !== null) {
+      clearTimeout(refreshTimer)
+      refreshTimer = null
+    }
+  }
+
+  async function doRefresh() {
+    if (!refreshToken.value) return
+
+    try {
+      const resp = await fetch('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken.value }),
+      })
+
+      if (!resp.ok) return
+
+      const data = await resp.json()
+      token.value = data.access_token
+      if (data.id_token) idToken.value = data.id_token
+      if (data.refresh_token) refreshToken.value = data.refresh_token
+      accessDenied.value = false
+
+      scheduleRefresh()
+    } catch {
+      // Refresh failed — don't redirect, let the 401 retry handle it
+    }
+  }
+
+  function setToken(t: string, id?: string, rt?: string) {
     token.value = t
     idToken.value = id ?? null
+    refreshToken.value = rt ?? null
     accessDenied.value = false
+    scheduleRefresh()
   }
 
   function clearToken() {
+    cancelRefresh()
     token.value = null
     idToken.value = null
+    refreshToken.value = null
   }
 
   function setAccessDenied() {
     accessDenied.value = true
   }
 
-  return { token, idToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, setToken, clearToken, setAccessDenied }
+  return { token, idToken, refreshToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, setToken, clearToken, setAccessDenied, scheduleRefresh, cancelRefresh, doRefresh }
 })
