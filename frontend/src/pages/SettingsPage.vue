@@ -22,6 +22,10 @@ const llmModelSuccess = ref(false)
 const taskProcessingModel = ref(DEFAULT_TASK_PROCESSING_MODEL)
 const taskProcessingModelSaving = ref(false)
 const taskProcessingModelSuccess = ref(false)
+const timezoneValue = ref('UTC')
+const timezoneSaving = ref(false)
+const timezoneSuccess = ref(false)
+const timezones = ref<string[]>([])
 const loading = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -55,6 +59,7 @@ async function loadSettings() {
     mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
     taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
+    timezoneValue.value = data.timezone ?? 'UTC'
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -214,7 +219,35 @@ async function onTaskProcessingModelChange() {
   }
 }
 
+async function onTimezoneChange() {
+  timezoneSaving.value = true
+  timezoneSuccess.value = false
+  try {
+    const res = await settingsFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone: timezoneValue.value }),
+    })
+    if (!res.ok) {
+      error.value = `Failed to save timezone (HTTP ${res.status})`
+      return
+    }
+    timezoneSuccess.value = true
+    setTimeout(() => { timezoneSuccess.value = false }, 3000)
+  } catch {
+    error.value = 'Failed to save timezone. Please check your connection.'
+  } finally {
+    timezoneSaving.value = false
+  }
+}
+
 onMounted(async () => {
+  try {
+    const zones = Intl.supportedValuesOf('timeZone')
+    timezones.value = zones.includes('UTC') ? zones : ['UTC', ...zones]
+  } catch {
+    timezones.value = ['UTC']
+  }
   await loadSettings()
   await loadModels()
 })
@@ -289,6 +322,23 @@ onMounted(async () => {
             <span v-if="taskProcessingModelSaving" class="text-sm text-gray-500">Saving...</span>
             <span v-if="taskProcessingModelSuccess" class="text-sm text-green-600">Model saved.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Timezone -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">Timezone</h3>
+        <div class="flex items-center gap-3">
+          <select
+            v-model="timezoneValue"
+            :disabled="timezoneSaving"
+            class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+            @change="onTimezoneChange"
+          >
+            <option v-for="tz in timezones" :key="tz" :value="tz">{{ tz }}</option>
+          </select>
+          <span v-if="timezoneSaving" class="text-sm text-gray-500">Saving...</span>
+          <span v-if="timezoneSuccess" class="text-sm text-green-600">Timezone saved.</span>
         </div>
       </div>
 
