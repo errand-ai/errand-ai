@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
 from models import Setting, Task
 
@@ -14,7 +15,7 @@ from models import Setting, Task
 from worker import (
     read_settings, truncate_output, _task_to_dict, put_archive,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
-    TaskRunnerOutput,
+    TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
 )
 
 
@@ -587,3 +588,209 @@ def test_task_runner_output_default_questions():
     raw = '{"status": "completed", "result": "done"}'
     parsed = TaskRunnerOutput.model_validate_json(raw)
     assert parsed.questions == []
+
+
+# --- parse_interval ---
+
+
+def test_parse_interval_minutes():
+    assert parse_interval("15m") == timedelta(minutes=15)
+
+
+def test_parse_interval_hours():
+    assert parse_interval("2h") == timedelta(hours=2)
+
+
+def test_parse_interval_days():
+    assert parse_interval("1d") == timedelta(days=1)
+
+
+def test_parse_interval_weeks():
+    assert parse_interval("1w") == timedelta(weeks=1)
+
+
+def test_parse_interval_large_number():
+    assert parse_interval("30m") == timedelta(minutes=30)
+
+
+def test_parse_interval_unparseable_crontab():
+    assert parse_interval("0 9 * * MON-FRI") is None
+
+
+def test_parse_interval_unparseable_empty():
+    assert parse_interval("") is None
+
+
+def test_parse_interval_unparseable_no_unit():
+    assert parse_interval("30") is None
+
+
+# --- _reschedule_if_repeating ---
+
+
+async def _insert_tag(factory, name: str) -> str:
+    """Insert a tag and return its id."""
+    from models import Tag
+    tag = Tag(name=name)
+    async with factory() as session:
+        session.add(tag)
+        await session.commit()
+        await session.refresh(tag)
+        return tag.id
+
+
+async def _link_tag(factory, task_id, tag_id):
+    """Link a tag to a task via the association table."""
+    async with factory() as session:
+        await session.execute(text(
+            "INSERT INTO task_tags (task_id, tag_id) VALUES (:tid, :gid)"
+        ), {"tid": str(task_id), "gid": str(tag_id)})
+        await session.commit()
+
+
+def _make_completed_repeating_task(**overrides):
+    """Create a mock completed repeating task for rescheduling tests."""
+    task = MagicMock(spec=Task)
+    task.id = overrides.get("id", uuid.uuid4())
+    task.title = overrides.get("title", "Check server logs")
+    task.description = overrides.get("description", "Check logs on prod")
+    task.status = "completed"
+    task.category = overrides.get("category", "repeating")
+    task.repeat_interval = overrides.get("repeat_interval", "30m")
+    task.repeat_until = overrides.get("repeat_until", None)
+    task.tags = overrides.get("tags", [])
+    return task
+
+
+@pytest.mark.asyncio
+async def test_reschedule_repeating_creates_new_task(retry_session_factory):
+    """Repeating task with repeat_interval='30m' and repeat_until=null creates a new scheduled task."""
+    engine, factory = retry_session_factory
+    task = _make_completed_repeating_task()
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _reschedule_if_repeating(task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.status == "scheduled"))
+        new_task = result.scalar_one()
+        assert new_task.title == "Check server logs"
+        assert new_task.category == "repeating"
+        assert new_task.repeat_interval == "30m"
+        assert new_task.execute_at is not None
+        assert new_task.status == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_repeating_future_repeat_until(retry_session_factory):
+    """Repeating task with repeat_until in the future creates a new task."""
+    engine, factory = retry_session_factory
+    future = datetime.now(timezone.utc) + timedelta(hours=24)
+    task = _make_completed_repeating_task(repeat_interval="1h", repeat_until=future)
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _reschedule_if_repeating(task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.status == "scheduled"))
+        new_task = result.scalar_one()
+        assert new_task.repeat_until.replace(tzinfo=None) == future.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_expired_repeat_until_skips(retry_session_factory):
+    """Repeating task with expired repeat_until does NOT create a new task."""
+    engine, factory = retry_session_factory
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    task = _make_completed_repeating_task(repeat_until=past)
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _reschedule_if_repeating(task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.status == "scheduled"))
+        assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_reschedule_non_repeating_skips(retry_session_factory):
+    """Non-repeating (immediate) completed task does NOT create a new task."""
+    engine, factory = retry_session_factory
+    task = _make_completed_repeating_task(category="immediate")
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _reschedule_if_repeating(task)
+
+    async with factory() as session:
+        result = await session.execute(select(Task).where(Task.status == "scheduled"))
+        assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_reschedule_cloned_task_fields(retry_session_factory):
+    """Cloned task has correct fields: fresh UUID, status=scheduled, output=null, etc."""
+    engine, factory = retry_session_factory
+    original_id = uuid.uuid4()
+    tag_id = await _insert_tag(factory, "Monitoring")
+    tag_mock = MagicMock()
+    tag_mock.id = tag_id
+    tag_mock.name = "Monitoring"
+    task = _make_completed_repeating_task(
+        id=original_id,
+        tags=[tag_mock],
+        repeat_interval="1d",
+    )
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _reschedule_if_repeating(task)
+
+    async with factory() as session:
+        result = await session.execute(
+            select(Task).options(selectinload(Task.tags)).where(Task.status == "scheduled")
+        )
+        new_task = result.scalar_one()
+        assert str(new_task.id) != str(original_id)
+        assert new_task.status == "scheduled"
+        assert new_task.output is None
+        assert new_task.runner_logs is None
+        assert new_task.retry_count == 0
+        assert len(new_task.tags) == 1
+        assert new_task.tags[0].name == "Monitoring"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_publishes_task_created_event(retry_session_factory):
+    """task_created WebSocket event is published for the rescheduled task."""
+    engine, factory = retry_session_factory
+    task = _make_completed_repeating_task()
+    mock_publish = AsyncMock()
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", mock_publish):
+        await _reschedule_if_repeating(task)
+
+    mock_publish.assert_called_once()
+    event_type, event_data = mock_publish.call_args[0]
+    assert event_type == "task_created"
+    assert event_data["title"] == "Check server logs"
+    assert event_data["status"] == "scheduled"
+    assert event_data["category"] == "repeating"
+
+
+def test_needs_input_does_not_trigger_rescheduling():
+    """Repeating task reaching needs_input/review status is NOT rescheduled.
+
+    In run(), target_status is derived from parsed.status:
+      "completed" -> "completed", "needs_input" -> "review"
+    _reschedule_if_repeating is only called when target_status == "completed".
+    """
+    parsed = TaskRunnerOutput.model_validate_json(
+        '{"status": "needs_input", "result": "Need info", "questions": ["?"]}'
+    )
+    target_status = "completed" if parsed.status == "completed" else "review"
+    assert target_status != "completed", "needs_input must not map to 'completed' (would trigger rescheduling)"

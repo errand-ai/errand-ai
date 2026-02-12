@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 import os
 import signal
 import tarfile
@@ -151,6 +152,27 @@ async def dequeue_task(session: AsyncSession) -> Task | None:
     return result.scalar_one_or_none()
 
 
+def parse_interval(interval_str: str) -> timedelta | None:
+    """Parse simple duration strings (15m, 1h, 1d, 1w) into timedelta objects.
+
+    Returns None for unparseable formats (e.g. crontab expressions).
+    """
+    match = re.fullmatch(r"(\d+)([mhdw])", interval_str.strip())
+    if not match:
+        return None
+    value, unit = int(match.group(1)), match.group(2)
+    if unit == "m":
+        return timedelta(minutes=value)
+    if unit == "h":
+        return timedelta(hours=value)
+    if unit == "d":
+        return timedelta(days=value)
+    if unit == "w":
+        return timedelta(weeks=value)
+    return None
+
+
+
 def _task_to_dict(task: Task) -> dict:
     return {
         "id": str(task.id),
@@ -292,6 +314,58 @@ async def _schedule_retry(task: Task, output: str | None = None, runner_logs: st
         )
 
 
+async def _reschedule_if_repeating(task: Task) -> None:
+    """If the task is repeating and not expired, create a cloned task for the next interval."""
+    if task.category != "repeating":
+        return
+
+    if task.repeat_until and datetime.now(timezone.utc) > task.repeat_until:
+        logger.info("Task %s: repeat_until has passed, not rescheduling", task.id)
+        return
+
+    interval = parse_interval(task.repeat_interval or "")
+    if interval is None:
+        logger.warning(
+            "Task %s: cannot parse repeat_interval '%s', skipping reschedule",
+            task.id, task.repeat_interval,
+        )
+        return
+
+    async with async_session() as session:
+        position = await _next_position(session, "scheduled")
+        new_task = Task(
+            title=task.title,
+            description=task.description,
+            status="scheduled",
+            category=task.category,
+            execute_at=datetime.now(timezone.utc) + interval,
+            repeat_interval=task.repeat_interval,
+            repeat_until=task.repeat_until,
+            position=position,
+            output=None,
+            runner_logs=None,
+            retry_count=0,
+        )
+        session.add(new_task)
+        await session.flush()
+
+        # Copy tags from completed task to new task
+        for tag in task.tags:
+            await session.execute(
+                task_tags.insert().values(task_id=new_task.id, tag_id=tag.id)
+            )
+
+        await session.commit()
+
+        # Load with tags for WebSocket event
+        result = await session.execute(
+            select(Task).options(selectinload(Task.tags)).where(Task.id == new_task.id)
+        )
+        new_task_loaded = result.scalar_one()
+        await publish_event("task_created", _task_to_dict(new_task_loaded))
+        logger.info("Task %s: rescheduled as new task %s", task.id, new_task.id)
+
+
 async def run() -> None:
     global shutdown_event, docker_client
     shutdown_event = asyncio.Event()
@@ -392,6 +466,8 @@ async def run() -> None:
                 logger.info(
                     "Task %s moved to %s (runner_status=%s)", task.id, target_status, parsed.status,
                 )
+                if target_status == "completed":
+                    await _reschedule_if_repeating(updated_task)
             else:
                 logger.warning("Task %s container exited with code %d", task.id, exit_code)
                 await _schedule_retry(task, output=full_output, runner_logs=stderr)
