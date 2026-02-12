@@ -37,7 +37,7 @@ async def db_session():
 
 
 async def test_transcribe_audio_success(db_session: AsyncSession):
-    """transcribe_audio calls audio.transcriptions.create with correct model and file."""
+    """transcribe_audio calls audio.transcriptions.create with correct model and file tuple."""
     db_session.add(Setting(key="transcription_model", value="whisper-large-v3"))
     await db_session.commit()
 
@@ -47,14 +47,18 @@ async def test_transcribe_audio_success(db_session: AsyncSession):
     mock_client = AsyncMock()
     mock_client.audio.transcriptions.create = AsyncMock(return_value=mock_response)
 
-    fake_file = io.BytesIO(b"fake audio data")
+    fake_file = MagicMock()
+    fake_file.filename = "recording.webm"
+    fake_file.content_type = "audio/webm"
+    fake_file.read = AsyncMock(return_value=b"fake audio data")
 
     with patch.object(llm_module, "_client", mock_client):
         result = await transcribe_audio(fake_file, db_session)
 
     assert result == "Hello world"
     mock_client.audio.transcriptions.create.assert_called_once_with(
-        model="whisper-large-v3", file=fake_file
+        model="whisper-large-v3",
+        file=("recording.webm", b"fake audio data", "audio/webm"),
     )
 
 
@@ -188,17 +192,20 @@ async def test_transcribe_status_disabled_no_client(client: AsyncClient):
 async def test_transcription_models_success(admin_client: AsyncClient):
     """GET /api/llm/transcription-models returns filtered, sorted list."""
     model_info_response = {
-        "data": {
-            "whisper-large-v3": {
+        "data": [
+            {
+                "model_name": "whisper-large-v3",
                 "model_info": {"mode": "audio_transcription"},
             },
-            "gpt-4o": {
+            {
+                "model_name": "gpt-4o",
                 "model_info": {"mode": "chat"},
             },
-            "whisper-1": {
+            {
+                "model_name": "whisper-1",
                 "model_info": {"mode": "audio_transcription"},
             },
-        }
+        ]
     }
 
     mock_response = MagicMock()
@@ -245,11 +252,12 @@ async def test_transcription_models_proxy_error_502(admin_client: AsyncClient):
 async def test_transcription_models_empty_list(admin_client: AsyncClient):
     """GET /api/llm/transcription-models returns empty list when no transcription models."""
     model_info_response = {
-        "data": {
-            "gpt-4o": {
+        "data": [
+            {
+                "model_name": "gpt-4o",
                 "model_info": {"mode": "chat"},
             },
-        }
+        ]
     }
 
     mock_response = MagicMock()

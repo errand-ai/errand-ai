@@ -3,11 +3,13 @@ import { onMounted, ref } from 'vue'
 import { fetchArchivedTasks } from '../composables/useApi'
 import type { TaskData } from '../composables/useApi'
 import TaskEditModal from '../components/TaskEditModal.vue'
+import TaskOutputModal from '../components/TaskOutputModal.vue'
 
 const tasks = ref<TaskData[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 const selectedTask = ref<TaskData | null>(null)
+const outputTask = ref<TaskData | null>(null)
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return ''
@@ -59,7 +61,8 @@ onMounted(async () => {
           <th class="py-3 pr-4 font-medium text-gray-700">Title</th>
           <th class="py-3 pr-4 font-medium text-gray-700">Status</th>
           <th class="py-3 pr-4 font-medium text-gray-700">Tags</th>
-          <th class="py-3 font-medium text-gray-700">Date</th>
+          <th class="py-3 pr-4 font-medium text-gray-700">Date</th>
+          <th class="py-3 font-medium text-gray-700">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -86,7 +89,17 @@ onMounted(async () => {
               </span>
             </div>
           </td>
-          <td class="py-3 text-gray-600">{{ formatDate(task.updated_at) }}</td>
+          <td class="py-3 pr-4 text-gray-600">{{ formatDate(task.updated_at) }}</td>
+          <td class="py-3">
+            <button
+              v-if="task.output"
+              type="button"
+              class="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+              @click.stop="outputTask = task"
+            >
+              View Output
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -98,6 +111,13 @@ onMounted(async () => {
       @cancel="onModalCancel"
       @save="() => {}"
       @delete="() => {}"
+    />
+
+    <TaskOutputModal
+      v-if="outputTask"
+      :title="outputTask.title"
+      :output="outputTask.output ?? null"
+      @close="outputTask = null"
     />
   </div>
 </template>

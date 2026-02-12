@@ -200,5 +200,11 @@ async def transcribe_audio(file, session: AsyncSession) -> str:
         raise TranscriptionNotConfiguredError("No transcription model configured")
 
     model = str(setting.value)
-    response = await client.audio.transcriptions.create(model=model, file=file)
+    content = await file.read()
+    filename = getattr(file, "filename", "audio.webm") or "audio.webm"
+    content_type = getattr(file, "content_type", "audio/webm") or "audio/webm"
+    response = await client.audio.transcriptions.create(
+        model=model,
+        file=(filename, content, content_type),
+    )
     return response.text

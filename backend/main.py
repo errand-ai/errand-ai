@@ -7,6 +7,8 @@ import asyncio
 import json
 import logging
 
+logger = logging.getLogger(__name__)
+
 import jwt
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
@@ -505,6 +507,7 @@ async def transcribe(
     except (TranscriptionNotConfiguredError, LLMClientNotConfiguredError):
         raise HTTPException(status_code=503, detail="Transcription not configured")
     except Exception:
+        logger.exception("Transcription failed")
         raise HTTPException(status_code=502, detail="Transcription failed")
 
 
@@ -529,21 +532,25 @@ async def list_transcription_models(
     base_url = os.environ.get("OPENAI_BASE_URL", "")
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
+    api_key = os.environ.get("OPENAI_API_KEY", "")
     try:
         async with httpx.AsyncClient() as http_client:
-            resp = await http_client.get(f"{base_url}/model/info", timeout=10)
+            resp = await http_client.get(
+                f"{base_url}/model/info",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
             resp.raise_for_status()
             data = resp.json()
+        models = []
+        for entry in data.get("data", []):
+            if entry.get("model_info", {}).get("mode") == "audio_transcription":
+                models.append(entry["model_name"])
+        return sorted(models)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
-
-    models = []
-    model_data = data.get("data", {})
-    for model_id, info in model_data.items():
-        model_info = info.get("model_info", {})
-        if model_info.get("mode") == "audio_transcription":
-            models.append(model_id)
-    return sorted(models)
 
 
 # --- Admin settings endpoints ---
@@ -600,8 +607,6 @@ async def health(session: AsyncSession = Depends(get_session)):
 
 
 # --- WebSocket endpoint ---
-
-logger = logging.getLogger(__name__)
 
 PING_INTERVAL = 30
 PONG_TIMEOUT = 10
