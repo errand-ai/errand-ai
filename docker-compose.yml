@@ -34,6 +34,17 @@ services:
       timeout: 5s
       retries: 10
 
+  task-runner-build:
+    image: docker:27
+    environment:
+      DOCKER_HOST: tcp://dind:2375
+    depends_on:
+      dind:
+        condition: service_healthy
+    volumes:
+      - ./task-runner:/workspace
+    command: docker build -t content-manager-task-runner:latest /workspace
+
   migrate:
     build: ./backend
     command: alembic upgrade head
@@ -82,6 +93,8 @@ services:
         condition: service_healthy
       dind:
         condition: service_healthy
+      task-runner-build:
+        condition: service_completed_successfully
     volumes:
       - ./backend:/app
 
