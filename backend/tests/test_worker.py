@@ -719,6 +719,79 @@ def test_process_task_container_env_vars():
     assert exit_code == 0
 
 
+def test_process_task_container_passes_log_level():
+    """TASK_RUNNER_LOG_LEVEL is forwarded as LOG_LEVEL to the container."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "TASK_RUNNER_LOG_LEVEL": "DEBUG",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert env["LOG_LEVEL"] == "DEBUG"
+
+
+def test_process_task_container_omits_log_level_when_unset():
+    """LOG_LEVEL is not set in the container when TASK_RUNNER_LOG_LEVEL is absent."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert "LOG_LEVEL" not in env
+
+
 def test_process_task_container_copies_three_files():
     """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
     task = _make_mock_task(description="My task")

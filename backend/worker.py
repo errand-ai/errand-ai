@@ -249,6 +249,9 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
     env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
     env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
     env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
+    task_runner_log_level = os.environ.get("TASK_RUNNER_LOG_LEVEL")
+    if task_runner_log_level:
+        env_vars["LOG_LEVEL"] = task_runner_log_level
 
     # Ensure image is available (try local first, pull only if not found)
     try:

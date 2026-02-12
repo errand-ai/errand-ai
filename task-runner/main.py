@@ -13,8 +13,9 @@ from pydantic import BaseModel
 from agents import Agent, Runner, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 
-# All logging to stderr
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
+# All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 # Disable tracing (no OpenAI tracing endpoint in sandboxed container)
@@ -24,6 +25,7 @@ OVERARCHING_PROMPT = """You MUST produce your final response as a JSON object wi
 {"status": "completed" | "needs_input", "result": "<your response text>", "questions": ["<question>"]}
 
 Rules:
+- If you are asked to do something at timed intervals (like every 30 minutes), just perform the task now and do not be concerned with the next time the task needs to be completed. 
 - If you have fully addressed the user's request, set status to "completed", put your answer in "result", and set "questions" to an empty list [].
 - If you cannot proceed without user clarification, set status to "needs_input", explain what is unclear in "result", and list specific questions in "questions".
 - Output ONLY the JSON object as your final response. No markdown fences, no extra text.

@@ -11,6 +11,7 @@ import pytest
 # Add task-runner to path so we can import main
 sys.path.insert(0, os.path.dirname(__file__))
 
+import logging
 from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT
 
 
@@ -160,3 +161,28 @@ def test_overarching_prompt_contains_schema():
     assert "questions" in OVERARCHING_PROMPT
     assert "completed" in OVERARCHING_PROMPT
     assert "needs_input" in OVERARCHING_PROMPT
+
+
+# --- Log level configuration ---
+
+
+def test_log_level_defaults_to_info():
+    """Without LOG_LEVEL env var, logging defaults to INFO."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LOG_LEVEL", None)
+        level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    assert level == logging.INFO
+
+
+def test_log_level_debug_from_env():
+    """LOG_LEVEL=DEBUG sets debug logging."""
+    with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG"}):
+        level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    assert level == logging.DEBUG
+
+
+def test_log_level_invalid_falls_back_to_info():
+    """Invalid LOG_LEVEL falls back to INFO."""
+    with patch.dict(os.environ, {"LOG_LEVEL": "INVALID"}):
+        level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    assert level == logging.INFO
