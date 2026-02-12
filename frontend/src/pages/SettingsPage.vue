@@ -31,6 +31,9 @@ const timezoneValue = ref('UTC')
 const timezoneSaving = ref(false)
 const timezoneSuccess = ref(false)
 const timezones = ref<string[]>([])
+const archiveAfterDays = ref(3)
+const archiveSaving = ref(false)
+const archiveSuccess = ref(false)
 const loading = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -66,6 +69,7 @@ async function loadSettings() {
     taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
     transcriptionModel.value = data.transcription_model ?? ''
     timezoneValue.value = data.timezone ?? 'UTC'
+    archiveAfterDays.value = data.archive_after_days ?? 3
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -185,6 +189,32 @@ async function saveMcpServers() {
     mcpError.value = 'Failed to save MCP configuration. Please check your connection.'
   } finally {
     mcpSaving.value = false
+  }
+}
+
+async function saveArchiveAfterDays() {
+  archiveSaving.value = true
+  archiveSuccess.value = false
+  try {
+    const res = await settingsFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archive_after_days: archiveAfterDays.value }),
+    })
+    if (res.status === 403) {
+      error.value = 'Access denied — admin role required.'
+      return
+    }
+    if (!res.ok) {
+      error.value = `Failed to save archive setting (HTTP ${res.status})`
+      return
+    }
+    archiveSuccess.value = true
+    setTimeout(() => { archiveSuccess.value = false }, 3000)
+  } catch {
+    error.value = 'Failed to save archive setting. Please check your connection.'
+  } finally {
+    archiveSaving.value = false
   }
 }
 
@@ -389,6 +419,29 @@ onMounted(async () => {
           </select>
           <span v-if="timezoneSaving" class="text-sm text-gray-500">Saving...</span>
           <span v-if="timezoneSuccess" class="text-sm text-green-600">Timezone saved.</span>
+        </div>
+      </div>
+
+      <!-- Task Archiving -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">Task Archiving</h3>
+        <div class="flex items-center gap-3">
+          <label for="archive-after-days" class="text-sm font-medium text-gray-700">Archive after (days)</label>
+          <input
+            id="archive-after-days"
+            v-model.number="archiveAfterDays"
+            type="number"
+            min="1"
+            class="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+            @click="saveArchiveAfterDays"
+            :disabled="archiveSaving"
+            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {{ archiveSaving ? 'Saving...' : 'Save' }}
+          </button>
+          <span v-if="archiveSuccess" class="text-sm text-green-600">Archive setting saved.</span>
         </div>
       </div>
 

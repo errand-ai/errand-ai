@@ -85,6 +85,24 @@ async def get_current_user(
     return claims
 
 
+async def require_editor(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict:
+    token = credentials.credentials
+    try:
+        claims = auth_module.oidc.decode_token(token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    roles = auth_module.oidc.extract_roles(claims)
+    if "editor" not in roles and "admin" not in roles:
+        raise HTTPException(status_code=403, detail="Editor role required")
+
+    return claims
+
+
 async def require_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
@@ -105,7 +123,7 @@ async def require_admin(
 
 # --- Schemas ---
 
-VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed"]
+VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed", "deleted", "archived"]
 
 
 class TaskCreate(BaseModel):
@@ -232,7 +250,7 @@ async def list_tasks(
     _user: dict = Depends(get_current_user),
 ):
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).order_by(Task.position.asc(), Task.created_at.asc())
+        select(Task).options(selectinload(Task.tags)).where(Task.status.not_in(["deleted", "archived"])).order_by(Task.position.asc(), Task.created_at.asc())
     )
     tasks = result.scalars().all()
     return [TaskResponse.from_task(t) for t in tasks]
@@ -242,7 +260,7 @@ async def list_tasks(
 async def create_task(
     body: TaskCreate,
     session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_editor),
 ):
     input_text = body.input.strip()
     words = input_text.split()
@@ -317,6 +335,23 @@ async def create_task(
     return resp
 
 
+@app.get("/api/tasks/archived", response_model=list[TaskResponse])
+async def list_archived_tasks(
+    session: AsyncSession = Depends(get_session),
+    claims: dict = Depends(get_current_user),
+):
+    roles = claims.get("resource_access", {}).get("content-manager", {}).get("roles", [])
+    if "admin" in roles:
+        status_filter = Task.status.in_(["deleted", "archived"])
+    else:
+        status_filter = Task.status == "archived"
+    result = await session.execute(
+        select(Task).options(selectinload(Task.tags)).where(status_filter).order_by(Task.updated_at.desc())
+    )
+    tasks = result.scalars().all()
+    return [TaskResponse.from_task(t) for t in tasks]
+
+
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: uuid.UUID,
@@ -337,7 +372,7 @@ async def update_task(
     task_id: uuid.UUID,
     body: TaskUpdate,
     session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_editor),
 ):
     result = await session.execute(
         select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
@@ -345,6 +380,8 @@ async def update_task(
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    if task.status == "running":
+        raise HTTPException(status_code=409, detail="Cannot edit a running task")
     if body.title is not None:
         task.title = body.title
     if body.description is not None:
@@ -421,7 +458,7 @@ async def update_task(
 async def delete_task(
     task_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_editor),
 ):
     result = await session.execute(
         select(Task).where(Task.id == task_id)
@@ -430,11 +467,9 @@ async def delete_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task_id_str = str(task.id)
-    await session.execute(delete(task_tags).where(task_tags.c.task_id == task.id))
-    await session.delete(task)
+    task.status = "deleted"
     await session.commit()
-    await publish_event("task_deleted", {"id": task_id_str})
+    await publish_event("task_deleted", {"id": str(task.id)})
 
 
 # --- LLM endpoints ---

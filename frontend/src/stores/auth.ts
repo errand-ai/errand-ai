@@ -32,6 +32,8 @@ export const useAuthStore = defineStore('auth', () => {
   })
 
   const isAdmin = computed(() => roles.value.includes('admin'))
+  const isEditor = computed(() => roles.value.includes('editor') || roles.value.includes('admin'))
+  const isViewer = computed(() => isAuthenticated.value && !isEditor.value)
 
   function scheduleRefresh() {
     cancelRefresh()
@@ -107,5 +109,5 @@ export const useAuthStore = defineStore('auth', () => {
     accessDenied.value = true
   }
 
-  return { token, idToken, refreshToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, setToken, clearToken, setAccessDenied, scheduleRefresh, cancelRefresh, doRefresh }
+  return { token, idToken, refreshToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, scheduleRefresh, cancelRefresh, doRefresh }
 })

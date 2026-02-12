@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import events as events_module
 from models import Base, Task
-from main import app, get_current_user, require_admin
+from main import app, get_current_user, require_editor, require_admin
 from database import get_session
 
 FAKE_USER_CLAIMS = {
@@ -17,7 +17,7 @@ FAKE_USER_CLAIMS = {
     "email": "test@example.com",
     "resource_access": {
         "content-manager": {
-            "roles": ["user"],
+            "roles": ["user", "editor"],
         }
     },
 }
@@ -29,6 +29,17 @@ FAKE_ADMIN_CLAIMS = {
     "resource_access": {
         "content-manager": {
             "roles": ["user", "admin"],
+        }
+    },
+}
+
+FAKE_VIEWER_CLAIMS = {
+    "sub": "viewer-user-id",
+    "preferred_username": "vieweruser",
+    "email": "viewer@example.com",
+    "resource_access": {
+        "content-manager": {
+            "roles": ["viewer"],
         }
     },
 }
@@ -108,8 +119,12 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_current_user():
         return FAKE_USER_CLAIMS
 
+    async def override_require_editor():
+        return FAKE_USER_CLAIMS
+
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[require_editor] = override_require_editor
 
     # Non-admin: require_admin should reject
     from fastapi import HTTPException
@@ -142,11 +157,15 @@ async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_current_user():
         return FAKE_ADMIN_CLAIMS
 
+    async def override_require_editor():
+        return FAKE_ADMIN_CLAIMS
+
     async def override_require_admin():
         return FAKE_ADMIN_CLAIMS
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[require_editor] = override_require_editor
     app.dependency_overrides[require_admin] = override_require_admin
 
     transport = ASGITransport(app=app)
@@ -171,6 +190,43 @@ async def unauth_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(require_editor, None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+
+@pytest.fixture()
+async def viewer_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
+    """Client authenticated as a viewer user (no editor/admin role)."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    await _create_tables(engine)
+
+    test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_session():
+        async with test_session() as session:
+            yield session
+
+    async def override_get_current_user():
+        return FAKE_VIEWER_CLAIMS
+
+    from fastapi import HTTPException
+
+    async def override_require_editor_reject():
+        raise HTTPException(status_code=403, detail="Editor role required")
+
+    async def override_require_admin_reject():
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[require_editor] = override_require_editor_reject
+    app.dependency_overrides[require_admin] = override_require_admin_reject
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

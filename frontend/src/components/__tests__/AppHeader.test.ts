@@ -73,7 +73,7 @@ describe('App header — admin dropdown', () => {
     expect(trigger.text()).toContain('Admin User')
   })
 
-  it('shows static layout for non-admin users', async () => {
+  it('shows dropdown for non-admin users with Archived Tasks and Log out', async () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Regular User',
@@ -88,13 +88,20 @@ describe('App header — admin dropdown', () => {
       global: { plugins: [router] },
     })
 
-    // Non-admin should see static username text + standalone logout button
-    expect(wrapper.find('.dropdown-trigger').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Regular User')
-    expect(wrapper.find('button').text()).toContain('Log out')
+    // Non-admin should see dropdown trigger (all users with userDisplay get dropdown)
+    const trigger = wrapper.find('.dropdown-trigger button')
+    expect(trigger.exists()).toBe(true)
+    expect(trigger.text()).toContain('Regular User')
+
+    await trigger.trigger('click')
+
+    const menuItems = wrapper.findAll('.dropdown-trigger .absolute button')
+    expect(menuItems.length).toBe(2)
+    expect(menuItems[0].text()).toBe('Archived Tasks')
+    expect(menuItems[1].text()).toBe('Log out')
   })
 
-  it('dropdown opens on click and shows Settings and Log out', async () => {
+  it('dropdown opens on click and shows Archived Tasks, Settings, and Log out for admin', async () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin User',
@@ -113,8 +120,9 @@ describe('App header — admin dropdown', () => {
     await trigger.trigger('click')
 
     const menuItems = wrapper.findAll('.dropdown-trigger .absolute button')
-    expect(menuItems.length).toBe(2)
-    expect(menuItems[0].text()).toBe('Settings')
-    expect(menuItems[1].text()).toBe('Log out')
+    expect(menuItems.length).toBe(3)
+    expect(menuItems[0].text()).toBe('Archived Tasks')
+    expect(menuItems[1].text()).toBe('Settings')
+    expect(menuItems[2].text()).toBe('Log out')
   })
 })

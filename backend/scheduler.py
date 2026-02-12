@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from database import async_session
 from events import get_valkey, publish_event
-from models import Task
+from models import Setting, Task
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,40 @@ async def promote_due_tasks() -> int:
     return promoted
 
 
+async def archive_completed_tasks() -> int:
+    archived = 0
+    async with async_session() as session:
+        # Read archive_after_days setting (default 3)
+        result = await session.execute(
+            select(Setting).where(Setting.key == "archive_after_days")
+        )
+        setting = result.scalar_one_or_none()
+        archive_after_days = int(setting.value) if setting else 3
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=archive_after_days)
+        stmt = (
+            select(Task)
+            .options(selectinload(Task.tags))
+            .where(Task.status == "completed", Task.updated_at < cutoff)
+            .limit(BATCH_SIZE)
+        )
+        result = await session.execute(stmt)
+        tasks = result.scalars().all()
+
+        for task in tasks:
+            task.status = "archived"
+            task.updated_at = datetime.now(timezone.utc)
+            archived += 1
+
+        if tasks:
+            await session.commit()
+            for task in tasks:
+                await session.refresh(task, ["tags"])
+                await publish_event("task_updated", _task_to_dict(task))
+
+    return archived
+
+
 async def run_scheduler() -> None:
     logger.info("Scheduler started (interval=%ds)", SCHEDULER_INTERVAL)
     while True:
@@ -122,6 +156,9 @@ async def run_scheduler() -> None:
                 count = await promote_due_tasks()
                 if count:
                     logger.info("Promoted %d scheduled task(s) to pending", count)
+                archived = await archive_completed_tasks()
+                if archived:
+                    logger.info("Archived %d completed task(s)", archived)
                 await refresh_lock()
             else:
                 logger.debug("Scheduler lock held by another replica, skipping cycle")

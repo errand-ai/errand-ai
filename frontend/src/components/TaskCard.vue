@@ -6,6 +6,8 @@ import { formatRelativeTime } from '../composables/useRelativeTime'
 const props = defineProps<{
   task: TaskData
   columnStatus?: string
+  hideDelete?: boolean
+  disableDrag?: boolean
 }>()
 
 defineEmits<{
@@ -21,7 +23,7 @@ const showOutputButton = computed(() => {
 </script>
 
 <template>
-  <div class="rounded-lg bg-white p-3 shadow cursor-grab active:cursor-grabbing" draggable="true">
+  <div class="rounded-lg bg-white p-3 shadow" :class="disableDrag ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'" :draggable="!disableDrag">
     <div class="flex items-start justify-between gap-2">
       <p class="text-sm text-gray-800">{{ task.title }}</p>
       <div class="flex shrink-0 gap-0.5">
@@ -46,6 +48,7 @@ const showOutputButton = computed(() => {
           </svg>
         </button>
         <button
+          v-if="!hideDelete"
           class="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-500"
           title="Delete task"
           @click.stop="$emit('delete')"

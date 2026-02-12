@@ -11,6 +11,12 @@ const router = createRouter({
       component: KanbanBoard,
     },
     {
+      path: '/archived',
+      name: 'archived',
+      component: () => import('../pages/ArchivedTasksPage.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('../pages/SettingsPage.vue'),
@@ -20,11 +26,12 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  if (to.meta.requiresAdmin) {
-    const auth = useAuthStore()
-    if (!auth.isAdmin) {
-      return { name: 'home' }
-    }
+  const auth = useAuthStore()
+  if (to.meta.requiresAuth && !auth.isAuthenticated) {
+    return { name: 'home' }
+  }
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'home' }
   }
 })
 
