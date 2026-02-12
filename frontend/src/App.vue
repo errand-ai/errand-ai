@@ -15,7 +15,7 @@ onMounted(() => {
     const params = new URLSearchParams(hash.substring(1))
     const token = params.get('access_token')
     if (token) {
-      auth.setToken(token, params.get('id_token') ?? undefined)
+      auth.setToken(token, params.get('id_token') ?? undefined, params.get('refresh_token') ?? undefined)
       history.replaceState(null, '', window.location.pathname)
       return
     }
