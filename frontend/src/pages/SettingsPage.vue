@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel } from '../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../composables/useApi'
 
 const auth = useAuthStore()
 
@@ -22,6 +22,11 @@ const llmModelSuccess = ref(false)
 const taskProcessingModel = ref(DEFAULT_TASK_PROCESSING_MODEL)
 const taskProcessingModelSaving = ref(false)
 const taskProcessingModelSuccess = ref(false)
+const transcriptionModel = ref<string>('')
+const transcriptionModels = ref<string[]>([])
+const transcriptionModelsError = ref<string | null>(null)
+const transcriptionModelSaving = ref(false)
+const transcriptionModelSuccess = ref(false)
 const timezoneValue = ref('UTC')
 const timezoneSaving = ref(false)
 const timezoneSuccess = ref(false)
@@ -59,6 +64,7 @@ async function loadSettings() {
     mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
     taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
+    transcriptionModel.value = data.transcription_model ?? ''
     timezoneValue.value = data.timezone ?? 'UTC'
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
@@ -219,6 +225,30 @@ async function onTaskProcessingModelChange() {
   }
 }
 
+async function loadTranscriptionModels() {
+  transcriptionModelsError.value = null
+  try {
+    transcriptionModels.value = await fetchTranscriptionModels()
+  } catch {
+    transcriptionModelsError.value = 'Failed to load transcription models.'
+  }
+}
+
+async function onTranscriptionModelChange() {
+  transcriptionModelSaving.value = true
+  transcriptionModelSuccess.value = false
+  try {
+    const value = transcriptionModel.value || null
+    await saveTranscriptionModel(value)
+    transcriptionModelSuccess.value = true
+    setTimeout(() => { transcriptionModelSuccess.value = false }, 3000)
+  } catch {
+    error.value = 'Failed to save transcription model selection.'
+  } finally {
+    transcriptionModelSaving.value = false
+  }
+}
+
 async function onTimezoneChange() {
   timezoneSaving.value = true
   timezoneSuccess.value = false
@@ -250,6 +280,7 @@ onMounted(async () => {
   }
   await loadSettings()
   await loadModels()
+  await loadTranscriptionModels()
 })
 </script>
 
@@ -307,7 +338,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div>
+        <div class="mb-4">
           <label class="block text-sm font-medium text-gray-700 mb-1">Task Processing Model</label>
           <div class="flex items-center gap-3">
             <select
@@ -321,6 +352,25 @@ onMounted(async () => {
             </select>
             <span v-if="taskProcessingModelSaving" class="text-sm text-gray-500">Saving...</span>
             <span v-if="taskProcessingModelSuccess" class="text-sm text-green-600">Model saved.</span>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Transcription Model</label>
+          <div v-if="transcriptionModelsError" class="text-sm text-red-600 mb-1">{{ transcriptionModelsError }}</div>
+          <div class="flex items-center gap-3">
+            <select
+              v-model="transcriptionModel"
+              :disabled="(transcriptionModels.length === 0 && !transcriptionModel) || transcriptionModelSaving || !!transcriptionModelsError"
+              class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+              @change="onTranscriptionModelChange"
+              data-testid="transcription-model-select"
+            >
+              <option value="">{{ transcriptionModels.length === 0 && !transcriptionModelsError ? 'No transcription models available' : 'Select a model to enable voice input' }}</option>
+              <option v-for="m in transcriptionModels" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <span v-if="transcriptionModelSaving" class="text-sm text-gray-500">Saving...</span>
+            <span v-if="transcriptionModelSuccess" class="text-sm text-green-600">Model saved.</span>
           </div>
         </div>
       </div>

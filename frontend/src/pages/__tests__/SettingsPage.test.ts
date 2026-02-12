@@ -12,10 +12,12 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     fetchLlmModels: vi.fn().mockResolvedValue([]),
     saveLlmModel: vi.fn().mockResolvedValue({}),
     saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
+    fetchTranscriptionModels: vi.fn().mockResolvedValue([]),
+    saveTranscriptionModel: vi.fn().mockResolvedValue({}),
   }
 })
 
-import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel } from '../../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -40,6 +42,8 @@ describe('SettingsPage', () => {
     vi.mocked(fetchLlmModels).mockResolvedValue([])
     vi.mocked(saveLlmModel).mockResolvedValue({})
     vi.mocked(saveTaskProcessingModel).mockResolvedValue({})
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue([])
+    vi.mocked(saveTranscriptionModel).mockResolvedValue({})
   })
 
   afterEach(() => {
@@ -592,9 +596,9 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Timezone')
-    // Find the timezone select (third select after title generation and task processing model)
+    // Find the timezone select (fourth select after title gen, task processing, and transcription model)
     const selects = wrapper.findAll('select')
-    expect(selects.length).toBeGreaterThanOrEqual(3)
+    expect(selects.length).toBeGreaterThanOrEqual(4)
   })
 
   it('timezone populated from settings', async () => {
@@ -608,7 +612,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[2]
+    const tzSelect = selects[3]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('Europe/London')
   })
 
@@ -623,8 +627,8 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    // Third select is timezone
-    const tzSelect = selects[2]
+    // Fourth select is timezone (after title gen, task processing, transcription)
+    const tzSelect = selects[3]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('UTC')
   })
 
@@ -645,7 +649,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[2]
+    const tzSelect = selects[3]
     await tzSelect.setValue('Europe/London')
     await flushPromises()
 
@@ -656,5 +660,127 @@ describe('SettingsPage', () => {
     expect(putCall).toBeTruthy()
     expect(JSON.parse(putCall![1].body as string)).toEqual({ timezone: 'Europe/London' })
     expect(wrapper.text()).toContain('Timezone saved.')
+  })
+
+  // --- Transcription Model Dropdown ---
+
+  it('renders Transcription Model dropdown with filtered models', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Transcription Model')
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    expect(transcriptionSelect.exists()).toBe(true)
+
+    const options = transcriptionSelect.findAll('option')
+    const optionTexts = options.map(o => o.text())
+    expect(optionTexts).toContain('whisper-1')
+    expect(optionTexts).toContain('whisper-large-v3')
+  })
+
+  it('shows placeholder when no transcription model is selected', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    expect((transcriptionSelect.element as HTMLSelectElement).value).toBe('')
+    expect(transcriptionSelect.text()).toContain('Select a model to enable voice input')
+  })
+
+  it('loads current transcription model from settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ transcription_model: 'whisper-large-v3' }),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    expect((transcriptionSelect.element as HTMLSelectElement).value).toBe('whisper-large-v3')
+  })
+
+  it('saves transcription model on selection change', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    await transcriptionSelect.setValue('whisper-1')
+    await flushPromises()
+
+    expect(saveTranscriptionModel).toHaveBeenCalledWith('whisper-1')
+  })
+
+  it('sends null when Disabled option is selected for transcription model', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ transcription_model: 'whisper-1' }),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    await transcriptionSelect.setValue('')
+    await flushPromises()
+
+    expect(saveTranscriptionModel).toHaveBeenCalledWith(null)
+  })
+
+  it('disables transcription dropdown when no models available', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchTranscriptionModels).mockResolvedValue([])
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
+    expect(transcriptionSelect.text()).toContain('No transcription models available')
+  })
+
+  it('disables transcription dropdown on endpoint failure', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+    vi.mocked(fetchTranscriptionModels).mockRejectedValue(new Error('Failed'))
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Failed to load transcription models')
+    const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
+    expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
   })
 })

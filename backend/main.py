@@ -1,3 +1,4 @@
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -7,7 +8,8 @@ import json
 import logging
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional
@@ -22,7 +24,7 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client, generate_title, LLMResult, VALID_CATEGORIES
+from llm import init_llm_client, get_llm_client, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from models import Setting, Tag, Task, task_tags
 from scheduler import run_scheduler, release_lock
 
@@ -451,6 +453,62 @@ async def list_llm_models(
         return model_ids
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+
+
+# --- Transcription endpoints ---
+
+
+@app.post("/api/transcribe")
+async def transcribe(
+    file: UploadFile,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    try:
+        text = await transcribe_audio(file, session)
+        return {"text": text}
+    except (TranscriptionNotConfiguredError, LLMClientNotConfiguredError):
+        raise HTTPException(status_code=503, detail="Transcription not configured")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Transcription failed")
+
+
+@app.get("/api/transcribe/status")
+async def transcribe_status(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    client = get_llm_client()
+    if client is None:
+        return {"enabled": False}
+    result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))
+    setting = result.scalar_one_or_none()
+    enabled = setting is not None and bool(setting.value)
+    return {"enabled": enabled}
+
+
+@app.get("/api/llm/transcription-models")
+async def list_transcription_models(
+    _user: dict = Depends(require_admin),
+):
+    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+    try:
+        async with httpx.AsyncClient() as http_client:
+            resp = await http_client.get(f"{base_url}/model/info", timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
+
+    models = []
+    model_data = data.get("data", {})
+    for model_id, info in model_data.items():
+        model_info = info.get("model_info", {})
+        if model_info.get("mode") == "audio_transcription":
+            models.append(model_id)
+    return sorted(models)
 
 
 # --- Admin settings endpoints ---
