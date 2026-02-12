@@ -35,7 +35,7 @@ vi.mock('../../composables/useApi', async () => {
         execute_at: null,
         repeat_interval: null,
         repeat_until: null,
-        output: null,
+        output: 'Task execution output here',
         runner_logs: null,
         retry_count: 0,
         tags: [],
@@ -79,6 +79,37 @@ describe('ArchivedTasksPage', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('tag1')
+  })
+
+  it('shows View Output button only for tasks with output', async () => {
+    const wrapper = mount(ArchivedTasksPage)
+    await flushPromises()
+
+    const rows = wrapper.findAll('tbody tr')
+    // First task has no output
+    expect(rows[0].find('button').exists()).toBe(false)
+    // Second task has output
+    const btn = rows[1].findAll('button').find(b => b.text() === 'View Output')
+    expect(btn).toBeDefined()
+  })
+
+  it('clicking View Output opens output modal', async () => {
+    const wrapper = mount(ArchivedTasksPage)
+    await flushPromises()
+
+    const rows = wrapper.findAll('tbody tr')
+    const btn = rows[1].findAll('button').find(b => b.text() === 'View Output')!
+    await btn.trigger('click')
+    await flushPromises()
+
+    const outputModal = wrapper.findComponent({ name: 'TaskOutputModal' })
+    expect(outputModal.exists()).toBe(true)
+    expect(outputModal.props('title')).toBe('Deleted task')
+    expect(outputModal.props('output')).toBe('Task execution output here')
+
+    // Edit modal should NOT have opened
+    const editModal = wrapper.findComponent({ name: 'TaskEditModal' })
+    expect(editModal.exists()).toBe(false)
   })
 
   it('opens read-only modal on row click', async () => {

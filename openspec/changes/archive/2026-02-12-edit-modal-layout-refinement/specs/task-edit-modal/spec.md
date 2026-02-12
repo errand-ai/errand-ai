@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Task edit modal displays editable fields
 The task edit modal SHALL be implemented as a `<dialog>` element with a maximum width of `max-w-3xl` (768px) and `w-full`, bounded to `max-h-[85vh]` with `overflow-y-auto`. It SHALL display editable fields for the task title, description, status, tags, category, execute_at, repeat_interval, and repeat_until, along with Save, Cancel, and Delete buttons.
 
@@ -22,6 +24,10 @@ When `task.runner_logs` is present, the modal SHALL display the logs in an alway
 - **WHEN** the edit modal opens on a viewport 768px or wider
 - **THEN** the modal displays in a two-column grid layout with approximately 35:65 ratio, metadata fields (status, category, dates, tags) in the left column, and the description textarea filling the full height of the right column, with the title spanning both columns at the top
 
+#### Scenario: Description textarea fills right column height
+- **WHEN** the edit modal opens on a viewport 768px or wider
+- **THEN** the description textarea stretches to fill the full height of the right column, with a minimum height of 8 rows
+
 #### Scenario: Single-column layout on narrow viewport
 - **WHEN** the edit modal opens on a viewport narrower than 768px
 - **THEN** all fields stack in a single column and the modal width fills the available viewport width
@@ -29,10 +35,6 @@ When `task.runner_logs` is present, the modal SHALL display the logs in an alway
 #### Scenario: Modal bounded to viewport height
 - **WHEN** the edit modal opens and the content exceeds 85% of the viewport height
 - **THEN** the modal content scrolls vertically within the `max-h-[85vh]` constraint
-
-#### Scenario: Description textarea fills right column height
-- **WHEN** the edit modal opens on a viewport 768px or wider
-- **THEN** the description textarea stretches to fill the full height of the right column, with a minimum height of 8 rows
 
 #### Scenario: Runner logs displayed full-width at bottom
 - **WHEN** the edit modal opens for a task with runner_logs containing log text
@@ -131,19 +133,3 @@ When the edit modal opens for a task with `status = "running"`, all form fields 
 #### Scenario: Runner logs visible in read-only mode
 - **WHEN** the edit modal opens in read-only mode for a running task with runner_logs
 - **THEN** the "Task Runner Logs" section is visible as a full-width row below the content columns
-
-### Requirement: Edit modal read-only for viewer users
-
-When a user with the `viewer` role opens the edit modal, all form fields SHALL be rendered as read-only regardless of the task's status. The "Save" and "Delete" action buttons SHALL be hidden. Only the "Close" / "Cancel" button SHALL be visible. This allows viewers to inspect task details without the ability to modify them.
-
-#### Scenario: Viewer opens edit modal for any task
-- **WHEN** a viewer opens the edit modal for a task with status "new"
-- **THEN** all form fields are disabled/read-only and the Save and Delete buttons are hidden
-
-#### Scenario: Viewer opens edit modal for completed task
-- **WHEN** a viewer opens the edit modal for a task with status "completed"
-- **THEN** all form fields are disabled/read-only, output is viewable, and action buttons are hidden
-
-#### Scenario: Editor opens edit modal for non-running task
-- **WHEN** an editor opens the edit modal for a task with status "review"
-- **THEN** all form fields are editable and action buttons are visible

@@ -305,15 +305,30 @@ describe('TaskEditModal', () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
     const grid = wrapper.find('.grid')
     expect(grid.exists()).toBe(true)
-    expect(grid.classes()).toContain('md:grid-cols-2')
+    expect(grid.classes()).toContain('md:grid-cols-[1fr_2fr]')
   })
 
   // --- Description textarea rows ---
 
-  it('description textarea has rows="8"', () => {
+  it('description textarea has rows="8" and min-h for flex-grow', () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
     const textarea = wrapper.find('#edit-description')
     expect(textarea.attributes('rows')).toBe('8')
+    expect(textarea.classes()).toContain('h-full')
+    expect(textarea.classes()).toContain('min-h-[8rem]')
+  })
+
+  it('right column uses flex layout with description container as flex-1', () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    const textarea = wrapper.find('#edit-description')
+    const descContainer = textarea.element.parentElement!
+    expect(descContainer.classList.contains('flex-1')).toBe(true)
+    expect(descContainer.classList.contains('flex')).toBe(true)
+    expect(descContainer.classList.contains('flex-col')).toBe(true)
+    const rightCol = descContainer.parentElement!
+    expect(rightCol.classList.contains('flex')).toBe(true)
+    expect(rightCol.classList.contains('flex-col')).toBe(true)
+    expect(rightCol.classList.contains('gap-4')).toBe(true)
   })
 
   // --- Task Runner Logs section ---
@@ -328,6 +343,14 @@ describe('TaskEditModal', () => {
     const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
     expect(wrapper.text()).toContain('Task Runner Logs')
     expect(wrapper.find('pre').exists()).toBe(true)
+  })
+
+  it('runner logs are in a full-width col-span-2 row (not inside right column)', () => {
+    const taskWithLogs: TaskData = { ...task, runner_logs: 'some logs' }
+    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
+    const pre = wrapper.find('pre')
+    const logsContainer = pre.element.parentElement!
+    expect(logsContainer.classList.contains('md:col-span-2')).toBe(true)
   })
 
   it('displays runner logs content in a pre block', () => {

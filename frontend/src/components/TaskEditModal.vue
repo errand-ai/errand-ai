@@ -179,7 +179,7 @@ function onTagBlur() {
     <form method="dialog" class="max-w-3xl w-full p-6 max-h-[85vh] overflow-y-auto" @submit.prevent="onSave">
       <h3 class="mb-4 text-lg font-semibold text-gray-800">Edit Task</h3>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-6">
         <!-- Title: spans both columns -->
         <div class="md:col-span-2">
           <label for="edit-title" class="mb-1 block text-sm font-medium text-gray-700">Title</label>
@@ -319,22 +319,24 @@ function onTagBlur() {
         </div>
 
         <!-- Right column: content fields -->
-        <div class="space-y-4">
-          <div>
+        <div class="flex flex-col gap-4">
+          <div class="flex-1 flex flex-col">
             <label for="edit-description" class="mb-1 block text-sm font-medium text-gray-700">Description</label>
             <textarea
               id="edit-description"
               v-model="description"
               rows="8"
               :disabled="readOnly"
-              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+              class="h-full min-h-[8rem] w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
           </div>
 
-          <div v-if="task.runner_logs">
-            <label class="mb-1 block text-sm font-medium text-gray-700">Task Runner Logs</label>
-            <pre class="max-h-48 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 whitespace-pre">{{ task.runner_logs }}</pre>
-          </div>
+        </div>
+
+        <!-- Runner logs: full-width bottom row -->
+        <div v-if="task.runner_logs" class="md:col-span-2">
+          <label class="mb-1 block text-sm font-medium text-gray-700">Task Runner Logs</label>
+          <pre class="max-h-48 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 whitespace-pre">{{ task.runner_logs }}</pre>
         </div>
 
         <!-- Error + action buttons: span both columns -->
