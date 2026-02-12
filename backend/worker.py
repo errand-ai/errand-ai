@@ -113,18 +113,19 @@ DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 async def read_settings(session: AsyncSession) -> dict:
     """Read task processing settings from the settings table.
 
-    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt.
+    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level.
     """
     settings: dict = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
         "system_prompt": "",
+        "task_runner_log_level": "",
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level"])
         )
     )
     for setting in result.scalars().all():
@@ -136,6 +137,8 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["task_processing_model"] = str(setting.value) if setting.value else DEFAULT_TASK_PROCESSING_MODEL
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
+        elif setting.key == "task_runner_log_level":
+            settings["task_runner_log_level"] = str(setting.value) if setting.value else ""
 
     return settings
 
@@ -202,6 +205,27 @@ async def _next_position(session: AsyncSession, status: str) -> int:
     return (max_pos or 0) + 1
 
 
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def substitute_env_vars(obj, environ=None):
+    """Recursively substitute $VAR and ${VAR} placeholders in string values."""
+    if environ is None:
+        environ = os.environ
+
+    def _replace_match(m):
+        var_name = m.group(1) or m.group(2)
+        return environ.get(var_name, m.group(0))
+
+    if isinstance(obj, str):
+        return _ENV_VAR_RE.sub(_replace_match, obj)
+    if isinstance(obj, dict):
+        return {k: substitute_env_vars(v, environ) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [substitute_env_vars(item, environ) for item in obj]
+    return obj
+
+
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
     """Run task in a Docker container via DinD. Returns (exit_code, stdout, stderr)."""
     global active_container_id
@@ -228,6 +252,9 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
     env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
     env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
     env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
+    task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
+    if task_runner_log_level:
+        env_vars["LOG_LEVEL"] = task_runner_log_level
 
     # Ensure image is available (try local first, pull only if not found)
     try:
@@ -252,7 +279,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         files = {
             "prompt.txt": prompt_text,
             "system_prompt.txt": system_prompt,
-            "mcp.json": json.dumps(mcp_servers),
+            "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
         }
         put_archive(container, files)
 

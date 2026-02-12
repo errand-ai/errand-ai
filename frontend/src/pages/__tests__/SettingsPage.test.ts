@@ -662,6 +662,71 @@ describe('SettingsPage', () => {
     expect(wrapper.text()).toContain('Timezone saved.')
   })
 
+  // --- Task Runner Log Level Dropdown ---
+
+  it('renders Task Runner log level dropdown with default INFO', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Task Runner')
+    expect(wrapper.text()).toContain('Log Level')
+    const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
+    expect(logLevelSelect.exists()).toBe(true)
+    expect((logLevelSelect.element as HTMLSelectElement).value).toBe('INFO')
+
+    const options = logLevelSelect.findAll('option')
+    const optionValues = options.map(o => o.text())
+    expect(optionValues).toEqual(['INFO', 'DEBUG', 'WARNING', 'ERROR'])
+  })
+
+  it('loads task runner log level from settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ task_runner_log_level: 'DEBUG' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
+    expect((logLevelSelect.element as HTMLSelectElement).value).toBe('DEBUG')
+  })
+
+  it('saves task runner log level on selection change', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
+    await logLevelSelect.setValue('ERROR')
+    await flushPromises()
+
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('task_runner_log_level')
+    )
+    expect(putCall).toBeTruthy()
+    expect(JSON.parse(putCall![1].body as string)).toEqual({ task_runner_log_level: 'ERROR' })
+    expect(wrapper.text()).toContain('Log level saved.')
+  })
+
   // --- Transcription Model Dropdown ---
 
   it('renders Transcription Model dropdown with filtered models', async () => {

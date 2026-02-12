@@ -27,6 +27,9 @@ const transcriptionModels = ref<string[]>([])
 const transcriptionModelsError = ref<string | null>(null)
 const transcriptionModelSaving = ref(false)
 const transcriptionModelSuccess = ref(false)
+const taskRunnerLogLevel = ref('INFO')
+const taskRunnerLogLevelSaving = ref(false)
+const taskRunnerLogLevelSuccess = ref(false)
 const timezoneValue = ref('UTC')
 const timezoneSaving = ref(false)
 const timezoneSuccess = ref(false)
@@ -68,6 +71,7 @@ async function loadSettings() {
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
     taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
     transcriptionModel.value = data.transcription_model ?? ''
+    taskRunnerLogLevel.value = data.task_runner_log_level || 'INFO'
     timezoneValue.value = data.timezone ?? 'UTC'
     archiveAfterDays.value = data.archive_after_days ?? 3
   } catch {
@@ -279,6 +283,28 @@ async function onTranscriptionModelChange() {
   }
 }
 
+async function onTaskRunnerLogLevelChange() {
+  taskRunnerLogLevelSaving.value = true
+  taskRunnerLogLevelSuccess.value = false
+  try {
+    const res = await settingsFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_runner_log_level: taskRunnerLogLevel.value }),
+    })
+    if (!res.ok) {
+      error.value = `Failed to save log level (HTTP ${res.status})`
+      return
+    }
+    taskRunnerLogLevelSuccess.value = true
+    setTimeout(() => { taskRunnerLogLevelSuccess.value = false }, 3000)
+  } catch {
+    error.value = 'Failed to save log level. Please check your connection.'
+  } finally {
+    taskRunnerLogLevelSaving.value = false
+  }
+}
+
 async function onTimezoneChange() {
   timezoneSaving.value = true
   timezoneSuccess.value = false
@@ -442,6 +468,30 @@ onMounted(async () => {
             {{ archiveSaving ? 'Saving...' : 'Save' }}
           </button>
           <span v-if="archiveSuccess" class="text-sm text-green-600">Archive setting saved.</span>
+        </div>
+      </div>
+
+      <!-- Task Runner -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">Task Runner</h3>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Log Level</label>
+          <div class="flex items-center gap-3">
+            <select
+              v-model="taskRunnerLogLevel"
+              :disabled="taskRunnerLogLevelSaving"
+              class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+              @change="onTaskRunnerLogLevelChange"
+              data-testid="task-runner-log-level-select"
+            >
+              <option value="INFO">INFO</option>
+              <option value="DEBUG">DEBUG</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+            <span v-if="taskRunnerLogLevelSaving" class="text-sm text-gray-500">Saving...</span>
+            <span v-if="taskRunnerLogLevelSuccess" class="text-sm text-green-600">Log level saved.</span>
+          </div>
         </div>
       </div>
 

@@ -16,6 +16,7 @@ from worker import (
     read_settings, truncate_output, _task_to_dict, put_archive,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
+    substitute_env_vars,
 )
 
 
@@ -49,6 +50,64 @@ def test_truncate_output_unicode():
     text = "\U0001f600" * 100  # emoji, 4 bytes each
     result = truncate_output(text, max_bytes=50)
     assert "--- OUTPUT TRUNCATED" in result
+
+
+# --- Environment variable substitution ---
+
+
+def test_substitute_env_vars_dollar_syntax():
+    """$VAR syntax is substituted from the provided mapping."""
+    obj = {"headers": {"x-api-key": "Bearer $API_KEY"}}
+    result = substitute_env_vars(obj, environ={"API_KEY": "sk-secret-123"})
+    assert result == {"headers": {"x-api-key": "Bearer sk-secret-123"}}
+
+
+def test_substitute_env_vars_braced_syntax():
+    """${VAR} syntax is substituted from the provided mapping."""
+    obj = {"headers": {"Authorization": "${AUTH_TOKEN}"}}
+    result = substitute_env_vars(obj, environ={"AUTH_TOKEN": "Bearer abc-456"})
+    assert result == {"headers": {"Authorization": "Bearer abc-456"}}
+
+
+def test_substitute_env_vars_missing_variable():
+    """Missing environment variable leaves placeholder unchanged."""
+    obj = {"headers": {"x-api-key": "$MISSING_KEY"}}
+    result = substitute_env_vars(obj, environ={})
+    assert result == {"headers": {"x-api-key": "$MISSING_KEY"}}
+
+
+def test_substitute_env_vars_nested():
+    """Variables at various depths in nested structures are substituted."""
+    obj = {
+        "mcpServers": {
+            "svc1": {"url": "http://host/mcp", "headers": {"key": "$DB_PASSWORD"}},
+            "svc2": {"nested": {"deep": {"value": "$DB_PASSWORD"}}},
+        }
+    }
+    result = substitute_env_vars(obj, environ={"DB_PASSWORD": "s3cret"})
+    assert result["mcpServers"]["svc1"]["headers"]["key"] == "s3cret"
+    assert result["mcpServers"]["svc2"]["nested"]["deep"]["value"] == "s3cret"
+
+
+def test_substitute_env_vars_non_string_values():
+    """Numbers, booleans, and nulls pass through unchanged."""
+    obj = {"port": 8080, "enabled": True, "extra": None, "items": [1, False, "val"]}
+    result = substitute_env_vars(obj, environ={"val": "x"})
+    assert result == {"port": 8080, "enabled": True, "extra": None, "items": [1, False, "val"]}
+
+
+def test_substitute_env_vars_multiple_in_single_string():
+    """Multiple variables in a single string value are all substituted."""
+    obj = {"url": "$SCHEME://$HOST:$PORT/mcp"}
+    result = substitute_env_vars(obj, environ={"SCHEME": "https", "HOST": "api.example.com", "PORT": "8443"})
+    assert result == {"url": "https://api.example.com:8443/mcp"}
+
+
+def test_substitute_env_vars_no_variables():
+    """Config with no variable references passes through unchanged."""
+    obj = {"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {}}}}
+    result = substitute_env_vars(obj, environ={"UNUSED": "value"})
+    assert result == {"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {}}}}
 
 
 # --- _task_to_dict ---
@@ -563,6 +622,7 @@ async def test_read_settings_defaults(db_session):
     assert settings["credentials"] == []
     assert settings["task_processing_model"] == DEFAULT_TASK_PROCESSING_MODEL
     assert settings["system_prompt"] == ""
+    assert settings["task_runner_log_level"] == ""
 
 
 async def test_read_settings_with_mcp(db_session):
@@ -616,6 +676,18 @@ async def test_read_settings_with_system_prompt(db_session):
     assert settings["system_prompt"] == "You are a helpful assistant."
 
 
+async def test_read_settings_with_task_runner_log_level(db_session):
+    """Reads task_runner_log_level from settings table."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "task_runner_log_level", "value": json.dumps("DEBUG")},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["task_runner_log_level"] == "DEBUG"
+
+
 # --- Container environment variables ---
 
 
@@ -658,6 +730,118 @@ def test_process_task_container_env_vars():
     assert env["SYSTEM_PROMPT_PATH"] == "/workspace/system_prompt.txt"
     assert env["MCP_CONFIGURATION_PATH"] == "/workspace/mcp.json"
     assert exit_code == 0
+
+
+def test_process_task_container_passes_log_level_from_settings():
+    """task_runner_log_level from settings is forwarded as LOG_LEVEL to the container."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "task_runner_log_level": "DEBUG",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert env["LOG_LEVEL"] == "DEBUG"
+
+
+def test_process_task_container_log_level_env_fallback():
+    """TASK_RUNNER_LOG_LEVEL env var is used when settings value is empty."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "task_runner_log_level": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "TASK_RUNNER_LOG_LEVEL": "WARNING",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert env["LOG_LEVEL"] == "WARNING"
+
+
+def test_process_task_container_omits_log_level_when_unset():
+    """LOG_LEVEL is not set when both settings and env var are absent."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "task_runner_log_level": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-123"
+    mock_container.short_id = "cont123"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    env = mock_client.containers.create.call_args[1]["environment"]
+    assert "LOG_LEVEL" not in env
 
 
 def test_process_task_container_copies_three_files():
