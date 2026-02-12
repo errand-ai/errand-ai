@@ -1,5 +1,7 @@
 ### Requirement: Worker executes tasks in DinD containers
-The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle. The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, and `mcp_servers` settings from the database, (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings) into the stopped container via `put_archive()`, (5) start the container, (6) wait for the container to exit, (7) capture stdout/stderr via `container.logs()`, (8) parse the structured output from stdout, (9) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (10) remove the container, (11) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle. The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, and `mcp_servers` settings from the database, (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, (5) start the container, (6) wait for the container to exit, (7) capture stdout/stderr via `container.logs()`, (8) parse the structured output from stdout, (9) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (10) remove the container, (11) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+
+Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the worker SHALL perform environment variable substitution on all string values within the JSON structure. The substitution SHALL support two syntaxes: `$VARIABLE_NAME` and `${VARIABLE_NAME}`, where `VARIABLE_NAME` matches the pattern `[A-Za-z_][A-Za-z0-9_]*`. The worker SHALL resolve variable references against its own process environment (`os.environ`). If a referenced variable does not exist in the worker's environment, the placeholder SHALL be left unchanged in the output. Substitution SHALL only operate on string values within the JSON structure — keys, numbers, booleans, and nulls SHALL NOT be modified.
 
 The worker SHALL store the captured stderr in the task's `runner_logs` field for all execution outcomes: successful completion, needs_input, retry on failure, and retry on parse error. The `runner_logs` field SHALL be written in every UPDATE statement that modifies the task after container execution.
 
@@ -32,6 +34,30 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 #### Scenario: Missing settings use defaults
 - **WHEN** the worker picks up a task but `task_processing_model` is not set in settings
 - **THEN** the worker uses `claude-sonnet-4-5-20250929` as the model and passes an empty string for system prompt and empty JSON object for MCP config
+
+#### Scenario: Environment variable substitution in MCP config with $VAR syntax
+- **WHEN** the worker writes `mcp.json` and the `mcp_servers` configuration contains `{"mcpServers": {"argocd": {"url": "http://mcp-proxy:4000/argocd/mcp", "headers": {"x-litellm-api-key": "Bearer $LITELLM_API_KEY"}}}}` and the worker environment has `LITELLM_API_KEY=sk-secret-123`
+- **THEN** the `mcp.json` written to the container contains `{"mcpServers": {"argocd": {"url": "http://mcp-proxy:4000/argocd/mcp", "headers": {"x-litellm-api-key": "Bearer sk-secret-123"}}}}`
+
+#### Scenario: Environment variable substitution in MCP config with ${VAR} syntax
+- **WHEN** the worker writes `mcp.json` and the `mcp_servers` configuration contains `{"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {"Authorization": "${AUTH_TOKEN}"}}}}` and the worker environment has `AUTH_TOKEN=Bearer abc-456`
+- **THEN** the `mcp.json` written to the container contains `{"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {"Authorization": "Bearer abc-456"}}}}`
+
+#### Scenario: Missing environment variable leaves placeholder unchanged
+- **WHEN** the worker writes `mcp.json` and the `mcp_servers` configuration contains `{"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {"x-api-key": "$MISSING_KEY"}}}}` and `MISSING_KEY` is not set in the worker environment
+- **THEN** the `mcp.json` written to the container contains `{"mcpServers": {"svc": {"url": "http://host/mcp", "headers": {"x-api-key": "$MISSING_KEY"}}}}`
+
+#### Scenario: Substitution in nested JSON values
+- **WHEN** the worker writes `mcp.json` and the `mcp_servers` configuration contains nested objects with string values containing `$DB_PASSWORD` at various depths and the worker environment has `DB_PASSWORD=s3cret`
+- **THEN** all string values containing `$DB_PASSWORD` at any nesting level are substituted with `s3cret`
+
+#### Scenario: Non-string values are not modified during substitution
+- **WHEN** the worker writes `mcp.json` and the `mcp_servers` configuration contains numeric, boolean, or null values
+- **THEN** those values are passed through unchanged regardless of environment variables
+
+#### Scenario: Multiple variables in a single string value
+- **WHEN** the worker writes `mcp.json` and a string value contains `"$SCHEME://$HOST:$PORT/mcp"` and the worker environment has `SCHEME=https`, `HOST=api.example.com`, and `PORT=8443`
+- **THEN** the substituted value is `"https://api.example.com:8443/mcp"`
 
 #### Scenario: WebSocket event includes all task fields
 - **WHEN** the worker publishes a `task_updated` event after changing task status
