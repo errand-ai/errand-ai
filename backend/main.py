@@ -529,7 +529,7 @@ async def transcribe_status(
 async def list_transcription_models(
     _user: dict = Depends(require_admin),
 ):
-    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    base_url = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
     api_key = os.environ.get("OPENAI_API_KEY", "")
