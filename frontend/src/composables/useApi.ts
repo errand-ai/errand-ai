@@ -147,3 +147,37 @@ export async function saveTaskProcessingModel(model: string): Promise<Record<str
   if (!res.ok) throw new Error(`Failed to save task processing model: ${res.status}`)
   return res.json()
 }
+
+export async function fetchTranscriptionStatus(): Promise<{ enabled: boolean }> {
+  const res = await authFetch(`${BASE}/transcribe/status`)
+  if (!res.ok) return { enabled: false }
+  return res.json()
+}
+
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const formData = new FormData()
+  formData.append('file', blob, 'recording.webm')
+  const res = await authFetch(`${BASE}/transcribe`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) throw new Error(`Transcription failed: ${res.status}`)
+  const data = await res.json()
+  return data.text
+}
+
+export async function fetchTranscriptionModels(): Promise<string[]> {
+  const res = await authFetch(`${BASE}/llm/transcription-models`)
+  if (!res.ok) throw new Error(`Failed to fetch transcription models: ${res.status}`)
+  return res.json()
+}
+
+export async function saveTranscriptionModel(model: string | null): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcription_model: model }),
+  })
+  if (!res.ok) throw new Error(`Failed to save transcription model: ${res.status}`)
+  return res.json()
+}

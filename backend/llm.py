@@ -12,6 +12,16 @@ from models import Setting
 
 logger = logging.getLogger(__name__)
 
+
+class TranscriptionNotConfiguredError(Exception):
+    """Raised when transcription model is not configured."""
+    pass
+
+
+class LLMClientNotConfiguredError(Exception):
+    """Raised when the LLM client is not available."""
+    pass
+
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 VALID_CATEGORIES = {"immediate", "scheduled", "repeating"}
@@ -172,3 +182,23 @@ async def generate_title(description: str, session: AsyncSession, now: datetime 
     except Exception:
         logger.exception("LLM title generation failed")
         return LLMResult(title=_fallback_title(description), success=False)
+
+
+async def transcribe_audio(file, session: AsyncSession) -> str:
+    """Transcribe an audio file using the configured transcription model.
+
+    Raises TranscriptionNotConfiguredError if no transcription_model setting exists.
+    Raises LLMClientNotConfiguredError if the LLM client is not available.
+    """
+    client = get_llm_client()
+    if client is None:
+        raise LLMClientNotConfiguredError("LLM client is not configured")
+
+    result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))
+    setting = result.scalar_one_or_none()
+    if not setting or not setting.value:
+        raise TranscriptionNotConfiguredError("No transcription model configured")
+
+    model = str(setting.value)
+    response = await client.audio.transcriptions.create(model=model, file=file)
+    return response.text
