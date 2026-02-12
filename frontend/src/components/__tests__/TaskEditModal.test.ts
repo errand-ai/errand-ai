@@ -299,26 +299,42 @@ describe('TaskEditModal', () => {
     expect(wrapper.emitted('delete')).toHaveLength(1)
   })
 
+  // --- Two-column grid layout ---
+
+  it('has two-column grid class on the layout container', () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    const grid = wrapper.find('.grid')
+    expect(grid.exists()).toBe(true)
+    expect(grid.classes()).toContain('md:grid-cols-2')
+  })
+
+  // --- Description textarea rows ---
+
+  it('description textarea has rows="8"', () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    const textarea = wrapper.find('#edit-description')
+    expect(textarea.attributes('rows')).toBe('8')
+  })
+
   // --- Task Runner Logs section ---
 
   it('hides runner logs section when runner_logs is null', () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
-    expect(wrapper.find('details').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Task Runner Logs')
   })
 
   it('shows runner logs section when runner_logs is present', () => {
     const taskWithLogs: TaskData = { ...task, runner_logs: '2026-02-10 INFO Starting agent execution' }
     const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-    expect(wrapper.find('details').exists()).toBe(true)
     expect(wrapper.text()).toContain('Task Runner Logs')
+    expect(wrapper.find('pre').exists()).toBe(true)
   })
 
   it('displays runner logs content in a pre block', () => {
     const logs = '2026-02-10 INFO Starting agent\n2026-02-10 INFO Connected to MCP'
     const taskWithLogs: TaskData = { ...task, runner_logs: logs }
     const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-    const pre = wrapper.find('details pre')
+    const pre = wrapper.find('pre')
     expect(pre.exists()).toBe(true)
     expect(pre.text()).toContain('2026-02-10 INFO Starting agent')
     expect(pre.text()).toContain('2026-02-10 INFO Connected to MCP')

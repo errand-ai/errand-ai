@@ -175,180 +175,190 @@ function onTagBlur() {
     class="rounded-lg p-0 shadow-xl backdrop:bg-black/50"
     @cancel.prevent="onCancel"
   >
-    <form method="dialog" class="w-[28rem] p-6" @submit.prevent="onSave">
+    <form method="dialog" class="max-w-3xl w-full p-6 max-h-[85vh] overflow-y-auto" @submit.prevent="onSave">
       <h3 class="mb-4 text-lg font-semibold text-gray-800">Edit Task</h3>
 
-      <div class="mb-4">
-        <label for="edit-title" class="mb-1 block text-sm font-medium text-gray-700">Title</label>
-        <input
-          id="edit-title"
-          v-model="title"
-          type="text"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-      </div>
-
-      <div class="mb-4">
-        <label for="edit-description" class="mb-1 block text-sm font-medium text-gray-700">Description</label>
-        <textarea
-          id="edit-description"
-          v-model="description"
-          rows="3"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-      </div>
-
-      <div class="mb-4">
-        <label for="edit-status" class="mb-1 block text-sm font-medium text-gray-700">Status</label>
-        <select
-          id="edit-status"
-          v-model="status"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        >
-          <option v-for="s in statuses" :key="s.key" :value="s.key">{{ s.label }}</option>
-        </select>
-      </div>
-
-      <div class="mb-4">
-        <label for="edit-category" class="mb-1 block text-sm font-medium text-gray-700">Category</label>
-        <select
-          id="edit-category"
-          v-model="category"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        >
-          <option v-for="c in categories" :key="c.key" :value="c.key">{{ c.label }}</option>
-        </select>
-      </div>
-
-      <div v-if="isCompletedStatus" class="mb-4">
-        <label class="mb-1 block text-sm font-medium text-gray-700">Completed at</label>
-        <p class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
-          {{ formatDatetime(task.updated_at) || 'Unknown' }}
-        </p>
-      </div>
-      <div v-else class="mb-4">
-        <label for="edit-execute-at" class="mb-1 block text-sm font-medium text-gray-700">Execute at</label>
-        <input
-          id="edit-execute-at"
-          v-model="executeAtLocal"
-          type="datetime-local"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-      </div>
-
-      <div v-if="showRepeatFields" class="mb-4">
-        <label for="edit-repeat-interval" class="mb-1 block text-sm font-medium text-gray-700">Repeat interval</label>
-        <input
-          id="edit-repeat-interval"
-          v-model="repeatInterval"
-          type="text"
-          placeholder="e.g. 15m, 1h, 1d, 1w, or 0 9 * * MON-FRI"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <p class="mt-1 text-xs text-gray-500">
-          Simple intervals (15m, 1h, 1d, 1w) or crontab (e.g. 0 9 * * MON-FRI)
-        </p>
-        <div class="mt-1.5 flex gap-1.5">
-          <button
-            v-for="qi in quickIntervals"
-            :key="qi"
-            type="button"
-            class="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
-            @click="setQuickInterval(qi)"
-          >
-            {{ qi }}
-          </button>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Title: spans both columns -->
+        <div class="md:col-span-2">
+          <label for="edit-title" class="mb-1 block text-sm font-medium text-gray-700">Title</label>
+          <input
+            id="edit-title"
+            v-model="title"
+            type="text"
+            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
         </div>
-      </div>
 
-      <div v-if="showRepeatFields" class="mb-4">
-        <label for="edit-repeat-until" class="mb-1 block text-sm font-medium text-gray-700">Repeat until</label>
-        <input
-          id="edit-repeat-until"
-          v-model="repeatUntilLocal"
-          type="datetime-local"
-          class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-      </div>
+        <!-- Left column: metadata fields -->
+        <div class="space-y-4">
+          <div>
+            <label for="edit-status" class="mb-1 block text-sm font-medium text-gray-700">Status</label>
+            <select
+              id="edit-status"
+              v-model="status"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option v-for="s in statuses" :key="s.key" :value="s.key">{{ s.label }}</option>
+            </select>
+          </div>
 
-      <div class="mb-4">
-        <label class="mb-1 block text-sm font-medium text-gray-700">Tags</label>
-        <div class="flex flex-wrap gap-1 mb-2" v-if="tags.length > 0">
-          <span
-            v-for="tag in tags"
-            :key="tag"
-            class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700"
-          >
-            {{ tag }}
+          <div>
+            <label for="edit-category" class="mb-1 block text-sm font-medium text-gray-700">Category</label>
+            <select
+              id="edit-category"
+              v-model="category"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option v-for="c in categories" :key="c.key" :value="c.key">{{ c.label }}</option>
+            </select>
+          </div>
+
+          <div v-if="isCompletedStatus">
+            <label class="mb-1 block text-sm font-medium text-gray-700">Completed at</label>
+            <p class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+              {{ formatDatetime(task.updated_at) || 'Unknown' }}
+            </p>
+          </div>
+          <div v-else>
+            <label for="edit-execute-at" class="mb-1 block text-sm font-medium text-gray-700">Execute at</label>
+            <input
+              id="edit-execute-at"
+              v-model="executeAtLocal"
+              type="datetime-local"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+
+          <div v-if="showRepeatFields">
+            <label for="edit-repeat-interval" class="mb-1 block text-sm font-medium text-gray-700">Repeat interval</label>
+            <input
+              id="edit-repeat-interval"
+              v-model="repeatInterval"
+              type="text"
+              placeholder="e.g. 15m, 1h, 1d, 1w, or 0 9 * * MON-FRI"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p class="mt-1 text-xs text-gray-500">
+              Simple intervals (15m, 1h, 1d, 1w) or crontab (e.g. 0 9 * * MON-FRI)
+            </p>
+            <div class="mt-1.5 flex gap-1.5">
+              <button
+                v-for="qi in quickIntervals"
+                :key="qi"
+                type="button"
+                class="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
+                @click="setQuickInterval(qi)"
+              >
+                {{ qi }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="showRepeatFields">
+            <label for="edit-repeat-until" class="mb-1 block text-sm font-medium text-gray-700">Repeat until</label>
+            <input
+              id="edit-repeat-until"
+              v-model="repeatUntilLocal"
+              type="datetime-local"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1 block text-sm font-medium text-gray-700">Tags</label>
+            <div class="flex flex-wrap gap-1 mb-2" v-if="tags.length > 0">
+              <span
+                v-for="tag in tags"
+                :key="tag"
+                class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700"
+              >
+                {{ tag }}
+                <button
+                  type="button"
+                  class="text-blue-400 hover:text-blue-600"
+                  @click="removeTag(tag)"
+                >
+                  &times;
+                </button>
+              </span>
+            </div>
+            <div class="relative">
+              <input
+                v-model="tagInput"
+                type="text"
+                placeholder="Add tag..."
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                @input="onTagInputChange"
+                @keydown="onTagKeydown"
+                @blur="onTagBlur"
+              />
+              <ul
+                v-if="showSuggestions"
+                class="absolute z-10 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-40 overflow-y-auto"
+              >
+                <li
+                  v-for="suggestion in tagSuggestions"
+                  :key="suggestion"
+                  class="cursor-pointer px-3 py-2 text-sm hover:bg-blue-50"
+                  @mousedown.prevent="addTag(suggestion)"
+                >
+                  {{ suggestion }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column: content fields -->
+        <div class="space-y-4">
+          <div>
+            <label for="edit-description" class="mb-1 block text-sm font-medium text-gray-700">Description</label>
+            <textarea
+              id="edit-description"
+              v-model="description"
+              rows="8"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+
+          <div v-if="task.runner_logs">
+            <label class="mb-1 block text-sm font-medium text-gray-700">Task Runner Logs</label>
+            <pre class="max-h-48 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 whitespace-pre">{{ task.runner_logs }}</pre>
+          </div>
+        </div>
+
+        <!-- Error + action buttons: span both columns -->
+        <div class="md:col-span-2">
+          <p v-if="error" class="mb-3 text-sm text-red-600">{{ error }}</p>
+
+          <div class="flex items-center justify-between">
             <button
               type="button"
-              class="text-blue-400 hover:text-blue-600"
-              @click="removeTag(tag)"
+              class="rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+              @click="onDeleteClick"
             >
-              &times;
+              Delete
             </button>
-          </span>
-        </div>
-        <div class="relative">
-          <input
-            v-model="tagInput"
-            type="text"
-            placeholder="Add tag..."
-            class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            @input="onTagInputChange"
-            @keydown="onTagKeydown"
-            @blur="onTagBlur"
-          />
-          <ul
-            v-if="showSuggestions"
-            class="absolute z-10 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg max-h-40 overflow-y-auto"
-          >
-            <li
-              v-for="suggestion in tagSuggestions"
-              :key="suggestion"
-              class="cursor-pointer px-3 py-2 text-sm hover:bg-blue-50"
-              @mousedown.prevent="addTag(suggestion)"
-            >
-              {{ suggestion }}
-            </li>
-          </ul>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                @click="onCancel"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                class="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                :disabled="saving"
+              >
+                {{ saving ? 'Saving...' : 'Save' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
-
-      <p v-if="error" class="mb-3 text-sm text-red-600">{{ error }}</p>
-
-      <div class="flex items-center justify-between">
-        <button
-          type="button"
-          class="rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
-          @click="onDeleteClick"
-        >
-          Delete
-        </button>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-            @click="onCancel"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            class="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-            :disabled="saving"
-          >
-            {{ saving ? 'Saving...' : 'Save' }}
-          </button>
-        </div>
-      </div>
-
-      <details v-if="task.runner_logs" class="mt-4">
-        <summary class="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
-          Task Runner Logs
-        </summary>
-        <pre class="mt-2 max-h-64 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 whitespace-pre">{{ task.runner_logs }}</pre>
-      </details>
     </form>
   </dialog>
 </template>
