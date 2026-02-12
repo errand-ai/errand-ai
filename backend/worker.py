@@ -302,6 +302,27 @@ async def _schedule_retry(task: Task, output: str | None = None, runner_logs: st
         await session.execute(
             update(Task).where(Task.id == task.id).values(**values)
         )
+
+        # Add "Retry" tag to task (find-or-create, guard against duplicates)
+        result = await session.execute(
+            select(Tag).where(Tag.name == "Retry")
+        )
+        retry_tag = result.scalar_one_or_none()
+        if retry_tag is None:
+            retry_tag = Tag(name="Retry")
+            session.add(retry_tag)
+            await session.flush()
+        existing = await session.execute(
+            select(task_tags).where(
+                task_tags.c.task_id == task.id,
+                task_tags.c.tag_id == retry_tag.id,
+            )
+        )
+        if existing.first() is None:
+            await session.execute(
+                task_tags.insert().values(task_id=task.id, tag_id=retry_tag.id)
+            )
+
         await session.commit()
         result = await session.execute(
             select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
@@ -455,6 +476,19 @@ async def run() -> None:
                         # Add tag to task via association table
                         await session.execute(
                             task_tags.insert().values(task_id=task.id, tag_id=tag.id)
+                        )
+
+                    # Remove "Retry" tag if present (applies to both completed and review)
+                    result = await session.execute(
+                        select(Tag).where(Tag.name == "Retry")
+                    )
+                    retry_tag = result.scalar_one_or_none()
+                    if retry_tag is not None:
+                        await session.execute(
+                            task_tags.delete().where(
+                                task_tags.c.task_id == task.id,
+                                task_tags.c.tag_id == retry_tag.id,
+                            )
                         )
 
                     await session.commit()

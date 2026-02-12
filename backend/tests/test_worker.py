@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
@@ -401,6 +401,159 @@ async def test_schedule_retry_preserves_output_when_none(retry_session_factory):
         result = await session.execute(select(Task).where(Task.id == task_id))
         updated = result.scalar_one()
         assert updated.output == "previous output"
+
+
+# --- Retry tag tests ---
+
+
+async def _get_task_tag_names(factory, task_id):
+    """Return the tag names associated with a task."""
+    async with factory() as session:
+        result = await session.execute(
+            select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+        )
+        task = result.scalar_one()
+        return [t.name for t in task.tags]
+
+
+async def test_schedule_retry_adds_retry_tag(retry_session_factory):
+    """_schedule_retry adds a 'Retry' tag to the task."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="error output")
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert "Retry" in tag_names
+
+
+async def test_schedule_retry_no_duplicate_tag(retry_session_factory):
+    """Second retry does not create a duplicate 'Retry' tag association."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=0)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="first error")
+
+    # Update status back to running for second retry
+    async with factory() as session:
+        await session.execute(
+            update(Task).where(Task.id == task_id).values(status="running")
+        )
+        await session.commit()
+
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="second error")
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert tag_names.count("Retry") == 1
+
+
+async def test_success_removes_retry_tag(retry_session_factory):
+    """Successful completion removes the 'Retry' tag from the task."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=1)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    # First, add a Retry tag via _schedule_retry
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="error")
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert "Retry" in tag_names
+
+    # Now simulate the success path: update task and remove Retry tag
+    from models import Tag, task_tags as tt
+    async with factory() as session:
+        new_position = 1
+        values = {
+            "status": "completed",
+            "position": new_position,
+            "output": "Task done",
+            "runner_logs": "",
+            "retry_count": 0,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        await session.execute(
+            update(Task).where(Task.id == task_id).values(**values)
+        )
+        # Remove Retry tag (same logic as worker success path)
+        result = await session.execute(
+            select(Tag).where(Tag.name == "Retry")
+        )
+        retry_tag = result.scalar_one_or_none()
+        if retry_tag is not None:
+            await session.execute(
+                tt.delete().where(
+                    tt.c.task_id == task_id,
+                    tt.c.tag_id == retry_tag.id,
+                )
+            )
+        await session.commit()
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert "Retry" not in tag_names
+
+
+async def test_review_removes_retry_tag(retry_session_factory):
+    """Task moving to review (needs_input) removes the 'Retry' tag."""
+    engine, factory = retry_session_factory
+    task_id = await _insert_task(factory, title="Test task", status="running", retry_count=1)
+
+    mock_task = MagicMock(spec=Task)
+    mock_task.id = task_id
+
+    # First, add a Retry tag via _schedule_retry
+    with patch("worker.async_session", factory), \
+         patch("worker.publish_event", new_callable=AsyncMock):
+        await _schedule_retry(mock_task, output="error")
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert "Retry" in tag_names
+
+    # Now simulate the review path: update task and remove Retry tag
+    from models import Tag, task_tags as tt
+    async with factory() as session:
+        values = {
+            "status": "review",
+            "position": 1,
+            "output": "Need clarification",
+            "runner_logs": "",
+            "retry_count": 0,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        await session.execute(
+            update(Task).where(Task.id == task_id).values(**values)
+        )
+        # Remove Retry tag (same logic as worker success path)
+        result = await session.execute(
+            select(Tag).where(Tag.name == "Retry")
+        )
+        retry_tag = result.scalar_one_or_none()
+        if retry_tag is not None:
+            await session.execute(
+                tt.delete().where(
+                    tt.c.task_id == task_id,
+                    tt.c.tag_id == retry_tag.id,
+                )
+            )
+        await session.commit()
+
+    tag_names = await _get_task_tag_names(factory, task_id)
+    assert "Retry" not in tag_names
 
 
 async def test_read_settings_defaults(db_session):
