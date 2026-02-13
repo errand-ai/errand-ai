@@ -3,7 +3,17 @@ name: Build and Publish
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'CLAUDE.md'
+      - 'openspec/**'
+      - '.claude/**'
+      - '.serena/**'
   pull_request:
+    paths-ignore:
+      - 'CLAUDE.md'
+      - 'openspec/**'
+      - '.claude/**'
+      - '.serena/**'
 
 env:
   REGISTRY: ghcr.io
