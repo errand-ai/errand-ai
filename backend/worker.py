@@ -27,6 +27,50 @@ class TaskRunnerOutput(BaseModel):
     result: str
     questions: list[str] = []
 
+
+def extract_json(text: str) -> str | None:
+    """Extract a valid TaskRunnerOutput JSON string from LLM output.
+
+    Tries three strategies in order:
+    1. Direct parse of the full text
+    2. Extract content from a markdown code fence anywhere in text
+    3. Extract substring from first '{' to last '}'
+
+    Returns the JSON string if valid TaskRunnerOutput, otherwise None.
+    """
+    stripped = text.strip()
+
+    # Strategy 1: direct parse
+    try:
+        TaskRunnerOutput.model_validate_json(stripped)
+        return stripped
+    except (ValidationError, ValueError):
+        pass
+
+    # Strategy 2: code fence extraction
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", stripped, re.DOTALL)
+    if fence_match:
+        fenced_content = fence_match.group(1).strip()
+        try:
+            TaskRunnerOutput.model_validate_json(fenced_content)
+            return fenced_content
+        except (ValidationError, ValueError):
+            pass
+
+    # Strategy 3: first '{' to last '}'
+    first_brace = stripped.find("{")
+    last_brace = stripped.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        brace_content = stripped[first_brace:last_brace + 1]
+        try:
+            TaskRunnerOutput.model_validate_json(brace_content)
+            return brace_content
+        except (ValidationError, ValueError):
+            pass
+
+    return None
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -458,14 +502,13 @@ async def run() -> None:
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout
 
             if exit_code == 0:
-                # Strip markdown code fences that LLMs sometimes wrap around JSON
-                clean_stdout = stdout.strip()
-                if clean_stdout.startswith("```"):
-                    lines = clean_stdout.split("\n")
-                    if lines[-1].strip() == "```":
-                        clean_stdout = "\n".join(lines[1:-1]).strip()
+                # Extract structured JSON from stdout (handles preamble text, code fences, etc.)
+                clean_stdout = extract_json(stdout)
+                if clean_stdout is None:
+                    logger.warning("Task %s: failed to extract structured output from stdout", task.id)
+                    await _schedule_retry(task, output=full_output, runner_logs=stderr)
+                    continue
 
-                # Parse structured output from task runner (stdout only)
                 try:
                     parsed = TaskRunnerOutput.model_validate_json(clean_stdout)
                 except (ValidationError, ValueError) as e:

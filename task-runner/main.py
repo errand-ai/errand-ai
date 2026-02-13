@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import AsyncExitStack
 
@@ -36,6 +37,49 @@ class TaskRunnerOutput(BaseModel):
     status: str
     result: str
     questions: list[str] = []
+
+
+def extract_json(text: str) -> str | None:
+    """Extract a valid TaskRunnerOutput JSON string from LLM output.
+
+    Tries three strategies in order:
+    1. Direct parse of the full text
+    2. Extract content from a markdown code fence (```json...``` or ```...```) anywhere in text
+    3. Extract substring from first '{' to last '}'
+
+    Returns the JSON string if valid TaskRunnerOutput, otherwise None.
+    """
+    stripped = text.strip()
+
+    # Strategy 1: direct parse
+    try:
+        TaskRunnerOutput.model_validate_json(stripped)
+        return stripped
+    except Exception:
+        pass
+
+    # Strategy 2: code fence extraction
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", stripped, re.DOTALL)
+    if fence_match:
+        fenced_content = fence_match.group(1).strip()
+        try:
+            TaskRunnerOutput.model_validate_json(fenced_content)
+            return fenced_content
+        except Exception:
+            pass
+
+    # Strategy 3: first '{' to last '}'
+    first_brace = stripped.find("{")
+    last_brace = stripped.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        brace_content = stripped[first_brace:last_brace + 1]
+        try:
+            TaskRunnerOutput.model_validate_json(brace_content)
+            return brace_content
+        except Exception:
+            pass
+
+    return None
 
 
 def read_env_vars() -> dict[str, str]:
@@ -170,20 +214,13 @@ async def main():
             result = await Runner.run(agent, user_prompt)
             raw_output = result.final_output
 
-            # Strip markdown code fences that LLMs often wrap around JSON
-            stripped = raw_output.strip()
-            if stripped.startswith("```"):
-                lines = stripped.split("\n")
-                # Remove first line (```json or ```) and last line (```)
-                if lines[-1].strip() == "```":
-                    stripped = "\n".join(lines[1:-1]).strip()
-
-            # Try to parse as structured JSON
-            try:
-                parsed = TaskRunnerOutput.model_validate_json(stripped)
+            # Extract structured JSON from LLM output (handles preamble text, code fences, etc.)
+            extracted = extract_json(raw_output)
+            if extracted is not None:
+                parsed = TaskRunnerOutput.model_validate_json(extracted)
                 output = parsed.model_dump_json()
-            except Exception:
-                # If agent didn't produce valid JSON, wrap as completed
+            else:
+                # If no valid structured JSON found, wrap as completed
                 output = json.dumps({
                     "status": "completed",
                     "result": raw_output,
