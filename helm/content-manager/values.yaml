@@ -66,6 +66,16 @@ valkey:
       cpu: 50m
       memory: 64Mi
 
+perplexity:
+  existingSecret: ""
+  replicaCount: 1
+  image:
+    repository: quay.io/devops_consultants/perplexity-mcp-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+
 ingress:
   enabled: true
   host: tasks.example.com

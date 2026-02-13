@@ -312,12 +312,25 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
     container = docker_client.containers.create(
         image=TASK_RUNNER_IMAGE,
         environment=env_vars,
+        network_mode="host",
         detach=True,
     )
     active_container_id = container.id
     logger.info("Created container %s for task %s", container.short_id, task.id)
 
     try:
+        # Inject Perplexity MCP server if enabled via environment
+        if os.environ.get("USE_PERPLEXITY") == "true":
+            mcp_servers.setdefault("mcpServers", {})
+            if "perplexity-ask" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
+            system_prompt += (
+                "\n\n## Perplexity Web Search\n\n"
+                "You have access to the `perplexity-ask` MCP tool. Use it to look up "
+                "current information online, conduct web research, or reason about "
+                "topics that require context beyond your training data."
+            )
+
         # Copy files into the stopped container
         prompt_text = task.description or task.title
         files = {

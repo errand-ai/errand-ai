@@ -50,6 +50,12 @@ spec:
             - name: OPENAI_API_KEY
               value: {{ .Values.openai.apiKey | quote }}
             {{- end }}
+            {{- if .Values.perplexity.existingSecret }}
+            - name: USE_PERPLEXITY
+              value: "true"
+            - name: PERPLEXITY_URL
+              value: "http://{{ include "content-manager.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
+            {{- end }}
         - name: dind
           image: {{ .Values.dind.image }}
           securityContext:
