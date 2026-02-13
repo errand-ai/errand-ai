@@ -1,5 +1,5 @@
 ### Requirement: Worker executes tasks in DinD containers
-The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle. The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, and `mcp_servers` settings from the database, (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, (5) start the container, (6) wait for the container to exit, (7) capture stdout/stderr via `container.logs()`, (8) parse the structured output from stdout, (9) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (10) remove the container, (11) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle. The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, and `mcp_servers` settings from the database, (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, (5) start the container, (6) wait for the container to exit, (7) capture stdout/stderr via `container.logs()`, (8) parse the structured output from stdout using robust JSON extraction (try direct JSON parse, then code fence extraction anywhere in stdout, then first-`{`-to-last-`}` extraction — the first strategy that produces a valid `TaskRunnerOutput` is used; if none succeed, schedule retry), (9) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (10) remove the container, (11) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
 
 Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the worker SHALL perform environment variable substitution on all string values within the JSON structure. The substitution SHALL support two syntaxes: `$VARIABLE_NAME` and `${VARIABLE_NAME}`, where `VARIABLE_NAME` matches the pattern `[A-Za-z_][A-Za-z0-9_]*`. The worker SHALL resolve variable references against its own process environment (`os.environ`). If a referenced variable does not exist in the worker's environment, the placeholder SHALL be left unchanged in the output. Substitution SHALL only operate on string values within the JSON structure — keys, numbers, booleans, and nulls SHALL NOT be modified.
 
@@ -11,6 +11,14 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 - **WHEN** the worker processes a pending task and the task runner exits with code 0 and stdout contains `{"status": "completed", "result": "Task done", "questions": []}` and stderr contains "2026-02-10 INFO Starting agent"
 - **THEN** the worker stores "Task done" in the task's `output` field and "2026-02-10 INFO Starting agent" in the task's `runner_logs` field
 
+#### Scenario: Task runner stdout has preamble before JSON
+- **WHEN** the worker processes a task and the task runner exits with code 0 and stdout contains `Here is the report:\n\n{"status": "completed", "result": "All healthy", "questions": []}`
+- **THEN** the worker extracts the JSON from stdout, stores "All healthy" in the task's `output` field, and stores stderr in `runner_logs`
+
+#### Scenario: Task runner stdout has preamble before JSON code fence
+- **WHEN** the worker processes a task and the task runner exits with code 0 and stdout contains `Based on analysis...\n\n` followed by ```` ```json\n{"status": "completed", "result": "Report text", "questions": []}\n``` ````
+- **THEN** the worker extracts the JSON from the code fence, stores "Report text" in the task's `output` field, and stores stderr in `runner_logs`
+
 #### Scenario: Task runner returns needs_input status with logs
 - **WHEN** the worker processes a task and the task runner exits with code 0 and stdout contains `{"status": "needs_input", "result": "Need more details", "questions": ["What format?"]}` and stderr contains agent log output
 - **THEN** the worker stores the output in the task's `output` field, stores stderr in `runner_logs`, moves the task to `review` status, and adds an "Input Needed" tag
@@ -20,7 +28,7 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 - **THEN** the worker captures stderr in `runner_logs`, stores combined stdout/stderr in `output`, and schedules the task for retry
 
 #### Scenario: Task runner stdout is not valid JSON stores logs
-- **WHEN** the worker processes a task and the task runner exits with code 0 but stdout is not valid JSON and stderr contains log output
+- **WHEN** the worker processes a task and the task runner exits with code 0 but stdout contains no extractable valid JSON and stderr contains log output
 - **THEN** the worker stores stderr in `runner_logs`, stores combined output in `output`, and schedules the task for retry
 
 #### Scenario: Container creation fails
@@ -76,7 +84,7 @@ When the worker successfully processes a task (moves to `completed` or `review` 
 - **THEN** the worker moves the task to `scheduled` status with exponential backoff and adds a "Retry" tag to the task
 
 #### Scenario: Retry on unparseable output adds "Retry" tag
-- **WHEN** the worker processes a task and the container exits with code 0 but stdout is not valid JSON
+- **WHEN** the worker processes a task and the container exits with code 0 but stdout contains no extractable valid JSON
 - **THEN** the worker moves the task to `scheduled` status and adds a "Retry" tag to the task
 
 #### Scenario: Successful completion removes "Retry" tag
