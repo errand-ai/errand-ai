@@ -34,6 +34,13 @@ spec:
                 name: {{ include "content-manager.fullname" . }}-backend
                 port:
                   number: {{ .Values.backend.service.port }}
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "content-manager.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.service.port }}
           - path: /
             pathType: Prefix
             backend:
