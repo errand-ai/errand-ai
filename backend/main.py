@@ -1,4 +1,5 @@
 import os
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -24,10 +25,11 @@ from sqlalchemy.orm import selectinload
 import auth as auth_module
 from auth import OIDCConfig
 from auth_routes import router as auth_router
-from database import engine, get_session
+from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import init_llm_client, get_llm_client, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from models import Setting, Tag, Task, task_tags
+from mcp_server import create_mcp_app, mcp as mcp_server
 from scheduler import run_scheduler, release_lock
 
 security = HTTPBearer()
@@ -39,8 +41,35 @@ async def lifespan(app: FastAPI):
     await auth_module.oidc.discover()
     await init_valkey()
     init_llm_client()
+
+    # Auto-generate MCP API key and default system prompt if they don't exist
+    async with async_session() as session:
+        result = await session.execute(select(Setting).where(Setting.key == "mcp_api_key"))
+        if result.scalar_one_or_none() is None:
+            session.add(Setting(key="mcp_api_key", value=secrets.token_hex(32)))
+            await session.commit()
+            logger.info("Generated new MCP API key")
+
+        result = await session.execute(select(Setting).where(Setting.key == "system_prompt"))
+        if result.scalar_one_or_none() is None:
+            default_prompt = (
+                "You are a helpful personal assistant. When you are asked to perform a task, "
+                "carry it out to the best of your ability.\n"
+                "\n"
+                "RULES:\n"
+                "- Verify your results before you finish. Make sure that you have addressed "
+                "all the requirements and not missed any.\n"
+                "- If you need clarification on an issue that is preventing you from completing "
+                "the task, ask the user specific targeted questions that will provide the "
+                "clarification needed to complete the task."
+            )
+            session.add(Setting(key="system_prompt", value=default_prompt))
+            await session.commit()
+            logger.info("Created default system prompt")
+
     scheduler_task = asyncio.create_task(run_scheduler())
-    yield
+    async with mcp_server.session_manager.run():
+        yield
     scheduler_task.cancel()
     try:
         await scheduler_task
@@ -61,6 +90,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.mount("/mcp", create_mcp_app())
 
 
 # --- Auth dependency ---
@@ -584,6 +614,22 @@ async def update_settings(
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
     return {s.key: s.value for s in settings}
+
+
+@app.post("/api/settings/regenerate-mcp-key")
+async def regenerate_mcp_key(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    new_key = secrets.token_hex(32)
+    result = await session.execute(select(Setting).where(Setting.key == "mcp_api_key"))
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.value = new_key
+    else:
+        session.add(Setting(key="mcp_api_key", value=new_key))
+    await session.commit()
+    return {"mcp_api_key": new_key}
 
 
 # --- Unprotected endpoints ---
