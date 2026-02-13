@@ -62,6 +62,12 @@ export const useTaskStore = defineStore('tasks', () => {
         return new Date(a.execute_at).getTime() - new Date(b.execute_at).getTime()
       })
     }
+    if (status === 'completed') {
+      // Completed column: most recently completed first (updated_at descending)
+      return filtered.sort((a, b) => {
+        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      })
+    }
     // All other columns: sort by position ascending, tie-break by created_at ascending
     return filtered.sort((a, b) => {
       if (a.position !== b.position) return a.position - b.position
