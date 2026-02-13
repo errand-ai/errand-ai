@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(__file__))
 
 import logging
-from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT
+from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json
 
 
 # --- Environment variable validation ---
@@ -122,33 +122,79 @@ def test_task_runner_output_default_questions():
     assert output.questions == []
 
 
-# --- Markdown fence stripping (main.py strips fences before parsing) ---
+# --- extract_json ---
 
 
-def test_strip_markdown_fences_from_json():
-    """TaskRunnerOutput parses correctly after stripping ```json fences."""
-    fenced = '```json\n{"status": "completed", "result": "Done", "questions": []}\n```'
-    stripped = fenced.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        if lines[-1].strip() == "```":
-            stripped = "\n".join(lines[1:-1]).strip()
-    parsed = TaskRunnerOutput.model_validate_json(stripped)
+def test_extract_json_bare_json():
+    """Extracts valid JSON when output is bare JSON."""
+    raw = '{"status": "completed", "result": "Done", "questions": []}'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
     assert parsed.status == "completed"
     assert parsed.result == "Done"
 
 
-def test_strip_plain_markdown_fences():
-    """Strips ``` fences without language tag."""
-    fenced = '```\n{"status": "needs_input", "result": "Need info", "questions": ["What?"]}\n```'
-    stripped = fenced.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        if lines[-1].strip() == "```":
-            stripped = "\n".join(lines[1:-1]).strip()
-    parsed = TaskRunnerOutput.model_validate_json(stripped)
+def test_extract_json_code_fence_at_start():
+    """Extracts JSON from code fence at start of output."""
+    raw = '```json\n{"status": "completed", "result": "Done", "questions": []}\n```'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+
+
+def test_extract_json_plain_fence_at_start():
+    """Extracts JSON from plain ``` fence without language tag."""
+    raw = '```\n{"status": "needs_input", "result": "Need info", "questions": ["What?"]}\n```'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
     assert parsed.status == "needs_input"
     assert parsed.questions == ["What?"]
+
+
+def test_extract_json_preamble_before_code_fence():
+    """Extracts JSON when LLM produces preamble text before code fence."""
+    raw = 'Based on my analysis of all 53 applications, here is the health status report:\n\n```json\n{"status": "completed", "result": "All healthy", "questions": []}\n```'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+    assert parsed.result == "All healthy"
+
+
+def test_extract_json_preamble_before_bare_json():
+    """Extracts JSON when LLM produces preamble text before bare JSON object."""
+    raw = 'Here is the result:\n{"status": "completed", "result": "done", "questions": []}'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+    assert parsed.result == "done"
+
+
+def test_extract_json_unparseable_output():
+    """Returns None when output contains no valid TaskRunnerOutput JSON."""
+    raw = "This is just plain text with no JSON at all."
+    result = extract_json(raw)
+    assert result is None
+
+
+def test_extract_json_invalid_json_in_fence():
+    """Returns None when code fence contains invalid JSON."""
+    raw = '```json\nnot valid json\n```'
+    result = extract_json(raw)
+    assert result is None
+
+
+def test_extract_json_preamble_and_postamble():
+    """Extracts JSON when there is text both before and after the code fence."""
+    raw = 'Here is my report:\n\n```json\n{"status": "completed", "result": "Report", "questions": []}\n```\n\nLet me know if you need more details.'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.result == "Report"
 
 
 # --- Overarching prompt ---

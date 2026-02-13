@@ -16,7 +16,7 @@ from worker import (
     read_settings, truncate_output, _task_to_dict, put_archive,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
-    substitute_env_vars,
+    substitute_env_vars, extract_json,
 )
 
 
@@ -925,6 +925,57 @@ def test_task_runner_output_default_questions():
     raw = '{"status": "completed", "result": "done"}'
     parsed = TaskRunnerOutput.model_validate_json(raw)
     assert parsed.questions == []
+
+
+# --- extract_json ---
+
+
+def test_extract_json_bare_json():
+    """Extracts valid JSON when output is bare JSON."""
+    raw = '{"status": "completed", "result": "Done", "questions": []}'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+
+
+def test_extract_json_code_fence_at_start():
+    """Extracts JSON from code fence at start of output."""
+    raw = '```json\n{"status": "completed", "result": "Done", "questions": []}\n```'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+
+
+def test_extract_json_preamble_before_code_fence():
+    """Extracts JSON when there is preamble text before a code fence."""
+    raw = 'Based on my analysis:\n\n```json\n{"status": "completed", "result": "All healthy", "questions": []}\n```'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.status == "completed"
+    assert parsed.result == "All healthy"
+
+
+def test_extract_json_preamble_before_bare_json():
+    """Extracts JSON when there is preamble text before bare JSON."""
+    raw = 'Here is the result:\n{"status": "completed", "result": "done", "questions": []}'
+    result = extract_json(raw)
+    assert result is not None
+    parsed = TaskRunnerOutput.model_validate_json(result)
+    assert parsed.result == "done"
+
+
+def test_extract_json_unparseable():
+    """Returns None when no valid TaskRunnerOutput JSON is found."""
+    assert extract_json("This is just plain text.") is None
+
+
+def test_extract_json_invalid_json_in_fence():
+    """Returns None when code fence contains invalid JSON."""
+    raw = '```json\nnot valid json\n```'
+    assert extract_json(raw) is None
 
 
 # --- parse_interval ---
