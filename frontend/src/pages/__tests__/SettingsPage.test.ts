@@ -848,4 +848,200 @@ describe('SettingsPage', () => {
     const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
     expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
   })
+
+  // --- MCP API Key Section ---
+
+  it('shows MCP API Key section with masked key when key exists', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'abc123def456' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('MCP API Key')
+    expect(wrapper.text()).toContain('API Key')
+    // Key display code element should show masked bullets, not the actual key
+    const codeEl = wrapper.find('code')
+    expect(codeEl.text()).toBe('\u2022'.repeat(32))
+  })
+
+  it('shows placeholder message when no API key exists', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No API key generated')
+  })
+
+  it('reveals and hides API key on toggle', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'secret-key-value' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const revealBtn = wrapper.find('[data-testid="mcp-key-reveal"]')
+    const codeEl = wrapper.find('code')
+    expect(revealBtn.text()).toBe('Reveal')
+    expect(codeEl.text()).toBe('\u2022'.repeat(32))
+
+    // Click to reveal
+    await revealBtn.trigger('click')
+    expect(revealBtn.text()).toBe('Hide')
+    expect(codeEl.text()).toBe('secret-key-value')
+
+    // Click to hide again
+    await revealBtn.trigger('click')
+    expect(revealBtn.text()).toBe('Reveal')
+    expect(codeEl.text()).toBe('\u2022'.repeat(32))
+  })
+
+  it('copies API key to clipboard', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'key-to-copy' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const copyBtn = wrapper.find('[data-testid="mcp-key-copy"]')
+    expect(copyBtn.text()).toBe('Copy')
+
+    await copyBtn.trigger('click')
+    await flushPromises()
+
+    expect(writeTextMock).toHaveBeenCalledWith('key-to-copy')
+    expect(copyBtn.text()).toBe('Copied!')
+  })
+
+  it('regenerates API key on confirm via dialog', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ mcp_api_key: 'old-key-123' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ mcp_api_key: 'new-key-456' }),
+      })
+
+    const wrapper = mount(SettingsPage, { attachTo: document.body })
+    await flushPromises()
+
+    // Click Regenerate to open the dialog
+    const regenBtn = wrapper.find('[data-testid="mcp-key-regenerate"]')
+    await regenBtn.trigger('click')
+    await flushPromises()
+
+    // Confirm in the dialog
+    const confirmBtn = wrapper.find('[data-testid="mcp-regenerate-confirm"]')
+    expect(confirmBtn.exists()).toBe(true)
+    await confirmBtn.trigger('click')
+    await flushPromises()
+
+    // Verify POST was called
+    const postCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[0] === '/api/settings/regenerate-mcp-key'
+    )
+    expect(postCall).toBeTruthy()
+    expect(postCall![1].method).toBe('POST')
+
+    // New key should be stored (reveal to check)
+    const revealBtn = wrapper.find('[data-testid="mcp-key-reveal"]')
+    await revealBtn.trigger('click')
+    expect(wrapper.text()).toContain('new-key-456')
+    expect(wrapper.text()).toContain('API key regenerated.')
+
+    wrapper.unmount()
+  })
+
+  it('does not regenerate when dialog is cancelled', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'old-key-123' }),
+    })
+
+    const wrapper = mount(SettingsPage, { attachTo: document.body })
+    await flushPromises()
+
+    // Click Regenerate to open the dialog
+    const regenBtn = wrapper.find('[data-testid="mcp-key-regenerate"]')
+    await regenBtn.trigger('click')
+    await flushPromises()
+
+    // Cancel in the dialog
+    const cancelBtn = wrapper.find('[data-testid="mcp-regenerate-cancel"]')
+    expect(cancelBtn.exists()).toBe(true)
+    await cancelBtn.trigger('click')
+    await flushPromises()
+
+    // Only the initial GET should have been called
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
+
+  it('renders example MCP configuration with masked key', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'test-api-key' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Example MCP Configuration')
+    expect(wrapper.text()).toContain('content-manager')
+    expect(wrapper.text()).toContain('/mcp')
+    // Key should be masked in the displayed config
+    expect(wrapper.text()).toContain('Bearer ' + '*'.repeat(32))
+    expect(wrapper.text()).not.toContain('Bearer test-api-key')
+  })
+
+  it('copies example config to clipboard', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ mcp_api_key: 'cfg-key' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const copyConfigBtn = wrapper.find('[data-testid="mcp-config-copy"]')
+    expect(copyConfigBtn.text()).toBe('Copy Configuration')
+
+    await copyConfigBtn.trigger('click')
+    await flushPromises()
+
+    expect(writeTextMock).toHaveBeenCalled()
+    const copiedText = writeTextMock.mock.calls[0][0]
+    const parsed = JSON.parse(copiedText)
+    expect(parsed.mcpServers['content-manager'].url).toContain('/mcp')
+    expect(parsed.mcpServers['content-manager'].headers.Authorization).toBe('Bearer cfg-key')
+    expect(copyConfigBtn.text()).toBe('Copied!')
+  })
 })

@@ -37,6 +37,15 @@ const timezones = ref<string[]>([])
 const archiveAfterDays = ref(3)
 const archiveSaving = ref(false)
 const archiveSuccess = ref(false)
+const mcpApiKey = ref<string | null>(null)
+const mcpApiKeyRevealed = ref(false)
+const mcpApiKeyCopied = ref(false)
+const mcpConfigCopied = ref(false)
+const mcpKeyRegenerating = ref(false)
+const mcpKeyRegenerateSuccess = ref(false)
+const mcpKeyRegenerateError = ref<string | null>(null)
+const showRegenerateDialog = ref(false)
+const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -68,6 +77,7 @@ async function loadSettings() {
     const data = await res.json()
     systemPrompt.value = data.system_prompt ?? ''
     mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
+    mcpApiKey.value = data.mcp_api_key ?? null
     llmModel.value = data.llm_model ?? DEFAULT_MODEL
     taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
     transcriptionModel.value = data.transcription_model ?? ''
@@ -219,6 +229,85 @@ async function saveArchiveAfterDays() {
     error.value = 'Failed to save archive setting. Please check your connection.'
   } finally {
     archiveSaving.value = false
+  }
+}
+
+function mcpExampleConfig(): string {
+  const host = window.location.origin
+  return JSON.stringify({
+    mcpServers: {
+      'content-manager': {
+        url: `${host}/mcp`,
+        headers: {
+          Authorization: `Bearer ${mcpApiKey.value || '<api-key>'}`
+        }
+      }
+    }
+  }, null, 2)
+}
+
+function mcpMaskedConfig(): string {
+  const host = window.location.origin
+  return JSON.stringify({
+    mcpServers: {
+      'content-manager': {
+        url: `${host}/mcp`,
+        headers: {
+          Authorization: `Bearer ${'*'.repeat(32)}`
+        }
+      }
+    }
+  }, null, 2)
+}
+
+async function copyMcpApiKey() {
+  if (!mcpApiKey.value) return
+  await navigator.clipboard.writeText(mcpApiKey.value)
+  mcpApiKeyCopied.value = true
+  setTimeout(() => { mcpApiKeyCopied.value = false }, 2000)
+}
+
+async function copyMcpConfig() {
+  await navigator.clipboard.writeText(mcpExampleConfig())
+  mcpConfigCopied.value = true
+  setTimeout(() => { mcpConfigCopied.value = false }, 2000)
+}
+
+function showRegenerateConfirm() {
+  showRegenerateDialog.value = true
+  setTimeout(() => regenerateDialogRef.value?.showModal(), 0)
+}
+
+function cancelRegenerate() {
+  regenerateDialogRef.value?.close()
+  showRegenerateDialog.value = false
+}
+
+function onRegenerateDialogClick(e: MouseEvent) {
+  if (e.target === regenerateDialogRef.value) cancelRegenerate()
+}
+
+async function confirmRegenerate() {
+  regenerateDialogRef.value?.close()
+  showRegenerateDialog.value = false
+  mcpKeyRegenerating.value = true
+  mcpKeyRegenerateError.value = null
+  mcpKeyRegenerateSuccess.value = false
+  try {
+    const res = await settingsFetch('/api/settings/regenerate-mcp-key', { method: 'POST' })
+    if (!res.ok) {
+      mcpKeyRegenerateError.value = `Failed to regenerate key (HTTP ${res.status})`
+      return
+    }
+    const data = await res.json()
+    mcpApiKey.value = data.mcp_api_key
+    mcpApiKeyRevealed.value = false
+    mcpKeyRegenerateSuccess.value = true
+    setTimeout(() => { mcpKeyRegenerateSuccess.value = false }, 3000)
+  } catch {
+    mcpKeyRegenerateError.value = 'Failed to regenerate key. Please check your connection.'
+  } finally {
+    mcpKeyRegenerating.value = false
   }
 }
 
@@ -495,6 +584,66 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- MCP API Key -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">MCP API Key</h3>
+
+        <div v-if="mcpApiKey" class="space-y-4">
+          <!-- Key display -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+            <div class="flex items-center gap-2">
+              <code class="flex-1 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm font-mono break-all">{{ mcpApiKeyRevealed ? mcpApiKey : '\u2022'.repeat(32) }}</code>
+              <button
+                @click="mcpApiKeyRevealed = !mcpApiKeyRevealed"
+                class="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                data-testid="mcp-key-reveal"
+              >
+                {{ mcpApiKeyRevealed ? 'Hide' : 'Reveal' }}
+              </button>
+              <button
+                @click="copyMcpApiKey"
+                class="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                data-testid="mcp-key-copy"
+              >
+                {{ mcpApiKeyCopied ? 'Copied!' : 'Copy' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Regenerate -->
+          <div class="flex items-center gap-3">
+            <button
+              @click="showRegenerateConfirm"
+              :disabled="mcpKeyRegenerating"
+              class="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              data-testid="mcp-key-regenerate"
+            >
+              {{ mcpKeyRegenerating ? 'Regenerating...' : 'Regenerate' }}
+            </button>
+            <span v-if="mcpKeyRegenerateSuccess" class="text-sm text-green-600">API key regenerated.</span>
+            <span v-if="mcpKeyRegenerateError" class="text-sm text-red-600">{{ mcpKeyRegenerateError }}</span>
+          </div>
+
+          <!-- Example config -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Example MCP Configuration</label>
+            <pre class="rounded-md border border-gray-300 bg-gray-50 p-3 text-xs font-mono overflow-x-auto">{{ mcpMaskedConfig() }}</pre>
+            <button
+              @click="copyMcpConfig"
+              class="mt-2 rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              data-testid="mcp-config-copy"
+            >
+              {{ mcpConfigCopied ? 'Copied!' : 'Copy Configuration' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="text-sm text-gray-500">
+          No API key generated. Restart the backend to auto-generate one.
+        </div>
+      </div>
+
       <!-- MCP Server Configuration -->
       <div class="rounded-lg bg-white p-6 shadow">
         <button
@@ -533,5 +682,36 @@ onMounted(async () => {
         </div>
       </div>
     </template>
+
+    <!-- Regenerate API key confirmation dialog -->
+    <dialog
+      ref="regenerateDialogRef"
+      class="rounded-lg p-0 shadow-xl backdrop:bg-black/50"
+      @cancel.prevent="cancelRegenerate"
+      @click="onRegenerateDialogClick"
+    >
+      <div class="w-80 p-6">
+        <h3 class="mb-2 text-lg font-semibold text-gray-800">Regenerate API key?</h3>
+        <p class="mb-4 text-sm text-gray-600">This will invalidate the current key. All MCP clients will need to be reconfigured.</p>
+        <div class="flex justify-end gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            @click="cancelRegenerate"
+            data-testid="mcp-regenerate-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="rounded-md bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700"
+            @click="confirmRegenerate"
+            data-testid="mcp-regenerate-confirm"
+          >
+            Regenerate
+          </button>
+        </div>
+      </div>
+    </dialog>
   </div>
 </template>
