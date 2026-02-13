@@ -157,7 +157,7 @@ DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 async def read_settings(session: AsyncSession) -> dict:
     """Read task processing settings from the settings table.
 
-    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level.
+    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level, skills.
     """
     settings: dict = {
         "mcp_servers": {},
@@ -165,11 +165,13 @@ async def read_settings(session: AsyncSession) -> dict:
         "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
         "system_prompt": "",
         "task_runner_log_level": "",
+        "skills": [],
+        "mcp_api_key": "",
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "skills", "mcp_api_key"])
         )
     )
     for setting in result.scalars().all():
@@ -183,6 +185,10 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
             settings["task_runner_log_level"] = str(setting.value) if setting.value else ""
+        elif setting.key == "skills":
+            settings["skills"] = setting.value if isinstance(setting.value, list) else []
+        elif setting.key == "mcp_api_key":
+            settings["mcp_api_key"] = str(setting.value) if setting.value else ""
 
     return settings
 
@@ -329,6 +335,29 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 "You have access to the `perplexity-ask` MCP tool. Use it to look up "
                 "current information online, conduct web research, or reason about "
                 "topics that require context beyond your training data."
+            )
+
+        # Inject backend MCP server and skill-awareness directive if skills are defined
+        skills = settings.get("skills", [])
+        if skills:
+            backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
+            mcp_api_key = settings.get("mcp_api_key", "")
+            if backend_mcp_url:
+                mcp_servers.setdefault("mcpServers", {})
+                if "content-manager" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["content-manager"] = {
+                        "url": backend_mcp_url,
+                        "headers": {"Authorization": f"Bearer {mcp_api_key}"},
+                    }
+            else:
+                logger.warning("Skills defined but BACKEND_MCP_URL not set — agent cannot reach skill tools")
+            system_prompt += (
+                "\n\n## Skills\n\n"
+                "IMPORTANT: You MUST call the `list_skills` tool as your FIRST action "
+                "before doing anything else. Check if a skill matches your current task. "
+                "If one does, call `get_skill` with the skill name to load its full "
+                "instructions, then follow those instructions exactly. "
+                "Do NOT skip this step."
             )
 
         # Copy files into the stopped container

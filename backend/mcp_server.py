@@ -1,3 +1,4 @@
+import json
 import logging
 import secrets
 import uuid as uuid_mod
@@ -142,6 +143,41 @@ async def task_output(task_id: str) -> str:
             return task.output or "(no output)"
 
         return f"Task is still in progress (status: {task.status})"
+
+
+@mcp.tool()
+async def list_skills() -> str:
+    """List available skills (name and description only). Call get_skill to load full instructions."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Setting.value).where(Setting.key == "skills")
+        )
+        skills_value = result.scalar_one_or_none()
+
+    if not skills_value or not isinstance(skills_value, list):
+        return "[]"
+
+    summary = [{"name": s["name"], "description": s["description"]} for s in skills_value if isinstance(s, dict)]
+    return json.dumps(summary)
+
+
+@mcp.tool()
+async def get_skill(name: str) -> str:
+    """Load the full instructions for a skill by name."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Setting.value).where(Setting.key == "skills")
+        )
+        skills_value = result.scalar_one_or_none()
+
+    if not skills_value or not isinstance(skills_value, list):
+        return f"Skill '{name}' not found"
+
+    for skill in skills_value:
+        if isinstance(skill, dict) and skill.get("name") == name:
+            return skill.get("instructions", "")
+
+    return f"Skill '{name}' not found"
 
 
 def create_mcp_app() -> Starlette:

@@ -95,6 +95,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       USE_PERPLEXITY: "true"
       PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
+      BACKEND_MCP_URL: http://backend:8000/mcp
     depends_on:
       migrate:
         condition: service_completed_successfully

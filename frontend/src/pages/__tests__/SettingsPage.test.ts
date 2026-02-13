@@ -1044,4 +1044,191 @@ describe('SettingsPage', () => {
     expect(parsed.mcpServers['content-manager'].headers.Authorization).toBe('Bearer cfg-key')
     expect(copyConfigBtn.text()).toBe('Copied!')
   })
+
+  // --- Skills Section ---
+
+  it('shows Skills section collapsed with count', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ skills: [
+        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
+      ] }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Skills')
+    expect(wrapper.text()).toContain('(1)')
+    // Should not show skill details when collapsed
+    expect(wrapper.text()).not.toContain('researcher')
+  })
+
+  it('expands Skills section and shows skill list', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ skills: [
+        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
+        { id: '2', name: 'coder', description: 'Code generation', instructions: 'Code text' },
+      ] }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Click Skills header to expand
+    const buttons = wrapper.findAll('button')
+    const skillsButton = buttons.find(b => b.text().includes('Skills'))
+    await skillsButton!.trigger('click')
+
+    expect(wrapper.text()).toContain('researcher')
+    expect(wrapper.text()).toContain('Web research')
+    expect(wrapper.text()).toContain('coder')
+    expect(wrapper.text()).toContain('Code generation')
+  })
+
+  it('shows empty state when no skills defined', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ skills: [] }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const skillsButton = buttons.find(b => b.text().includes('Skills'))
+    await skillsButton!.trigger('click')
+
+    expect(wrapper.text()).toContain('No skills defined yet')
+    expect(wrapper.text()).toContain('Add Skill')
+  })
+
+  it('opens add skill form and saves new skill', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ skills: [] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    // Mock crypto.randomUUID
+    vi.stubGlobal('crypto', { randomUUID: () => 'test-uuid-123' })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand skills section
+    const buttons = wrapper.findAll('button')
+    const skillsButton = buttons.find(b => b.text().includes('Skills'))
+    await skillsButton!.trigger('click')
+
+    // Click Add Skill
+    const addBtn = wrapper.find('[data-testid="skill-add"]')
+    await addBtn.trigger('click')
+
+    // Fill in the form
+    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
+    const descInput = wrapper.find('[data-testid="skill-description-input"]')
+    const instrInput = wrapper.find('[data-testid="skill-instructions-input"]')
+    await nameInput.setValue('researcher')
+    await descInput.setValue('Web research')
+    await instrInput.setValue('You are a research specialist.')
+
+    // Click save
+    const saveBtn = wrapper.find('[data-testid="skill-save"]')
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    // Verify PUT was called with the new skill
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('skills')
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.skills).toHaveLength(1)
+    expect(body.skills[0].name).toBe('researcher')
+    expect(body.skills[0].instructions).toBe('You are a research specialist.')
+  })
+
+  it('deletes a skill', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ skills: [
+          { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
+        ] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand skills section
+    const buttons = wrapper.findAll('button')
+    const skillsButton = buttons.find(b => b.text().includes('Skills'))
+    await skillsButton!.trigger('click')
+
+    // Click delete
+    const deleteBtn = wrapper.find('[data-testid="skill-delete"]')
+    await deleteBtn.trigger('click')
+    await flushPromises()
+
+    // Verify PUT was called with empty skills array
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('skills')
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.skills).toEqual([])
+  })
+
+  it('shows validation error for duplicate skill name', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ skills: [
+        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
+      ] }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Expand skills section
+    const buttons = wrapper.findAll('button')
+    const skillsButton = buttons.find(b => b.text().includes('Skills'))
+    await skillsButton!.trigger('click')
+
+    // Click Add Skill
+    const addBtn = wrapper.find('[data-testid="skill-add"]')
+    await addBtn.trigger('click')
+
+    // Fill in duplicate name
+    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
+    const descInput = wrapper.find('[data-testid="skill-description-input"]')
+    const instrInput = wrapper.find('[data-testid="skill-instructions-input"]')
+    await nameInput.setValue('researcher')
+    await descInput.setValue('Another desc')
+    await instrInput.setValue('Another instructions')
+
+    const saveBtn = wrapper.find('[data-testid="skill-save"]')
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('already exists')
+  })
 })

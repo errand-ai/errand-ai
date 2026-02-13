@@ -7,7 +7,9 @@ from httpx import AsyncClient
 async def test_get_settings_empty(admin_client: AsyncClient):
     resp = await admin_client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json() == {}
+    data = resp.json()
+    # skills defaults to empty array even when no settings exist
+    assert data == {"skills": []}
 
 
 async def test_get_settings_non_admin(client: AsyncClient):
@@ -59,3 +61,43 @@ async def test_put_settings_non_admin(client: AsyncClient):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"] == "Admin role required"
+
+
+# --- Skills in settings ---
+
+
+async def test_get_settings_skills_default_empty(admin_client: AsyncClient):
+    resp = await admin_client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json()["skills"] == []
+
+
+async def test_put_settings_skills_roundtrip(admin_client: AsyncClient):
+    skills = [
+        {
+            "id": "abc-123",
+            "name": "researcher",
+            "description": "Web research skill",
+            "instructions": "You are a research specialist.",
+        }
+    ]
+    resp = await admin_client.put("/api/settings", json={"skills": skills})
+    assert resp.status_code == 200
+    assert resp.json()["skills"] == skills
+
+    # Verify GET returns the same data
+    resp = await admin_client.get("/api/settings")
+    assert resp.json()["skills"] == skills
+
+
+async def test_put_settings_skills_update(admin_client: AsyncClient):
+    skills_v1 = [{"id": "1", "name": "a", "description": "d1", "instructions": "i1"}]
+    await admin_client.put("/api/settings", json={"skills": skills_v1})
+
+    skills_v2 = [
+        {"id": "1", "name": "a", "description": "d1", "instructions": "i1-updated"},
+        {"id": "2", "name": "b", "description": "d2", "instructions": "i2"},
+    ]
+    resp = await admin_client.put("/api/settings", json={"skills": skills_v2})
+    assert resp.status_code == 200
+    assert resp.json()["skills"] == skills_v2

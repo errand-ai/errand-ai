@@ -623,6 +623,7 @@ async def test_read_settings_defaults(db_session):
     assert settings["task_processing_model"] == DEFAULT_TASK_PROCESSING_MODEL
     assert settings["system_prompt"] == ""
     assert settings["task_runner_log_level"] == ""
+    assert settings["mcp_api_key"] == ""
 
 
 async def test_read_settings_with_mcp(db_session):
@@ -1029,6 +1030,112 @@ def test_perplexity_system_prompt_appended_when_enabled():
     assert system_prompt_content.startswith(original_prompt)
     assert "perplexity-ask" in system_prompt_content
     assert "web research" in system_prompt_content.lower() or "web search" in system_prompt_content.lower()
+
+
+def test_skills_directive_appended_when_skills_exist():
+    """When skills are defined, system prompt has the skills directive and MCP server is injected."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "skills": [
+            {"id": "1", "name": "researcher", "description": "Web research", "instructions": "Full instructions"},
+        ],
+        "mcp_api_key": "test-api-key-123",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-sk1"
+    mock_container.short_id = "contsk1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "BACKEND_MCP_URL": "http://backend:8000/mcp",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+
+    # Check system prompt has skill directive
+    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+    assert "You are a helpful assistant." in system_prompt_content
+    assert "list_skills" in system_prompt_content
+    assert "get_skill" in system_prompt_content
+
+    # Check MCP config has the content-manager server injected
+    tar_data.seek(0)
+    tar2 = tarfile.open(fileobj=tar_data)
+    mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
+    assert "content-manager" in mcp_content["mcpServers"]
+    cm_server = mcp_content["mcpServers"]["content-manager"]
+    assert cm_server["url"] == "http://backend:8000/mcp"
+    assert cm_server["headers"]["Authorization"] == "Bearer test-api-key-123"
+
+
+def test_skills_directive_omitted_when_no_skills():
+    """When no skills are defined, system prompt has no skills directive."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "skills": [],
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-sk2"
+    mock_container.short_id = "contsk2"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+    assert system_prompt_content == "You are a helpful assistant."
+    assert "list_skills" not in system_prompt_content
+
+    # Check MCP config does NOT have the content-manager server
+    tar_data.seek(0)
+    tar2 = tarfile.open(fileobj=tar_data)
+    mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
+    assert "content-manager" not in mcp_content.get("mcpServers", {})
 
 
 def test_process_task_container_copies_three_files():
