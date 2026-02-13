@@ -5,16 +5,13 @@ from collections.abc import AsyncGenerator
 from unittest.mock import patch
 
 import pytest
-from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import database as database_module
-import events as events_module
 from models import Setting, Task
 from main import app, get_current_user, require_editor, require_admin
-from database import get_session
 
 FAKE_ADMIN_CLAIMS = {
     "sub": "admin-user-id",
@@ -86,7 +83,7 @@ async def db_session(fake_valkey):
     async def override_require_admin():
         return FAKE_ADMIN_CLAIMS
 
-    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[database_module.get_session] = override_get_session
     app.dependency_overrides[get_current_user] = lambda: FAKE_ADMIN_CLAIMS
     app.dependency_overrides[require_editor] = lambda: FAKE_ADMIN_CLAIMS
     app.dependency_overrides[require_admin] = override_require_admin
@@ -182,7 +179,7 @@ async def test_regenerate_mcp_key_non_admin(fake_valkey):
     async def override_require_admin_reject():
         raise HTTPException(status_code=403, detail="Admin role required")
 
-    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[database_module.get_session] = override_get_session
     app.dependency_overrides[require_admin] = override_require_admin_reject
 
     transport = ASGITransport(app=app)
