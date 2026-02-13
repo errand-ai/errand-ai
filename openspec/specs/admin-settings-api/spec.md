@@ -27,7 +27,7 @@ The backend SHALL provide a `require_admin` FastAPI dependency that validates th
 - **THEN** the backend returns HTTP 401 (handled by existing `get_current_user`)
 
 ### Requirement: Get all settings
-The backend SHALL expose `GET /api/settings` requiring the `admin` role. The endpoint SHALL return a JSON object with all settings, where each key maps to its stored value. If no settings exist, the endpoint SHALL return an empty object `{}`.
+The backend SHALL expose `GET /api/settings` requiring the `admin` role. The endpoint SHALL return a JSON object with all settings, where each key maps to its stored value. If no settings exist, the endpoint SHALL return an empty object `{}`. The `mcp_api_key` setting SHALL be included in the response when it exists.
 
 #### Scenario: Settings exist
 - **WHEN** an admin requests `GET /api/settings` and settings `system_prompt` and `mcp_servers` exist
@@ -40,6 +40,10 @@ The backend SHALL expose `GET /api/settings` requiring the `admin` role. The end
 #### Scenario: Non-admin user
 - **WHEN** a non-admin user requests `GET /api/settings`
 - **THEN** the backend returns HTTP 403 with `{"detail": "Admin role required"}`
+
+#### Scenario: API key included in settings response
+- **WHEN** an admin requests `GET /api/settings` and an `mcp_api_key` exists
+- **THEN** the response includes the `mcp_api_key` value
 
 ### Requirement: Update settings
 The backend SHALL expose `PUT /api/settings` requiring the `admin` role. The endpoint SHALL accept a JSON object where each key-value pair is upserted into the settings table. Keys not included in the request body SHALL remain unchanged. The endpoint SHALL return the full settings object after the update.
@@ -85,3 +89,22 @@ The backend SHALL expose `GET /api/llm/models` requiring the `admin` role. The e
 #### Scenario: LLM client not configured
 - **WHEN** an admin requests `GET /api/llm/models` but `OPENAI_BASE_URL` is not configured
 - **THEN** the backend returns HTTP 503 with `{"detail": "LLM provider not configured"}`
+
+### Requirement: Regenerate MCP API key endpoint
+
+The backend SHALL expose `POST /api/settings/regenerate-mcp-key` requiring the `admin` role. The endpoint SHALL generate a new 64-character hex API key via `secrets.token_hex(32)`, store it in the `settings` table with key `mcp_api_key` (overwriting any existing value), and return the new key in the response as `{"mcp_api_key": "<new-key>"}`.
+
+#### Scenario: Regenerate API key
+
+- **WHEN** an admin sends `POST /api/settings/regenerate-mcp-key`
+- **THEN** a new API key is generated, stored in the settings table, and returned as `{"mcp_api_key": "<new-key>"}`
+
+#### Scenario: Old key invalidated after regeneration
+
+- **WHEN** an admin regenerates the API key and a client uses the old key for MCP requests
+- **THEN** the MCP server rejects the request with an authentication error
+
+#### Scenario: Non-admin user rejected
+
+- **WHEN** a non-admin user sends `POST /api/settings/regenerate-mcp-key`
+- **THEN** the backend returns HTTP 403 with `{"detail": "Admin role required"}`
