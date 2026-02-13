@@ -1,0 +1,30 @@
+{{- if .Values.perplexity.existingSecret }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "content-manager.fullname" . }}-perplexity-mcp
+  labels:
+    {{- include "content-manager.labels" . | nindent 4 }}
+    app.kubernetes.io/component: perplexity-mcp
+spec:
+  replicas: {{ .Values.perplexity.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: perplexity-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: perplexity-mcp
+    spec:
+      containers:
+        - name: perplexity-mcp
+          image: "{{ .Values.perplexity.image.repository }}:{{ .Values.perplexity.image.tag }}"
+          imagePullPolicy: {{ .Values.perplexity.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: {{ .Values.perplexity.existingSecret }}
+{{- end }}

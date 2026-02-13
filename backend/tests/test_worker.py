@@ -844,6 +844,193 @@ def test_process_task_container_omits_log_level_when_unset():
     assert "LOG_LEVEL" not in env
 
 
+def test_perplexity_injected_when_enabled():
+    """When USE_PERPLEXITY=true and PERPLEXITY_URL is set, perplexity-ask is injected into mcp.json."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"other": {"url": "http://other/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-px1"
+    mock_container.short_id = "contpx1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "USE_PERPLEXITY": "true",
+            "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract the mcp.json content from put_archive call
+    put_archive_call = mock_container.put_archive.call_args[0]
+    import tarfile, io
+    tar_data = put_archive_call[1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert "perplexity-ask" in mcp_config["mcpServers"]
+    # $PERPLEXITY_URL should be substituted to the actual URL
+    assert mcp_config["mcpServers"]["perplexity-ask"]["url"] == "http://cm-perplexity-mcp:8000/sse"
+    assert mcp_config["mcpServers"]["other"]["url"] == "http://other/mcp"
+
+
+def test_perplexity_not_injected_when_disabled():
+    """When USE_PERPLEXITY is unset, no perplexity-ask entry is injected and system prompt is unchanged."""
+    task = _make_mock_task(description="Normal task")
+    original_prompt = "You are a helpful assistant."
+    settings = {
+        "mcp_servers": {"mcpServers": {"other": {"url": "http://other/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": original_prompt,
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-px2"
+    mock_container.short_id = "contpx2"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — should NOT have perplexity-ask
+    import tarfile, io
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert "perplexity-ask" not in mcp_config["mcpServers"]
+
+    # Extract system_prompt.txt — should be unchanged
+    system_prompt_member = tar.extractfile("system_prompt.txt")
+    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    assert system_prompt_content == original_prompt
+
+
+def test_perplexity_database_value_takes_precedence():
+    """When database mcp_servers already has perplexity-ask, the database value is preserved."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"perplexity-ask": {"url": "http://custom-perplexity/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-px3"
+    mock_container.short_id = "contpx3"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "USE_PERPLEXITY": "true",
+            "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — database value should be preserved
+    import tarfile, io
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert mcp_config["mcpServers"]["perplexity-ask"]["url"] == "http://custom-perplexity/mcp"
+
+
+def test_perplexity_system_prompt_appended_when_enabled():
+    """When USE_PERPLEXITY=true, system prompt has the Perplexity instruction block appended."""
+    task = _make_mock_task(description="Research task")
+    original_prompt = "You are a helpful assistant."
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": original_prompt,
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-px4"
+    mock_container.short_id = "contpx4"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "USE_PERPLEXITY": "true",
+            "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract system_prompt.txt — should contain original + Perplexity block
+    import tarfile, io
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    system_prompt_member = tar.extractfile("system_prompt.txt")
+    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    assert system_prompt_content.startswith(original_prompt)
+    assert "perplexity-ask" in system_prompt_content
+    assert "web research" in system_prompt_content.lower() or "web search" in system_prompt_content.lower()
+
+
 def test_process_task_container_copies_three_files():
     """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
     task = _make_mock_task(description="My task")

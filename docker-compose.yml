@@ -34,6 +34,13 @@ services:
       timeout: 5s
       retries: 10
 
+  perplexity-mcp:
+    image: quay.io/devops_consultants/perplexity-mcp-server:latest
+    ports:
+      - "8080:8080"
+    environment:
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
+
   task-runner-build:
     image: docker:27
     environment:
@@ -86,6 +93,8 @@ services:
       TASK_RUNNER_IMAGE: content-manager-task-runner:latest
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      USE_PERPLEXITY: "true"
+      PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -1,0 +1,16 @@
+{{- if .Values.perplexity.existingSecret }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "content-manager.fullname" . }}-perplexity-mcp
+  labels:
+    {{- include "content-manager.labels" . | nindent 4 }}
+    app.kubernetes.io/component: perplexity-mcp
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: perplexity-mcp
+  ports:
+    - port: {{ .Values.perplexity.service.port }}
+      targetPort: 8080
+{{- end }}
