@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Task output viewer popup
 The system SHALL provide a `TaskOutputModal` component that displays the captured execution output from a task in a read-only popup. The modal SHALL be implemented as a `<dialog>` element styled consistently with the existing `TaskEditModal`. The modal SHALL use a responsive width of `w-[90vw] max-w-5xl` to fill approximately two-thirds of the viewport on wide screens. The modal SHALL display the task title as the header. The modal SHALL parse the output as markdown and render it as formatted HTML using `marked`, sanitized with `DOMPurify`, and styled with Tailwind's `prose` class. The rendered output area SHALL be scrollable with a maximum modal height of `80vh`. The modal SHALL be dismissible by clicking the Close button, pressing Escape, or clicking the backdrop.

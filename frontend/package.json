@@ -10,11 +10,15 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "dompurify": "^3.3.1",
+    "marked": "^17.0.2",
     "pinia": "^2.2.0",
     "vue": "^3.5.0",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/dompurify": "^3.0.5",
     "@vitejs/plugin-vue": "^5.1.0",
     "@vue/test-utils": "^2.4.6",
     "autoprefixer": "^10.4.20",

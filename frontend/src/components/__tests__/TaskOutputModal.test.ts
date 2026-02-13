@@ -10,22 +10,21 @@ describe('TaskOutputModal', () => {
     expect(wrapper.text()).toContain('Fix auth bug')
   })
 
-  it('displays output in a monospace pre block', () => {
+  it('renders output as markdown HTML in a prose container', () => {
     const wrapper = mount(TaskOutputModal, {
       props: { title: 'Task', output: 'Line 1\nLine 2\nLine 3' },
     })
-    const pre = wrapper.find('pre')
-    expect(pre.exists()).toBe(true)
-    expect(pre.text()).toContain('Line 1')
-    expect(pre.text()).toContain('Line 3')
-    expect(pre.classes()).toContain('font-mono')
+    const prose = wrapper.find('.prose')
+    expect(prose.exists()).toBe(true)
+    expect(prose.text()).toContain('Line 1')
+    expect(prose.text()).toContain('Line 3')
   })
 
   it('shows "No output available" when output is null', () => {
     const wrapper = mount(TaskOutputModal, {
       props: { title: 'Task', output: null },
     })
-    expect(wrapper.find('pre').exists()).toBe(false)
+    expect(wrapper.find('.prose').exists()).toBe(false)
     expect(wrapper.text()).toContain('No output available')
   })
 
@@ -33,7 +32,7 @@ describe('TaskOutputModal', () => {
     const wrapper = mount(TaskOutputModal, {
       props: { title: 'Task', output: '' },
     })
-    expect(wrapper.find('pre').exists()).toBe(false)
+    expect(wrapper.find('.prose').exists()).toBe(false)
     expect(wrapper.text()).toContain('No output available')
   })
 
@@ -53,5 +52,60 @@ describe('TaskOutputModal', () => {
     const xBtn = wrapper.find('button[aria-label="Close"]')
     await xBtn.trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('renders markdown headings, lists, and horizontal rules as HTML', () => {
+    const md = '# Heading\n\n- Item 1\n- Item 2\n\n---\n'
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: md },
+    })
+    const prose = wrapper.find('.prose')
+    expect(prose.find('h1').exists()).toBe(true)
+    expect(prose.find('h1').text()).toBe('Heading')
+    expect(prose.find('ul').exists()).toBe(true)
+    expect(prose.findAll('li')).toHaveLength(2)
+    expect(prose.find('hr').exists()).toBe(true)
+  })
+
+  it('renders markdown code blocks as pre>code elements', () => {
+    const md = '```\nconsole.log("hello")\n```'
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: md },
+    })
+    const prose = wrapper.find('.prose')
+    expect(prose.find('pre code').exists()).toBe(true)
+    expect(prose.find('pre code').text()).toContain('console.log("hello")')
+  })
+
+  it('renders plain text output without artifacts', () => {
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: 'Just plain text here' },
+    })
+    const prose = wrapper.find('.prose')
+    expect(prose.exists()).toBe(true)
+    expect(prose.text()).toContain('Just plain text here')
+    // No markdown-specific elements created
+    expect(prose.find('h1').exists()).toBe(false)
+    expect(prose.find('ul').exists()).toBe(false)
+    expect(prose.find('hr').exists()).toBe(false)
+  })
+
+  it('sanitizes dangerous HTML tags from output', () => {
+    const malicious = '<script>alert("xss")</script><p>Safe content</p>'
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: malicious },
+    })
+    const prose = wrapper.find('.prose')
+    expect(prose.html()).not.toContain('<script>')
+    expect(prose.text()).toContain('Safe content')
+  })
+
+  it('uses responsive width classes', () => {
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: 'output' },
+    })
+    const inner = wrapper.find('dialog > div')
+    expect(inner.classes()).toContain('w-[90vw]')
+    expect(inner.classes()).toContain('max-w-5xl')
   })
 })

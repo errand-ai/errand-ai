@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
-defineProps<{
+const props = defineProps<{
   title: string
   output: string | null
 }>()
@@ -11,6 +13,12 @@ const emit = defineEmits<{
 }>()
 
 const dialogRef = ref<HTMLDialogElement | null>(null)
+
+const renderedOutput = computed(() => {
+  if (!props.output) return ''
+  const raw = marked.parse(props.output) as string
+  return DOMPurify.sanitize(raw)
+})
 
 onMounted(() => {
   dialogRef.value?.showModal()
@@ -29,7 +37,7 @@ function onClose() {
     @cancel.prevent="onClose"
     @click.self="onClose"
   >
-    <div class="w-[36rem] max-h-[80vh] flex flex-col p-6">
+    <div class="w-[90vw] max-w-5xl max-h-[80vh] flex flex-col p-6">
       <div class="flex items-center justify-between mb-4">
         <h3 class="text-lg font-semibold text-gray-800 truncate">{{ title }}</h3>
         <button
@@ -44,7 +52,7 @@ function onClose() {
         </button>
       </div>
       <div class="flex-1 overflow-auto rounded-md border border-gray-200 bg-gray-50 p-4">
-        <pre v-if="output" class="whitespace-pre-wrap break-words text-sm font-mono text-gray-700">{{ output }}</pre>
+        <div v-if="output" class="prose prose-sm max-w-none text-gray-700" v-html="renderedOutput" />
         <p v-else class="text-sm text-gray-500 italic">No output available</p>
       </div>
       <div class="mt-4 flex justify-end">
