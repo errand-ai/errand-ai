@@ -604,7 +604,11 @@ async def get_settings(
 ):
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
-    return {s.key: s.value for s in settings}
+    data = {s.key: s.value for s in settings}
+    # Ensure skills always present (default to empty array)
+    if "skills" not in data:
+        data["skills"] = []
+    return data
 
 
 @app.put("/api/settings")

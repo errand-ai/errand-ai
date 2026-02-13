@@ -51,6 +51,23 @@ const saving = ref(false)
 const error = ref<string | null>(null)
 const saveSuccess = ref(false)
 
+// Skills state
+interface Skill {
+  id: string
+  name: string
+  description: string
+  instructions: string
+}
+const skills = ref<Skill[]>([])
+const skillsExpanded = ref(false)
+const skillsSaving = ref(false)
+const skillsSuccess = ref(false)
+const skillsError = ref<string | null>(null)
+const showSkillForm = ref(false)
+const editingSkillId = ref<string | null>(null)
+const skillForm = ref({ name: '', description: '', instructions: '' })
+const skillNameError = ref<string | null>(null)
+
 async function settingsFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> || {}),
@@ -84,6 +101,7 @@ async function loadSettings() {
     taskRunnerLogLevel.value = data.task_runner_log_level || 'INFO'
     timezoneValue.value = data.timezone ?? 'UTC'
     archiveAfterDays.value = data.archive_after_days ?? 3
+    skills.value = Array.isArray(data.skills) ? data.skills : []
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -416,6 +434,91 @@ async function onTimezoneChange() {
   }
 }
 
+function openAddSkill() {
+  editingSkillId.value = null
+  skillForm.value = { name: '', description: '', instructions: '' }
+  skillNameError.value = null
+  showSkillForm.value = true
+}
+
+function openEditSkill(skill: Skill) {
+  editingSkillId.value = skill.id
+  skillForm.value = { name: skill.name, description: skill.description, instructions: skill.instructions }
+  skillNameError.value = null
+  showSkillForm.value = true
+}
+
+function cancelSkillForm() {
+  showSkillForm.value = false
+  editingSkillId.value = null
+  skillNameError.value = null
+}
+
+async function saveSkills(updatedSkills: Skill[]) {
+  skillsSaving.value = true
+  skillsSuccess.value = false
+  skillsError.value = null
+  try {
+    const res = await settingsFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skills: updatedSkills }),
+    })
+    if (!res.ok) {
+      skillsError.value = `Failed to save skills (HTTP ${res.status})`
+      return
+    }
+    skills.value = updatedSkills
+    skillsSuccess.value = true
+    setTimeout(() => { skillsSuccess.value = false }, 3000)
+  } catch {
+    skillsError.value = 'Failed to save skills. Please check your connection.'
+  } finally {
+    skillsSaving.value = false
+  }
+}
+
+async function submitSkillForm() {
+  const { name, description, instructions } = skillForm.value
+  if (!name.trim() || !description.trim() || !instructions.trim()) {
+    skillNameError.value = 'All fields are required.'
+    return
+  }
+  // Check name uniqueness (excluding current edit target)
+  const duplicate = skills.value.find(s => s.name === name.trim() && s.id !== editingSkillId.value)
+  if (duplicate) {
+    skillNameError.value = `A skill named "${name.trim()}" already exists.`
+    return
+  }
+
+  let updated: Skill[]
+  if (editingSkillId.value) {
+    updated = skills.value.map(s => s.id === editingSkillId.value
+      ? { ...s, name: name.trim(), description: description.trim(), instructions: instructions.trim() }
+      : s
+    )
+  } else {
+    const newSkill: Skill = {
+      id: crypto.randomUUID(),
+      name: name.trim(),
+      description: description.trim(),
+      instructions: instructions.trim(),
+    }
+    updated = [...skills.value, newSkill]
+  }
+
+  await saveSkills(updated)
+  if (!skillsError.value) {
+    showSkillForm.value = false
+    editingSkillId.value = null
+  }
+}
+
+async function deleteSkill(id: string) {
+  const updated = skills.value.filter(s => s.id !== id)
+  await saveSkills(updated)
+}
+
 onMounted(async () => {
   try {
     const zones = Intl.supportedValuesOf('timeZone')
@@ -641,6 +744,120 @@ onMounted(async () => {
 
         <div v-else class="text-sm text-gray-500">
           No API key generated. Restart the backend to auto-generate one.
+        </div>
+      </div>
+
+      <!-- Skills -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <button
+          @click="skillsExpanded = !skillsExpanded"
+          class="flex w-full items-center justify-between text-left"
+        >
+          <h3 class="text-lg font-semibold text-gray-800">
+            Skills
+            <span class="ml-2 text-sm font-normal text-gray-500">({{ skills.length }})</span>
+          </h3>
+          <svg
+            :class="{ 'rotate-180': skillsExpanded }"
+            class="h-5 w-5 text-gray-500 transition-transform"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        <div v-if="skillsExpanded" class="mt-3">
+          <p class="text-sm text-gray-500 mb-3">Reusable prompt templates the task runner agent can load on demand via MCP tools.</p>
+          <div v-if="skillsError" class="mb-2 text-sm text-red-600">{{ skillsError }}</div>
+          <div v-if="skillsSuccess" class="mb-2 text-sm text-green-600">Skills saved.</div>
+
+          <!-- Skill list -->
+          <div v-if="skills.length > 0 && !showSkillForm" class="space-y-2 mb-3">
+            <div
+              v-for="skill in skills"
+              :key="skill.id"
+              class="flex items-start justify-between rounded-md border border-gray-200 p-3"
+            >
+              <div>
+                <div class="text-sm font-medium text-gray-800">{{ skill.name }}</div>
+                <div class="text-xs text-gray-500">{{ skill.description }}</div>
+              </div>
+              <div class="flex gap-2 ml-3 shrink-0">
+                <button
+                  @click="openEditSkill(skill)"
+                  class="text-xs text-blue-600 hover:text-blue-800"
+                  data-testid="skill-edit"
+                >Edit</button>
+                <button
+                  @click="deleteSkill(skill.id)"
+                  :disabled="skillsSaving"
+                  class="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
+                  data-testid="skill-delete"
+                >Delete</button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="skills.length === 0 && !showSkillForm" class="text-sm text-gray-400 mb-3">No skills defined yet.</div>
+
+          <!-- Add/Edit form -->
+          <div v-if="showSkillForm" class="rounded-md border border-gray-200 p-4 mb-3 space-y-3">
+            <h4 class="text-sm font-semibold text-gray-700">{{ editingSkillId ? 'Edit Skill' : 'New Skill' }}</h4>
+            <div v-if="skillNameError" class="text-sm text-red-600">{{ skillNameError }}</div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+              <input
+                v-model="skillForm.name"
+                type="text"
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="e.g. researcher"
+                data-testid="skill-name-input"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
+              <input
+                v-model="skillForm.description"
+                type="text"
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="Brief summary for agent discovery"
+                data-testid="skill-description-input"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Instructions</label>
+              <textarea
+                v-model="skillForm.instructions"
+                rows="6"
+                class="w-full rounded-md border border-gray-300 p-3 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="Full prompt instructions the agent will follow..."
+                data-testid="skill-instructions-input"
+              ></textarea>
+            </div>
+            <div class="flex gap-2">
+              <button
+                @click="submitSkillForm"
+                :disabled="skillsSaving"
+                class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                data-testid="skill-save"
+              >
+                {{ skillsSaving ? 'Saving...' : (editingSkillId ? 'Update' : 'Add') }}
+              </button>
+              <button
+                @click="cancelSkillForm"
+                class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                data-testid="skill-cancel"
+              >Cancel</button>
+            </div>
+          </div>
+
+          <button
+            v-if="!showSkillForm"
+            @click="openAddSkill"
+            class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            data-testid="skill-add"
+          >Add Skill</button>
         </div>
       </div>
 
