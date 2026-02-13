@@ -48,6 +48,45 @@ async def test_list_tasks_ordered_by_position_asc(client: AsyncClient):
     assert data[0]["position"] < data[1]["position"]
 
 
+async def test_completed_tasks_ordered_by_updated_at_desc(client: AsyncClient):
+    """Completed tasks should appear most-recently-completed first."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+    t3 = await create_task(client, "Third")
+
+    # Complete them in order: t1, then t2, then t3
+    for t in [t1, t2, t3]:
+        await client.patch(f"/api/tasks/{t['id']}", json={"status": "completed"})
+
+    resp = await client.get("/api/tasks")
+    assert resp.status_code == 200
+    completed = [t for t in resp.json() if t["status"] == "completed"]
+    assert len(completed) == 3
+    # Most recently completed (t3) should be first
+    assert completed[0]["id"] == t3["id"]
+    assert completed[1]["id"] == t2["id"]
+    assert completed[2]["id"] == t1["id"]
+
+
+async def test_pending_tasks_still_ordered_by_position_asc(client: AsyncClient):
+    """Non-completed columns should retain position-based ordering."""
+    t1 = await create_task(client, "First")
+    t2 = await create_task(client, "Second")
+
+    # Move both to pending (in order)
+    await client.patch(f"/api/tasks/{t1['id']}", json={"status": "pending"})
+    await client.patch(f"/api/tasks/{t2['id']}", json={"status": "pending"})
+
+    resp = await client.get("/api/tasks")
+    assert resp.status_code == 200
+    pending = [t for t in resp.json() if t["status"] == "pending"]
+    assert len(pending) == 2
+    # Position-based: t1 moved first (lower position), t2 second
+    assert pending[0]["id"] == t1["id"]
+    assert pending[1]["id"] == t2["id"]
+    assert pending[0]["position"] < pending[1]["position"]
+
+
 # --- POST /api/tasks ---
 
 

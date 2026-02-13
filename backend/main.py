@@ -281,10 +281,21 @@ async def list_tasks(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).where(Task.status.not_in(["deleted", "archived"])).order_by(Task.position.asc(), Task.created_at.asc())
+    # Completed tasks: most recently completed first (updated_at DESC)
+    # All other columns: position ASC, created_at ASC
+    active = await session.execute(
+        select(Task)
+        .options(selectinload(Task.tags))
+        .where(Task.status.not_in(["deleted", "archived", "completed"]))
+        .order_by(Task.position.asc(), Task.created_at.asc())
     )
-    tasks = result.scalars().all()
+    completed = await session.execute(
+        select(Task)
+        .options(selectinload(Task.tags))
+        .where(Task.status == "completed")
+        .order_by(Task.updated_at.desc())
+    )
+    tasks = list(active.scalars().all()) + list(completed.scalars().all())
     return [TaskResponse.from_task(t) for t in tasks]
 
 

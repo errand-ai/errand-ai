@@ -110,6 +110,19 @@ describe('tasksByStatus sorting', () => {
     expect(result.map((t) => t.id)).toEqual(['2', '1'])
   })
 
+  it('sorts completed tasks by updated_at descending (most recent first)', () => {
+    const store = useTaskStore()
+    store.tasks = [
+      makeTask({ id: '1', status: 'completed', position: 1, updated_at: '2024-01-01T10:00:00Z' }),
+      makeTask({ id: '2', status: 'completed', position: 2, updated_at: '2024-01-01T14:00:00Z' }),
+      makeTask({ id: '3', status: 'completed', position: 3, updated_at: '2024-01-01T09:00:00Z' }),
+    ]
+
+    const result = store.tasksByStatus('completed')
+    // Most recently completed (14:00) first, then 10:00, then 09:00
+    expect(result.map((t) => t.id)).toEqual(['2', '1', '3'])
+  })
+
   it('returns empty array for status with no tasks', () => {
     const store = useTaskStore()
     store.tasks = [
