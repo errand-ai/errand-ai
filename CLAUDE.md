@@ -48,6 +48,7 @@ openspec/
   changes/             # Active changes (created by openspec new)
 backend/
   main.py              # FastAPI app (API endpoints)
+  mcp_server.py        # MCP Streamable HTTP server (tools: new_task, task_status, etc.)
   auth.py              # OIDC config, JWT validation, role extraction
   auth_routes.py       # /auth/login, /auth/callback, /auth/logout
   models.py            # SQLAlchemy models (Task, Tag, Setting)
@@ -79,6 +80,7 @@ helm/
 ## Development Workflow
 
 Changes are implemented sequentially — one change at a time, branching from `main`. Do not start implementing a new change until the current one is merged.
+**Never push directly to main** — always use a feature branch + PR. After a PR is created, use new commits (not amend + force-push).
 
 ### 1. Create a feature branch
 
@@ -204,6 +206,12 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - PR builds get tags like `0.4.0-pr2`; main builds get `0.4.0`
 - Static assets in `frontend/public/` must have `chmod 644` or nginx returns 403 (Docker copies permissions as-is)
 
+## MCP Server (Backend)
+
+- MCP SDK `TransportSecuritySettings`: DNS rebinding protection is auto-enabled when FastMCP host defaults to `localhost` — rejects non-localhost Host headers with 421. Disabled via `enable_dns_rebinding_protection=False` since we use API key auth.
+- MCP SDK dependency cascade: upgrading `mcp` can require bumping `pydantic`, `PyJWT`, and `uvicorn` minimum versions — check for conflicts when updating.
+- Helm deploys Twitter secrets via `envFrom`/`secretRef` — K8s secret keys must match env var names exactly (e.g. `TWITTER_API_KEY`).
+
 ## Frontend Layout
 
 - App.vue `<main>` has no max-width — content fills viewport width
@@ -235,8 +243,8 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 
 ## Current State
 
-- Version: `0.26.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.28.3` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 262 backend (pytest) + 205 frontend (vitest) — CI `test` job gates both build jobs
-- 31 component specs in `openspec/specs/`
+- Tests: 268 backend (pytest) + 205 frontend (vitest) — CI `test` job gates both build jobs
+- 34 component specs in `openspec/specs/`
