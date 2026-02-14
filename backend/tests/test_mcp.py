@@ -253,12 +253,12 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_five_tools():
-    """The MCP server exposes exactly five tools."""
+async def test_mcp_server_has_six_tools():
+    """The MCP server exposes exactly six tools."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
-    assert tool_names == {"new_task", "task_status", "task_output", "list_skills", "get_skill"}
+    assert tool_names == {"new_task", "task_status", "task_output", "list_skills", "get_skill", "post_tweet"}
 
 
 # --- 5.4: MCP tools (tested as direct function calls) ---
@@ -431,3 +431,84 @@ async def test_get_skill_not_found(db_session):
     from mcp_server import get_skill
     result = await get_skill("nonexistent")
     assert "not found" in result.lower()
+
+
+# --- post_tweet MCP tool ---
+
+
+async def test_post_tweet_valid(monkeypatch):
+    """Successful tweet returns the tweet URL."""
+    monkeypatch.setenv("TWITTER_API_KEY", "key")
+    monkeypatch.setenv("TWITTER_API_SECRET", "secret")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("TWITTER_ACCESS_SECRET", "access")
+
+    mock_response = type("Response", (), {"data": {"id": "123456"}})()
+    mock_user = type("User", (), {"data": type("Data", (), {"username": "testuser"})()})()
+
+    with patch("tweepy.Client") as MockClient:
+        instance = MockClient.return_value
+        instance.create_tweet.return_value = mock_response
+        instance.get_me.return_value = mock_user
+
+        from mcp_server import post_tweet
+        result = await post_tweet("Hello world!")
+
+    assert "https://x.com/testuser/status/123456" in result
+    instance.create_tweet.assert_called_once_with(text="Hello world!")
+
+
+async def test_post_tweet_too_long():
+    """Messages over 280 characters are rejected."""
+    from mcp_server import post_tweet
+    result = await post_tweet("a" * 281)
+    assert "Error" in result
+    assert "280 character limit" in result
+    assert "281" in result
+
+
+async def test_post_tweet_empty():
+    """Empty messages are rejected."""
+    from mcp_server import post_tweet
+    result = await post_tweet("")
+    assert "Error" in result
+    assert "empty" in result.lower()
+
+
+async def test_post_tweet_whitespace_only():
+    """Whitespace-only messages are rejected."""
+    from mcp_server import post_tweet
+    result = await post_tweet("   ")
+    assert "Error" in result
+    assert "empty" in result.lower()
+
+
+async def test_post_tweet_credentials_not_configured(monkeypatch):
+    """Missing credentials returns an error."""
+    monkeypatch.delenv("TWITTER_API_KEY", raising=False)
+    monkeypatch.delenv("TWITTER_API_SECRET", raising=False)
+    monkeypatch.delenv("TWITTER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("TWITTER_ACCESS_SECRET", raising=False)
+
+    from mcp_server import post_tweet
+    result = await post_tweet("Hello world!")
+    assert "Error" in result
+    assert "credentials not configured" in result.lower()
+
+
+async def test_post_tweet_twitter_api_error(monkeypatch):
+    """Twitter API errors are caught and returned."""
+    monkeypatch.setenv("TWITTER_API_KEY", "key")
+    monkeypatch.setenv("TWITTER_API_SECRET", "secret")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("TWITTER_ACCESS_SECRET", "access")
+
+    with patch("tweepy.Client") as MockClient:
+        instance = MockClient.return_value
+        instance.create_tweet.side_effect = Exception("403 Forbidden: duplicate tweet")
+
+        from mcp_server import post_tweet
+        result = await post_tweet("Hello world!")
+
+    assert "Error posting tweet" in result
+    assert "403 Forbidden" in result

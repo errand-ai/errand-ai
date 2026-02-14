@@ -66,6 +66,9 @@ valkey:
       cpu: 50m
       memory: 64Mi
 
+twitter:
+  existingSecret: ""
+
 perplexity:
   existingSecret: ""
   replicaCount: 1
