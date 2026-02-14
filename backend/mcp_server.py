@@ -1,4 +1,3 @@
-import json
 import logging
 import secrets
 import uuid as uuid_mod
@@ -6,6 +5,7 @@ import uuid as uuid_mod
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
 from starlette.applications import Starlette
@@ -43,6 +43,9 @@ mcp = FastMCP(
     auth=AuthSettings(
         issuer_url=AnyHttpUrl("https://localhost"),
         resource_server_url=AnyHttpUrl("https://localhost"),
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
     ),
     stateless_http=True,
     json_response=True,
@@ -158,6 +161,7 @@ async def list_skills() -> str:
         return "[]"
 
     summary = [{"name": s["name"], "description": s["description"]} for s in skills_value if isinstance(s, dict)]
+    import json
     return json.dumps(summary)
 
 
@@ -178,6 +182,44 @@ async def get_skill(name: str) -> str:
             return skill.get("instructions", "")
 
     return f"Skill '{name}' not found"
+
+
+@mcp.tool()
+async def post_tweet(message: str) -> str:
+    """Post a tweet to Twitter/X. Message must be 1-280 characters."""
+    import os
+
+    if not message or not message.strip():
+        return "Error: Message cannot be empty"
+
+    if len(message) > 280:
+        return f"Error: Message exceeds 280 character limit (got {len(message)} characters)"
+
+    api_key = os.environ.get("TWITTER_API_KEY", "")
+    api_secret = os.environ.get("TWITTER_API_SECRET", "")
+    access_token = os.environ.get("TWITTER_ACCESS_TOKEN", "")
+    access_secret = os.environ.get("TWITTER_ACCESS_SECRET", "")
+
+    if not all([api_key, api_secret, access_token, access_secret]):
+        return "Error: Twitter API credentials not configured"
+
+    try:
+        import tweepy
+
+        client = tweepy.Client(
+            consumer_key=api_key,
+            consumer_secret=api_secret,
+            access_token=access_token,
+            access_token_secret=access_secret,
+        )
+        response = client.create_tweet(text=message)
+        tweet_id = response.data["id"]
+        # Get the authenticated user's username for the URL
+        user = client.get_me()
+        username = user.data.username if user.data else "i"
+        return f"Tweet posted: https://x.com/{username}/status/{tweet_id}"
+    except Exception as e:
+        return f"Error posting tweet: {e}"
 
 
 def create_mcp_app() -> Starlette:

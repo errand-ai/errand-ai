@@ -61,3 +61,8 @@ spec:
             - name: OPENAI_API_KEY
               value: {{ .Values.openai.apiKey | quote }}
             {{- end }}
+          {{- if .Values.twitter.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.twitter.existingSecret }}
+          {{- end }}
