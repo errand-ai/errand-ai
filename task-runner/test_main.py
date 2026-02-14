@@ -2,7 +2,6 @@
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from unittest.mock import patch, MagicMock
@@ -266,14 +265,14 @@ def test_execute_command_stderr(tmp_path):
 
 def test_execute_command_timeout(tmp_path):
     """Returns timeout message for long-running commands."""
-    import main
-    original = main.COMMAND_TIMEOUT
-    main.COMMAND_TIMEOUT = 1
+    main_module = sys.modules["main"]
+    original = main_module.COMMAND_TIMEOUT
+    main_module.COMMAND_TIMEOUT = 1
     try:
         result = execute_command("sleep 10", working_directory=str(tmp_path))
         assert "timed out" in result
     finally:
-        main.COMMAND_TIMEOUT = original
+        main_module.COMMAND_TIMEOUT = original
 
 
 def test_execute_command_working_directory():

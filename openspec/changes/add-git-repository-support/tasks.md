@@ -40,4 +40,4 @@
 - [x] 6.1 Run full test suite (backend + frontend) and ensure all existing tests still pass
 - [x] 6.2 Build task runner image locally and verify git clone works over HTTPS for a public repo
 - [x] 6.3 Build task runner image locally and verify git clone works over SSH when credentials are injected
-- [ ] 6.4 Verify git push works over SSH when deploy key has write access
+- [x] 6.4 Verify git push works over SSH when deploy key has write access
