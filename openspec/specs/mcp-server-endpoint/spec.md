@@ -12,7 +12,7 @@ The backend SHALL mount an MCP Streamable HTTP server at the `/mcp` path using t
 #### Scenario: MCP endpoint listed in tool discovery
 
 - **WHEN** a client sends a `tools/list` request to `/mcp`
-- **THEN** the response includes the three tools: `new_task`, `task_status`, `task_output`
+- **THEN** the response includes the tools: `new_task`, `task_status`, `task_output`, `list_skills`, `get_skill`, `post_tweet`
 
 ### Requirement: API key authentication via TokenVerifier
 
