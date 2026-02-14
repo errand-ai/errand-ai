@@ -5,6 +5,7 @@ import uuid as uuid_mod
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
 from starlette.applications import Starlette
@@ -42,6 +43,9 @@ mcp = FastMCP(
     auth=AuthSettings(
         issuer_url=AnyHttpUrl("https://localhost"),
         resource_server_url=AnyHttpUrl("https://localhost"),
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
     ),
     stateless_http=True,
     json_response=True,
