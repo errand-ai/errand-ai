@@ -5,13 +5,14 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from agents import Agent, Runner, set_default_openai_client, set_tracing_disabled
+from agents import Agent, Runner, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
@@ -180,6 +181,43 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
     return servers
 
 
+COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
+
+
+@function_tool
+def execute_command(command: str, working_directory: str = "/workspace") -> str:
+    """Execute a shell command and return the combined stdout and stderr output.
+
+    Use this tool to run commands like git clone, ls, cat, grep, etc.
+
+    Args:
+        command: The shell command to execute.
+        working_directory: The directory to run the command in. Defaults to /workspace.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT,
+            cwd=working_directory,
+        )
+        output_parts = []
+        if result.stdout:
+            output_parts.append(result.stdout)
+        if result.stderr:
+            output_parts.append(result.stderr)
+        output = "\n".join(output_parts) if output_parts else "(no output)"
+        if result.returncode != 0:
+            output = f"Command exited with code {result.returncode}\n{output}"
+        return output
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {COMMAND_TIMEOUT} seconds"
+    except Exception as e:
+        return f"Error executing command: {e}"
+
+
 async def main():
     # 1. Read and validate environment variables
     env = read_env_vars()
@@ -207,11 +245,13 @@ async def main():
             name="TaskRunner",
             instructions=combined_instructions,
             model=env["OPENAI_MODEL"],
+            tools=[execute_command],
             mcp_servers=mcp_servers if mcp_servers else [],
         )
 
         try:
-            result = await Runner.run(agent, user_prompt)
+            max_turns = int(os.environ.get("MAX_TURNS", "30"))
+            result = await Runner.run(agent, user_prompt, max_turns=max_turns)
             raw_output = result.final_output
 
             # Extract structured JSON from LLM output (handles preamble text, code fences, etc.)

@@ -8,6 +8,9 @@ import asyncio
 import json
 import logging
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+
 logger = logging.getLogger(__name__)
 
 import jwt
@@ -33,6 +36,21 @@ from mcp_server import create_mcp_app, mcp as mcp_server
 from scheduler import run_scheduler, release_lock
 
 security = HTTPBearer()
+
+
+def generate_ssh_keypair() -> tuple[str, str]:
+    """Generate an Ed25519 SSH keypair. Returns (private_key_pem, public_key_openssh)."""
+    private_key = Ed25519PrivateKey.generate()
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    public_openssh = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.OpenSSH,
+        format=serialization.PublicFormat.OpenSSH,
+    ).decode("utf-8")
+    return private_pem, f"{public_openssh} content-manager"
 
 
 @asynccontextmanager
@@ -66,6 +84,20 @@ async def lifespan(app: FastAPI):
             session.add(Setting(key="system_prompt", value=default_prompt))
             await session.commit()
             logger.info("Created default system prompt")
+
+        result = await session.execute(select(Setting).where(Setting.key == "ssh_private_key"))
+        if result.scalar_one_or_none() is None:
+            private_pem, public_openssh = generate_ssh_keypair()
+            session.add(Setting(key="ssh_private_key", value=private_pem))
+            session.add(Setting(key="ssh_public_key", value=public_openssh))
+            await session.commit()
+            logger.info("Generated new SSH keypair")
+
+        result = await session.execute(select(Setting).where(Setting.key == "git_ssh_hosts"))
+        if result.scalar_one_or_none() is None:
+            session.add(Setting(key="git_ssh_hosts", value=["github.com", "bitbucket.org"]))
+            await session.commit()
+            logger.info("Created default git SSH hosts")
 
     scheduler_task = asyncio.create_task(run_scheduler())
     async with mcp_server.session_manager.run():
@@ -604,7 +636,7 @@ async def get_settings(
 ):
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
-    data = {s.key: s.value for s in settings}
+    data = {s.key: s.value for s in settings if s.key != "ssh_private_key"}
     # Ensure skills always present (default to empty array)
     if "skills" not in data:
         data["skills"] = []
@@ -629,6 +661,23 @@ async def update_settings(
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
     return {s.key: s.value for s in settings}
+
+
+@app.post("/api/settings/regenerate-ssh-key")
+async def regenerate_ssh_key(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    private_pem, public_openssh = generate_ssh_keypair()
+    for key, value in [("ssh_private_key", private_pem), ("ssh_public_key", public_openssh)]:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.value = value
+        else:
+            session.add(Setting(key=key, value=value))
+    await session.commit()
+    return {"ssh_public_key": public_openssh}
 
 
 @app.post("/api/settings/regenerate-mcp-key")

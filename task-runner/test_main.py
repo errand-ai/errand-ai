@@ -4,15 +4,23 @@ import json
 import os
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
 # Add task-runner to path so we can import main
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Mock the agents SDK before importing main — the SDK may not be installed locally
+# or may have version conflicts. We only need the pure-Python functions from main.
+_mock_agents = MagicMock()
+_mock_agents.function_tool = lambda f: f  # passthrough decorator
+sys.modules.setdefault("agents", _mock_agents)
+sys.modules.setdefault("agents.mcp", MagicMock())
+sys.modules.setdefault("openai", MagicMock())
+
 import logging
-from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json
+from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json, execute_command
 
 
 # --- Environment variable validation ---
@@ -232,3 +240,49 @@ def test_log_level_invalid_falls_back_to_info():
     with patch.dict(os.environ, {"LOG_LEVEL": "INVALID"}):
         level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
     assert level == logging.INFO
+
+
+# --- execute_command tool ---
+
+
+def test_execute_command_success(tmp_path):
+    """Runs a simple command and returns stdout."""
+    result = execute_command("echo hello", working_directory=str(tmp_path))
+    assert "hello" in result
+
+
+def test_execute_command_nonzero_exit(tmp_path):
+    """Reports non-zero exit code."""
+    result = execute_command("exit 42", working_directory=str(tmp_path))
+    assert "exited with code 42" in result
+
+
+def test_execute_command_stderr(tmp_path):
+    """Captures stderr output."""
+    result = execute_command("echo err >&2", working_directory=str(tmp_path))
+    assert "err" in result
+
+
+def test_execute_command_timeout(tmp_path):
+    """Returns timeout message for long-running commands."""
+    main_module = sys.modules["main"]
+    original = main_module.COMMAND_TIMEOUT
+    main_module.COMMAND_TIMEOUT = 1
+    try:
+        result = execute_command("sleep 10", working_directory=str(tmp_path))
+        assert "timed out" in result
+    finally:
+        main_module.COMMAND_TIMEOUT = original
+
+
+def test_execute_command_working_directory():
+    """Runs command in specified working directory."""
+    result = execute_command("pwd", working_directory="/tmp")
+    # macOS /tmp is a symlink to /private/tmp
+    assert "tmp" in result
+
+
+def test_execute_command_invalid_directory():
+    """Returns error for non-existent working directory."""
+    result = execute_command("echo hello", working_directory="/nonexistent")
+    assert "Error executing command" in result
