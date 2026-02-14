@@ -16,7 +16,7 @@ from worker import (
     read_settings, truncate_output, _task_to_dict, put_archive,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
-    substitute_env_vars, extract_json,
+    substitute_env_vars, extract_json, generate_ssh_config, put_archive_ssh,
 )
 
 
@@ -1476,3 +1476,92 @@ def test_needs_input_does_not_trigger_rescheduling():
     )
     target_status = "completed" if parsed.status == "completed" else "review"
     assert target_status != "completed", "needs_input must not map to 'completed' (would trigger rescheduling)"
+
+
+# --- SSH config generation ---
+
+
+def test_generate_ssh_config_single_host():
+    config = generate_ssh_config(["github.com"])
+    assert "Host github.com" in config
+    assert "IdentityFile ~/.ssh/id_rsa.agent" in config
+    assert "User git" in config
+    assert "StrictHostKeyChecking accept-new" in config
+
+
+def test_generate_ssh_config_multiple_hosts():
+    config = generate_ssh_config(["github.com", "gitlab.com"])
+    assert "Host github.com" in config
+    assert "Host gitlab.com" in config
+
+
+def test_generate_ssh_config_empty_hosts():
+    config = generate_ssh_config([])
+    assert config == ""
+
+
+# --- SSH archive injection ---
+
+
+def test_put_archive_ssh():
+    """Verify put_archive_ssh creates a tar with correct file names and permissions."""
+    import tarfile as tf
+
+    container = MagicMock()
+    put_archive_ssh(container, "PRIVATE_KEY_CONTENT", "Host github.com\n    User git\n")
+    container.put_archive.assert_called_once()
+    call_args = container.put_archive.call_args
+    assert call_args[0][0] == "/home/nonroot/.ssh"
+
+    # Inspect the tar contents
+    buf = call_args[0][1]
+    buf.seek(0)
+    with tf.open(fileobj=buf, mode="r") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        # Directory entry sets .ssh to 700
+        assert "." in members
+        assert members["."].isdir()
+        assert members["."].mode == 0o700
+        assert "id_rsa.agent" in members
+        assert "config" in members
+        assert members["id_rsa.agent"].mode == 0o600
+        assert members["config"].mode == 0o644
+        assert members["id_rsa.agent"].uid == 65532
+        # Read key content
+        key_file = tar.extractfile("id_rsa.agent")
+        assert key_file.read().decode("utf-8") == "PRIVATE_KEY_CONTENT"
+
+
+# --- read_settings includes SSH keys ---
+
+
+@pytest.fixture()
+async def worker_session():
+    """Create an async engine+session for worker tests that need the DB."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+    await engine.dispose()
+
+
+async def test_read_settings_includes_ssh_keys(worker_session: AsyncSession):
+    worker_session.add(Setting(key="ssh_private_key", value="PRIVATE"))
+    worker_session.add(Setting(key="git_ssh_hosts", value=json.dumps(["github.com"])))
+    await worker_session.commit()
+    settings = await read_settings(worker_session)
+    assert settings["ssh_private_key"] == "PRIVATE"
+
+
+async def test_read_settings_ssh_defaults_when_missing(worker_session: AsyncSession):
+    settings = await read_settings(worker_session)
+    assert settings["ssh_private_key"] == ""
+    assert settings["git_ssh_hosts"] == []

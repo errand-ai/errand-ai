@@ -167,11 +167,13 @@ async def read_settings(session: AsyncSession) -> dict:
         "task_runner_log_level": "",
         "skills": [],
         "mcp_api_key": "",
+        "ssh_private_key": "",
+        "git_ssh_hosts": [],
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "skills", "mcp_api_key"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "skills", "mcp_api_key", "ssh_private_key", "git_ssh_hosts"])
         )
     )
     for setting in result.scalars().all():
@@ -189,6 +191,10 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["skills"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "mcp_api_key":
             settings["mcp_api_key"] = str(setting.value) if setting.value else ""
+        elif setting.key == "ssh_private_key":
+            settings["ssh_private_key"] = str(setting.value) if setting.value else ""
+        elif setting.key == "git_ssh_hosts":
+            settings["git_ssh_hosts"] = setting.value if isinstance(setting.value, list) else []
 
     return settings
 
@@ -274,6 +280,52 @@ def substitute_env_vars(obj, environ=None):
     if isinstance(obj, list):
         return [substitute_env_vars(item, environ) for item in obj]
     return obj
+
+
+def generate_ssh_config(hosts: list[str]) -> str:
+    """Generate an SSH config file with per-host entries for git SSH authentication."""
+    entries = []
+    for host in hosts:
+        entries.append(
+            f"Host {host}\n"
+            f"    IdentityFile ~/.ssh/id_rsa.agent\n"
+            f"    User git\n"
+            f"    StrictHostKeyChecking accept-new"
+        )
+    return "\n\n".join(entries) + "\n" if entries else ""
+
+
+def put_archive_ssh(container, private_key: str, ssh_config: str) -> None:
+    """Copy SSH private key and config into the container's ~/.ssh/ directory."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        # .ssh directory entry — ensures permissions are 700 (SSH requires this)
+        ssh_dir = tarfile.TarInfo(name=".")
+        ssh_dir.type = tarfile.DIRTYPE
+        ssh_dir.mode = 0o700
+        ssh_dir.uid = 65532
+        ssh_dir.gid = 65532
+        tar.addfile(ssh_dir)
+
+        # Private key with permissions 600
+        key_data = private_key.encode("utf-8")
+        key_info = tarfile.TarInfo(name="id_rsa.agent")
+        key_info.size = len(key_data)
+        key_info.mode = 0o600
+        key_info.uid = 65532
+        key_info.gid = 65532
+        tar.addfile(key_info, io.BytesIO(key_data))
+
+        # SSH config with permissions 644
+        config_data = ssh_config.encode("utf-8")
+        config_info = tarfile.TarInfo(name="config")
+        config_info.size = len(config_data)
+        config_info.mode = 0o644
+        config_info.uid = 65532
+        config_info.gid = 65532
+        tar.addfile(config_info, io.BytesIO(config_data))
+    buf.seek(0)
+    container.put_archive("/home/nonroot/.ssh", buf)
 
 
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
@@ -368,6 +420,14 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
         }
         put_archive(container, files)
+
+        # Inject SSH credentials if available
+        ssh_private_key = settings.get("ssh_private_key", "")
+        if ssh_private_key:
+            git_ssh_hosts = settings.get("git_ssh_hosts", [])
+            ssh_config = generate_ssh_config(git_ssh_hosts)
+            put_archive_ssh(container, ssh_private_key, ssh_config)
+            logger.info("Injected SSH credentials for task %s (%d hosts)", task.id, len(git_ssh_hosts))
 
         # Start and wait
         container.start()

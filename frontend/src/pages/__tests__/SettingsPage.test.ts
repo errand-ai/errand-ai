@@ -1231,4 +1231,280 @@ describe('SettingsPage', () => {
 
     expect(wrapper.text()).toContain('already exists')
   })
+
+  // --- Git SSH Key Section ---
+
+  it('shows SSH public key when key exists', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Git SSH Key')
+    const keyEl = wrapper.find('[data-testid="ssh-public-key"]')
+    expect(keyEl.exists()).toBe(true)
+    expect(keyEl.text()).toBe('ssh-ed25519 AAAA content-manager')
+  })
+
+  it('shows no-key message when SSH key is absent', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const noKey = wrapper.find('[data-testid="ssh-no-key"]')
+    expect(noKey.exists()).toBe(true)
+    expect(noKey.text()).toContain('No SSH key generated')
+  })
+
+  it('copies SSH public key to clipboard', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 COPY content-manager' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const copyBtn = wrapper.find('[data-testid="ssh-key-copy"]')
+    expect(copyBtn.text()).toBe('Copy')
+
+    await copyBtn.trigger('click')
+    await flushPromises()
+
+    expect(writeTextMock).toHaveBeenCalledWith('ssh-ed25519 COPY content-manager')
+    expect(copyBtn.text()).toBe('Copied!')
+  })
+
+  it('regenerates SSH key on confirm via dialog', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 OLD content-manager' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 NEW content-manager' }),
+      })
+
+    const wrapper = mount(SettingsPage, { attachTo: document.body })
+    await flushPromises()
+
+    // Click Regenerate to open the dialog
+    const regenBtn = wrapper.find('[data-testid="ssh-key-regenerate"]')
+    await regenBtn.trigger('click')
+    await flushPromises()
+
+    // Confirm in the dialog
+    const confirmBtn = wrapper.find('[data-testid="ssh-regenerate-confirm"]')
+    expect(confirmBtn.exists()).toBe(true)
+    await confirmBtn.trigger('click')
+    await flushPromises()
+
+    // Verify POST was called to the correct endpoint
+    const postCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[0] === '/api/settings/regenerate-ssh-key'
+    )
+    expect(postCall).toBeTruthy()
+    expect(postCall![1].method).toBe('POST')
+
+    // New key should be displayed
+    const keyEl = wrapper.find('[data-testid="ssh-public-key"]')
+    expect(keyEl.text()).toBe('ssh-ed25519 NEW content-manager')
+    expect(wrapper.text()).toContain('SSH key regenerated.')
+
+    wrapper.unmount()
+  })
+
+  it('does not regenerate SSH key when dialog is cancelled', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 KEEP content-manager' }),
+    })
+
+    const wrapper = mount(SettingsPage, { attachTo: document.body })
+    await flushPromises()
+
+    // Click Regenerate to open the dialog
+    const regenBtn = wrapper.find('[data-testid="ssh-key-regenerate"]')
+    await regenBtn.trigger('click')
+    await flushPromises()
+
+    // Cancel in the dialog
+    const cancelBtn = wrapper.find('[data-testid="ssh-regenerate-cancel"]')
+    expect(cancelBtn.exists()).toBe(true)
+    await cancelBtn.trigger('click')
+    await flushPromises()
+
+    // Only the initial GET should have been called
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
+
+  it('displays default SSH hosts from settings', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com', 'bitbucket.org'],
+      }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('github.com')
+    expect(wrapper.text()).toContain('bitbucket.org')
+  })
+
+  it('adds a new SSH host', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com'],
+      }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="ssh-host-input"]')
+    await input.setValue('gitlab.com')
+    const addBtn = wrapper.find('[data-testid="ssh-host-add"]')
+    await addBtn.trigger('click')
+
+    expect(wrapper.text()).toContain('gitlab.com')
+    expect(wrapper.text()).toContain('github.com')
+  })
+
+  it('removes an SSH host', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com', 'bitbucket.org'],
+      }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const removeBtns = wrapper.findAll('[data-testid="ssh-host-remove"]')
+    expect(removeBtns).toHaveLength(2)
+    await removeBtns[0].trigger('click')
+
+    expect(wrapper.text()).not.toContain('github.com')
+    expect(wrapper.text()).toContain('bitbucket.org')
+  })
+
+  it('prevents adding a duplicate SSH host', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com'],
+      }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="ssh-host-input"]')
+    await input.setValue('github.com')
+    const addBtn = wrapper.find('[data-testid="ssh-host-add"]')
+    await addBtn.trigger('click')
+
+    expect(wrapper.text()).toContain('already in the list')
+  })
+
+  it('prevents adding an empty SSH host', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com'],
+      }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="ssh-host-input"]')
+    await input.setValue('   ')
+    const addBtn = wrapper.find('[data-testid="ssh-host-add"]')
+    await addBtn.trigger('click')
+
+    // Should still have only the original host
+    const removeBtns = wrapper.findAll('[data-testid="ssh-host-remove"]')
+    expect(removeBtns).toHaveLength(1)
+  })
+
+  it('saves SSH hosts via PUT', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+          git_ssh_hosts: ['github.com', 'bitbucket.org'],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const saveBtn = wrapper.find('[data-testid="ssh-hosts-save"]')
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    // Verify PUT was called with git_ssh_hosts
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('git_ssh_hosts')
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.git_ssh_hosts).toEqual(['github.com', 'bitbucket.org'])
+    expect(wrapper.text()).toContain('SSH hosts saved.')
+  })
+
+  it('shows deploy key help text', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' }),
+    })
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('deploy key')
+    expect(wrapper.text()).toContain('write access')
+  })
 })

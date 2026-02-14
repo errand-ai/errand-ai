@@ -3,9 +3,60 @@ WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
 
+FROM debian:bookworm-slim AS git-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    openssh-client \
+    ca-certificates \
+    busybox \
+    && rm -rf /var/lib/apt/lists/*
+# Create .ssh directory with correct permissions (preserved by COPY --from)
+RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
+# Stage shared libraries needed by git, ssh, and busybox into an arch-independent
+# path. ldd lists all .so dependencies; we copy them preserving the full directory
+# structure so the dynamic linker finds them regardless of architecture.
+# We exclude libraries already present in the distroless base image to avoid
+# glibc version conflicts.
+RUN mkdir -p /staged-libs && \
+    echo "libc.so libdl.so libm.so libpthread.so librt.so libresolv.so libz.so libexpat.so libgcc_s.so libnsl.so libutil.so libcrypt.so liblzma.so libtirpc.so libtinfo.so libncursesw.so libreadline.so libhistory.so libbz2.so libcom_err.so libkeyutils.so" > /tmp/skip_libs && \
+    for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/lib/git-core/git-remote-https /bin/busybox; do \
+      ldd "$bin" 2>/dev/null | awk '/ => \// {print $3}' | while read lib; do \
+        basename=$(basename "$lib" | sed 's/\.so.*/.so/') ; \
+        if ! grep -qw "$basename" /tmp/skip_libs; then \
+          mkdir -p "/staged-libs$(dirname "$lib")" && \
+          cp -L "$lib" "/staged-libs$lib" 2>/dev/null || true ; \
+        fi ; \
+      done ; \
+    done
+
 FROM gcr.io/distroless/python3-debian12:nonroot
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 COPY main.py /app/main.py
+
+# Copy shared libraries first (needed by all binaries below)
+COPY --from=git-builder /staged-libs/ /
+COPY --from=git-builder /etc/ssl/certs /etc/ssl/certs
+
+# Copy git binary and its dependencies
+COPY --from=git-builder /usr/bin/git /usr/bin/git
+COPY --from=git-builder /usr/lib/git-core /usr/lib/git-core
+COPY --from=git-builder /usr/share/git-core /usr/share/git-core
+
+# Copy ssh client binaries
+COPY --from=git-builder /usr/bin/ssh /usr/bin/ssh
+COPY --from=git-builder /usr/bin/ssh-keygen /usr/bin/ssh-keygen
+
+# Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
+# Libraries must be copied before this step so busybox can execute.
+# Distroless nonroot image defaults to UID 65532; switch to root to write /bin.
+COPY --from=git-builder /bin/busybox /bin/busybox
+USER root
+RUN ["/bin/busybox", "sh", "-c", "/bin/busybox --install -s /bin"]
+USER nonroot
+
+# Copy .ssh directory (permissions 700 preserved from git-builder)
+COPY --from=git-builder --chown=65532:65532 /home/nonroot/.ssh /home/nonroot/.ssh
+
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
 WORKDIR /workspace
 ENTRYPOINT ["python3", "/app/main.py"]
