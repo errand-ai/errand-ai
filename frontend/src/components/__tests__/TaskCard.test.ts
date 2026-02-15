@@ -83,26 +83,92 @@ describe('TaskCard', () => {
     const wrapper = mount(TaskCard, {
       props: { task: scheduledTask, columnStatus: 'scheduled' },
     })
-    // The relative time text should be rendered (e.g. "in 1h")
-    const timeEl = wrapper.find('.text-blue-600')
+    const timeEl = wrapper.find('[data-testid="execute-at-time"]')
     expect(timeEl.exists()).toBe(true)
     expect(timeEl.text()).toBeTruthy()
   })
 
-  it('hides execute_at when columnStatus is not scheduled', () => {
+  it('shows execute_at on non-scheduled columns when execute_at is set', () => {
+    const taskWithExecuteAt: TaskData = {
+      ...task,
+      execute_at: new Date(Date.now() + 3600000).toISOString(),
+    }
     const wrapper = mount(TaskCard, {
-      props: { task: scheduledTask, columnStatus: 'pending' },
+      props: { task: taskWithExecuteAt, columnStatus: 'pending' },
     })
-    const timeEl = wrapper.find('.text-blue-600')
-    expect(timeEl.exists()).toBe(false)
+    const timeEl = wrapper.find('[data-testid="execute-at-time"]')
+    expect(timeEl.exists()).toBe(true)
   })
 
-  it('hides execute_at when execute_at is null even in scheduled column', () => {
+  it('hides execute_at when execute_at is null', () => {
     const wrapper = mount(TaskCard, {
       props: { task, columnStatus: 'scheduled' },
     })
-    const timeEl = wrapper.find('.text-blue-600')
+    const timeEl = wrapper.find('[data-testid="execute-at-time"]')
     expect(timeEl.exists()).toBe(false)
+  })
+
+  // --- Description preview ---
+
+  it('shows description preview when description is set', () => {
+    const taskWithDesc: TaskData = { ...task, description: 'Some long description text here' }
+    const wrapper = mount(TaskCard, { props: { task: taskWithDesc } })
+    const preview = wrapper.find('[data-testid="description-preview"]')
+    expect(preview.exists()).toBe(true)
+    expect(preview.text()).toContain('Some long description text here')
+  })
+
+  it('hides description preview when description is null', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    const preview = wrapper.find('[data-testid="description-preview"]')
+    expect(preview.exists()).toBe(false)
+  })
+
+  // --- Repeating indicator ---
+
+  it('shows repeating indicator for repeating tasks', () => {
+    const repeatingTask: TaskData = {
+      ...task,
+      category: 'repeating',
+      repeat_interval: '1d',
+    }
+    const wrapper = mount(TaskCard, { props: { task: repeatingTask } })
+    const indicator = wrapper.find('[data-testid="repeating-indicator"]')
+    expect(indicator.exists()).toBe(true)
+    expect(indicator.text()).toContain('1d')
+  })
+
+  it('hides repeating indicator for non-repeating tasks', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    const indicator = wrapper.find('[data-testid="repeating-indicator"]')
+    expect(indicator.exists()).toBe(false)
+  })
+
+  // --- Running indicator ---
+
+  it('shows running indicator when columnStatus is running', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'running' },
+    })
+    const indicator = wrapper.find('[data-testid="running-indicator"]')
+    expect(indicator.exists()).toBe(true)
+    expect(indicator.text()).toContain('Running...')
+  })
+
+  it('applies border accent when running', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'running' },
+    })
+    const card = wrapper.find('.border-l-2.border-blue-400')
+    expect(card.exists()).toBe(true)
+  })
+
+  it('hides running indicator when not running', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'pending' },
+    })
+    const indicator = wrapper.find('[data-testid="running-indicator"]')
+    expect(indicator.exists()).toBe(false)
   })
 
   // --- Output button ---

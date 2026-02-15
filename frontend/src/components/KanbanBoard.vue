@@ -219,20 +219,44 @@ onUnmounted(() => store.stop())
     <TaskForm />
   </div>
   <p v-if="store.error" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ store.error }}</p>
-  <p v-if="store.loading && store.tasks.length === 0" class="mb-4 text-sm text-gray-500">Loading tasks...</p>
-  <div class="flex gap-4 overflow-x-auto pb-4" style="min-width: 0;">
+
+  <!-- Skeleton loading state -->
+  <div v-if="store.loading && store.tasks.length === 0" class="flex gap-4 overflow-x-auto pb-4" data-testid="skeleton-loading">
+    <div v-for="i in 6" :key="i" class="min-w-[240px] flex-1 rounded-lg bg-gray-100 p-4">
+      <div class="mb-3 h-4 w-24 animate-pulse rounded bg-gray-300"></div>
+      <div class="space-y-2">
+        <div class="h-16 animate-pulse rounded-lg bg-gray-200"></div>
+        <div class="h-16 animate-pulse rounded-lg bg-gray-200"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Board-level empty state -->
+  <div
+    v-else-if="!store.loading && store.tasks.length === 0"
+    class="flex flex-col items-center justify-center py-16 text-gray-400"
+    data-testid="board-empty-state"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" class="mb-3 h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+    </svg>
+    <p class="text-lg font-medium">No tasks yet</p>
+    <p class="text-sm">Create your first task using the form above</p>
+  </div>
+
+  <div v-else class="flex gap-4 overflow-x-auto pb-4" style="min-width: 0;">
     <div
       v-for="col in columns"
       :key="col.key"
-      :class="[col.color, 'rounded-lg p-4 min-w-[100px] flex-1', !auth.isViewer && dragOverColumn === col.key ? 'ring-2 ring-blue-400 ring-inset' : '']"
+      :class="[col.color, 'rounded-lg p-4 min-w-[240px] flex-1', !auth.isViewer && dragOverColumn === col.key ? 'ring-2 ring-blue-400 ring-inset' : '']"
       @dragover="onDragOver($event, col.key)"
       @dragenter="onDragEnter(col.key)"
       @dragleave="onDragLeave($event, col.key)"
       @drop="onDrop($event, col.key)"
     >
-      <h2 class="mb-3 text-sm font-semibold uppercase text-gray-700">
+      <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold uppercase text-gray-700">
         {{ col.label }}
-        <span class="ml-1 text-gray-500">({{ store.tasksByStatus(col.key).length }})</span>
+        <span class="inline-flex items-center justify-center rounded-full bg-white/70 px-1.5 text-xs font-medium text-gray-600" data-testid="column-count">{{ store.tasksByStatus(col.key).length }}</span>
       </h2>
       <div data-card-list class="flex flex-col gap-2">
         <template v-for="(task, index) in store.tasksByStatus(col.key)" :key="task.id">
@@ -257,9 +281,6 @@ onUnmounted(() => store.stop())
           class="h-1 rounded bg-blue-400"
         />
       </div>
-      <p v-if="store.tasksByStatus(col.key).length === 0" class="text-xs text-gray-400 italic">
-        No tasks
-      </p>
     </div>
   </div>
   <TaskEditModal

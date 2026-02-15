@@ -56,10 +56,10 @@ describe('KanbanBoard', () => {
     setActivePinia(createPinia())
   })
 
-  it('renders 6 columns with correct labels', () => {
-    const wrapper = mount(KanbanBoard)
+  it('renders 6 columns with correct labels when tasks exist', () => {
+    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'new' }]))
     const headings = wrapper.findAll('h2')
-    const labels = headings.map((h) => h.text().replace(/\(\d+\)/, '').trim())
+    const labels = headings.map((h) => h.text().replace(/\d+/, '').trim())
     expect(labels).toEqual(COLUMN_LABELS)
   })
 
@@ -79,14 +79,24 @@ describe('KanbanBoard', () => {
     expect(columns[5].text()).toContain('Gamma')
   })
 
-  it('shows "No tasks" placeholder in empty columns', () => {
+  it('shows board-level empty state when no tasks exist', () => {
     const { wrapper } = mountWithTasks([])
 
-    const placeholders = wrapper.findAll('p.italic')
-    expect(placeholders.length).toBe(6)
-    placeholders.forEach((p) => {
-      expect(p.text()).toBe('No tasks')
-    })
+    const emptyState = wrapper.find('[data-testid="board-empty-state"]')
+    expect(emptyState.exists()).toBe(true)
+    expect(emptyState.text()).toContain('No tasks yet')
+  })
+
+  it('shows pill badge with count in column headers', () => {
+    const { wrapper } = mountWithTasks(makeTasks([
+      { title: 'Alpha', status: 'new' },
+      { title: 'Beta', status: 'new' },
+    ]))
+
+    const badges = wrapper.findAll('[data-testid="column-count"]')
+    expect(badges.length).toBe(6)
+    // New column should show 2
+    expect(badges[0].text()).toBe('2')
   })
 
   it('calls store.updateTask on drop to different column', async () => {
@@ -124,7 +134,7 @@ describe('KanbanBoard', () => {
   })
 
   it('highlights column on drag enter', async () => {
-    const wrapper = mount(KanbanBoard)
+    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'new' }]))
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
     await columns[1].trigger('dragenter')

@@ -17,12 +17,14 @@ defineEmits<{
   'view-output': []
 }>()
 
-const isScheduled = computed(() => props.columnStatus === 'scheduled')
+const hasExecuteAt = computed(() => !!props.task.execute_at)
+const isRunning = computed(() => props.columnStatus === 'running')
+const isRepeating = computed(() => props.task.category === 'repeating')
 
-const now = useNow(30000, isScheduled)
+const now = useNow(30000, hasExecuteAt)
 
 const relativeTime = computed(() => {
-  if (!isScheduled.value || !props.task.execute_at) return ''
+  if (!props.task.execute_at) return ''
   return formatRelativeTime(props.task.execute_at, now.value)
 })
 
@@ -33,7 +35,14 @@ const showOutputButton = computed(() => {
 </script>
 
 <template>
-  <div class="rounded-lg bg-white p-3 shadow" :class="disableDrag ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'" :draggable="!disableDrag">
+  <div
+    class="rounded-lg bg-white p-3 shadow"
+    :class="[
+      disableDrag ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
+      isRunning ? 'border-l-2 border-blue-400' : '',
+    ]"
+    :draggable="!disableDrag"
+  >
     <div class="flex items-start justify-between gap-2">
       <p class="text-sm text-gray-800">{{ task.title }}</p>
       <div class="flex shrink-0 gap-0.5">
@@ -70,8 +79,29 @@ const showOutputButton = computed(() => {
       </div>
     </div>
     <p
-      v-if="isScheduled && task.execute_at"
+      v-if="task.description"
+      class="mt-0.5 text-xs text-gray-500 line-clamp-2"
+      data-testid="description-preview"
+    >
+      {{ task.description }}
+    </p>
+    <div v-if="isRunning" class="mt-1 flex items-center gap-1.5" data-testid="running-indicator">
+      <span class="relative flex h-2.5 w-2.5">
+        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75"></span>
+        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500"></span>
+      </span>
+      <span class="text-xs text-blue-600">Running...</span>
+    </div>
+    <div v-if="isRepeating && task.repeat_interval" class="mt-1 flex items-center gap-1" data-testid="repeating-indicator">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+      </svg>
+      <span class="text-xs text-gray-500">{{ task.repeat_interval }}</span>
+    </div>
+    <p
+      v-if="task.execute_at"
       class="mt-1 text-xs text-blue-600"
+      data-testid="execute-at-time"
     >
       {{ relativeTime }}
     </p>
