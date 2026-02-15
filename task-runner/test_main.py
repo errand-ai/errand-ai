@@ -15,12 +15,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 # or may have version conflicts. We only need the pure-Python functions from main.
 _mock_agents = MagicMock()
 _mock_agents.function_tool = lambda f: f  # passthrough decorator
+# RunHooks must be a real class so ToolCallLogger can subclass it
+_mock_agents.RunHooks = type("RunHooks", (), {})
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
 sys.modules.setdefault("openai", MagicMock())
 
 import logging
-from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json, execute_command
+from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json, execute_command, ToolCallLogger, _truncate, TOOL_RESULT_MAX_LENGTH
 
 
 # --- Environment variable validation ---
@@ -286,3 +288,63 @@ def test_execute_command_invalid_directory():
     """Returns error for non-existent working directory."""
     result = execute_command("echo hello", working_directory="/nonexistent")
     assert "Error executing command" in result
+
+
+# --- Tool call logging ---
+
+
+@pytest.mark.asyncio
+async def test_tool_call_logger_on_tool_start(caplog):
+    """on_tool_start logs TOOL_CALL [<name>] to stderr."""
+    tool = MagicMock()
+    tool.name = "execute_command"
+    hook = ToolCallLogger()
+    with caplog.at_level(logging.INFO):
+        await hook.on_tool_start(MagicMock(), MagicMock(), tool)
+    assert any("TOOL_CALL [execute_command]" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_logger_on_tool_end(caplog):
+    """on_tool_end logs TOOL_RESULT [<name>] (<len> chars): <result> to stderr."""
+    tool = MagicMock()
+    tool.name = "execute_command"
+    hook = ToolCallLogger()
+    with caplog.at_level(logging.INFO):
+        await hook.on_tool_end(MagicMock(), MagicMock(), tool, "hello world")
+    assert any("TOOL_RESULT [execute_command] (11 chars): hello world" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_logger_truncates_long_result(caplog):
+    """Results exceeding TOOL_RESULT_MAX_LENGTH are truncated with '...'."""
+    tool = MagicMock()
+    tool.name = "execute_command"
+    long_result = "x" * 600
+    hook = ToolCallLogger()
+    with caplog.at_level(logging.INFO):
+        await hook.on_tool_end(MagicMock(), MagicMock(), tool, long_result)
+    record = [r for r in caplog.records if "TOOL_RESULT" in r.message][0]
+    assert "(600 chars):" in record.message
+    assert record.message.endswith("...")
+    # The logged result portion should be truncated
+    assert "x" * 501 not in record.message
+
+
+def test_truncate_short_string():
+    """Short strings are returned unchanged."""
+    assert _truncate("hello") == "hello"
+
+
+def test_truncate_exact_length():
+    """String at exactly max length is not truncated."""
+    text = "x" * TOOL_RESULT_MAX_LENGTH
+    assert _truncate(text) == text
+
+
+def test_truncate_long_string():
+    """Long strings are truncated with '...' appended."""
+    text = "x" * 600
+    result = _truncate(text)
+    assert len(result) == TOOL_RESULT_MAX_LENGTH + 3  # 500 + "..."
+    assert result.endswith("...")

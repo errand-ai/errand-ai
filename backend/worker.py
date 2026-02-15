@@ -645,10 +645,17 @@ async def run() -> None:
                             tag = Tag(name="Input Needed")
                             session.add(tag)
                             await session.flush()
-                        # Add tag to task via association table
-                        await session.execute(
-                            task_tags.insert().values(task_id=task.id, tag_id=tag.id)
+                        # Add tag to task via association table (guard against duplicates)
+                        existing = await session.execute(
+                            select(task_tags).where(
+                                task_tags.c.task_id == task.id,
+                                task_tags.c.tag_id == tag.id,
+                            )
                         )
+                        if existing.first() is None:
+                            await session.execute(
+                                task_tags.insert().values(task_id=task.id, tag_id=tag.id)
+                            )
 
                     # Remove "Retry" tag if present (applies to both completed and review)
                     result = await session.execute(

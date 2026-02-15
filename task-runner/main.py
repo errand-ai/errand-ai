@@ -12,7 +12,7 @@ from contextlib import AsyncExitStack
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from agents import Agent, Runner, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
@@ -22,6 +22,27 @@ logger = logging.getLogger(__name__)
 
 # Disable tracing (no OpenAI tracing endpoint in sandboxed container)
 set_tracing_disabled(True)
+
+TOOL_RESULT_MAX_LENGTH = 500
+
+
+def _truncate(text: str, max_length: int = TOOL_RESULT_MAX_LENGTH) -> str:
+    """Truncate text to max_length, appending '...' if truncated."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length] + "..."
+
+
+class ToolCallLogger(RunHooks):
+    """Logs tool calls (name, result) to stderr via the logger."""
+
+    async def on_tool_start(self, context, agent, tool) -> None:
+        logger.info("TOOL_CALL [%s]", tool.name)
+
+    async def on_tool_end(self, context, agent, tool, result) -> None:
+        result_str = str(result)
+        logger.info("TOOL_RESULT [%s] (%d chars): %s", tool.name, len(result_str), _truncate(result_str))
+
 
 OVERARCHING_PROMPT = """You MUST produce your final response as a JSON object with exactly this schema:
 {"status": "completed" | "needs_input", "result": "<your response text>", "questions": ["<question>"]}
@@ -251,7 +272,16 @@ async def main():
 
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            result = await Runner.run(agent, user_prompt, max_turns=max_turns)
+            result = await Runner.run(agent, user_prompt, max_turns=max_turns, hooks=ToolCallLogger())
+
+            # Log summary of tool calls from run items
+            tool_call_count = sum(
+                1 for item in result.new_items
+                if getattr(item, "type", None) == "tool_call_output_item"
+            )
+            if tool_call_count:
+                logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
+
             raw_output = result.final_output
 
             # Extract structured JSON from LLM output (handles preamble text, code fences, etc.)
