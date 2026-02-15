@@ -2,11 +2,10 @@
  * Format an ISO datetime string as a relative time string.
  * Examples: "in 15 minutes", "at 5:00 PM today", "tomorrow at 9:00 AM"
  */
-export function formatRelativeTime(isoString: string): string {
+export function formatRelativeTime(isoString: string, now: Date = new Date()): string {
   const date = new Date(isoString)
   if (isNaN(date.getTime())) return ''
 
-  const now = new Date()
   const diffMs = date.getTime() - now.getTime()
   const diffMinutes = Math.round(diffMs / 60000)
 

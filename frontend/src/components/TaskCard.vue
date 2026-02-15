@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { TaskData } from '../composables/useApi'
 import { formatRelativeTime } from '../composables/useRelativeTime'
+import { useNow } from '../composables/useNow'
 
 const props = defineProps<{
   task: TaskData
@@ -15,6 +16,15 @@ defineEmits<{
   delete: []
   'view-output': []
 }>()
+
+const isScheduled = computed(() => props.columnStatus === 'scheduled')
+
+const now = useNow(30000, isScheduled)
+
+const relativeTime = computed(() => {
+  if (!isScheduled.value || !props.task.execute_at) return ''
+  return formatRelativeTime(props.task.execute_at, now.value)
+})
 
 const showOutputButton = computed(() => {
   const col = props.columnStatus
@@ -60,10 +70,10 @@ const showOutputButton = computed(() => {
       </div>
     </div>
     <p
-      v-if="columnStatus === 'scheduled' && task.execute_at"
+      v-if="isScheduled && task.execute_at"
       class="mt-1 text-xs text-blue-600"
     >
-      {{ formatRelativeTime(task.execute_at) }}
+      {{ relativeTime }}
     </p>
     <div v-if="task.tags && task.tags.length > 0" class="mt-1.5 flex flex-wrap gap-1">
       <span
