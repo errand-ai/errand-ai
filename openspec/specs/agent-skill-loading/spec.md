@@ -1,38 +1,31 @@
 ## Requirements
 
-### Requirement: list_skills MCP tool
-The backend MCP server SHALL expose a `list_skills` tool that returns a JSON array of all defined skills, each containing only `name` and `description` fields (not the full instructions). If no skills are defined, it SHALL return an empty array. The tool SHALL require valid MCP API key authentication.
+### Requirement: Skill directories written to container
+When the worker prepares a task for execution and skills exist in the database, the worker SHALL write Agent Skills directories into the container at `/workspace/skills/<name>/`. Each skill directory SHALL contain a `SKILL.md` file with YAML frontmatter (`name` and `description`) followed by the skill's instructions as the markdown body. If the skill has attached files, the worker SHALL also write them at their relative paths within the skill directory (e.g. `/workspace/skills/<name>/scripts/extract.py`). If no skills exist, the worker SHALL NOT create the `/workspace/skills/` directory.
 
-#### Scenario: List skills with skills defined
-- **WHEN** the agent calls `list_skills` and two skills are defined ("researcher" and "code-reviewer")
-- **THEN** the tool returns `[{"name": "researcher", "description": "Conducts web research"}, {"name": "code-reviewer", "description": "Reviews code for quality"}]`
+#### Scenario: Skills with files written to container
+- **WHEN** the worker prepares a task and 2 skills exist: "research" (with 1 file `scripts/search.py`) and "code-review" (no files)
+- **THEN** the container contains `/workspace/skills/research/SKILL.md`, `/workspace/skills/research/scripts/search.py`, and `/workspace/skills/code-review/SKILL.md`
 
-#### Scenario: List skills with no skills defined
-- **WHEN** the agent calls `list_skills` and no skills are defined
-- **THEN** the tool returns `[]`
+#### Scenario: SKILL.md format matches Agent Skills standard
+- **WHEN** the worker writes a skill with name "research", description "Conducts web research", and instructions "## Steps\n1. Search the web..."
+- **THEN** the SKILL.md file contains `---\nname: research\ndescription: Conducts web research\n---\n\n## Steps\n1. Search the web...`
 
-### Requirement: get_skill MCP tool
-The backend MCP server SHALL expose a `get_skill` tool that accepts a `name` parameter and returns the full `instructions` text of the matching skill. If no skill matches the given name, the tool SHALL return an error message indicating the skill was not found.
+#### Scenario: No skills — no directory created
+- **WHEN** the worker prepares a task and no skills exist in the database
+- **THEN** no `/workspace/skills/` directory is created in the container
 
-#### Scenario: Get existing skill
-- **WHEN** the agent calls `get_skill` with name "researcher" and that skill exists
-- **THEN** the tool returns the full instructions text of the "researcher" skill
+### Requirement: Skill manifest in system prompt
+When the worker prepares the system prompt for a task and skills exist in the database, the worker SHALL append a skill manifest section. The manifest SHALL list each skill's name and description in a compact format. The manifest SHALL instruct the agent that skills are installed at `/workspace/skills/`, that each skill directory contains a `SKILL.md` with full instructions and may include `scripts/`, `references/`, and `assets/` subdirectories, and that the agent should read the `SKILL.md` of any relevant skill before proceeding. If no skills exist, the worker SHALL NOT append the manifest.
 
-#### Scenario: Get non-existent skill
-- **WHEN** the agent calls `get_skill` with name "nonexistent" and no skill has that name
-- **THEN** the tool returns an error message: "Skill 'nonexistent' not found"
+#### Scenario: Skills exist — manifest appended
+- **WHEN** the worker prepares the system prompt and 2 skills exist ("research" and "code-review")
+- **THEN** the system prompt includes a "## Skills" section with a table listing both skills and a directive to read SKILL.md files from `/workspace/skills/`
 
-### Requirement: Skill-awareness directive in system prompt
-When the worker prepares the system prompt for a task, it SHALL check if any skills are defined in settings. If at least one skill exists, the worker SHALL append a skill-awareness directive to the system prompt instructing the agent to: (1) call `list_skills` at the start of execution to discover available skills, (2) call `get_skill` to load a skill if one is relevant to the task, and (3) follow the loaded skill's instructions. If no skills are defined, the worker SHALL NOT append the directive.
+#### Scenario: No skills — no manifest
+- **WHEN** the worker prepares the system prompt and no skills exist
+- **THEN** the system prompt contains no skills section
 
-#### Scenario: Skills exist — directive appended
-- **WHEN** the worker prepares the system prompt and 2 skills are defined in settings
-- **THEN** the system prompt written to the container includes the original admin prompt followed by a skill-awareness directive
-
-#### Scenario: No skills defined — no directive
-- **WHEN** the worker prepares the system prompt and no skills are defined in settings
-- **THEN** the system prompt written to the container contains only the original admin prompt (and any other existing augmentations like Perplexity)
-
-#### Scenario: Directive placement after Perplexity
+#### Scenario: Manifest placement after other augmentations
 - **WHEN** the worker prepares the system prompt and both Perplexity and skills are enabled
-- **THEN** the skill-awareness directive appears after the Perplexity instruction block
+- **THEN** the skill manifest appears after the Perplexity instruction block
