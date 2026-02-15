@@ -14,7 +14,7 @@ from models import Setting, Task
 
 logger = logging.getLogger(__name__)
 
-SCHEDULER_INTERVAL = int(os.environ.get("SCHEDULER_INTERVAL", "30"))
+SCHEDULER_INTERVAL = int(os.environ.get("SCHEDULER_INTERVAL", "15"))
 LOCK_KEY = "content-manager:scheduler-lock"
 LOCK_TTL = 30
 BATCH_SIZE = 100
