@@ -1,4 +1,18 @@
-## Requirements
+## REMOVED Requirements
+
+### Requirement: list_skills MCP tool
+**Reason**: Replaced by file-based skill injection. The worker now writes skill directories to the container filesystem and includes a skill manifest in the system prompt. The agent reads skill files directly instead of making MCP tool calls.
+**Migration**: Skills are now discovered via system prompt manifest and loaded by reading `/workspace/skills/<name>/SKILL.md` using the execute_command tool.
+
+### Requirement: get_skill MCP tool
+**Reason**: Replaced by file-based skill injection. Skill instructions are available as local files in the container at `/workspace/skills/<name>/SKILL.md`.
+**Migration**: The agent reads skill instructions from the filesystem instead of calling an MCP tool.
+
+### Requirement: Skill-awareness directive in system prompt
+**Reason**: Replaced by a new skill manifest directive that references local skill files instead of MCP tools.
+**Migration**: See new "Skill manifest in system prompt" requirement below.
+
+## ADDED Requirements
 
 ### Requirement: Skill directories written to container
 When the worker prepares a task for execution and skills exist in the database, the worker SHALL write Agent Skills directories into the container at `/workspace/skills/<name>/`. Each skill directory SHALL contain a `SKILL.md` file with YAML frontmatter (`name` and `description`) followed by the skill's instructions as the markdown body. If the skill has attached files, the worker SHALL also write them at their relative paths within the skill directory (e.g. `/workspace/skills/<name>/scripts/extract.py`). If no skills exist, the worker SHALL NOT create the `/workspace/skills/` directory.

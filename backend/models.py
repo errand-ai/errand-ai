@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -86,3 +86,51 @@ class Setting(Base):
         server_default=text("now()"),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class Skill(Base):
+    __tablename__ = "skills"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    files: Mapped[list["SkillFile"]] = relationship(back_populates="skill", cascade="all, delete-orphan", lazy="raise")
+
+
+class SkillFile(Base):
+    __tablename__ = "skill_files"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "path", name="uq_skill_files_skill_id_path"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    skill_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False
+    )
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    skill: Mapped["Skill"] = relationship(back_populates="files")

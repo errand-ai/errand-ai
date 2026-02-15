@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from database import async_session, engine
 from events import init_valkey, close_valkey, publish_event
-from models import Setting, Tag, Task, task_tags
+from models import Setting, Skill, Tag, Task, task_tags
 
 
 class TaskRunnerOutput(BaseModel):
@@ -142,6 +142,56 @@ def put_archive(container, files: dict[str, str], dest: str = "/workspace") -> N
     container.put_archive(dest, buf)
 
 
+def build_skills_archive(skills: list[dict]) -> bytes | None:
+    """Build a tar archive containing Agent Skills directories.
+
+    Each skill becomes a directory with SKILL.md (YAML frontmatter + instructions body)
+    and optional files in scripts/, references/, assets/ subdirectories.
+    Returns the tar bytes, or None if no skills exist.
+    """
+    if not skills:
+        return None
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for skill in skills:
+            name = skill["name"]
+            description = skill.get("description", "")
+            instructions = skill.get("instructions", "")
+
+            # Build SKILL.md content with YAML frontmatter
+            skill_md = f"---\nname: {name}\ndescription: {description}\n---\n\n{instructions}"
+            data = skill_md.encode("utf-8")
+            info = tarfile.TarInfo(name=f"skills/{name}/SKILL.md")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+            # Add attached files
+            for f in skill.get("files", []):
+                file_data = f["content"].encode("utf-8")
+                file_info = tarfile.TarInfo(name=f"skills/{name}/{f['path']}")
+                file_info.size = len(file_data)
+                tar.addfile(file_info, io.BytesIO(file_data))
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def build_skill_manifest(skills: list[dict]) -> str:
+    """Build the system prompt skill manifest section."""
+    lines = [
+        "\n\n## Skills\n",
+        "Available skills are installed at /workspace/skills/. Each skill directory contains a SKILL.md file with full instructions, and may include scripts/, references/, and assets/ subdirectories.\n",
+        "| Skill | Description |",
+        "|-------|-------------|",
+    ]
+    for skill in skills:
+        lines.append(f"| {skill['name']} | {skill.get('description', '')} |")
+    lines.append("")
+    lines.append("If a skill is relevant to your task, read its SKILL.md file to load the full instructions before proceeding.")
+    return "\n".join(lines)
+
+
 def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     """Truncate output to max_bytes, appending a marker if exceeded."""
     encoded = output.encode("utf-8")
@@ -155,7 +205,7 @@ DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 
 
 async def read_settings(session: AsyncSession) -> dict:
-    """Read task processing settings from the settings table.
+    """Read task processing settings from the settings table and skills from the skills table.
 
     Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level, skills.
     """
@@ -173,7 +223,7 @@ async def read_settings(session: AsyncSession) -> dict:
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "skills", "mcp_api_key", "ssh_private_key", "git_ssh_hosts"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "mcp_api_key", "ssh_private_key", "git_ssh_hosts"])
         )
     )
     for setting in result.scalars().all():
@@ -187,14 +237,26 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
             settings["task_runner_log_level"] = str(setting.value) if setting.value else ""
-        elif setting.key == "skills":
-            settings["skills"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "mcp_api_key":
             settings["mcp_api_key"] = str(setting.value) if setting.value else ""
         elif setting.key == "ssh_private_key":
             settings["ssh_private_key"] = str(setting.value) if setting.value else ""
         elif setting.key == "git_ssh_hosts":
             settings["git_ssh_hosts"] = setting.value if isinstance(setting.value, list) else []
+
+    # Query skills from dedicated tables
+    skill_result = await session.execute(
+        select(Skill).options(selectinload(Skill.files)).order_by(Skill.name)
+    )
+    skills_list = []
+    for skill in skill_result.scalars().all():
+        skills_list.append({
+            "name": skill.name,
+            "description": skill.description,
+            "instructions": skill.instructions,
+            "files": [{"path": f.path, "content": f.content} for f in skill.files],
+        })
+    settings["skills"] = skills_list
 
     return settings
 
@@ -389,28 +451,21 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 "topics that require context beyond your training data."
             )
 
-        # Inject backend MCP server and skill-awareness directive if skills are defined
+        # Inject content-manager MCP server for task tools (post_tweet, new_task, etc.)
+        backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
+        mcp_api_key = settings.get("mcp_api_key", "")
+        if backend_mcp_url and mcp_api_key:
+            mcp_servers.setdefault("mcpServers", {})
+            if "content-manager" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["content-manager"] = {
+                    "url": backend_mcp_url,
+                    "headers": {"Authorization": f"Bearer {mcp_api_key}"},
+                }
+
+        # Inject skill manifest into system prompt if skills are defined
         skills = settings.get("skills", [])
         if skills:
-            backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
-            mcp_api_key = settings.get("mcp_api_key", "")
-            if backend_mcp_url:
-                mcp_servers.setdefault("mcpServers", {})
-                if "content-manager" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["content-manager"] = {
-                        "url": backend_mcp_url,
-                        "headers": {"Authorization": f"Bearer {mcp_api_key}"},
-                    }
-            else:
-                logger.warning("Skills defined but BACKEND_MCP_URL not set — agent cannot reach skill tools")
-            system_prompt += (
-                "\n\n## Skills\n\n"
-                "IMPORTANT: You MUST call the `list_skills` tool as your FIRST action "
-                "before doing anything else. Check if a skill matches your current task. "
-                "If one does, call `get_skill` with the skill name to load its full "
-                "instructions, then follow those instructions exactly. "
-                "Do NOT skip this step."
-            )
+            system_prompt += build_skill_manifest(skills)
 
         # Copy files into the stopped container
         prompt_text = task.description or task.title
@@ -420,6 +475,13 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
         }
         put_archive(container, files)
+
+        # Write Agent Skills directories into the container
+        if skills:
+            skills_tar = build_skills_archive(skills)
+            if skills_tar:
+                container.put_archive("/workspace", io.BytesIO(skills_tar))
+                logger.info("Injected %d skill(s) into container for task %s", len(skills), task.id)
 
         # Inject SSH credentials if available
         ssh_private_key = settings.get("ssh_private_key", "")

@@ -30,6 +30,20 @@ const adminToken = fakeJwt({
   resource_access: { 'content-manager': { roles: ['admin'] } },
 })
 
+// Helper: build a mock fetch that responds to /api/settings and /api/skills
+function mockSettingsAndSkills(
+  settingsData: Record<string, unknown> = {},
+  skillsData: unknown[] = [],
+) {
+  return vi.fn().mockImplementation((url: string) => {
+    if (url === '/api/skills') {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(skillsData) })
+    }
+    // Default: /api/settings
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(settingsData) })
+  })
+}
+
 describe('SettingsPage', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
@@ -37,7 +51,7 @@ describe('SettingsPage', () => {
     setActivePinia(createPinia())
     const auth = useAuthStore()
     auth.setToken(adminToken)
-    fetchMock = vi.fn()
+    fetchMock = mockSettingsAndSkills()
     vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchLlmModels).mockResolvedValue([])
     vi.mocked(saveLlmModel).mockResolvedValue({})
@@ -50,13 +64,18 @@ describe('SettingsPage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders both sections after loading', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
+  // --- Page layout / group headers ---
 
+  it('renders three group headers', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="group-agent-configuration"]').text()).toBe('Agent Configuration')
+    expect(wrapper.find('[data-testid="group-task-management"]').text()).toBe('Task Management')
+    expect(wrapper.find('[data-testid="group-integrations-security"]').text()).toContain('Integrations')
+  })
+
+  it('renders both sections after loading', async () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -65,11 +84,8 @@ describe('SettingsPage', () => {
   })
 
   it('loads existing system prompt into textarea', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ system_prompt: 'Hello world' }),
-    })
+    fetchMock = mockSettingsAndSkills({ system_prompt: 'Hello world' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -79,17 +95,15 @@ describe('SettingsPage', () => {
   })
 
   it('saves system prompt on button click', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ system_prompt: 'new prompt' }),
-      })
+    // First call is settings load, second is skills load, third is the PUT
+    let callCount = 0
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      callCount++
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (_opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ system_prompt: 'new prompt' }) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -98,20 +112,20 @@ describe('SettingsPage', () => {
     await wrapper.find('button').trigger('click')
     await flushPromises()
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    const [url, opts] = fetchMock.mock.calls[1]
-    expect(url).toBe('/api/settings')
-    expect(opts.method).toBe('PUT')
-    expect(JSON.parse(opts.body)).toEqual({ system_prompt: 'new prompt' })
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT'
+    )
+    expect(putCall).toBeTruthy()
+    expect(JSON.parse(putCall![1].body)).toEqual({ system_prompt: 'new prompt' })
     expect(wrapper.text()).toContain('Settings saved.')
   })
 
   it('shows access denied on 403', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 403,
-      json: () => Promise.resolve({ detail: 'Admin role required' }),
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({ detail: 'Admin role required' }) })
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -120,7 +134,11 @@ describe('SettingsPage', () => {
   })
 
   it('shows error on network failure', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('Network error'))
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.reject(new Error('Network error'))
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -131,55 +149,36 @@ describe('SettingsPage', () => {
   // --- MCP Server Configuration ---
 
   it('MCP section is collapsed by default', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_servers: { servers: [] } }),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // The MCP textarea should not be visible when collapsed
+    // Only the system prompt textarea should be visible (MCP collapsed)
     const textareas = wrapper.findAll('textarea')
-    // Only the system prompt textarea should be visible
     expect(textareas.length).toBe(1)
     expect(wrapper.text()).toContain('MCP Server Configuration')
   })
 
   it('MCP section expands on click', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_servers: { servers: [] } }),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Click the MCP header button to expand
     const buttons = wrapper.findAll('button')
     const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
     expect(mcpButton).toBeTruthy()
     await mcpButton!.trigger('click')
 
-    // Now the MCP textarea should be visible (2 textareas total)
     const textareas = wrapper.findAll('textarea')
     expect(textareas.length).toBe(2)
   })
 
   it('loads MCP servers into text box when expanded', async () => {
     const mcpConfig = { servers: [{ name: 'test-server' }] }
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_servers: mcpConfig }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_servers: mcpConfig })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Expand MCP section
     const buttons = wrapper.findAll('button')
     const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
     await mcpButton!.trigger('click')
@@ -190,26 +189,17 @@ describe('SettingsPage', () => {
   })
 
   it('shows JSON validation error for invalid JSON', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Expand MCP section
     const buttons = wrapper.findAll('button')
     const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
     await mcpButton!.trigger('click')
 
-    // Enter invalid JSON
     const textareas = wrapper.findAll('textarea')
     const mcpTextarea = textareas[textareas.length - 1]
     await mcpTextarea.setValue('not valid json {{{')
 
-    // Click save
     const saveButtons = wrapper.findAll('button')
     const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
     await saveMcpButton!.trigger('click')
@@ -219,38 +209,28 @@ describe('SettingsPage', () => {
   })
 
   it('saves valid MCP JSON configuration', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Expand MCP section
     const buttons = wrapper.findAll('button')
     const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
     await mcpButton!.trigger('click')
 
-    // Enter valid JSON
     const textareas = wrapper.findAll('textarea')
     const mcpTextarea = textareas[textareas.length - 1]
     await mcpTextarea.setValue('{"mcpServers": {"test": {"url": "http://localhost:4000/mcp"}}}')
 
-    // Click save
     const saveButtons = wrapper.findAll('button')
     const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
     await saveMcpButton!.trigger('click')
     await flushPromises()
 
-    // Verify the PUT was called with parsed JSON
     const putCall = fetchMock.mock.calls.find(
       (call: any[]) => call[1]?.method === 'PUT'
     )
@@ -264,12 +244,6 @@ describe('SettingsPage', () => {
   // --- LLM Model Dropdown ---
 
   it('renders LLM Models section with both dropdowns', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -279,11 +253,6 @@ describe('SettingsPage', () => {
   })
 
   it('loads models from fetchLlmModels and populates dropdown', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
 
     const wrapper = mount(SettingsPage)
@@ -296,27 +265,18 @@ describe('SettingsPage', () => {
   })
 
   it('pre-selects current title generation model from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ llm_model: 'gpt-4o' }),
-    })
+    fetchMock = mockSettingsAndSkills({ llm_model: 'gpt-4o' })
+    vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    // First select is title generation model
     expect((selects[0].element as HTMLSelectElement).value).toBe('gpt-4o')
   })
 
   it('saves title generation model on selection change via saveLlmModel', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
 
     const wrapper = mount(SettingsPage)
@@ -330,11 +290,6 @@ describe('SettingsPage', () => {
   })
 
   it('shows error when model list fails to load', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchLlmModels).mockRejectedValue(new Error('Failed'))
 
     const wrapper = mount(SettingsPage)
@@ -344,12 +299,6 @@ describe('SettingsPage', () => {
   })
 
   it('defaults to claude-haiku when no llm_model in settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -360,28 +309,18 @@ describe('SettingsPage', () => {
   // --- Task Processing Model Dropdown ---
 
   it('loads task processing model from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ task_processing_model: 'gpt-4o' }),
-    })
+    fetchMock = mockSettingsAndSkills({ task_processing_model: 'gpt-4o' })
+    vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    // Second select is task processing model
     expect((selects[1].element as HTMLSelectElement).value).toBe('gpt-4o')
   })
 
   it('defaults task processing model to claude-sonnet when not in settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -390,11 +329,6 @@ describe('SettingsPage', () => {
   })
 
   it('saves task processing model on selection change via saveTaskProcessingModel', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
 
     const wrapper = mount(SettingsPage)
@@ -408,11 +342,6 @@ describe('SettingsPage', () => {
   })
 
   it('disables both dropdowns when models endpoint fails', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchLlmModels).mockRejectedValue(new Error('Failed'))
 
     const wrapper = mount(SettingsPage)
@@ -426,28 +355,19 @@ describe('SettingsPage', () => {
   // --- MCP Configuration Validation ---
 
   it('rejects STDIO MCP server configuration', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Expand MCP section
     const buttons = wrapper.findAll('button')
     const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
     await mcpButton!.trigger('click')
 
-    // Enter STDIO config
     const textareas = wrapper.findAll('textarea')
     const mcpTextarea = textareas[textareas.length - 1]
     await mcpTextarea.setValue(JSON.stringify({
       mcpServers: { local: { command: 'npx', args: ['-y', 'some-mcp-server'] } },
     }))
 
-    // Click save
     const saveButtons = wrapper.findAll('button')
     const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
     await saveMcpButton!.trigger('click')
@@ -458,12 +378,6 @@ describe('SettingsPage', () => {
   })
 
   it('rejects MCP server entry missing url field', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -487,12 +401,6 @@ describe('SettingsPage', () => {
   })
 
   it('rejects mixed valid and STDIO servers', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -519,17 +427,11 @@ describe('SettingsPage', () => {
   })
 
   it('accepts valid HTTP Streaming MCP configuration', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -558,12 +460,6 @@ describe('SettingsPage', () => {
   })
 
   it('rejects malformed JSON in MCP config', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -586,74 +482,50 @@ describe('SettingsPage', () => {
   // --- Timezone Selector ---
 
   it('displays timezone selector on settings page', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     expect(wrapper.text()).toContain('Timezone')
-    // Find the timezone select (fourth select after title gen, task processing, and transcription model)
     const selects = wrapper.findAll('select')
-    expect(selects.length).toBeGreaterThanOrEqual(4)
+    expect(selects.length).toBeGreaterThanOrEqual(5)
   })
 
   it('timezone populated from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ timezone: 'Europe/London' }),
-    })
+    fetchMock = mockSettingsAndSkills({ timezone: 'Europe/London' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('Europe/London')
   })
 
   it('timezone defaults to UTC when no setting exists', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    // Fourth select is timezone (after title gen, task processing, transcription)
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('UTC')
   })
 
   it('selecting a timezone triggers save to API', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ timezone: 'Europe/London' }),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     await tzSelect.setValue('Europe/London')
     await flushPromises()
 
-    // Verify the PUT call
     const putCall = fetchMock.mock.calls.find(
       (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('timezone')
     )
@@ -665,12 +537,6 @@ describe('SettingsPage', () => {
   // --- Task Runner Log Level Dropdown ---
 
   it('renders Task Runner log level dropdown with default INFO', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -686,11 +552,8 @@ describe('SettingsPage', () => {
   })
 
   it('loads task runner log level from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ task_runner_log_level: 'DEBUG' }),
-    })
+    fetchMock = mockSettingsAndSkills({ task_runner_log_level: 'DEBUG' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -700,17 +563,11 @@ describe('SettingsPage', () => {
   })
 
   it('saves task runner log level on selection change', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -730,11 +587,6 @@ describe('SettingsPage', () => {
   // --- Transcription Model Dropdown ---
 
   it('renders Transcription Model dropdown with filtered models', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
 
     const wrapper = mount(SettingsPage)
@@ -751,11 +603,6 @@ describe('SettingsPage', () => {
   })
 
   it('shows placeholder when no transcription model is selected', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
 
     const wrapper = mount(SettingsPage)
@@ -767,11 +614,8 @@ describe('SettingsPage', () => {
   })
 
   it('loads current transcription model from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ transcription_model: 'whisper-large-v3' }),
-    })
+    fetchMock = mockSettingsAndSkills({ transcription_model: 'whisper-large-v3' })
+    vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
 
     const wrapper = mount(SettingsPage)
@@ -782,11 +626,6 @@ describe('SettingsPage', () => {
   })
 
   it('saves transcription model on selection change', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
 
     const wrapper = mount(SettingsPage)
@@ -800,11 +639,8 @@ describe('SettingsPage', () => {
   })
 
   it('sends null when Disabled option is selected for transcription model', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ transcription_model: 'whisper-1' }),
-    })
+    fetchMock = mockSettingsAndSkills({ transcription_model: 'whisper-1' })
+    vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
 
     const wrapper = mount(SettingsPage)
@@ -818,11 +654,6 @@ describe('SettingsPage', () => {
   })
 
   it('disables transcription dropdown when no models available', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchTranscriptionModels).mockResolvedValue([])
 
     const wrapper = mount(SettingsPage)
@@ -834,11 +665,6 @@ describe('SettingsPage', () => {
   })
 
   it('disables transcription dropdown on endpoint failure', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
     vi.mocked(fetchTranscriptionModels).mockRejectedValue(new Error('Failed'))
 
     const wrapper = mount(SettingsPage)
@@ -852,29 +678,19 @@ describe('SettingsPage', () => {
   // --- MCP API Key Section ---
 
   it('shows MCP API Key section with masked key when key exists', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'abc123def456' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'abc123def456' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     expect(wrapper.text()).toContain('MCP API Key')
     expect(wrapper.text()).toContain('API Key')
-    // Key display code element should show masked bullets, not the actual key
     const codeEl = wrapper.find('code')
     expect(codeEl.text()).toBe('\u2022'.repeat(32))
   })
 
   it('shows placeholder message when no API key exists', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -882,11 +698,8 @@ describe('SettingsPage', () => {
   })
 
   it('reveals and hides API key on toggle', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'secret-key-value' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'secret-key-value' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -896,12 +709,10 @@ describe('SettingsPage', () => {
     expect(revealBtn.text()).toBe('Reveal')
     expect(codeEl.text()).toBe('\u2022'.repeat(32))
 
-    // Click to reveal
     await revealBtn.trigger('click')
     expect(revealBtn.text()).toBe('Hide')
     expect(codeEl.text()).toBe('secret-key-value')
 
-    // Click to hide again
     await revealBtn.trigger('click')
     expect(revealBtn.text()).toBe('Reveal')
     expect(codeEl.text()).toBe('\u2022'.repeat(32))
@@ -911,11 +722,8 @@ describe('SettingsPage', () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'key-to-copy' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'key-to-copy' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -931,40 +739,31 @@ describe('SettingsPage', () => {
   })
 
   it('regenerates API key on confirm via dialog', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ mcp_api_key: 'old-key-123' }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ mcp_api_key: 'new-key-456' }),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (url === '/api/settings/regenerate-mcp-key') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ mcp_api_key: 'new-key-456' }) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ mcp_api_key: 'old-key-123' }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage, { attachTo: document.body })
     await flushPromises()
 
-    // Click Regenerate to open the dialog
     const regenBtn = wrapper.find('[data-testid="mcp-key-regenerate"]')
     await regenBtn.trigger('click')
     await flushPromises()
 
-    // Confirm in the dialog
     const confirmBtn = wrapper.find('[data-testid="mcp-regenerate-confirm"]')
     expect(confirmBtn.exists()).toBe(true)
     await confirmBtn.trigger('click')
     await flushPromises()
 
-    // Verify POST was called
     const postCall = fetchMock.mock.calls.find(
       (call: any[]) => call[0] === '/api/settings/regenerate-mcp-key'
     )
     expect(postCall).toBeTruthy()
     expect(postCall![1].method).toBe('POST')
 
-    // New key should be stored (reveal to check)
     const revealBtn = wrapper.find('[data-testid="mcp-key-reveal"]')
     await revealBtn.trigger('click')
     expect(wrapper.text()).toContain('new-key-456')
@@ -974,38 +773,30 @@ describe('SettingsPage', () => {
   })
 
   it('does not regenerate when dialog is cancelled', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'old-key-123' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'old-key-123' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage, { attachTo: document.body })
     await flushPromises()
 
-    // Click Regenerate to open the dialog
     const regenBtn = wrapper.find('[data-testid="mcp-key-regenerate"]')
     await regenBtn.trigger('click')
     await flushPromises()
 
-    // Cancel in the dialog
     const cancelBtn = wrapper.find('[data-testid="mcp-regenerate-cancel"]')
     expect(cancelBtn.exists()).toBe(true)
     await cancelBtn.trigger('click')
     await flushPromises()
 
-    // Only the initial GET should have been called
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Only the initial GET calls (settings + skills)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
   })
 
   it('renders example MCP configuration with masked key', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'test-api-key' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'test-api-key' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1013,7 +804,6 @@ describe('SettingsPage', () => {
     expect(wrapper.text()).toContain('Example MCP Configuration')
     expect(wrapper.text()).toContain('content-manager')
     expect(wrapper.text()).toContain('/mcp')
-    // Key should be masked in the displayed config
     expect(wrapper.text()).toContain('Bearer ' + '*'.repeat(32))
     expect(wrapper.text()).not.toContain('Bearer test-api-key')
   })
@@ -1022,11 +812,8 @@ describe('SettingsPage', () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ mcp_api_key: 'cfg-key' }),
-    })
+    fetchMock = mockSettingsAndSkills({ mcp_api_key: 'cfg-key' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1045,201 +832,171 @@ describe('SettingsPage', () => {
     expect(copyConfigBtn.text()).toBe('Copied!')
   })
 
-  // --- Skills Section ---
+  // --- Skills Section (new API-based) ---
 
-  it('shows Skills section collapsed with count', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ skills: [
-        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
-      ] }),
-    })
+  it('shows Skills section always visible with skill list', async () => {
+    fetchMock = mockSettingsAndSkills({}, [
+      { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [], created_at: '', updated_at: '' },
+      { id: '2', name: 'coder', description: 'Code generation', instructions: 'Code text', files: [], created_at: '', updated_at: '' },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
+    // Skills section is always visible (no need to expand)
     expect(wrapper.text()).toContain('Skills')
-    expect(wrapper.text()).toContain('(1)')
-    // Should not show skill details when collapsed
-    expect(wrapper.text()).not.toContain('researcher')
-  })
-
-  it('expands Skills section and shows skill list', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ skills: [
-        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
-        { id: '2', name: 'coder', description: 'Code generation', instructions: 'Code text' },
-      ] }),
-    })
-
-    const wrapper = mount(SettingsPage)
-    await flushPromises()
-
-    // Click Skills header to expand
-    const buttons = wrapper.findAll('button')
-    const skillsButton = buttons.find(b => b.text().includes('Skills'))
-    await skillsButton!.trigger('click')
-
+    expect(wrapper.text()).toContain('(2)')
     expect(wrapper.text()).toContain('researcher')
     expect(wrapper.text()).toContain('Web research')
     expect(wrapper.text()).toContain('coder')
     expect(wrapper.text()).toContain('Code generation')
   })
 
-  it('shows empty state when no skills defined', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ skills: [] }),
-    })
-
+  it('shows Agent Skills standard description text', async () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    const buttons = wrapper.findAll('button')
-    const skillsButton = buttons.find(b => b.text().includes('Skills'))
-    await skillsButton!.trigger('click')
+    expect(wrapper.text()).toContain('Agent Skills standard')
+    expect(wrapper.text()).toContain('SKILL.md')
+  })
+
+  it('shows empty state when no skills defined', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
 
     expect(wrapper.text()).toContain('No skills defined yet')
     expect(wrapper.text()).toContain('Add Skill')
   })
 
-  it('opens add skill form and saves new skill', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ skills: [] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
-
-    // Mock crypto.randomUUID
-    vi.stubGlobal('crypto', { randomUUID: () => 'test-uuid-123' })
+  it('creates a new skill via POST /api/skills', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills' && _opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ id: 'new-id', name: 'researcher', description: 'Web research', instructions: 'You are a researcher.', files: [] }) })
+      }
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
-
-    // Expand skills section
-    const buttons = wrapper.findAll('button')
-    const skillsButton = buttons.find(b => b.text().includes('Skills'))
-    await skillsButton!.trigger('click')
 
     // Click Add Skill
     const addBtn = wrapper.find('[data-testid="skill-add"]')
     await addBtn.trigger('click')
 
     // Fill in the form
-    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
-    const descInput = wrapper.find('[data-testid="skill-description-input"]')
-    const instrInput = wrapper.find('[data-testid="skill-instructions-input"]')
-    await nameInput.setValue('researcher')
-    await descInput.setValue('Web research')
-    await instrInput.setValue('You are a research specialist.')
+    await wrapper.find('[data-testid="skill-name-input"]').setValue('researcher')
+    await wrapper.find('[data-testid="skill-description-input"]').setValue('Web research')
+    await wrapper.find('[data-testid="skill-instructions-input"]').setValue('You are a researcher.')
 
     // Click save
-    const saveBtn = wrapper.find('[data-testid="skill-save"]')
-    await saveBtn.trigger('click')
+    await wrapper.find('[data-testid="skill-save"]').trigger('click')
     await flushPromises()
 
-    // Verify PUT was called with the new skill
-    const putCall = fetchMock.mock.calls.find(
-      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('skills')
+    // Verify POST was called
+    const postCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[0] === '/api/skills' && call[1]?.method === 'POST'
     )
-    expect(putCall).toBeTruthy()
-    const body = JSON.parse(putCall![1].body as string)
-    expect(body.skills).toHaveLength(1)
-    expect(body.skills[0].name).toBe('researcher')
-    expect(body.skills[0].instructions).toBe('You are a research specialist.')
+    expect(postCall).toBeTruthy()
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body.name).toBe('researcher')
+    expect(body.description).toBe('Web research')
+    expect(body.instructions).toBe('You are a researcher.')
   })
 
-  it('deletes a skill', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ skills: [
-          { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
-        ] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
+  it('deletes a skill via DELETE /api/skills/{id}', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1' && _opts?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, status: 204 })
+      }
+      if (url === '/api/skills') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([
+          { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [], created_at: '', updated_at: '' },
+        ]) })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
-
-    // Expand skills section
-    const buttons = wrapper.findAll('button')
-    const skillsButton = buttons.find(b => b.text().includes('Skills'))
-    await skillsButton!.trigger('click')
 
     // Click delete
     const deleteBtn = wrapper.find('[data-testid="skill-delete"]')
     await deleteBtn.trigger('click')
     await flushPromises()
 
-    // Verify PUT was called with empty skills array
-    const putCall = fetchMock.mock.calls.find(
-      (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('skills')
+    // Verify DELETE was called
+    const deleteCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[0] === '/api/skills/1' && call[1]?.method === 'DELETE'
     )
-    expect(putCall).toBeTruthy()
-    const body = JSON.parse(putCall![1].body as string)
-    expect(body.skills).toEqual([])
+    expect(deleteCall).toBeTruthy()
   })
 
-  it('shows validation error for duplicate skill name', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ skills: [
-        { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text' },
-      ] }),
-    })
-
+  it('shows name validation error for invalid name in real-time', async () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
-    // Expand skills section
-    const buttons = wrapper.findAll('button')
-    const skillsButton = buttons.find(b => b.text().includes('Skills'))
-    await skillsButton!.trigger('click')
-
-    // Click Add Skill
     const addBtn = wrapper.find('[data-testid="skill-add"]')
     await addBtn.trigger('click')
 
-    // Fill in duplicate name
     const nameInput = wrapper.find('[data-testid="skill-name-input"]')
-    const descInput = wrapper.find('[data-testid="skill-description-input"]')
-    const instrInput = wrapper.find('[data-testid="skill-instructions-input"]')
-    await nameInput.setValue('researcher')
-    await descInput.setValue('Another desc')
-    await instrInput.setValue('Another instructions')
-
-    const saveBtn = wrapper.find('[data-testid="skill-save"]')
-    await saveBtn.trigger('click')
+    await nameInput.setValue('Invalid Name')
+    await nameInput.trigger('input')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('already exists')
+    expect(wrapper.text()).toContain('Name must be lowercase')
+  })
+
+  it('shows name validation error for consecutive hyphens', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const addBtn = wrapper.find('[data-testid="skill-add"]')
+    await addBtn.trigger('click')
+
+    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
+    await nameInput.setValue('my--skill')
+    await nameInput.trigger('input')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('consecutive hyphens')
+  })
+
+  it('shows description character counter', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const addBtn = wrapper.find('[data-testid="skill-add"]')
+    await addBtn.trigger('click')
+
+    const charCount = wrapper.find('[data-testid="description-char-count"]')
+    expect(charCount.text()).toBe('0/1024')
+
+    await wrapper.find('[data-testid="skill-description-input"]').setValue('Hello world')
+    await flushPromises()
+
+    expect(charCount.text()).toBe('11/1024')
+  })
+
+  it('shows name validation hint text', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    const addBtn = wrapper.find('[data-testid="skill-add"]')
+    await addBtn.trigger('click')
+
+    expect(wrapper.text()).toContain('Lowercase letters, digits, and hyphens only')
+    expect(wrapper.text()).toContain('Max 64 characters')
   })
 
   // --- Git SSH Key Section ---
 
   it('shows SSH public key when key exists', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' }),
-    })
+    fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1251,12 +1008,6 @@ describe('SettingsPage', () => {
   })
 
   it('shows no-key message when SSH key is absent', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({}),
-    })
-
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
@@ -1269,11 +1020,8 @@ describe('SettingsPage', () => {
     const writeTextMock = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 COPY content-manager' }),
-    })
+    fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 COPY content-manager' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1289,40 +1037,31 @@ describe('SettingsPage', () => {
   })
 
   it('regenerates SSH key on confirm via dialog', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 OLD content-manager' }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 NEW content-manager' }),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (url === '/api/settings/regenerate-ssh-key') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 NEW content-manager' }) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 OLD content-manager' }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage, { attachTo: document.body })
     await flushPromises()
 
-    // Click Regenerate to open the dialog
     const regenBtn = wrapper.find('[data-testid="ssh-key-regenerate"]')
     await regenBtn.trigger('click')
     await flushPromises()
 
-    // Confirm in the dialog
     const confirmBtn = wrapper.find('[data-testid="ssh-regenerate-confirm"]')
     expect(confirmBtn.exists()).toBe(true)
     await confirmBtn.trigger('click')
     await flushPromises()
 
-    // Verify POST was called to the correct endpoint
     const postCall = fetchMock.mock.calls.find(
       (call: any[]) => call[0] === '/api/settings/regenerate-ssh-key'
     )
     expect(postCall).toBeTruthy()
     expect(postCall![1].method).toBe('POST')
 
-    // New key should be displayed
     const keyEl = wrapper.find('[data-testid="ssh-public-key"]')
     expect(keyEl.text()).toBe('ssh-ed25519 NEW content-manager')
     expect(wrapper.text()).toContain('SSH key regenerated.')
@@ -1331,41 +1070,33 @@ describe('SettingsPage', () => {
   })
 
   it('does not regenerate SSH key when dialog is cancelled', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 KEEP content-manager' }),
-    })
+    fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 KEEP content-manager' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage, { attachTo: document.body })
     await flushPromises()
 
-    // Click Regenerate to open the dialog
     const regenBtn = wrapper.find('[data-testid="ssh-key-regenerate"]')
     await regenBtn.trigger('click')
     await flushPromises()
 
-    // Cancel in the dialog
     const cancelBtn = wrapper.find('[data-testid="ssh-regenerate-cancel"]')
     expect(cancelBtn.exists()).toBe(true)
     await cancelBtn.trigger('click')
     await flushPromises()
 
-    // Only the initial GET should have been called
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Only the initial GET calls (settings + skills)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
   })
 
   it('displays default SSH hosts from settings', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-        git_ssh_hosts: ['github.com', 'bitbucket.org'],
-      }),
+    fetchMock = mockSettingsAndSkills({
+      ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+      git_ssh_hosts: ['github.com', 'bitbucket.org'],
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1375,14 +1106,11 @@ describe('SettingsPage', () => {
   })
 
   it('adds a new SSH host', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-        git_ssh_hosts: ['github.com'],
-      }),
+    fetchMock = mockSettingsAndSkills({
+      ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+      git_ssh_hosts: ['github.com'],
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1397,14 +1125,11 @@ describe('SettingsPage', () => {
   })
 
   it('removes an SSH host', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-        git_ssh_hosts: ['github.com', 'bitbucket.org'],
-      }),
+    fetchMock = mockSettingsAndSkills({
+      ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+      git_ssh_hosts: ['github.com', 'bitbucket.org'],
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1418,14 +1143,11 @@ describe('SettingsPage', () => {
   })
 
   it('prevents adding a duplicate SSH host', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-        git_ssh_hosts: ['github.com'],
-      }),
+    fetchMock = mockSettingsAndSkills({
+      ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+      git_ssh_hosts: ['github.com'],
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1439,14 +1161,11 @@ describe('SettingsPage', () => {
   })
 
   it('prevents adding an empty SSH host', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-        git_ssh_hosts: ['github.com'],
-      }),
+    fetchMock = mockSettingsAndSkills({
+      ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+      git_ssh_hosts: ['github.com'],
     })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1456,26 +1175,19 @@ describe('SettingsPage', () => {
     const addBtn = wrapper.find('[data-testid="ssh-host-add"]')
     await addBtn.trigger('click')
 
-    // Should still have only the original host
     const removeBtns = wrapper.findAll('[data-testid="ssh-host-remove"]')
     expect(removeBtns).toHaveLength(1)
   })
 
   it('saves SSH hosts via PUT', async () => {
-    fetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({
-          ssh_public_key: 'ssh-ed25519 AAAA content-manager',
-          git_ssh_hosts: ['github.com', 'bitbucket.org'],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
-      })
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({
+        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        git_ssh_hosts: ['github.com', 'bitbucket.org'],
+      }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
@@ -1484,7 +1196,6 @@ describe('SettingsPage', () => {
     await saveBtn.trigger('click')
     await flushPromises()
 
-    // Verify PUT was called with git_ssh_hosts
     const putCall = fetchMock.mock.calls.find(
       (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('git_ssh_hosts')
     )
@@ -1495,16 +1206,168 @@ describe('SettingsPage', () => {
   })
 
   it('shows deploy key help text', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' }),
-    })
+    fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(SettingsPage)
     await flushPromises()
 
     expect(wrapper.text()).toContain('deploy key')
     expect(wrapper.text()).toContain('write access')
+  })
+
+  // --- File management ---
+
+  it('shows file count per skill', async () => {
+    fetchMock = mockSettingsAndSkills({}, [
+      { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [
+        { id: 'f1', path: 'scripts/extract.py', created_at: '' },
+        { id: 'f2', path: 'references/guide.md', created_at: '' },
+      ], created_at: '', updated_at: '' },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('2 file(s)')
+  })
+
+  it('toggles file panel on Files button click', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills/1') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', content: '#!/bin/bash', created_at: '' }] }) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', created_at: '' }], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Files panel should not be visible initially
+    expect(wrapper.find('[data-testid="skill-files-panel"]').exists()).toBe(false)
+
+    // Click Files toggle
+    const filesToggle = wrapper.find('[data-testid="skill-files-toggle"]')
+    await filesToggle.trigger('click')
+    await flushPromises()
+
+    // Panel should be visible with grouped files
+    expect(wrapper.find('[data-testid="skill-files-panel"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('scripts/')
+    expect(wrapper.text()).toContain('extract.py')
+  })
+
+  it('submits file add form via POST', async () => {
+    const skillDetail = { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', content: '#!/bin/bash', created_at: '' }] }
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1/files' && _opts?.method === 'POST') return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ id: 'f2', path: 'references/guide.md', content: '# Guide', created_at: '' }) })
+      if (url === '/api/skills/1') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(skillDetail) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ ...skillDetail, files: [{ id: 'f1', path: 'scripts/extract.py', created_at: '' }], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Open files panel
+    await wrapper.find('[data-testid="skill-files-toggle"]').trigger('click')
+    await flushPromises()
+
+    // Click Add File button
+    await wrapper.find('[data-testid="file-add"]').trigger('click')
+    await flushPromises()
+
+    // Fill form
+    await wrapper.find('[data-testid="file-filename-input"]').setValue('guide.md')
+    await wrapper.find('[data-testid="file-content-input"]').setValue('# Guide')
+
+    // Submit
+    await wrapper.find('[data-testid="file-save"]').trigger('click')
+    await flushPromises()
+
+    // Verify POST was called with correct path
+    const postCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'POST' && call[0]?.includes('/files')
+    )
+    expect(postCall).toBeTruthy()
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body.path).toBe('scripts/guide.md')
+    expect(body.content).toBe('# Guide')
+  })
+
+  it('deletes a file via DELETE', async () => {
+    const skillDetail = { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', content: '#!/bin/bash', created_at: '' }] }
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1/files/f1' && _opts?.method === 'DELETE') return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve({}) })
+      if (url === '/api/skills/1') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(skillDetail) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ ...skillDetail, files: [{ id: 'f1', path: 'scripts/extract.py', created_at: '' }], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Open files panel
+    await wrapper.find('[data-testid="skill-files-toggle"]').trigger('click')
+    await flushPromises()
+
+    // Click delete on the file
+    await wrapper.find('[data-testid="file-delete"]').trigger('click')
+    await flushPromises()
+
+    // Verify DELETE was called
+    const deleteCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'DELETE' && call[0]?.includes('/files/')
+    )
+    expect(deleteCall).toBeTruthy()
+    expect(deleteCall![0]).toContain('/api/skills/1/files/f1')
+  })
+
+  // --- Skill edit ---
+
+  it('opens edit form and submits PUT for existing skill', async () => {
+    fetchMock = mockSettingsAndSkills({}, [
+      { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [], created_at: '', updated_at: '' },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Click Edit button
+    await wrapper.find('[data-testid="skill-edit"]').trigger('click')
+    await flushPromises()
+
+    // Form should be populated with existing values
+    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
+    expect((nameInput.element as HTMLInputElement).value).toBe('researcher')
+
+    // Update fetch to handle PUT
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1' && _opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: '1', name: 'researcher-v2', description: 'Updated', instructions: 'New text' }) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ id: '1', name: 'researcher-v2', description: 'Updated', instructions: 'New text', files: [], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Modify and submit
+    await nameInput.setValue('researcher-v2')
+    await wrapper.find('[data-testid="skill-description-input"]').setValue('Updated')
+    await wrapper.find('[data-testid="skill-instructions-input"]').setValue('New text')
+    await wrapper.find('[data-testid="skill-save"]').trigger('click')
+    await flushPromises()
+
+    // Verify PUT was called
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[0]?.includes('/api/skills/1')
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.name).toBe('researcher-v2')
+    expect(body.description).toBe('Updated')
+    expect(body.instructions).toBe('New text')
   })
 })

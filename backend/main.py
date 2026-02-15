@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
@@ -31,7 +32,7 @@ from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import init_llm_client, get_llm_client, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
-from models import Setting, Tag, Task, task_tags
+from models import Setting, Skill, SkillFile, Tag, Task, task_tags
 from mcp_server import create_mcp_app, mcp as mcp_server
 from scheduler import run_scheduler, release_lock
 
@@ -636,10 +637,7 @@ async def get_settings(
 ):
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
-    data = {s.key: s.value for s in settings if s.key != "ssh_private_key"}
-    # Ensure skills always present (default to empty array)
-    if "skills" not in data:
-        data["skills"] = []
+    data = {s.key: s.value for s in settings if s.key not in ("ssh_private_key", "skills")}
     return data
 
 
@@ -650,6 +648,8 @@ async def update_settings(
     _user: dict = Depends(require_admin),
 ):
     for key, value in body.items():
+        if key == "skills":
+            continue  # Skills managed via /api/skills
         result = await session.execute(select(Setting).where(Setting.key == key))
         existing = result.scalar_one_or_none()
         if existing:
@@ -660,7 +660,7 @@ async def update_settings(
 
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
-    return {s.key: s.value for s in settings}
+    return {s.key: s.value for s in settings if s.key not in ("ssh_private_key", "skills")}
 
 
 @app.post("/api/settings/regenerate-ssh-key")
@@ -694,6 +694,269 @@ async def regenerate_mcp_key(
         session.add(Setting(key="mcp_api_key", value=new_key))
     await session.commit()
     return {"mcp_api_key": new_key}
+
+
+# --- Skill validation helpers ---
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def validate_skill_name(name: str) -> str | None:
+    """Validate skill name per Agent Skills rules. Returns error message or None."""
+    if not name:
+        return "Name is required"
+    if len(name) > 64:
+        return "Name must be at most 64 characters"
+    if name != name.lower():
+        return "Name must be lowercase"
+    if "--" in name:
+        return "Name must not contain consecutive hyphens"
+    if not _SKILL_NAME_RE.match(name):
+        return "Name must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen"
+    return None
+
+
+_ALLOWED_SUBDIRS = {"scripts", "references", "assets"}
+
+
+def validate_skill_file_path(path: str) -> str | None:
+    """Validate skill file path. Returns error message or None."""
+    if not path:
+        return "Path is required"
+    parts = path.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return "Path must be one level deep within scripts/, references/, or assets/"
+    if parts[0] not in _ALLOWED_SUBDIRS:
+        return f"Path must be in one of: {', '.join(sorted(_ALLOWED_SUBDIRS))}/"
+    return None
+
+
+# --- Skills API ---
+
+
+@app.get("/api/skills")
+async def list_skills(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    result = await session.execute(
+        select(Skill).options(selectinload(Skill.files)).order_by(Skill.name)
+    )
+    skills = result.scalars().all()
+    return [
+        {
+            "id": str(s.id),
+            "name": s.name,
+            "description": s.description,
+            "instructions": s.instructions,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "files": [
+                {"id": str(f.id), "path": f.path, "created_at": f.created_at.isoformat() if f.created_at else None}
+                for f in s.files
+            ],
+        }
+        for s in skills
+    ]
+
+
+@app.post("/api/skills", status_code=201)
+async def create_skill(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    name = body.get("name", "")
+    description = body.get("description", "")
+    instructions = body.get("instructions", "")
+
+    name_error = validate_skill_name(name)
+    if name_error:
+        raise HTTPException(status_code=422, detail=name_error)
+
+    if not description:
+        raise HTTPException(status_code=422, detail="Description is required")
+    if len(description) > 1024:
+        raise HTTPException(status_code=422, detail="Description must be at most 1024 characters")
+
+    if not instructions:
+        raise HTTPException(status_code=422, detail="Instructions are required")
+
+    # Check name uniqueness
+    result = await session.execute(select(Skill).where(Skill.name == name))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"Skill with name '{name}' already exists")
+
+    skill = Skill(name=name, description=description, instructions=instructions)
+    session.add(skill)
+    await session.commit()
+    await session.refresh(skill)
+    return {
+        "id": str(skill.id),
+        "name": skill.name,
+        "description": skill.description,
+        "instructions": skill.instructions,
+        "created_at": skill.created_at.isoformat() if skill.created_at else None,
+        "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
+        "files": [],
+    }
+
+
+@app.get("/api/skills/{skill_id}")
+async def get_skill_by_id(
+    skill_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    result = await session.execute(
+        select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
+    )
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return {
+        "id": str(skill.id),
+        "name": skill.name,
+        "description": skill.description,
+        "instructions": skill.instructions,
+        "created_at": skill.created_at.isoformat() if skill.created_at else None,
+        "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
+        "files": [
+            {
+                "id": str(f.id),
+                "path": f.path,
+                "content": f.content,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+            }
+            for f in skill.files
+        ],
+    }
+
+
+@app.put("/api/skills/{skill_id}")
+async def update_skill(
+    skill_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
+    )
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    if "name" in body:
+        name_error = validate_skill_name(body["name"])
+        if name_error:
+            raise HTTPException(status_code=422, detail=name_error)
+        # Check uniqueness if name changed
+        if body["name"] != skill.name:
+            dup = await session.execute(select(Skill).where(Skill.name == body["name"]))
+            if dup.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail=f"Skill with name '{body['name']}' already exists")
+        skill.name = body["name"]
+
+    if "description" in body:
+        if not body["description"]:
+            raise HTTPException(status_code=422, detail="Description is required")
+        if len(body["description"]) > 1024:
+            raise HTTPException(status_code=422, detail="Description must be at most 1024 characters")
+        skill.description = body["description"]
+
+    if "instructions" in body:
+        if not body["instructions"]:
+            raise HTTPException(status_code=422, detail="Instructions are required")
+        skill.instructions = body["instructions"]
+
+    await session.commit()
+    await session.refresh(skill)
+    return {
+        "id": str(skill.id),
+        "name": skill.name,
+        "description": skill.description,
+        "instructions": skill.instructions,
+        "created_at": skill.created_at.isoformat() if skill.created_at else None,
+        "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
+        "files": [
+            {"id": str(f.id), "path": f.path, "created_at": f.created_at.isoformat() if f.created_at else None}
+            for f in skill.files
+        ],
+    }
+
+
+@app.delete("/api/skills/{skill_id}", status_code=204)
+async def delete_skill(
+    skill_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    await session.delete(skill)
+    await session.commit()
+
+
+@app.post("/api/skills/{skill_id}/files", status_code=201)
+async def add_skill_file(
+    skill_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    path = body.get("path", "")
+    content = body.get("content", "")
+
+    path_error = validate_skill_file_path(path)
+    if path_error:
+        raise HTTPException(status_code=422, detail=path_error)
+
+    if not content:
+        raise HTTPException(status_code=422, detail="Content is required")
+
+    # Check duplicate path
+    dup = await session.execute(
+        select(SkillFile).where(SkillFile.skill_id == skill_id, SkillFile.path == path)
+    )
+    if dup.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"File with path '{path}' already exists for this skill")
+
+    skill_file = SkillFile(skill_id=skill.id, path=path, content=content)
+    session.add(skill_file)
+    await session.commit()
+    await session.refresh(skill_file)
+    return {
+        "id": str(skill_file.id),
+        "skill_id": str(skill_file.skill_id),
+        "path": skill_file.path,
+        "content": skill_file.content,
+        "created_at": skill_file.created_at.isoformat() if skill_file.created_at else None,
+    }
+
+
+@app.delete("/api/skills/{skill_id}/files/{file_id}", status_code=204)
+async def delete_skill_file(
+    skill_id: uuid.UUID,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(SkillFile).where(SkillFile.id == file_id, SkillFile.skill_id == skill_id)
+    )
+    skill_file = result.scalar_one_or_none()
+    if not skill_file:
+        raise HTTPException(status_code=404, detail="File not found")
+    await session.delete(skill_file)
+    await session.commit()
 
 
 # --- Unprotected endpoints ---

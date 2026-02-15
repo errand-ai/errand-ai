@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Skill data structure
 Each skill SHALL be stored as a row in the `skills` table with the following fields: `id` (UUID, auto-generated primary key), `name` (string, unique, not null, validated against Agent Skills naming rules), `description` (string, not null, max 1024 characters), `instructions` (string, not null — the SKILL.md markdown body), `created_at` (timestamp with timezone), and `updated_at` (timestamp with timezone). Skill files SHALL be stored in a `skill_files` table with fields: `id` (UUID, auto-generated primary key), `skill_id` (UUID, foreign key to skills with CASCADE delete), `path` (string, not null — relative path within the skill directory), `content` (string, not null), and `created_at` (timestamp with timezone). The combination of `skill_id` and `path` SHALL be unique.
@@ -25,6 +25,8 @@ The `GET /api/settings` endpoint SHALL no longer return a `skills` array. Skills
 #### Scenario: Put settings ignores skills field
 - **WHEN** an admin calls `PUT /api/settings` with a body containing a `skills` field
 - **THEN** the skills field is ignored and no skills are modified
+
+## MODIFIED Requirements
 
 ### Requirement: Skills management UI
 The settings page SHALL include an always-visible "Skills" section (not collapsible) within the "Agent Configuration" group, positioned after the System Prompt section. The section SHALL display all defined skills loaded from `GET /api/skills`. The section SHALL allow the admin to add a new skill (providing name, description, and instructions), edit an existing skill, delete a skill, and manage attached files (add and remove files in `scripts/`, `references/`, and `assets/` subdirectories). Each skill in the list SHALL display its name and description. The instructions field SHALL use a multi-line textarea. The name field SHALL display validation hints indicating Agent Skills naming rules (lowercase, hyphens only, max 64 chars). The description field SHALL display a character counter (max 1024).

@@ -1,4 +1,5 @@
 """Worker unit tests: settings reader, output truncation, task_to_dict, retry scheduling."""
+import io
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from worker import (
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
     substitute_env_vars, extract_json, generate_ssh_config, put_archive_ssh,
+    build_skills_archive, build_skill_manifest,
 )
 
 
@@ -293,6 +295,26 @@ async def db_session():
                 task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                 tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
                 PRIMARY KEY (task_id, tag_id)
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS skills (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                instructions TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS skill_files (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                skill_id VARCHAR(36) NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                path TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                UNIQUE (skill_id, path)
             )
         """))
 
@@ -1033,7 +1055,7 @@ def test_perplexity_system_prompt_appended_when_enabled():
 
 
 def test_skills_directive_appended_when_skills_exist():
-    """When skills are defined, system prompt has the skills directive and MCP server is injected."""
+    """When skills are defined, system prompt has the skill manifest and skills archive is written."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -1041,7 +1063,7 @@ def test_skills_directive_appended_when_skills_exist():
         "task_processing_model": "gpt-4o",
         "system_prompt": "You are a helpful assistant.",
         "skills": [
-            {"id": "1", "name": "researcher", "description": "Web research", "instructions": "Full instructions"},
+            {"name": "researcher", "description": "Web research", "instructions": "Full instructions", "files": []},
         ],
         "mcp_api_key": "test-api-key-123",
     }
@@ -1063,35 +1085,45 @@ def test_skills_directive_appended_when_skills_exist():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "BACKEND_MCP_URL": "http://backend:8000/mcp",
         }):
             process_task_in_container(task, settings)
     finally:
         worker.docker_client = original_client
 
     import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
+
+    # First put_archive call is workspace files (/workspace)
+    first_call = mock_container.put_archive.call_args_list[0]
+    tar_data = first_call[0][1]
     tar_data.seek(0)
     tar = tarfile.open(fileobj=tar_data)
 
-    # Check system prompt has skill directive
+    # Check system prompt has skill manifest (not old MCP directives)
     system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
     assert "You are a helpful assistant." in system_prompt_content
-    assert "list_skills" in system_prompt_content
-    assert "get_skill" in system_prompt_content
+    assert "## Skills" in system_prompt_content
+    assert "| researcher | Web research |" in system_prompt_content
+    assert "SKILL.md" in system_prompt_content
+    assert "list_skills" not in system_prompt_content
+    assert "get_skill" not in system_prompt_content
 
-    # Check MCP config has the content-manager server injected
+    # Check MCP config does NOT have the content-manager server auto-injected
     tar_data.seek(0)
     tar2 = tarfile.open(fileobj=tar_data)
     mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
-    assert "content-manager" in mcp_content["mcpServers"]
-    cm_server = mcp_content["mcpServers"]["content-manager"]
-    assert cm_server["url"] == "http://backend:8000/mcp"
-    assert cm_server["headers"]["Authorization"] == "Bearer test-api-key-123"
+    assert "content-manager" not in mcp_content.get("mcpServers", {})
+
+    # Second put_archive call is skills archive (/workspace)
+    second_call = mock_container.put_archive.call_args_list[1]
+    assert second_call[0][0] == "/workspace"
+    skills_tar_data = second_call[0][1]
+    skills_tar_data.seek(0)
+    skills_tar = tarfile.open(fileobj=skills_tar_data)
+    assert "skills/researcher/SKILL.md" in skills_tar.getnames()
 
 
 def test_skills_directive_omitted_when_no_skills():
-    """When no skills are defined, system prompt has no skills directive."""
+    """When no skills are defined, system prompt has no skills directive and no skills archive is written."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -1124,18 +1156,82 @@ def test_skills_directive_omitted_when_no_skills():
         worker.docker_client = original_client
 
     import tarfile
+    # Only one put_archive call (workspace files), no skills archive
+    assert mock_container.put_archive.call_count == 1
     tar_data = mock_container.put_archive.call_args[0][1]
     tar_data.seek(0)
     tar = tarfile.open(fileobj=tar_data)
     system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
     assert system_prompt_content == "You are a helpful assistant."
-    assert "list_skills" not in system_prompt_content
+    assert "## Skills" not in system_prompt_content
 
     # Check MCP config does NOT have the content-manager server
     tar_data.seek(0)
     tar2 = tarfile.open(fileobj=tar_data)
     mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
     assert "content-manager" not in mcp_content.get("mcpServers", {})
+
+
+def test_perplexity_and_skills_combined_system_prompt():
+    """When both Perplexity and skills are enabled, system prompt has Perplexity block before skills manifest."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "skills": [
+            {"name": "researcher", "description": "Web research", "instructions": "Full instructions", "files": []},
+        ],
+        "mcp_api_key": "test-api-key-123",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-combo1"
+    mock_container.short_id = "combo1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "USE_PERPLEXITY": "true",
+            "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    import tarfile
+    first_call = mock_container.put_archive.call_args_list[0]
+    tar_data = first_call[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+
+    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+
+    # Original prompt is at the start
+    assert system_prompt_content.startswith("You are a helpful assistant.")
+
+    # Perplexity block appears
+    assert "perplexity-ask" in system_prompt_content
+
+    # Skills manifest appears
+    assert "## Skills" in system_prompt_content
+    assert "| researcher | Web research |" in system_prompt_content
+
+    # Perplexity block comes before skills manifest
+    perplexity_pos = system_prompt_content.index("perplexity-ask")
+    skills_pos = system_prompt_content.index("## Skills")
+    assert perplexity_pos < skills_pos, "Perplexity block should appear before skills manifest"
 
 
 def test_process_task_container_copies_three_files():
@@ -1547,6 +1643,26 @@ async def worker_session():
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
         """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS skills (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL,
+                instructions TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS skill_files (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                skill_id VARCHAR(36) NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                path TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                UNIQUE(skill_id, path)
+            )
+        """))
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         yield session
@@ -1565,3 +1681,114 @@ async def test_read_settings_ssh_defaults_when_missing(worker_session: AsyncSess
     settings = await read_settings(worker_session)
     assert settings["ssh_private_key"] == ""
     assert settings["git_ssh_hosts"] == []
+
+
+# --- Skills archive assembly ---
+
+
+def test_build_skills_archive_empty():
+    """No skills returns None."""
+    assert build_skills_archive([]) is None
+
+
+def test_build_skills_archive_single_skill():
+    """Single skill produces correct SKILL.md."""
+    import tarfile
+    skills = [{"name": "research", "description": "Conducts research", "instructions": "## Steps\n1. Search", "files": []}]
+    data = build_skills_archive(skills)
+    assert data is not None
+
+    tar = tarfile.open(fileobj=io.BytesIO(data), mode="r")
+    names = tar.getnames()
+    assert "skills/research/SKILL.md" in names
+
+    skill_md = tar.extractfile("skills/research/SKILL.md").read().decode()
+    assert "name: research" in skill_md
+    assert "description: Conducts research" in skill_md
+    assert "## Steps" in skill_md
+
+
+def test_build_skills_archive_with_files():
+    """Skill with attached files includes them in the archive."""
+    import tarfile
+    skills = [{
+        "name": "code-review",
+        "description": "Reviews code",
+        "instructions": "Review it",
+        "files": [
+            {"path": "scripts/check.py", "content": "print('check')"},
+            {"path": "references/GUIDE.md", "content": "# Guide"},
+        ],
+    }]
+    data = build_skills_archive(skills)
+    tar = tarfile.open(fileobj=io.BytesIO(data), mode="r")
+    names = tar.getnames()
+    assert "skills/code-review/SKILL.md" in names
+    assert "skills/code-review/scripts/check.py" in names
+    assert "skills/code-review/references/GUIDE.md" in names
+
+    script = tar.extractfile("skills/code-review/scripts/check.py").read().decode()
+    assert script == "print('check')"
+
+
+def test_build_skills_archive_multiple_skills():
+    """Multiple skills produce separate directories."""
+    import tarfile
+    skills = [
+        {"name": "alpha", "description": "d1", "instructions": "i1", "files": []},
+        {"name": "beta", "description": "d2", "instructions": "i2", "files": []},
+    ]
+    data = build_skills_archive(skills)
+    tar = tarfile.open(fileobj=io.BytesIO(data), mode="r")
+    names = tar.getnames()
+    assert "skills/alpha/SKILL.md" in names
+    assert "skills/beta/SKILL.md" in names
+
+
+# --- Skill manifest ---
+
+
+def test_build_skill_manifest():
+    """Manifest includes skill table and directive."""
+    skills = [
+        {"name": "research", "description": "Conducts web research"},
+        {"name": "code-review", "description": "Reviews code"},
+    ]
+    manifest = build_skill_manifest(skills)
+    assert "## Skills" in manifest
+    assert "| research | Conducts web research |" in manifest
+    assert "| code-review | Reviews code |" in manifest
+    assert "/workspace/skills/" in manifest
+    assert "SKILL.md" in manifest
+
+
+def test_build_skill_manifest_no_mcp_directive():
+    """Manifest should NOT contain old MCP tool directives."""
+    skills = [{"name": "test", "description": "Test"}]
+    manifest = build_skill_manifest(skills)
+    assert "list_skills" not in manifest
+    assert "get_skill" not in manifest
+
+
+# --- read_settings includes skills from skills table ---
+
+
+async def test_read_settings_skills_from_table(worker_session: AsyncSession):
+    """read_settings queries skills from the skills table, not settings."""
+    from models import Skill
+    skill = Skill(name="test-skill", description="Test", instructions="Do test")
+    worker_session.add(skill)
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert len(settings["skills"]) == 1
+    assert settings["skills"][0]["name"] == "test-skill"
+    assert settings["skills"][0]["description"] == "Test"
+    assert settings["skills"][0]["instructions"] == "Do test"
+    assert settings["skills"][0]["files"] == []
+
+
+async def test_read_settings_skills_empty_by_default(worker_session: AsyncSession):
+    """read_settings returns empty skills list when no skills exist."""
+    settings = await read_settings(worker_session)
+    assert settings["skills"] == []

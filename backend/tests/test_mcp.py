@@ -253,12 +253,12 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_six_tools():
-    """The MCP server exposes exactly six tools."""
+async def test_mcp_server_has_four_tools():
+    """The MCP server exposes exactly four tools."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
-    assert tool_names == {"new_task", "task_status", "task_output", "list_skills", "get_skill", "post_tweet"}
+    assert tool_names == {"new_task", "task_status", "task_output", "post_tweet"}
 
 
 # --- 5.4: MCP tools (tested as direct function calls) ---
@@ -377,59 +377,6 @@ async def test_task_output_in_progress(db_session):
 async def test_task_output_not_found(db_session):
     from mcp_server import task_output
     result = await task_output("00000000-0000-0000-0000-000000000000")
-    assert "not found" in result.lower()
-
-
-# --- Skills MCP tools ---
-
-
-async def test_list_skills_empty(db_session):
-    from mcp_server import list_skills
-    import json
-
-    result = await list_skills()
-    assert json.loads(result) == []
-
-
-async def test_list_skills_returns_name_and_description(db_session):
-    _, session_factory = db_session
-    import json
-
-    skills_data = [
-        {"id": "1", "name": "researcher", "description": "Web research", "instructions": "Full instructions here"},
-        {"id": "2", "name": "coder", "description": "Code generation", "instructions": "Coding instructions"},
-    ]
-    async with session_factory() as session:
-        session.add(Setting(key="skills", value=skills_data))
-        await session.commit()
-
-    from mcp_server import list_skills
-    result = json.loads(await list_skills())
-    assert len(result) == 2
-    assert result[0] == {"name": "researcher", "description": "Web research"}
-    assert result[1] == {"name": "coder", "description": "Code generation"}
-    # Instructions should NOT be included
-    assert "instructions" not in result[0]
-
-
-async def test_get_skill_found(db_session):
-    _, session_factory = db_session
-
-    skills_data = [
-        {"id": "1", "name": "researcher", "description": "Web research", "instructions": "You are a research specialist."},
-    ]
-    async with session_factory() as session:
-        session.add(Setting(key="skills", value=skills_data))
-        await session.commit()
-
-    from mcp_server import get_skill
-    result = await get_skill("researcher")
-    assert result == "You are a research specialist."
-
-
-async def test_get_skill_not_found(db_session):
-    from mcp_server import get_skill
-    result = await get_skill("nonexistent")
     assert "not found" in result.lower()
 
 
