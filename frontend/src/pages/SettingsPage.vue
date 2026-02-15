@@ -118,7 +118,15 @@ onBeforeUnmount(() => {
       {{ error }}
     </div>
 
-    <div v-if="loading" class="text-sm text-gray-500">Loading settings...</div>
+    <div v-if="loading" class="space-y-6" data-testid="settings-skeleton">
+      <div v-for="n in 4" :key="n" class="rounded-lg bg-white p-6 shadow">
+        <div class="h-5 w-48 rounded bg-gray-200 animate-pulse mb-4"></div>
+        <div class="space-y-3">
+          <div class="h-4 w-full rounded bg-gray-200 animate-pulse"></div>
+          <div class="h-4 w-3/4 rounded bg-gray-200 animate-pulse"></div>
+        </div>
+      </div>
+    </div>
 
     <template v-else>
       <!-- ===== Agent Configuration ===== -->

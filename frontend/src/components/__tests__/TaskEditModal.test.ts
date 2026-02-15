@@ -399,4 +399,22 @@ describe('TaskEditModal', () => {
     expect(wrapper.emitted('cancel')).toHaveLength(1)
     confirmSpy.mockRestore()
   })
+
+  it('shows confirm dialog on Escape key when form is dirty', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(TaskEditModal, { props: { task } })
+
+    await wrapper.find('#edit-title').setValue('Changed title')
+    await wrapper.find('dialog').trigger('cancel')
+
+    expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    confirmSpy.mockRestore()
+  })
+
+  it('emits cancel on Escape key when form is clean', async () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    await wrapper.find('dialog').trigger('cancel')
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+  })
 })

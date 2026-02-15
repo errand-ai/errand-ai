@@ -63,4 +63,4 @@
 
 - [x] 8.1 Run full frontend test suite and verify all tests pass
 - [x] 8.2 Run full backend test suite and verify all tests pass (no backend changes, but confirm nothing is broken)
-- [ ] 8.3 Manual smoke test with `docker compose up --build` — verify navigation, toast notifications, task card enhancements, archive search/filter, settings save patterns, modal behavior
+- [x] 8.3 Manual smoke test with `docker compose up --build` — verify navigation, toast notifications, task card enhancements, archive search/filter, settings save patterns, modal behavior

@@ -85,6 +85,13 @@ describe('SettingsPage', () => {
     expect(wrapper.find('[data-testid="group-integrations-security"]').text()).toContain('Integrations')
   })
 
+  it('shows skeleton loading state before settings load', () => {
+    const wrapper = mount(SettingsPage)
+    const skeleton = wrapper.find('[data-testid="settings-skeleton"]')
+    expect(skeleton.exists()).toBe(true)
+    expect(skeleton.findAll('.animate-pulse').length).toBeGreaterThanOrEqual(4)
+  })
+
   it('renders sections after loading', async () => {
     const wrapper = mount(SettingsPage)
     await flushPromises()
