@@ -87,6 +87,28 @@ CREATE TABLE IF NOT EXISTS task_tags (
 )
 """
 
+_SKILLS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS skills (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_SKILL_FILES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS skill_files (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    skill_id VARCHAR(36) NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(skill_id, path)
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
@@ -94,6 +116,8 @@ async def _create_tables(engine):
         await conn.execute(text(_SETTINGS_TABLE_SQL))
         await conn.execute(text(_TAGS_TABLE_SQL))
         await conn.execute(text(_TASK_TAGS_TABLE_SQL))
+        await conn.execute(text(_SKILLS_TABLE_SQL))
+        await conn.execute(text(_SKILL_FILES_TABLE_SQL))
 
 
 @pytest.fixture()

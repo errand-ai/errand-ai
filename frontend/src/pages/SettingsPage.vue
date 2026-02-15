@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../composables/useApi'
 
@@ -65,14 +65,23 @@ const error = ref<string | null>(null)
 const saveSuccess = ref(false)
 
 // Skills state
+interface SkillFile {
+  id: string
+  path: string
+  content?: string
+  created_at: string
+}
 interface Skill {
   id: string
   name: string
   description: string
   instructions: string
+  files: SkillFile[]
+  created_at: string
+  updated_at: string
 }
 const skills = ref<Skill[]>([])
-const skillsExpanded = ref(false)
+const skillsLoading = ref(false)
 const skillsSaving = ref(false)
 const skillsSuccess = ref(false)
 const skillsError = ref<string | null>(null)
@@ -80,6 +89,27 @@ const showSkillForm = ref(false)
 const editingSkillId = ref<string | null>(null)
 const skillForm = ref({ name: '', description: '', instructions: '' })
 const skillNameError = ref<string | null>(null)
+// File management state
+const expandedSkillId = ref<string | null>(null)
+const expandedSkillFiles = ref<SkillFile[]>([])
+const filesLoading = ref(false)
+const showFileForm = ref(false)
+const fileForm = ref({ subdirectory: 'scripts', filename: '', content: '' })
+const fileFormError = ref<string | null>(null)
+const fileSaving = ref(false)
+
+const descriptionCharCount = computed(() => skillForm.value.description.length)
+
+function validateSkillNameLocal(name: string): string | null {
+  if (!name) return 'Name is required'
+  if (name.length > 64) return 'Name must be at most 64 characters'
+  if (name !== name.toLowerCase()) return 'Name must be lowercase'
+  if (/--/.test(name)) return 'Name must not contain consecutive hyphens'
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name)) {
+    return 'Name must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen'
+  }
+  return null
+}
 
 async function settingsFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -116,11 +146,27 @@ async function loadSettings() {
     taskRunnerLogLevel.value = data.task_runner_log_level || 'INFO'
     timezoneValue.value = data.timezone ?? 'UTC'
     archiveAfterDays.value = data.archive_after_days ?? 3
-    skills.value = Array.isArray(data.skills) ? data.skills : []
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadSkills() {
+  skillsLoading.value = true
+  skillsError.value = null
+  try {
+    const res = await settingsFetch('/api/skills')
+    if (!res.ok) {
+      skillsError.value = `Failed to load skills (HTTP ${res.status})`
+      return
+    }
+    skills.value = await res.json()
+  } catch {
+    skillsError.value = 'Failed to load skills. Please check your connection.'
+  } finally {
+    skillsLoading.value = false
   }
 }
 
@@ -532,6 +578,8 @@ async function onTimezoneChange() {
   }
 }
 
+// --- Skills CRUD via /api/skills ---
+
 function openAddSkill() {
   editingSkillId.value = null
   skillForm.value = { name: '', description: '', instructions: '' }
@@ -552,28 +600,13 @@ function cancelSkillForm() {
   skillNameError.value = null
 }
 
-async function saveSkills(updatedSkills: Skill[]) {
-  skillsSaving.value = true
-  skillsSuccess.value = false
-  skillsError.value = null
-  try {
-    const res = await settingsFetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skills: updatedSkills }),
-    })
-    if (!res.ok) {
-      skillsError.value = `Failed to save skills (HTTP ${res.status})`
-      return
-    }
-    skills.value = updatedSkills
-    skillsSuccess.value = true
-    setTimeout(() => { skillsSuccess.value = false }, 3000)
-  } catch {
-    skillsError.value = 'Failed to save skills. Please check your connection.'
-  } finally {
-    skillsSaving.value = false
+function onSkillNameInput() {
+  const name = skillForm.value.name
+  if (!name) {
+    skillNameError.value = null
+    return
   }
+  skillNameError.value = validateSkillNameLocal(name)
 }
 
 async function submitSkillForm() {
@@ -582,39 +615,186 @@ async function submitSkillForm() {
     skillNameError.value = 'All fields are required.'
     return
   }
-  // Check name uniqueness (excluding current edit target)
-  const duplicate = skills.value.find(s => s.name === name.trim() && s.id !== editingSkillId.value)
-  if (duplicate) {
-    skillNameError.value = `A skill named "${name.trim()}" already exists.`
+  const nameValidation = validateSkillNameLocal(name.trim())
+  if (nameValidation) {
+    skillNameError.value = nameValidation
+    return
+  }
+  if (description.length > 1024) {
+    skillNameError.value = 'Description must be at most 1024 characters.'
     return
   }
 
-  let updated: Skill[]
-  if (editingSkillId.value) {
-    updated = skills.value.map(s => s.id === editingSkillId.value
-      ? { ...s, name: name.trim(), description: description.trim(), instructions: instructions.trim() }
-      : s
-    )
-  } else {
-    const newSkill: Skill = {
-      id: crypto.randomUUID(),
-      name: name.trim(),
-      description: description.trim(),
-      instructions: instructions.trim(),
-    }
-    updated = [...skills.value, newSkill]
-  }
+  skillsSaving.value = true
+  skillsSuccess.value = false
+  skillsError.value = null
 
-  await saveSkills(updated)
-  if (!skillsError.value) {
+  try {
+    if (editingSkillId.value) {
+      // Update existing skill
+      const res = await settingsFetch(`/api/skills/${editingSkillId.value}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), description: description.trim(), instructions: instructions.trim() }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        skillsError.value = data.detail || `Failed to update skill (HTTP ${res.status})`
+        return
+      }
+    } else {
+      // Create new skill
+      const res = await settingsFetch('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), description: description.trim(), instructions: instructions.trim() }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        skillsError.value = data.detail || `Failed to create skill (HTTP ${res.status})`
+        return
+      }
+    }
+    await loadSkills()
     showSkillForm.value = false
     editingSkillId.value = null
+    skillsSuccess.value = true
+    setTimeout(() => { skillsSuccess.value = false }, 3000)
+  } catch {
+    skillsError.value = 'Failed to save skill. Please check your connection.'
+  } finally {
+    skillsSaving.value = false
   }
 }
 
 async function deleteSkill(id: string) {
-  const updated = skills.value.filter(s => s.id !== id)
-  await saveSkills(updated)
+  skillsSaving.value = true
+  skillsError.value = null
+  try {
+    const res = await settingsFetch(`/api/skills/${id}`, { method: 'DELETE' })
+    if (!res.ok && res.status !== 204) {
+      skillsError.value = `Failed to delete skill (HTTP ${res.status})`
+      return
+    }
+    if (expandedSkillId.value === id) {
+      expandedSkillId.value = null
+      expandedSkillFiles.value = []
+    }
+    await loadSkills()
+    skillsSuccess.value = true
+    setTimeout(() => { skillsSuccess.value = false }, 3000)
+  } catch {
+    skillsError.value = 'Failed to delete skill. Please check your connection.'
+  } finally {
+    skillsSaving.value = false
+  }
+}
+
+// --- Skill file management ---
+
+async function toggleSkillFiles(skillId: string) {
+  if (expandedSkillId.value === skillId) {
+    expandedSkillId.value = null
+    expandedSkillFiles.value = []
+    showFileForm.value = false
+    return
+  }
+  expandedSkillId.value = skillId
+  filesLoading.value = true
+  try {
+    const res = await settingsFetch(`/api/skills/${skillId}`)
+    if (res.ok) {
+      const data = await res.json()
+      expandedSkillFiles.value = data.files || []
+    }
+  } catch {
+    expandedSkillFiles.value = []
+  } finally {
+    filesLoading.value = false
+  }
+}
+
+function groupedFiles(files: SkillFile[]) {
+  const groups: Record<string, SkillFile[]> = {}
+  for (const f of files) {
+    const dir = f.path.split('/')[0]
+    if (!groups[dir]) groups[dir] = []
+    groups[dir].push(f)
+  }
+  return groups
+}
+
+function openAddFile() {
+  fileForm.value = { subdirectory: 'scripts', filename: '', content: '' }
+  fileFormError.value = null
+  showFileForm.value = true
+}
+
+function cancelFileForm() {
+  showFileForm.value = false
+  fileFormError.value = null
+}
+
+async function submitFileForm() {
+  const { subdirectory, filename, content } = fileForm.value
+  if (!filename.trim()) {
+    fileFormError.value = 'Filename is required.'
+    return
+  }
+  if (!content.trim()) {
+    fileFormError.value = 'Content is required.'
+    return
+  }
+  if (filename.includes('/') || filename.includes('\\')) {
+    fileFormError.value = 'Filename must not contain path separators.'
+    return
+  }
+
+  const path = `${subdirectory}/${filename.trim()}`
+  fileSaving.value = true
+  fileFormError.value = null
+
+  try {
+    const res = await settingsFetch(`/api/skills/${expandedSkillId.value}/files`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, content: content }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      fileFormError.value = data.detail || `Failed to add file (HTTP ${res.status})`
+      return
+    }
+    // Reload skill detail to refresh file list
+    const detailRes = await settingsFetch(`/api/skills/${expandedSkillId.value}`)
+    if (detailRes.ok) {
+      const data = await detailRes.json()
+      expandedSkillFiles.value = data.files || []
+    }
+    showFileForm.value = false
+    // Reload skills list to update file counts
+    await loadSkills()
+  } catch {
+    fileFormError.value = 'Failed to add file. Please check your connection.'
+  } finally {
+    fileSaving.value = false
+  }
+}
+
+async function deleteFile(skillId: string, fileId: string) {
+  try {
+    const res = await settingsFetch(`/api/skills/${skillId}/files/${fileId}`, { method: 'DELETE' })
+    if (!res.ok && res.status !== 204) return
+    // Reload skill detail
+    const detailRes = await settingsFetch(`/api/skills/${skillId}`)
+    if (detailRes.ok) {
+      const data = await detailRes.json()
+      expandedSkillFiles.value = data.files || []
+    }
+    await loadSkills()
+  } catch {
+    // Silently fail on delete error
+  }
 }
 
 onMounted(async () => {
@@ -625,6 +805,7 @@ onMounted(async () => {
     timezones.value = ['UTC']
   }
   await loadSettings()
+  await loadSkills()
   await loadModels()
   await loadTranscriptionModels()
 })
@@ -641,6 +822,9 @@ onMounted(async () => {
     <div v-if="loading" class="text-sm text-gray-500">Loading settings...</div>
 
     <template v-else>
+      <!-- ===== Agent Configuration ===== -->
+      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4" data-testid="group-agent-configuration">Agent Configuration</h3>
+
       <!-- System Prompt -->
       <div class="mb-6 rounded-lg bg-white p-6 shadow">
         <h3 class="text-lg font-semibold text-gray-800 mb-3">System Prompt</h3>
@@ -660,6 +844,195 @@ onMounted(async () => {
           </button>
           <span v-if="saveSuccess" class="text-sm text-green-600">Settings saved.</span>
         </div>
+      </div>
+
+      <!-- Skills (always visible) -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="skills-section">
+        <h3 class="text-lg font-semibold text-gray-800 mb-1">
+          Skills
+          <span class="ml-2 text-sm font-normal text-gray-500">({{ skills.length }})</span>
+        </h3>
+        <p class="text-sm text-gray-500 mb-3">Portable skill directories following the Agent Skills standard. Each skill includes a SKILL.md manifest and optional scripts, references, and assets.</p>
+        <div v-if="skillsError" class="mb-2 text-sm text-red-600" data-testid="skills-error">{{ skillsError }}</div>
+        <div v-if="skillsSuccess" class="mb-2 text-sm text-green-600">Skill saved.</div>
+
+        <!-- Skill list -->
+        <div v-if="skills.length > 0 && !showSkillForm" class="space-y-2 mb-3">
+          <div
+            v-for="skill in skills"
+            :key="skill.id"
+            class="rounded-md border border-gray-200"
+          >
+            <div class="flex items-start justify-between p-3">
+              <div class="flex-1 cursor-pointer" @click="toggleSkillFiles(skill.id)">
+                <div class="text-sm font-medium text-gray-800">{{ skill.name }}</div>
+                <div class="text-xs text-gray-500">{{ skill.description }}</div>
+                <div class="text-xs text-gray-400 mt-1">{{ skill.files?.length || 0 }} file(s)</div>
+              </div>
+              <div class="flex gap-2 ml-3 shrink-0">
+                <button
+                  @click="toggleSkillFiles(skill.id)"
+                  class="text-xs text-gray-500 hover:text-gray-700"
+                  data-testid="skill-files-toggle"
+                >{{ expandedSkillId === skill.id ? 'Hide Files' : 'Files' }}</button>
+                <button
+                  @click="openEditSkill(skill)"
+                  class="text-xs text-blue-600 hover:text-blue-800"
+                  data-testid="skill-edit"
+                >Edit</button>
+                <button
+                  @click="deleteSkill(skill.id)"
+                  :disabled="skillsSaving"
+                  class="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
+                  data-testid="skill-delete"
+                >Delete</button>
+              </div>
+            </div>
+
+            <!-- File manager (expanded) -->
+            <div v-if="expandedSkillId === skill.id" class="border-t border-gray-200 p-3 bg-gray-50" data-testid="skill-files-panel">
+              <div v-if="filesLoading" class="text-xs text-gray-400">Loading files...</div>
+              <template v-else>
+                <div v-if="expandedSkillFiles.length === 0 && !showFileForm" class="text-xs text-gray-400 mb-2">No files attached.</div>
+                <div v-for="(files, dir) in groupedFiles(expandedSkillFiles)" :key="dir" class="mb-2">
+                  <div class="text-xs font-semibold text-gray-600 mb-1">{{ dir }}/</div>
+                  <div v-for="file in files" :key="file.id" class="flex items-center justify-between pl-3 py-1">
+                    <span class="text-xs font-mono text-gray-700">{{ file.path.split('/')[1] }}</span>
+                    <button
+                      @click="deleteFile(skill.id, file.id)"
+                      class="text-xs text-red-500 hover:text-red-700"
+                      data-testid="file-delete"
+                    >Delete</button>
+                  </div>
+                </div>
+
+                <!-- Add File form -->
+                <div v-if="showFileForm" class="mt-2 rounded-md border border-gray-300 p-3 space-y-2 bg-white" data-testid="file-form">
+                  <div v-if="fileFormError" class="text-xs text-red-600">{{ fileFormError }}</div>
+                  <div class="flex gap-2">
+                    <div>
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Subdirectory</label>
+                      <select
+                        v-model="fileForm.subdirectory"
+                        class="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        data-testid="file-subdirectory-select"
+                      >
+                        <option value="scripts">scripts/</option>
+                        <option value="references">references/</option>
+                        <option value="assets">assets/</option>
+                      </select>
+                    </div>
+                    <div class="flex-1">
+                      <label class="block text-xs font-medium text-gray-600 mb-1">Filename</label>
+                      <input
+                        v-model="fileForm.filename"
+                        type="text"
+                        class="w-full rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        placeholder="e.g. extract.py"
+                        data-testid="file-filename-input"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Content</label>
+                    <textarea
+                      v-model="fileForm.content"
+                      rows="4"
+                      class="w-full rounded-md border border-gray-300 p-2 text-xs font-mono"
+                      placeholder="File content..."
+                      data-testid="file-content-input"
+                    ></textarea>
+                  </div>
+                  <div class="flex gap-2">
+                    <button
+                      @click="submitFileForm"
+                      :disabled="fileSaving"
+                      class="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                      data-testid="file-save"
+                    >{{ fileSaving ? 'Adding...' : 'Add File' }}</button>
+                    <button
+                      @click="cancelFileForm"
+                      class="rounded-md border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                      data-testid="file-cancel"
+                    >Cancel</button>
+                  </div>
+                </div>
+
+                <button
+                  v-if="!showFileForm"
+                  @click="openAddFile"
+                  class="mt-2 text-xs text-blue-600 hover:text-blue-800"
+                  data-testid="file-add"
+                >Add File</button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="skills.length === 0 && !showSkillForm" class="text-sm text-gray-400 mb-3">No skills defined yet.</div>
+
+        <!-- Add/Edit skill form -->
+        <div v-if="showSkillForm" class="rounded-md border border-gray-200 p-4 mb-3 space-y-3">
+          <h4 class="text-sm font-semibold text-gray-700">{{ editingSkillId ? 'Edit Skill' : 'New Skill' }}</h4>
+          <div v-if="skillNameError" class="text-sm text-red-600" data-testid="skill-name-error">{{ skillNameError }}</div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+            <input
+              v-model="skillForm.name"
+              @input="onSkillNameInput"
+              type="text"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="e.g. researcher"
+              data-testid="skill-name-input"
+            />
+            <p class="mt-1 text-xs text-gray-400">Lowercase letters, digits, and hyphens only. Max 64 characters.</p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
+            <input
+              v-model="skillForm.description"
+              type="text"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Brief summary for agent discovery"
+              data-testid="skill-description-input"
+            />
+            <p class="mt-1 text-xs" :class="descriptionCharCount > 1024 ? 'text-red-500' : 'text-gray-400'" data-testid="description-char-count">
+              {{ descriptionCharCount }}/1024
+            </p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Instructions</label>
+            <textarea
+              v-model="skillForm.instructions"
+              rows="6"
+              class="w-full rounded-md border border-gray-300 p-3 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Full prompt instructions the agent will follow..."
+              data-testid="skill-instructions-input"
+            ></textarea>
+          </div>
+          <div class="flex gap-2">
+            <button
+              @click="submitSkillForm"
+              :disabled="skillsSaving"
+              class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="skill-save"
+            >
+              {{ skillsSaving ? 'Saving...' : (editingSkillId ? 'Update' : 'Add') }}
+            </button>
+            <button
+              @click="cancelSkillForm"
+              class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              data-testid="skill-cancel"
+            >Cancel</button>
+          </div>
+        </div>
+
+        <button
+          v-if="!showSkillForm"
+          @click="openAddSkill"
+          class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          data-testid="skill-add"
+        >Add Skill</button>
       </div>
 
       <!-- LLM Models -->
@@ -720,6 +1093,9 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+
+      <!-- ===== Task Management ===== -->
+      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4 mt-8" data-testid="group-task-management">Task Management</h3>
 
       <!-- Timezone -->
       <div class="mb-6 rounded-lg bg-white p-6 shadow">
@@ -784,6 +1160,9 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+
+      <!-- ===== Integrations & Security ===== -->
+      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4 mt-8" data-testid="group-integrations-security">Integrations & Security</h3>
 
       <!-- MCP API Key -->
       <div class="mb-6 rounded-lg bg-white p-6 shadow">
@@ -930,120 +1309,6 @@ onMounted(async () => {
 
         <div v-else class="text-sm text-gray-500" data-testid="ssh-no-key">
           No SSH key generated. Restart the backend to auto-generate one.
-        </div>
-      </div>
-
-      <!-- Skills -->
-      <div class="mb-6 rounded-lg bg-white p-6 shadow">
-        <button
-          @click="skillsExpanded = !skillsExpanded"
-          class="flex w-full items-center justify-between text-left"
-        >
-          <h3 class="text-lg font-semibold text-gray-800">
-            Skills
-            <span class="ml-2 text-sm font-normal text-gray-500">({{ skills.length }})</span>
-          </h3>
-          <svg
-            :class="{ 'rotate-180': skillsExpanded }"
-            class="h-5 w-5 text-gray-500 transition-transform"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        <div v-if="skillsExpanded" class="mt-3">
-          <p class="text-sm text-gray-500 mb-3">Reusable prompt templates the task runner agent can load on demand via MCP tools.</p>
-          <div v-if="skillsError" class="mb-2 text-sm text-red-600">{{ skillsError }}</div>
-          <div v-if="skillsSuccess" class="mb-2 text-sm text-green-600">Skills saved.</div>
-
-          <!-- Skill list -->
-          <div v-if="skills.length > 0 && !showSkillForm" class="space-y-2 mb-3">
-            <div
-              v-for="skill in skills"
-              :key="skill.id"
-              class="flex items-start justify-between rounded-md border border-gray-200 p-3"
-            >
-              <div>
-                <div class="text-sm font-medium text-gray-800">{{ skill.name }}</div>
-                <div class="text-xs text-gray-500">{{ skill.description }}</div>
-              </div>
-              <div class="flex gap-2 ml-3 shrink-0">
-                <button
-                  @click="openEditSkill(skill)"
-                  class="text-xs text-blue-600 hover:text-blue-800"
-                  data-testid="skill-edit"
-                >Edit</button>
-                <button
-                  @click="deleteSkill(skill.id)"
-                  :disabled="skillsSaving"
-                  class="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
-                  data-testid="skill-delete"
-                >Delete</button>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="skills.length === 0 && !showSkillForm" class="text-sm text-gray-400 mb-3">No skills defined yet.</div>
-
-          <!-- Add/Edit form -->
-          <div v-if="showSkillForm" class="rounded-md border border-gray-200 p-4 mb-3 space-y-3">
-            <h4 class="text-sm font-semibold text-gray-700">{{ editingSkillId ? 'Edit Skill' : 'New Skill' }}</h4>
-            <div v-if="skillNameError" class="text-sm text-red-600">{{ skillNameError }}</div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
-              <input
-                v-model="skillForm.name"
-                type="text"
-                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="e.g. researcher"
-                data-testid="skill-name-input"
-              />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
-              <input
-                v-model="skillForm.description"
-                type="text"
-                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="Brief summary for agent discovery"
-                data-testid="skill-description-input"
-              />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 mb-1">Instructions</label>
-              <textarea
-                v-model="skillForm.instructions"
-                rows="6"
-                class="w-full rounded-md border border-gray-300 p-3 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="Full prompt instructions the agent will follow..."
-                data-testid="skill-instructions-input"
-              ></textarea>
-            </div>
-            <div class="flex gap-2">
-              <button
-                @click="submitSkillForm"
-                :disabled="skillsSaving"
-                class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                data-testid="skill-save"
-              >
-                {{ skillsSaving ? 'Saving...' : (editingSkillId ? 'Update' : 'Add') }}
-              </button>
-              <button
-                @click="cancelSkillForm"
-                class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                data-testid="skill-cancel"
-              >Cancel</button>
-            </div>
-          </div>
-
-          <button
-            v-if="!showSkillForm"
-            @click="openAddSkill"
-            class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            data-testid="skill-add"
-          >Add Skill</button>
         </div>
       </div>
 
