@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from database import async_session, engine
 from events import init_valkey, close_valkey, publish_event
-from models import Setting, Skill, SkillFile, Tag, Task, task_tags
+from models import Setting, Skill, Tag, Task, task_tags
 
 
 class TaskRunnerOutput(BaseModel):

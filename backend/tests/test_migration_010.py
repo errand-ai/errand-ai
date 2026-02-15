@@ -1,12 +1,11 @@
 """Tests for migration 010: skills tables and data migration from settings."""
 import json
-import os
 import re
 import uuid
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 
 def _slugify(name: str) -> str:
