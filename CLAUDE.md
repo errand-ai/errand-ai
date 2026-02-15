@@ -243,8 +243,8 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 
 ## Current State
 
-- Version: `0.28.3` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.29.1` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 268 backend (pytest) + 205 frontend (vitest) — CI `test` job gates both build jobs
-- 34 component specs in `openspec/specs/`
+- Tests: 280 backend (pytest) + 217 frontend (vitest) + 35 task-runner (pytest) — CI `test` job gates both build jobs
+- 35 component specs in `openspec/specs/`
