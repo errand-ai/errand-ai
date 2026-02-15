@@ -1172,6 +1172,68 @@ def test_skills_directive_omitted_when_no_skills():
     assert "content-manager" not in mcp_content.get("mcpServers", {})
 
 
+def test_perplexity_and_skills_combined_system_prompt():
+    """When both Perplexity and skills are enabled, system prompt has Perplexity block before skills manifest."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "skills": [
+            {"name": "researcher", "description": "Web research", "instructions": "Full instructions", "files": []},
+        ],
+        "mcp_api_key": "test-api-key-123",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-combo1"
+    mock_container.short_id = "combo1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "USE_PERPLEXITY": "true",
+            "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    import tarfile
+    first_call = mock_container.put_archive.call_args_list[0]
+    tar_data = first_call[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+
+    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+
+    # Original prompt is at the start
+    assert system_prompt_content.startswith("You are a helpful assistant.")
+
+    # Perplexity block appears
+    assert "perplexity-ask" in system_prompt_content
+
+    # Skills manifest appears
+    assert "## Skills" in system_prompt_content
+    assert "| researcher | Web research |" in system_prompt_content
+
+    # Perplexity block comes before skills manifest
+    perplexity_pos = system_prompt_content.index("perplexity-ask")
+    skills_pos = system_prompt_content.index("## Skills")
+    assert perplexity_pos < skills_pos, "Perplexity block should appear before skills manifest"
+
+
 def test_process_task_container_copies_three_files():
     """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
     task = _make_mock_task(description="My task")

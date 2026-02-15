@@ -487,7 +487,7 @@ describe('SettingsPage', () => {
 
     expect(wrapper.text()).toContain('Timezone')
     const selects = wrapper.findAll('select')
-    expect(selects.length).toBeGreaterThanOrEqual(4)
+    expect(selects.length).toBeGreaterThanOrEqual(5)
   })
 
   it('timezone populated from settings', async () => {
@@ -498,7 +498,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('Europe/London')
   })
 
@@ -507,7 +507,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     expect((tzSelect.element as HTMLSelectElement).value).toBe('UTC')
   })
 
@@ -522,7 +522,7 @@ describe('SettingsPage', () => {
     await flushPromises()
 
     const selects = wrapper.findAll('select')
-    const tzSelect = selects[3]
+    const tzSelect = selects[4]
     await tzSelect.setValue('Europe/London')
     await flushPromises()
 
@@ -1256,5 +1256,118 @@ describe('SettingsPage', () => {
     expect(wrapper.find('[data-testid="skill-files-panel"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('scripts/')
     expect(wrapper.text()).toContain('extract.py')
+  })
+
+  it('submits file add form via POST', async () => {
+    const skillDetail = { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', content: '#!/bin/bash', created_at: '' }] }
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1/files' && _opts?.method === 'POST') return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ id: 'f2', path: 'references/guide.md', content: '# Guide', created_at: '' }) })
+      if (url === '/api/skills/1') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(skillDetail) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ ...skillDetail, files: [{ id: 'f1', path: 'scripts/extract.py', created_at: '' }], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Open files panel
+    await wrapper.find('[data-testid="skill-files-toggle"]').trigger('click')
+    await flushPromises()
+
+    // Click Add File button
+    await wrapper.find('[data-testid="file-add"]').trigger('click')
+    await flushPromises()
+
+    // Fill form
+    await wrapper.find('[data-testid="file-filename-input"]').setValue('guide.md')
+    await wrapper.find('[data-testid="file-content-input"]').setValue('# Guide')
+
+    // Submit
+    await wrapper.find('[data-testid="file-save"]').trigger('click')
+    await flushPromises()
+
+    // Verify POST was called with correct path
+    const postCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'POST' && call[0]?.includes('/files')
+    )
+    expect(postCall).toBeTruthy()
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body.path).toBe('scripts/guide.md')
+    expect(body.content).toBe('# Guide')
+  })
+
+  it('deletes a file via DELETE', async () => {
+    const skillDetail = { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [{ id: 'f1', path: 'scripts/extract.py', content: '#!/bin/bash', created_at: '' }] }
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1/files/f1' && _opts?.method === 'DELETE') return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve({}) })
+      if (url === '/api/skills/1') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(skillDetail) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ ...skillDetail, files: [{ id: 'f1', path: 'scripts/extract.py', created_at: '' }], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Open files panel
+    await wrapper.find('[data-testid="skill-files-toggle"]').trigger('click')
+    await flushPromises()
+
+    // Click delete on the file
+    await wrapper.find('[data-testid="file-delete"]').trigger('click')
+    await flushPromises()
+
+    // Verify DELETE was called
+    const deleteCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'DELETE' && call[0]?.includes('/files/')
+    )
+    expect(deleteCall).toBeTruthy()
+    expect(deleteCall![0]).toContain('/api/skills/1/files/f1')
+  })
+
+  // --- Skill edit ---
+
+  it('opens edit form and submits PUT for existing skill', async () => {
+    fetchMock = mockSettingsAndSkills({}, [
+      { id: '1', name: 'researcher', description: 'Web research', instructions: 'Full text', files: [], created_at: '', updated_at: '' },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    // Click Edit button
+    await wrapper.find('[data-testid="skill-edit"]').trigger('click')
+    await flushPromises()
+
+    // Form should be populated with existing values
+    const nameInput = wrapper.find('[data-testid="skill-name-input"]')
+    expect((nameInput.element as HTMLInputElement).value).toBe('researcher')
+
+    // Update fetch to handle PUT
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
+      if (url === '/api/skills/1' && _opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: '1', name: 'researcher-v2', description: 'Updated', instructions: 'New text' }) })
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{ id: '1', name: 'researcher-v2', description: 'Updated', instructions: 'New text', files: [], created_at: '', updated_at: '' }]) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Modify and submit
+    await nameInput.setValue('researcher-v2')
+    await wrapper.find('[data-testid="skill-description-input"]').setValue('Updated')
+    await wrapper.find('[data-testid="skill-instructions-input"]').setValue('New text')
+    await wrapper.find('[data-testid="skill-save"]').trigger('click')
+    await flushPromises()
+
+    // Verify PUT was called
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[0]?.includes('/api/skills/1')
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.name).toBe('researcher-v2')
+    expect(body.description).toBe('Updated')
+    expect(body.instructions).toBe('New text')
   })
 })

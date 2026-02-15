@@ -660,7 +660,7 @@ async def update_settings(
 
     result = await session.execute(select(Setting))
     settings = result.scalars().all()
-    return {s.key: s.value for s in settings if s.key != "skills"}
+    return {s.key: s.value for s in settings if s.key not in ("ssh_private_key", "skills")}
 
 
 @app.post("/api/settings/regenerate-ssh-key")

@@ -1097,23 +1097,6 @@ onMounted(async () => {
       <!-- ===== Task Management ===== -->
       <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4 mt-8" data-testid="group-task-management">Task Management</h3>
 
-      <!-- Timezone -->
-      <div class="mb-6 rounded-lg bg-white p-6 shadow">
-        <h3 class="text-lg font-semibold text-gray-800 mb-3">Timezone</h3>
-        <div class="flex items-center gap-3">
-          <select
-            v-model="timezoneValue"
-            :disabled="timezoneSaving"
-            class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-            @change="onTimezoneChange"
-          >
-            <option v-for="tz in timezones" :key="tz" :value="tz">{{ tz }}</option>
-          </select>
-          <span v-if="timezoneSaving" class="text-sm text-gray-500">Saving...</span>
-          <span v-if="timezoneSuccess" class="text-sm text-green-600">Timezone saved.</span>
-        </div>
-      </div>
-
       <!-- Task Archiving -->
       <div class="mb-6 rounded-lg bg-white p-6 shadow">
         <h3 class="text-lg font-semibold text-gray-800 mb-3">Task Archiving</h3>
@@ -1158,6 +1141,23 @@ onMounted(async () => {
             <span v-if="taskRunnerLogLevelSaving" class="text-sm text-gray-500">Saving...</span>
             <span v-if="taskRunnerLogLevelSuccess" class="text-sm text-green-600">Log level saved.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Timezone -->
+      <div class="mb-6 rounded-lg bg-white p-6 shadow">
+        <h3 class="text-lg font-semibold text-gray-800 mb-3">Timezone</h3>
+        <div class="flex items-center gap-3">
+          <select
+            v-model="timezoneValue"
+            :disabled="timezoneSaving"
+            class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+            @change="onTimezoneChange"
+          >
+            <option v-for="tz in timezones" :key="tz" :value="tz">{{ tz }}</option>
+          </select>
+          <span v-if="timezoneSaving" class="text-sm text-gray-500">Saving...</span>
+          <span v-if="timezoneSuccess" class="text-sm text-green-600">Timezone saved.</span>
         </div>
       </div>
 
