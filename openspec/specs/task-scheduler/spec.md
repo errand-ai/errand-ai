@@ -50,7 +50,7 @@ The scheduler SHALL acquire a Valkey distributed lock before checking for due ta
 - **THEN** it refreshes the lock TTL back to 30 seconds before sleeping
 
 ### Requirement: Scheduler runs as background task in backend lifespan
-The scheduler SHALL be started as an `asyncio.create_task()` during the FastAPI lifespan startup, after Valkey and the database engine are initialised. The scheduler task SHALL be cancelled during lifespan shutdown. The scheduler SHALL poll at a configurable interval (default 30 seconds) controlled by the `SCHEDULER_INTERVAL` environment variable.
+The scheduler SHALL be started as an `asyncio.create_task()` during the FastAPI lifespan startup, after Valkey and the database engine are initialised. The scheduler task SHALL be cancelled during lifespan shutdown. The scheduler SHALL poll at a configurable interval (default 15 seconds) controlled by the `SCHEDULER_INTERVAL` environment variable.
 
 #### Scenario: Scheduler starts with the backend
 - **WHEN** the FastAPI application starts up
@@ -66,7 +66,7 @@ The scheduler SHALL be started as an `asyncio.create_task()` during the FastAPI 
 
 #### Scenario: Default poll interval
 - **WHEN** the `SCHEDULER_INTERVAL` environment variable is not set
-- **THEN** the scheduler waits 30 seconds between cycles
+- **THEN** the scheduler waits 15 seconds between cycles
 
 ### Requirement: Scheduler is resilient to transient errors
 The scheduler SHALL catch and log exceptions during each cycle without crashing. If a database or Valkey error occurs, the scheduler SHALL log the error and continue to the next cycle after the normal sleep interval.
