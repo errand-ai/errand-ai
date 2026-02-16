@@ -1269,6 +1269,55 @@ def test_process_task_container_copies_three_files():
     assert call_args[0] == "/workspace"
 
 
+# --- Valkey unavailability during log streaming ---
+
+
+def test_process_task_completes_when_valkey_unavailable():
+    """Task still completes when sync Redis client fails to connect for log streaming."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-789"
+    mock_container.short_id = "cont789"
+    mock_container.wait.return_value = {"StatusCode": 0}
+
+    # container.logs needs to handle both streaming (stream=True) and capture calls
+    def mock_logs(**kwargs):
+        if kwargs.get("stream"):
+            return iter([b"stderr line 1\n", b"stderr line 2\n"])
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            return b'{"status":"completed","result":"done","questions":[]}'
+        return b"stderr line 1\nstderr line 2\n"
+
+    mock_container.logs.side_effect = mock_logs
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+             patch("worker.sync_redis") as mock_sync_redis:
+            # Make Redis.from_url raise ConnectionError
+            mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    assert exit_code == 0
+    assert "completed" in stdout
+    assert "stderr line" in stderr
+
+
 # --- Structured output parsing ---
 
 

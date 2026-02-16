@@ -215,6 +215,32 @@ describe('TaskCard', () => {
     expect(wrapper.emitted('view-output')).toHaveLength(1)
   })
 
+  // --- Log button ---
+
+  it('shows log button when columnStatus is running', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'running' },
+    })
+    const btn = wrapper.find('button[title="View logs"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('hides log button when columnStatus is not running', () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'pending' },
+    })
+    const btn = wrapper.find('button[title="View logs"]')
+    expect(btn.exists()).toBe(false)
+  })
+
+  it('emits view-logs event when log button is clicked', async () => {
+    const wrapper = mount(TaskCard, {
+      props: { task, columnStatus: 'running' },
+    })
+    await wrapper.find('button[title="View logs"]').trigger('click')
+    expect(wrapper.emitted('view-logs')).toHaveLength(1)
+  })
+
   // --- Delete button ---
 
   it('renders a delete button', () => {

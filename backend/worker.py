@@ -21,7 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import async_session, engine
-from events import init_valkey, close_valkey, publish_event
+import redis as sync_redis
+
+from events import init_valkey, close_valkey, publish_event, VALKEY_URL
 from models import Setting, Skill, Tag, Task, task_tags
 
 
@@ -570,6 +572,9 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
     task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
     if task_runner_log_level:
         env_vars["LOG_LEVEL"] = task_runner_log_level
+    max_turns = os.environ.get("MAX_TURNS", "")
+    if max_turns:
+        env_vars["MAX_TURNS"] = max_turns
 
     # Ensure image is available (try local first, pull only if not found)
     try:
@@ -655,12 +660,42 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             put_archive_ssh(container, ssh_private_key, ssh_config)
             logger.info("Injected SSH credentials for task %s (%d hosts)", task.id, len(git_ssh_hosts))
 
-        # Start and wait
+        # Start container and stream stderr in real-time
         container.start()
+
+        # Create sync Redis client for publishing log lines to Valkey
+        log_channel = f"task_logs:{task.id}"
+        log_redis: sync_redis.Redis | None = None
+        try:
+            log_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
+        except Exception:
+            logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
+
+        # Stream stderr in real-time, publishing each chunk to Valkey
+        try:
+            for chunk in container.logs(stream=True, follow=True, stderr=True, stdout=False):
+                line = chunk.decode("utf-8", errors="replace")
+                if log_redis is not None:
+                    try:
+                        log_redis.publish(log_channel, json.dumps({"event": "task_log", "line": line}))
+                    except Exception:
+                        logger.warning("Failed to publish log line to Valkey", exc_info=True)
+        except Exception:
+            logger.warning("Error during stderr streaming for task %s", task.id, exc_info=True)
+
+        # Publish end sentinel
+        if log_redis is not None:
+            try:
+                log_redis.publish(log_channel, json.dumps({"event": "task_log_end"}))
+            except Exception:
+                logger.warning("Failed to publish task_log_end to Valkey", exc_info=True)
+            finally:
+                log_redis.close()
+
+        # Container has exited — get exit code and capture full output for parsing
         result = container.wait()
         exit_code = result.get("StatusCode", -1)
 
-        # Capture stdout (structured JSON) and stderr (logs) separately
         stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
         stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
         stdout = truncate_output(stdout)

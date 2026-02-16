@@ -83,6 +83,7 @@ jobs:
   build-frontend:
     needs: [version, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 7
     permissions:
       contents: read
       packages: write
@@ -113,6 +114,7 @@ jobs:
   build-backend:
     needs: [version, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 7
     permissions:
       contents: read
       packages: write
@@ -143,6 +145,7 @@ jobs:
   build-task-runner:
     needs: [version, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 7
     permissions:
       contents: read
       packages: write

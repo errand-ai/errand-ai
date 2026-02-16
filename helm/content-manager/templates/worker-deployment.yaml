@@ -52,6 +52,10 @@ spec:
             {{- end }}
             - name: BACKEND_MCP_URL
               value: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/mcp"
+            {{- if .Values.worker.maxTurns }}
+            - name: MAX_TURNS
+              value: {{ .Values.worker.maxTurns | quote }}
+            {{- end }}
             {{- if .Values.perplexity.existingSecret }}
             - name: USE_PERPLEXITY
               value: "true"

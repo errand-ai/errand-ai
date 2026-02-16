@@ -18,6 +18,7 @@ backend:
 
 worker:
   replicaCount: 0
+  maxTurns: "200"
 
 taskRunner:
   image:
