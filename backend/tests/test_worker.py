@@ -2182,11 +2182,6 @@ class TestGitFailureRetry:
 
         monkeypatch.setattr("worker.process_task_in_container", mock_process)
 
-        # Import and call the git error handling path directly
-        from worker import _schedule_retry as real_retry, _next_position
-        result = await session.execute(text("SELECT * FROM tasks WHERE id = :id"), {"id": task_id})
-        task_row = result.first()
-
         # Simulate the error handling in run() for retry_count < MAX_GIT_RETRIES
         mock_task = MagicMock()
         mock_task.id = task_id

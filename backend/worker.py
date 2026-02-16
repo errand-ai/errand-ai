@@ -258,7 +258,7 @@ def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | 
             try:
                 os.unlink(key_file.name)
             except OSError:
-                pass
+                logger.warning("Failed to delete temporary SSH key file %s", key_file.name, exc_info=True)
 
     return clone_dir
 
