@@ -1,11 +1,14 @@
 import asyncio
+import hashlib
 import io
 import json
 import logging
 import re
 import os
 import signal
+import subprocess
 import tarfile
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -192,6 +195,147 @@ def build_skill_manifest(skills: list[dict]) -> str:
     return "\n".join(lines)
 
 
+class GitSkillsError(Exception):
+    """Raised when git clone/pull fails for the skills repository."""
+    pass
+
+
+MAX_GIT_RETRIES = 5
+
+
+def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | None) -> str:
+    """Clone or pull the git skills repository. Returns the clone directory path."""
+    url_hash = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
+    clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+    env = os.environ.copy()
+    if ssh_private_key:
+        key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False)
+        try:
+            key_file.write(ssh_private_key)
+            key_file.close()
+            os.chmod(key_file.name, 0o600)
+            env["GIT_SSH_COMMAND"] = f"ssh -i {key_file.name} -o StrictHostKeyChecking=accept-new"
+        except Exception:
+            os.unlink(key_file.name)
+            raise
+    else:
+        key_file = None
+
+    try:
+        if os.path.isdir(os.path.join(clone_dir, ".git")):
+            # Pull updates
+            subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=clone_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logger.info("Pulled updates for skills repo in %s", clone_dir)
+        else:
+            # Clone
+            cmd = ["git", "clone"]
+            if branch:
+                cmd.extend(["-b", branch])
+            cmd.extend([repo_url, clone_dir])
+            subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logger.info("Cloned skills repo %s to %s", repo_url, clone_dir)
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() or e.stdout.strip() or str(e)
+        raise GitSkillsError(f"Git operation failed: {error_msg}") from e
+    except OSError as e:
+        raise GitSkillsError(f"Git not available: {e}") from e
+    finally:
+        if key_file is not None:
+            try:
+                os.unlink(key_file.name)
+            except OSError:
+                logger.warning("Failed to delete temporary SSH key file %s", key_file.name, exc_info=True)
+
+    return clone_dir
+
+
+def parse_skills_from_directory(base_path: str) -> list[dict]:
+    """Parse Agent Skills directories from a filesystem path.
+
+    Scans for subdirectories containing SKILL.md, parses YAML frontmatter
+    and markdown body, reads files from scripts/, references/, assets/.
+    Returns list[dict] matching build_skills_archive() input format.
+    """
+    skills = []
+    if not os.path.isdir(base_path):
+        return skills
+
+    for entry in sorted(os.listdir(base_path)):
+        skill_dir = os.path.join(base_path, entry)
+        if not os.path.isdir(skill_dir):
+            continue
+        skill_md_path = os.path.join(skill_dir, "SKILL.md")
+        if not os.path.isfile(skill_md_path):
+            continue
+
+        with open(skill_md_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Parse YAML frontmatter
+        name = entry
+        description = ""
+        instructions = content
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                frontmatter = parts[1].strip()
+                instructions = parts[2].strip()
+                for line in frontmatter.split("\n"):
+                    line = line.strip()
+                    if line.startswith("name:"):
+                        name = line[len("name:"):].strip()
+                    elif line.startswith("description:"):
+                        description = line[len("description:"):].strip()
+
+        # Read attached files from scripts/, references/, assets/
+        files = []
+        for subdir in ("scripts", "references", "assets"):
+            subdir_path = os.path.join(skill_dir, subdir)
+            if not os.path.isdir(subdir_path):
+                continue
+            for fname in sorted(os.listdir(subdir_path)):
+                fpath = os.path.join(subdir_path, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                with open(fpath, "r", encoding="utf-8") as f:
+                    files.append({"path": f"{subdir}/{fname}", "content": f.read()})
+
+        skills.append({
+            "name": name,
+            "description": description,
+            "instructions": instructions,
+            "files": files,
+        })
+
+    return skills
+
+
+def merge_skills(db_skills: list[dict], git_skills: list[dict]) -> list[dict]:
+    """Merge DB-managed and git-sourced skills. DB wins on name conflicts."""
+    db_names = {s["name"] for s in db_skills}
+    merged = list(db_skills)
+    for skill in git_skills:
+        if skill["name"] in db_names:
+            logger.warning("Skill name conflict: '%s' exists in both DB and git — using DB version", skill["name"])
+        else:
+            merged.append(skill)
+    return merged
+
+
 def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     """Truncate output to max_bytes, appending a marker if exceeded."""
     encoded = output.encode("utf-8")
@@ -207,7 +351,7 @@ DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 async def read_settings(session: AsyncSession) -> dict:
     """Read task processing settings from the settings table and skills from the skills table.
 
-    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level, skills.
+    Returns a dict with keys: mcp_servers, credentials, task_processing_model, system_prompt, task_runner_log_level, skills, skills_git_repo.
     """
     settings: dict = {
         "mcp_servers": {},
@@ -219,11 +363,12 @@ async def read_settings(session: AsyncSession) -> dict:
         "mcp_api_key": "",
         "ssh_private_key": "",
         "git_ssh_hosts": [],
+        "skills_git_repo": None,
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "mcp_api_key", "ssh_private_key", "git_ssh_hosts"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "mcp_api_key", "ssh_private_key", "git_ssh_hosts", "skills_git_repo"])
         )
     )
     for setting in result.scalars().all():
@@ -243,6 +388,12 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["ssh_private_key"] = str(setting.value) if setting.value else ""
         elif setting.key == "git_ssh_hosts":
             settings["git_ssh_hosts"] = setting.value if isinstance(setting.value, list) else []
+        elif setting.key == "skills_git_repo":
+            val = setting.value
+            if isinstance(val, dict) and val.get("url"):
+                settings["skills_git_repo"] = val
+            else:
+                settings["skills_git_repo"] = None
 
     # Query skills from dedicated tables
     skill_result = await session.execute(
@@ -462,8 +613,21 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                     "headers": {"Authorization": f"Bearer {mcp_api_key}"},
                 }
 
-        # Inject skill manifest into system prompt if skills are defined
+        # Merge DB skills with git-sourced skills if configured
         skills = settings.get("skills", [])
+        skills_git_repo = settings.get("skills_git_repo")
+        if skills_git_repo:
+            clone_dir = refresh_git_clone(
+                skills_git_repo["url"],
+                skills_git_repo.get("branch"),
+                settings.get("ssh_private_key") or None,
+            )
+            base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
+            git_skills = parse_skills_from_directory(base_path)
+            logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
+            skills = merge_skills(skills, git_skills)
+
+        # Inject skill manifest into system prompt if skills are defined
         if skills:
             system_prompt += build_skill_manifest(skills)
 
@@ -746,6 +910,32 @@ async def run() -> None:
             else:
                 logger.warning("Task %s container exited with code %d", task.id, exit_code)
                 await _schedule_retry(task, output=full_output, runner_logs=stderr)
+
+        except GitSkillsError as e:
+            logger.error("Git skills error for task %s: %s", task.id, e)
+            # Check if we've exceeded max retries — move to review if so
+            async with async_session() as session:
+                result = await session.execute(select(Task).where(Task.id == task.id))
+                current = result.scalar_one()
+                if current.retry_count >= MAX_GIT_RETRIES:
+                    new_position = await _next_position(session, "review")
+                    await session.execute(
+                        update(Task).where(Task.id == task.id).values(
+                            status="review",
+                            position=new_position,
+                            output=str(e),
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await session.commit()
+                    result = await session.execute(
+                        select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
+                    )
+                    updated = result.scalar_one()
+                    await publish_event("task_updated", _task_to_dict(updated))
+                    logger.info("Task %s moved to review after %d git retries", task.id, current.retry_count)
+                else:
+                    await _schedule_retry(task, output=str(e))
 
         except (ImageNotFound, APIError) as e:
             logger.error("Docker error for task %s: %s", task.id, e)

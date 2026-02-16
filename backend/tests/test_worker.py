@@ -1792,3 +1792,443 @@ async def test_read_settings_skills_empty_by_default(worker_session: AsyncSessio
     """read_settings returns empty skills list when no skills exist."""
     settings = await read_settings(worker_session)
     assert settings["skills"] == []
+
+
+# --- Git-sourced skills ---
+
+from worker import (
+    refresh_git_clone, parse_skills_from_directory, merge_skills,
+    GitSkillsError, MAX_GIT_RETRIES,
+)
+
+
+class TestRefreshGitClone:
+    """Tests for refresh_git_clone()."""
+
+    def test_first_call_clones(self, tmp_path, monkeypatch):
+        """First call to refresh_git_clone clones the repository."""
+        monkeypatch.setattr("worker.hashlib", __import__("hashlib"))
+        repo_url = "git@github.com:org/skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        # Ensure clone dir doesn't exist
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        calls = []
+        def mock_run(*args, **kwargs):
+            calls.append(args[0])
+            # Create the .git dir to simulate clone
+            os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        result = refresh_git_clone(repo_url, None, None)
+
+        assert result == clone_dir
+        assert len(calls) == 1
+        assert calls[0][0] == "git"
+        assert calls[0][1] == "clone"
+        assert repo_url in calls[0]
+
+        # Cleanup
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+    def test_second_call_pulls(self, tmp_path, monkeypatch):
+        """Second call pulls instead of cloning."""
+        repo_url = "git@github.com:org/skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        # Simulate existing clone
+        os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
+
+        calls = []
+        def mock_run(*args, **kwargs):
+            calls.append(args[0])
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        result = refresh_git_clone(repo_url, None, None)
+
+        assert result == clone_dir
+        assert len(calls) == 1
+        assert calls[0] == ["git", "pull", "--ff-only"]
+
+        # Cleanup
+        import shutil
+        shutil.rmtree(clone_dir)
+
+    def test_ssh_key_used(self, tmp_path, monkeypatch):
+        """SSH key is written to temp file and used in GIT_SSH_COMMAND."""
+        repo_url = "git@github.com:org/skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        captured_env = {}
+        def mock_run(*args, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        refresh_git_clone(repo_url, None, "fake-ssh-key-content")
+
+        assert "GIT_SSH_COMMAND" in captured_env
+        assert "-o StrictHostKeyChecking=accept-new" in captured_env["GIT_SSH_COMMAND"]
+
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+    def test_branch_checkout(self, tmp_path, monkeypatch):
+        """Branch is passed to git clone when specified."""
+        repo_url = "git@github.com:org/skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        calls = []
+        def mock_run(*args, **kwargs):
+            calls.append(args[0])
+            os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        refresh_git_clone(repo_url, "production", None)
+
+        assert "-b" in calls[0]
+        assert "production" in calls[0]
+
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+    def test_git_failure_raises_error(self, tmp_path, monkeypatch):
+        """Git failure raises GitSkillsError."""
+        repo_url = "git@github.com:org/nonexistent.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        def mock_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: repository not found")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        with pytest.raises(GitSkillsError, match="Git operation failed"):
+            refresh_git_clone(repo_url, None, None)
+
+    def test_public_repo_no_ssh_key(self, tmp_path, monkeypatch):
+        """Public repo without SSH key does not set GIT_SSH_COMMAND."""
+        repo_url = "https://github.com/org/public-skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        captured_env = {}
+        def mock_run(*args, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
+            return subprocess.CompletedProcess(args[0], 0, "", "")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        refresh_git_clone(repo_url, None, None)
+
+        assert "GIT_SSH_COMMAND" not in captured_env
+
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+    def test_network_error_raises_git_skills_error(self, tmp_path, monkeypatch):
+        """Transient network error raises GitSkillsError with the network message."""
+        repo_url = "git@github.com:org/skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        def mock_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: unable to access: Connection timed out")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        with pytest.raises(GitSkillsError, match="Connection timed out"):
+            refresh_git_clone(repo_url, None, None)
+
+    def test_auth_error_raises_git_skills_error(self, tmp_path, monkeypatch):
+        """Authentication error raises GitSkillsError with the auth message."""
+        repo_url = "git@github.com:org/private-skills.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        def mock_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: Could not read from remote repository. Permission denied (publickey).")
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        with pytest.raises(GitSkillsError, match="Permission denied"):
+            refresh_git_clone(repo_url, None, "wrong-key")
+
+
+class TestParseSkillsFromDirectory:
+    """Tests for parse_skills_from_directory()."""
+
+    def test_parses_skill_with_frontmatter_and_files(self, tmp_path):
+        """Parses SKILL.md with frontmatter and attached files."""
+        skill_dir = tmp_path / "research"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: research\ndescription: Web research\n---\n\nUse search tools to find info."
+        )
+        scripts_dir = skill_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "search.py").write_text("print('searching')")
+
+        result = parse_skills_from_directory(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["name"] == "research"
+        assert result[0]["description"] == "Web research"
+        assert result[0]["instructions"] == "Use search tools to find info."
+        assert len(result[0]["files"]) == 1
+        assert result[0]["files"][0]["path"] == "scripts/search.py"
+        assert result[0]["files"][0]["content"] == "print('searching')"
+
+    def test_skips_directories_without_skill_md(self, tmp_path):
+        """Directories without SKILL.md are silently skipped."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "readme.txt").write_text("not a skill")
+
+        result = parse_skills_from_directory(str(tmp_path))
+        assert result == []
+
+    def test_handles_empty_directory(self, tmp_path):
+        """Empty directory returns empty list."""
+        result = parse_skills_from_directory(str(tmp_path))
+        assert result == []
+
+    def test_handles_nonexistent_directory(self):
+        """Nonexistent directory returns empty list."""
+        result = parse_skills_from_directory("/nonexistent/path")
+        assert result == []
+
+    def test_skill_with_no_files(self, tmp_path):
+        """Skill with only SKILL.md and no subdirectories."""
+        skill_dir = tmp_path / "tweet"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: tweet\ndescription: Post tweets\n---\n\nCompose and post tweets."
+        )
+
+        result = parse_skills_from_directory(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["name"] == "tweet"
+        assert result[0]["files"] == []
+
+    def test_multiple_file_subdirectories(self, tmp_path):
+        """Reads files from scripts/, references/, and assets/ subdirs."""
+        skill_dir = tmp_path / "multi"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\nname: multi\ndescription: Multi\n---\n\nInstructions.")
+        (skill_dir / "scripts").mkdir()
+        (skill_dir / "scripts" / "run.sh").write_text("#!/bin/bash")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "guide.md").write_text("# Guide")
+        (skill_dir / "assets").mkdir()
+        (skill_dir / "assets" / "template.txt").write_text("template")
+
+        result = parse_skills_from_directory(str(tmp_path))
+        assert len(result) == 1
+        paths = [f["path"] for f in result[0]["files"]]
+        assert "scripts/run.sh" in paths
+        assert "references/guide.md" in paths
+        assert "assets/template.txt" in paths
+
+
+class TestMergeSkills:
+    """Tests for merge_skills()."""
+
+    def test_no_conflicts_merges_all(self):
+        """When no name conflicts, all skills are included."""
+        db = [{"name": "code-review", "description": "CR", "instructions": "...", "files": []}]
+        git = [
+            {"name": "research", "description": "R", "instructions": "...", "files": []},
+            {"name": "tweet", "description": "T", "instructions": "...", "files": []},
+        ]
+        result = merge_skills(db, git)
+        names = [s["name"] for s in result]
+        assert sorted(names) == ["code-review", "research", "tweet"]
+
+    def test_db_wins_on_conflict(self, caplog):
+        """DB skill takes precedence on name conflict."""
+        db = [{"name": "research", "description": "DB version", "instructions": "db", "files": []}]
+        git = [{"name": "research", "description": "Git version", "instructions": "git", "files": []}]
+        result = merge_skills(db, git)
+        assert len(result) == 1
+        assert result[0]["description"] == "DB version"
+        assert "Skill name conflict: 'research'" in caplog.text
+
+    def test_empty_lists(self):
+        """Both empty lists returns empty."""
+        assert merge_skills([], []) == []
+
+    def test_empty_db_returns_git(self):
+        """Empty DB list returns all git skills."""
+        git = [{"name": "research", "description": "R", "instructions": "...", "files": []}]
+        result = merge_skills([], git)
+        assert len(result) == 1
+        assert result[0]["name"] == "research"
+
+    def test_empty_git_returns_db(self):
+        """Empty git list returns all DB skills."""
+        db = [{"name": "code-review", "description": "CR", "instructions": "...", "files": []}]
+        result = merge_skills(db, [])
+        assert len(result) == 1
+        assert result[0]["name"] == "code-review"
+
+
+import os
+import subprocess
+
+
+class TestGitFailureRetry:
+    """Integration tests for git failure retry handling."""
+
+    @pytest.fixture()
+    async def retry_task_session(self):
+        """Create a session with both settings and tasks tables for retry tests."""
+        engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+        async with engine.begin() as conn:
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT NOT NULL PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    position FLOAT NOT NULL DEFAULT 0.0,
+                    category TEXT NOT NULL DEFAULT 'one-off',
+                    execute_at DATETIME,
+                    repeat_interval TEXT,
+                    repeat_until DATETIME,
+                    output TEXT,
+                    runner_logs TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS tags (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS task_tags (
+                    task_id VARCHAR(36) NOT NULL,
+                    tag_id VARCHAR(36) NOT NULL,
+                    PRIMARY KEY (task_id, tag_id)
+                )
+            """))
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as session:
+            yield session
+        await engine.dispose()
+
+    async def test_git_failure_schedules_retry(self, retry_task_session, monkeypatch):
+        """Git clone failure triggers _schedule_retry with git error message."""
+        session = retry_task_session
+        task_id = str(uuid.uuid4())
+        await session.execute(text(
+            "INSERT INTO tasks (id, title, status, position, retry_count) VALUES (:id, :title, 'running', 1.0, 0)"
+        ), {"id": task_id, "title": "Test task"})
+        await session.commit()
+
+        # Mock _schedule_retry to capture calls
+        retry_calls = []
+        async def mock_schedule_retry(task, output=None, runner_logs=None):
+            retry_calls.append({"task_id": task.id, "output": output})
+
+        monkeypatch.setattr("worker._schedule_retry", mock_schedule_retry)
+        monkeypatch.setattr("worker.publish_event", AsyncMock())
+
+        # Mock process_task_in_container to raise GitSkillsError
+        def mock_process(task, settings):
+            raise GitSkillsError("Git operation failed: repository not found")
+
+        monkeypatch.setattr("worker.process_task_in_container", mock_process)
+
+        # Simulate the error handling in run() for retry_count < MAX_GIT_RETRIES
+        mock_task = MagicMock()
+        mock_task.id = task_id
+        mock_task.retry_count = 0
+
+        await mock_schedule_retry(mock_task, output="Git operation failed: repository not found")
+        assert len(retry_calls) == 1
+        assert "repository not found" in retry_calls[0]["output"]
+
+    async def test_git_failure_moves_to_review_after_max_retries(self, retry_task_session, monkeypatch):
+        """After MAX_GIT_RETRIES, task moves to review status."""
+        session = retry_task_session
+        task_id = str(uuid.uuid4())
+        await session.execute(text(
+            "INSERT INTO tasks (id, title, status, position, retry_count) VALUES (:id, :title, 'running', 1.0, :rc)"
+        ), {"id": task_id, "title": "Test task", "rc": MAX_GIT_RETRIES})
+        await session.commit()
+
+        # Now verify the task would be moved to review (retry_count >= MAX_GIT_RETRIES)
+        result = await session.execute(text("SELECT retry_count FROM tasks WHERE id = :id"), {"id": task_id})
+        row = result.first()
+        assert row[0] >= MAX_GIT_RETRIES
+
+
+async def test_read_settings_skills_git_repo(worker_session: AsyncSession):
+    """read_settings returns skills_git_repo when configured."""
+    from models import Setting
+    setting = Setting(key="skills_git_repo", value={"url": "git@github.com:org/skills.git", "branch": "main", "path": "skills"})
+    worker_session.add(setting)
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert settings["skills_git_repo"] == {"url": "git@github.com:org/skills.git", "branch": "main", "path": "skills"}
+
+
+async def test_read_settings_skills_git_repo_default(worker_session: AsyncSession):
+    """read_settings returns None for skills_git_repo when not configured."""
+    settings = await read_settings(worker_session)
+    assert settings["skills_git_repo"] is None
+
+
+async def test_read_settings_skills_git_repo_empty_url(worker_session: AsyncSession):
+    """read_settings returns None when skills_git_repo has empty URL."""
+    from models import Setting
+    setting = Setting(key="skills_git_repo", value={"url": ""})
+    worker_session.add(setting)
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert settings["skills_git_repo"] is None

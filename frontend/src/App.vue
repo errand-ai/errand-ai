@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import AccessDenied from './components/AccessDenied.vue'
 import { Toaster } from 'vue-sonner'
+import 'vue-sonner/style.css'
 
 const auth = useAuthStore()
 const route = useRoute()

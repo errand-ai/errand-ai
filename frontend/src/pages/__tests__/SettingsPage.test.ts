@@ -1240,4 +1240,117 @@ describe('SettingsPage', () => {
     expect(body.name).toBe('researcher-v2')
     expect(toastMock.success).toHaveBeenCalledWith('Skill saved.')
   })
+
+  // --- Skills Repository ---
+
+  it('renders Skills Repository section', async () => {
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="skills-repo-section"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Skills Repository')
+  })
+
+  it('loads existing skills_git_repo config into form fields', async () => {
+    fetchMock = mockSettingsAndSkills({
+      skills_git_repo: {
+        url: 'git@github.com:org/skills.git',
+        branch: 'main',
+        path: 'skills',
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+    await nextTick()
+
+    const urlInput = wrapper.find('[data-testid="skills-repo-url"]').element as HTMLInputElement
+    const branchInput = wrapper.find('[data-testid="skills-repo-branch"]').element as HTMLInputElement
+    const pathInput = wrapper.find('[data-testid="skills-repo-path"]').element as HTMLInputElement
+    expect(urlInput.value).toBe('git@github.com:org/skills.git')
+    expect(branchInput.value).toBe('main')
+    expect(pathInput.value).toBe('skills')
+  })
+
+  it('saves skills repo with all fields', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="skills-repo-url"]').setValue('git@github.com:org/skills.git')
+    await wrapper.find('[data-testid="skills-repo-branch"]').setValue('main')
+    await wrapper.find('[data-testid="skills-repo-path"]').setValue('skills')
+    await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
+    await flushPromises()
+
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
+    )
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.skills_git_repo).toEqual({
+      url: 'git@github.com:org/skills.git',
+      branch: 'main',
+      path: 'skills',
+    })
+    expect(toastMock.success).toHaveBeenCalledWith('Skills repository settings saved.')
+  })
+
+  it('saves skills repo with URL only (omits empty branch/path)', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="skills-repo-url"]').setValue('git@github.com:org/skills.git')
+    await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
+    await flushPromises()
+
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
+    )
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.skills_git_repo).toEqual({ url: 'git@github.com:org/skills.git' })
+    expect(body.skills_git_repo.branch).toBeUndefined()
+    expect(body.skills_git_repo.path).toBeUndefined()
+  })
+
+  it('clears skills repo config when URL is empty', async () => {
+    fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ skills_git_repo: { url: 'git@github.com:org/skills.git' } }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SettingsPage)
+    await flushPromises()
+    await nextTick()
+
+    // Clear the URL
+    await wrapper.find('[data-testid="skills-repo-url"]').setValue('')
+    await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
+    await flushPromises()
+
+    const putCall = fetchMock.mock.calls.find(
+      (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
+    )
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.skills_git_repo).toBeNull()
+  })
 })
