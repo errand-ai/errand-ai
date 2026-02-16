@@ -622,8 +622,9 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 skills_git_repo.get("branch"),
                 settings.get("ssh_private_key") or None,
             )
-            base_path = os.path.join(clone_dir, skills_git_repo.get("path", "."))
+            base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
             git_skills = parse_skills_from_directory(base_path)
+            logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
             skills = merge_skills(skills, git_skills)
 
         # Inject skill manifest into system prompt if skills are defined
