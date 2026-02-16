@@ -1104,9 +1104,9 @@ async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(de
                         await websocket.close(code=1000)
                         return
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    pass  # Non-JSON messages are valid log lines, not an error
     except (WebSocketDisconnect, asyncio.CancelledError):
-        pass
+        logger.debug("WebSocket disconnected for task log stream %s", task_id)
     finally:
         await pubsub.unsubscribe(log_channel)
         await pubsub.aclose()

@@ -11,8 +11,10 @@ import auth as auth_module
 import events as events_module
 import main as main_module
 from fakeredis.aioredis import FakeRedis
-from main import app, get_current_user
 from database import get_session
+
+app = main_module.app
+get_current_user = main_module.get_current_user
 
 
 # SQLite-compatible DDL
