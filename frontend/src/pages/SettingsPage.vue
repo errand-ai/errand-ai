@@ -3,6 +3,7 @@ import { onMounted, ref, computed, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import SystemPromptSettings from '../components/settings/SystemPromptSettings.vue'
 import SkillsSettings from '../components/settings/SkillsSettings.vue'
+import SkillsRepoSettings from '../components/settings/SkillsRepoSettings.vue'
 import LlmModelSettings from '../components/settings/LlmModelSettings.vue'
 import TaskManagementSettings from '../components/settings/TaskManagementSettings.vue'
 import McpApiKeySettings from '../components/settings/McpApiKeySettings.vue'
@@ -26,6 +27,7 @@ const archiveAfterDays = ref(3)
 const mcpApiKey = ref<string | null>(null)
 const sshPublicKey = ref<string | null>(null)
 const gitSshHosts = ref<string[]>([])
+const skillsGitRepo = ref<{ url?: string; branch?: string; path?: string } | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 
@@ -93,6 +95,7 @@ async function loadSettings() {
     taskRunnerLogLevel.value = data.task_runner_log_level || 'INFO'
     timezoneValue.value = data.timezone ?? 'UTC'
     archiveAfterDays.value = data.archive_after_days ?? 3
+    skillsGitRepo.value = data.skills_git_repo ?? null
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -140,6 +143,11 @@ onBeforeUnmount(() => {
       />
 
       <SkillsSettings />
+
+      <SkillsRepoSettings
+        :skills-git-repo="skillsGitRepo"
+        :save-settings="saveSettings"
+      />
 
       <LlmModelSettings
         ref="llmModelRef"
