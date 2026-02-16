@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import AccessDenied from './components/AccessDenied.vue'
+import { Toaster } from 'vue-sonner'
 
 const auth = useAuthStore()
-const router = useRouter()
+const route = useRoute()
 const dropdownOpen = ref(false)
 
 onMounted(() => {
@@ -40,16 +41,6 @@ function closeDropdown() {
   dropdownOpen.value = false
 }
 
-function goToArchived() {
-  closeDropdown()
-  router.push('/archived')
-}
-
-function goToSettings() {
-  closeDropdown()
-  router.push('/settings')
-}
-
 function handleClickOutside(e: MouseEvent) {
   const target = e.target as HTMLElement
   if (dropdownOpen.value && !target.closest('.dropdown-trigger')) {
@@ -62,14 +53,39 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 </script>
 
 <template>
+  <Toaster position="top-right" />
   <div class="min-h-screen bg-gray-100" v-if="auth.isAuthenticated">
     <header class="bg-white shadow">
       <div class="flex items-center justify-between px-4 py-4">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-6">
           <router-link to="/" class="flex items-center gap-3">
             <img src="/logo.png" alt="Logo" class="h-8 w-auto" />
             <h1 class="text-2xl font-bold text-gray-900">Content Manager</h1>
           </router-link>
+          <nav class="flex items-center gap-1" data-testid="main-nav">
+            <router-link
+              to="/"
+              class="rounded-md px-3 py-1.5 text-sm font-medium"
+              :class="route.path === '/' ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:text-gray-900'"
+            >
+              Board
+            </router-link>
+            <router-link
+              to="/archived"
+              class="rounded-md px-3 py-1.5 text-sm font-medium"
+              :class="route.path === '/archived' ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:text-gray-900'"
+            >
+              Archived
+            </router-link>
+            <router-link
+              v-if="auth.isAdmin"
+              to="/settings"
+              class="rounded-md px-3 py-1.5 text-sm font-medium"
+              :class="route.path === '/settings' ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:text-gray-900'"
+            >
+              Settings
+            </router-link>
+          </nav>
         </div>
         <div class="flex items-center gap-4">
           <template v-if="auth.userDisplay">
@@ -87,19 +103,6 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                 v-if="dropdownOpen"
                 class="absolute right-0 mt-2 w-48 rounded-md bg-white py-1 shadow-lg ring-1 ring-black/5 z-50"
               >
-                <button
-                  @click="goToArchived"
-                  class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  Archived Tasks
-                </button>
-                <button
-                  v-if="auth.isAdmin"
-                  @click="goToSettings"
-                  class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  Settings
-                </button>
                 <button
                   @click="logout"
                   class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"

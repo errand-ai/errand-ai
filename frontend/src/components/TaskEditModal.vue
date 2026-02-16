@@ -82,9 +82,27 @@ onMounted(() => {
   dialogRef.value?.showModal()
 })
 
+const isDirty = computed(() => {
+  return title.value !== props.task.title
+    || description.value !== (props.task.description || '')
+    || status.value !== props.task.status
+    || category.value !== ((props.task.category as Category) || 'immediate')
+    || executeAtLocal.value !== toLocalDatetime(props.task.execute_at)
+    || repeatInterval.value !== (props.task.repeat_interval || '')
+    || repeatUntilLocal.value !== toLocalDatetime(props.task.repeat_until)
+    || JSON.stringify(tags.value) !== JSON.stringify(props.task.tags || [])
+})
+
 function onCancel() {
   dialogRef.value?.close()
   emit('cancel')
+}
+
+function onBackdropClick() {
+  if (isDirty.value) {
+    if (!confirm('Discard unsaved changes?')) return
+  }
+  onCancel()
 }
 
 async function onSave() {
@@ -174,7 +192,8 @@ function onTagBlur() {
   <dialog
     ref="dialogRef"
     class="rounded-lg p-0 shadow-xl backdrop:bg-black/50"
-    @cancel.prevent="onCancel"
+    @cancel.prevent="onBackdropClick"
+    @click.self="onBackdropClick"
   >
     <form method="dialog" class="max-w-3xl w-full p-6 max-h-[85vh] overflow-y-auto" @submit.prevent="onSave">
       <h3 class="mb-4 text-lg font-semibold text-gray-800">Edit Task</h3>

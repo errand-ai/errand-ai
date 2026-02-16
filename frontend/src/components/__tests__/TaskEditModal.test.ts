@@ -362,4 +362,59 @@ describe('TaskEditModal', () => {
     expect(pre.text()).toContain('2026-02-10 INFO Starting agent')
     expect(pre.text()).toContain('2026-02-10 INFO Connected to MCP')
   })
+
+  // --- Backdrop dismiss with dirty guard ---
+
+  it('emits cancel on backdrop click when form is clean', async () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    // Simulate clicking on the dialog element itself (backdrop)
+    await wrapper.find('dialog').trigger('click')
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+  })
+
+  it('shows confirm dialog on backdrop click when form is dirty', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(TaskEditModal, { props: { task } })
+
+    // Make form dirty
+    await wrapper.find('#edit-title').setValue('Changed title')
+
+    // Simulate backdrop click
+    await wrapper.find('dialog').trigger('click')
+
+    expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+    // Should NOT emit cancel since confirm returned false
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    confirmSpy.mockRestore()
+  })
+
+  it('emits cancel on backdrop click when dirty and user confirms discard', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(TaskEditModal, { props: { task } })
+
+    await wrapper.find('#edit-title').setValue('Changed title')
+    await wrapper.find('dialog').trigger('click')
+
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+    confirmSpy.mockRestore()
+  })
+
+  it('shows confirm dialog on Escape key when form is dirty', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(TaskEditModal, { props: { task } })
+
+    await wrapper.find('#edit-title').setValue('Changed title')
+    await wrapper.find('dialog').trigger('cancel')
+
+    expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    confirmSpy.mockRestore()
+  })
+
+  it('emits cancel on Escape key when form is clean', async () => {
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    await wrapper.find('dialog').trigger('cancel')
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+  })
 })

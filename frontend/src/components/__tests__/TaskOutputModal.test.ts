@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TaskOutputModal from '../TaskOutputModal.vue'
 
@@ -107,5 +107,39 @@ describe('TaskOutputModal', () => {
     const inner = wrapper.find('dialog > div')
     expect(inner.classes()).toContain('w-[90vw]')
     expect(inner.classes()).toContain('max-w-5xl')
+  })
+
+  // --- Copy raw button ---
+
+  it('shows Copy raw button when output is present', () => {
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: 'Some output' },
+    })
+    const copyBtn = wrapper.find('[data-testid="copy-raw-button"]')
+    expect(copyBtn.exists()).toBe(true)
+    expect(copyBtn.text()).toBe('Copy raw')
+  })
+
+  it('hides Copy raw button when output is null', () => {
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: null },
+    })
+    const copyBtn = wrapper.find('[data-testid="copy-raw-button"]')
+    expect(copyBtn.exists()).toBe(false)
+  })
+
+  it('copies output to clipboard and shows Copied!', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    const wrapper = mount(TaskOutputModal, {
+      props: { title: 'Task', output: 'Raw text here' },
+    })
+
+    const copyBtn = wrapper.find('[data-testid="copy-raw-button"]')
+    await copyBtn.trigger('click')
+
+    expect(writeText).toHaveBeenCalledWith('Raw text here')
+    expect(copyBtn.text()).toBe('Copied!')
   })
 })

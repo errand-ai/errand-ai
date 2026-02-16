@@ -13,6 +13,7 @@ const emit = defineEmits<{
 }>()
 
 const dialogRef = ref<HTMLDialogElement | null>(null)
+const copied = ref(false)
 
 const renderedOutput = computed(() => {
   if (!props.output) return ''
@@ -27,6 +28,13 @@ onMounted(() => {
 function onClose() {
   dialogRef.value?.close()
   emit('close')
+}
+
+async function copyRaw() {
+  if (!props.output) return
+  await navigator.clipboard.writeText(props.output)
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 2000)
 }
 </script>
 
@@ -55,7 +63,16 @@ function onClose() {
         <div v-if="output" class="prose prose-sm max-w-none text-gray-700" v-html="renderedOutput" />
         <p v-else class="text-sm text-gray-500 italic">No output available</p>
       </div>
-      <div class="mt-4 flex justify-end">
+      <div class="mt-4 flex justify-end gap-2">
+        <button
+          v-if="output"
+          type="button"
+          class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          data-testid="copy-raw-button"
+          @click="copyRaw"
+        >
+          {{ copied ? 'Copied!' : 'Copy raw' }}
+        </button>
         <button
           type="button"
           class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
