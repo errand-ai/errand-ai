@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Tool call logging via RunHooks
 
 The task runner SHALL log agent lifecycle events by emitting structured JSON events to stderr. The `ToolCallLogger` class (renamed to `StreamEventEmitter`) SHALL implement the following `RunHooks` callbacks:
@@ -51,3 +53,11 @@ The task runner SHALL log a summary count of tool calls after the streaming run 
 
 - **WHEN** the agent streaming run completes and tool calls were made
 - **THEN** a log line of the form `TOOL_SUMMARY total_tool_calls=<count>` is written to stderr at INFO level
+
+## REMOVED Requirements
+
+### Requirement: Tool call log format
+
+**Reason**: Replaced by structured JSON event protocol. The plain-text `TOOL_CALL [name]` and `TOOL_RESULT [name] (N chars): ...` format is superseded by JSON events with `type` and `data` fields.
+
+**Migration**: Consumers of the old log format should parse the new JSON events. The `tool_call` event type replaces `TOOL_CALL` prefix lines. The `tool_result` event type replaces `TOOL_RESULT` prefix lines.

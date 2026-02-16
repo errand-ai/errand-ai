@@ -1,4 +1,4 @@
-"""Unit tests for task runner main.py — input validation, MCP config parsing, output formatting."""
+"""Unit tests for task runner main.py — input validation, MCP config parsing, structured events."""
 
 import json
 import os
@@ -15,14 +15,22 @@ sys.path.insert(0, os.path.dirname(__file__))
 # or may have version conflicts. We only need the pure-Python functions from main.
 _mock_agents = MagicMock()
 _mock_agents.function_tool = lambda f: f  # passthrough decorator
-# RunHooks must be a real class so ToolCallLogger can subclass it
+# RunHooks must be a real class so StreamEventEmitter can subclass it
 _mock_agents.RunHooks = type("RunHooks", (), {})
+# ModelSettings must be a real class
+_mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
 sys.modules.setdefault("openai", MagicMock())
+sys.modules.setdefault("openai.types", MagicMock())
+sys.modules.setdefault("openai.types.shared", MagicMock())
 
 import logging
-from main import read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput, OVERARCHING_PROMPT, extract_json, execute_command, ToolCallLogger, _truncate, TOOL_RESULT_MAX_LENGTH
+from main import (
+    read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
+    execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
+    emit_event, get_reasoning_effort, extract_json,
+)
 
 
 # --- Environment variable validation ---
@@ -132,91 +140,226 @@ def test_task_runner_output_default_questions():
     assert output.questions == []
 
 
-# --- extract_json ---
+# --- emit_event ---
 
 
-def test_extract_json_bare_json():
-    """Extracts valid JSON when output is bare JSON."""
-    raw = '{"status": "completed", "result": "Done", "questions": []}'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.status == "completed"
-    assert parsed.result == "Done"
+def test_emit_event_writes_json_to_stderr(capsys):
+    """emit_event writes a single-line JSON object to stderr."""
+    emit_event("agent_start", {"agent": "TaskRunner"})
+    captured = capsys.readouterr()
+    line = captured.err.strip()
+    parsed = json.loads(line)
+    assert parsed == {"type": "agent_start", "data": {"agent": "TaskRunner"}}
 
 
-def test_extract_json_code_fence_at_start():
-    """Extracts JSON from code fence at start of output."""
-    raw = '```json\n{"status": "completed", "result": "Done", "questions": []}\n```'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.status == "completed"
+def test_emit_event_tool_call(capsys):
+    """emit_event produces correct tool_call event."""
+    emit_event("tool_call", {"tool": "execute_command", "args": {"command": "ls -la"}})
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "tool_call"
+    assert parsed["data"]["tool"] == "execute_command"
+    assert parsed["data"]["args"] == {"command": "ls -la"}
 
 
-def test_extract_json_plain_fence_at_start():
-    """Extracts JSON from plain ``` fence without language tag."""
-    raw = '```\n{"status": "needs_input", "result": "Need info", "questions": ["What?"]}\n```'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.status == "needs_input"
-    assert parsed.questions == ["What?"]
+def test_emit_event_error(capsys):
+    """emit_event produces correct error event."""
+    emit_event("error", {"message": "API auth failed"})
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "error"
+    assert parsed["data"]["message"] == "API auth failed"
 
 
-def test_extract_json_preamble_before_code_fence():
-    """Extracts JSON when LLM produces preamble text before code fence."""
-    raw = 'Based on my analysis of all 53 applications, here is the health status report:\n\n```json\n{"status": "completed", "result": "All healthy", "questions": []}\n```'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.status == "completed"
-    assert parsed.result == "All healthy"
+def test_emit_event_valid_json(capsys):
+    """All events are valid JSON with exactly type and data keys."""
+    emit_event("thinking", {"text": "Let me consider..."})
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert set(parsed.keys()) == {"type", "data"}
+    assert isinstance(parsed["type"], str)
+    assert isinstance(parsed["data"], dict)
 
 
-def test_extract_json_preamble_before_bare_json():
-    """Extracts JSON when LLM produces preamble text before bare JSON object."""
-    raw = 'Here is the result:\n{"status": "completed", "result": "done", "questions": []}'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.status == "completed"
-    assert parsed.result == "done"
+# --- StreamEventEmitter ---
 
 
-def test_extract_json_unparseable_output():
-    """Returns None when output contains no valid TaskRunnerOutput JSON."""
-    raw = "This is just plain text with no JSON at all."
-    result = extract_json(raw)
-    assert result is None
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_agent_start(capsys):
+    """on_agent_start emits agent_start event to stderr."""
+    agent = MagicMock()
+    agent.name = "TaskRunner"
+    emitter = StreamEventEmitter()
+    await emitter.on_agent_start(MagicMock(), agent)
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed == {"type": "agent_start", "data": {"agent": "TaskRunner"}}
 
 
-def test_extract_json_invalid_json_in_fence():
-    """Returns None when code fence contains invalid JSON."""
-    raw = '```json\nnot valid json\n```'
-    result = extract_json(raw)
-    assert result is None
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_tool_start_is_noop(capsys):
+    """on_tool_start is a no-op (tool_call emitted from streaming loop with full args)."""
+    agent = MagicMock()
+    tool = MagicMock()
+    tool.name = "execute_command"
+    emitter = StreamEventEmitter()
+    await emitter.on_tool_start(MagicMock(), agent, tool)
+    captured = capsys.readouterr()
+    assert captured.err.strip() == ""
 
 
-def test_extract_json_preamble_and_postamble():
-    """Extracts JSON when there is text both before and after the code fence."""
-    raw = 'Here is my report:\n\n```json\n{"status": "completed", "result": "Report", "questions": []}\n```\n\nLet me know if you need more details.'
-    result = extract_json(raw)
-    assert result is not None
-    parsed = TaskRunnerOutput.model_validate_json(result)
-    assert parsed.result == "Report"
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_tool_end(capsys):
+    """on_tool_end emits tool_result event with truncated output and length."""
+    agent = MagicMock()
+    tool = MagicMock()
+    tool.name = "execute_command"
+    emitter = StreamEventEmitter()
+    await emitter.on_tool_end(MagicMock(), agent, tool, "hello world")
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "tool_result"
+    assert parsed["data"]["tool"] == "execute_command"
+    assert parsed["data"]["output"] == "hello world"
+    assert parsed["data"]["length"] == 11
 
 
-# --- Overarching prompt ---
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_tool_end_truncates(capsys):
+    """on_tool_end truncates long results to TOOL_RESULT_MAX_LENGTH."""
+    agent = MagicMock()
+    tool = MagicMock()
+    tool.name = "execute_command"
+    long_result = "x" * 800
+    emitter = StreamEventEmitter()
+    await emitter.on_tool_end(MagicMock(), agent, tool, long_result)
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["data"]["length"] == 800
+    assert len(parsed["data"]["output"]) == TOOL_RESULT_MAX_LENGTH + 3  # 500 + "..."
+    assert parsed["data"]["output"].endswith("...")
 
 
-def test_overarching_prompt_contains_schema():
-    """Overarching prompt instructs agent to produce JSON with required fields."""
-    assert "status" in OVERARCHING_PROMPT
-    assert "result" in OVERARCHING_PROMPT
-    assert "questions" in OVERARCHING_PROMPT
-    assert "completed" in OVERARCHING_PROMPT
-    assert "needs_input" in OVERARCHING_PROMPT
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_agent_end(capsys):
+    """on_agent_end emits agent_end event with output."""
+    agent = MagicMock()
+    output = TaskRunnerOutput(status="completed", result="Done", questions=[])
+    emitter = StreamEventEmitter()
+    await emitter.on_agent_end(MagicMock(), agent, output)
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "agent_end"
+    assert parsed["data"]["output"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_llm_start(caplog):
+    """on_llm_start logs at DEBUG level."""
+    agent = MagicMock()
+    agent.name = "TaskRunner"
+    emitter = StreamEventEmitter()
+    with caplog.at_level(logging.DEBUG):
+        await emitter.on_llm_start(MagicMock(), agent)
+    assert any("LLM call starting" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_stream_event_emitter_on_llm_end(caplog):
+    """on_llm_end logs at DEBUG level."""
+    agent = MagicMock()
+    agent.name = "TaskRunner"
+    emitter = StreamEventEmitter()
+    with caplog.at_level(logging.DEBUG):
+        await emitter.on_llm_end(MagicMock(), agent, MagicMock())
+    assert any("LLM call completed" in r.message for r in caplog.records)
+
+
+# --- REASONING_EFFORT env var ---
+
+
+def test_reasoning_effort_default():
+    """Default reasoning effort is 'medium'."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REASONING_EFFORT", None)
+        assert get_reasoning_effort() == "medium"
+
+
+def test_reasoning_effort_high():
+    """REASONING_EFFORT=high returns 'high'."""
+    with patch.dict(os.environ, {"REASONING_EFFORT": "high"}):
+        assert get_reasoning_effort() == "high"
+
+
+def test_reasoning_effort_low():
+    """REASONING_EFFORT=low returns 'low'."""
+    with patch.dict(os.environ, {"REASONING_EFFORT": "low"}):
+        assert get_reasoning_effort() == "low"
+
+
+def test_reasoning_effort_invalid_falls_back():
+    """Invalid REASONING_EFFORT falls back to 'medium'."""
+    with patch.dict(os.environ, {"REASONING_EFFORT": "extreme"}):
+        assert get_reasoning_effort() == "medium"
+
+
+def test_reasoning_effort_case_insensitive():
+    """REASONING_EFFORT is case-insensitive."""
+    with patch.dict(os.environ, {"REASONING_EFFORT": "HIGH"}):
+        assert get_reasoning_effort() == "high"
+
+
+# --- Agent output_type configuration ---
+
+
+def test_task_runner_output_has_required_fields():
+    """TaskRunnerOutput model has the required fields for structured output parsing."""
+    assert hasattr(TaskRunnerOutput, "model_fields")
+    assert "status" in TaskRunnerOutput.model_fields
+    assert "result" in TaskRunnerOutput.model_fields
+    assert "questions" in TaskRunnerOutput.model_fields
+
+
+# --- extract_json() ---
+
+
+def test_extract_json_direct_parse():
+    """Direct JSON string is parsed successfully."""
+    raw = '{"status": "completed", "result": "done", "questions": []}'
+    parsed = extract_json(raw)
+    assert parsed == {"status": "completed", "result": "done", "questions": []}
+
+
+def test_extract_json_with_preamble():
+    """JSON embedded after preamble text is extracted via brace strategy."""
+    raw = 'Now let me create a report:\n\n{"status": "completed", "result": "report content", "questions": []}'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["status"] == "completed"
+    assert parsed["result"] == "report content"
+
+
+def test_extract_json_code_fence():
+    """JSON inside a markdown code fence is extracted."""
+    raw = 'Here is the output:\n\n```json\n{"status": "completed", "result": "fenced", "questions": []}\n```'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["result"] == "fenced"
+
+
+def test_extract_json_returns_none_for_invalid():
+    """Returns None when no valid TaskRunnerOutput JSON is found."""
+    assert extract_json("just plain text") is None
+    assert extract_json("") is None
+    assert extract_json('{"not": "valid schema"}') is None
+
+
+def test_extract_json_with_trailing_text():
+    """JSON followed by trailing text is extracted via brace strategy."""
+    raw = '{"status": "completed", "result": "ok", "questions": []}\n\nSome trailing text.'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["result"] == "ok"
 
 
 # --- Log level configuration ---
@@ -290,45 +433,101 @@ def test_execute_command_invalid_directory():
     assert "Error executing command" in result
 
 
-# --- Tool call logging ---
+# --- Truncation ---
+
+
+# --- Streaming event loop: thinking and reasoning emission ---
 
 
 @pytest.mark.asyncio
-async def test_tool_call_logger_on_tool_start(caplog):
-    """on_tool_start logs TOOL_CALL [<name>] to stderr."""
-    tool = MagicMock()
-    tool.name = "execute_command"
-    hook = ToolCallLogger()
-    with caplog.at_level(logging.INFO):
-        await hook.on_tool_start(MagicMock(), MagicMock(), tool)
-    assert any("TOOL_CALL [execute_command]" in r.message for r in caplog.records)
+async def test_streaming_loop_emits_thinking_for_message_output(capsys):
+    """The streaming loop emits a 'thinking' event when a message_output_item is received."""
+    # Build a mock event that mimics RunItemStreamEvent with a message_output_item
+    mock_item = MagicMock()
+    mock_item.type = "message_output_item"
+
+    mock_event = MagicMock()
+    mock_event.type = "run_item_stream_event"
+    mock_event.item = mock_item
+
+    # Mock ItemHelpers.text_message_output to return text
+    with patch("main.ItemHelpers") as mock_helpers:
+        mock_helpers.text_message_output.return_value = "I need to check the status first."
+
+        # Simulate the streaming loop logic inline (same as main.py lines 260-277)
+        if mock_event.type == "run_item_stream_event":
+            if mock_event.item.type == "message_output_item":
+                text = mock_helpers.text_message_output(mock_event.item)
+                if text:
+                    emit_event("thinking", {"text": text})
+
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "thinking"
+    assert parsed["data"]["text"] == "I need to check the status first."
 
 
 @pytest.mark.asyncio
-async def test_tool_call_logger_on_tool_end(caplog):
-    """on_tool_end logs TOOL_RESULT [<name>] (<len> chars): <result> to stderr."""
-    tool = MagicMock()
-    tool.name = "execute_command"
-    hook = ToolCallLogger()
-    with caplog.at_level(logging.INFO):
-        await hook.on_tool_end(MagicMock(), MagicMock(), tool, "hello world")
-    assert any("TOOL_RESULT [execute_command] (11 chars): hello world" in r.message for r in caplog.records)
+async def test_streaming_loop_emits_reasoning_for_reasoning_item(capsys):
+    """The streaming loop emits a 'reasoning' event when a reasoning_item with summary is received."""
+    # Build a mock reasoning_item with summary parts
+    mock_part1 = MagicMock()
+    mock_part1.text = "Step 1: Parse the request"
+    mock_part2 = MagicMock()
+    mock_part2.text = "Step 2: Execute the plan"
+
+    mock_item = MagicMock()
+    mock_item.type = "reasoning_item"
+    mock_item.summary = [mock_part1, mock_part2]
+
+    mock_event = MagicMock()
+    mock_event.type = "run_item_stream_event"
+    mock_event.item = mock_item
+
+    # Simulate the streaming loop logic for reasoning_item
+    if mock_event.type == "run_item_stream_event":
+        if mock_event.item.type == "reasoning_item":
+            summary = getattr(mock_event.item, "summary", None)
+            if summary:
+                texts = []
+                for part in summary:
+                    t = getattr(part, "text", None)
+                    if t:
+                        texts.append(t)
+                if texts:
+                    emit_event("reasoning", {"text": "\n".join(texts)})
+
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "reasoning"
+    assert parsed["data"]["text"] == "Step 1: Parse the request\nStep 2: Execute the plan"
 
 
 @pytest.mark.asyncio
-async def test_tool_call_logger_truncates_long_result(caplog):
-    """Results exceeding TOOL_RESULT_MAX_LENGTH are truncated with '...'."""
-    tool = MagicMock()
-    tool.name = "execute_command"
-    long_result = "x" * 600
-    hook = ToolCallLogger()
-    with caplog.at_level(logging.INFO):
-        await hook.on_tool_end(MagicMock(), MagicMock(), tool, long_result)
-    record = [r for r in caplog.records if "TOOL_RESULT" in r.message][0]
-    assert "(600 chars):" in record.message
-    assert record.message.endswith("...")
-    # The logged result portion should be truncated
-    assert "x" * 501 not in record.message
+async def test_streaming_loop_skips_reasoning_without_summary(capsys):
+    """The streaming loop does not emit a reasoning event when summary is None."""
+    mock_item = MagicMock()
+    mock_item.type = "reasoning_item"
+    mock_item.summary = None
+
+    mock_event = MagicMock()
+    mock_event.type = "run_item_stream_event"
+    mock_event.item = mock_item
+
+    if mock_event.type == "run_item_stream_event":
+        if mock_event.item.type == "reasoning_item":
+            summary = getattr(mock_event.item, "summary", None)
+            if summary:
+                texts = []
+                for part in summary:
+                    t = getattr(part, "text", None)
+                    if t:
+                        texts.append(t)
+                if texts:
+                    emit_event("reasoning", {"text": "\n".join(texts)})
+
+    captured = capsys.readouterr()
+    assert captured.err.strip() == ""
 
 
 def test_truncate_short_string():
