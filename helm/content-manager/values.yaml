@@ -70,6 +70,10 @@ valkey:
 twitter:
   existingSecret: ""
 
+hindsight:
+  url: ""
+  bankId: "content-manager-tasks"
+
 perplexity:
   existingSecret: ""
   replicaCount: 1
