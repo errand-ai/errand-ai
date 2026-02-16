@@ -251,6 +251,8 @@ def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | 
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.strip() or e.stdout.strip() or str(e)
         raise GitSkillsError(f"Git operation failed: {error_msg}") from e
+    except OSError as e:
+        raise GitSkillsError(f"Git not available: {e}") from e
     finally:
         if key_file is not None:
             try:
