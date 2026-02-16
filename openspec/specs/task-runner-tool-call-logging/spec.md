@@ -1,36 +1,53 @@
 ### Requirement: Tool call logging via RunHooks
 
-The task runner SHALL log all tool calls in real-time by passing a `ToolCallLogger` subclass of `RunHooks` to `Runner.run()`. The `on_tool_start` hook SHALL log the tool name. The `on_tool_end` hook SHALL log the tool name and a truncated result. The default maximum result length SHALL be 500 characters. All log messages SHALL be written to stderr via the Python `logging` module at INFO level. Both local function tools and MCP tools (which the SDK converts to FunctionTools) SHALL be logged through the same hooks.
+The task runner SHALL log agent lifecycle events by emitting structured JSON events to stderr. The `ToolCallLogger` class (renamed to `StreamEventEmitter`) SHALL implement the following `RunHooks` callbacks:
 
-#### Scenario: Tool call is logged on start
+- `on_agent_start`: Emit `{"type": "agent_start", "data": {"agent": "<agent_name>"}}` to stderr
+- `on_tool_start`: No-op. The `tool_call` event is emitted from the streaming event loop (on `tool_called` events) instead, because hooks do not expose the full tool arguments
+- `on_tool_end`: Emit `{"type": "tool_result", "data": {"tool": "<tool_name>", "output": "<truncated_result>", "length": <original_length>}}` to stderr
+- `on_agent_end`: Emit `{"type": "agent_end", "data": {"output": <final_output>}}` to stderr
+- `on_llm_start`: Log at DEBUG level for diagnostics (not emitted as a structured event)
+- `on_llm_end`: Log at DEBUG level for diagnostics (not emitted as a structured event)
 
-- **WHEN** the agent invokes any tool (local or MCP)
-- **THEN** a log line of the form `TOOL_CALL [<tool_name>]` is written to stderr
+The `tool_call` event (`{"type": "tool_call", "data": {"tool": "<tool_name>", "args": <tool_args>}}`) SHALL be emitted from the `Runner.run_streamed()` event loop when a `tool_called` stream event is received, as the streaming API provides access to the full tool arguments (parsed from `raw_item.arguments`) that are not available in the `on_tool_start` hook.
 
-#### Scenario: Tool result is logged on end
+The default maximum result length for `tool_result` output SHALL remain 500 characters. All events SHALL be written as single-line JSON to stderr.
 
-- **WHEN** a tool returns a result
-- **THEN** a log line of the form `TOOL_RESULT [<tool_name>] (<length> chars): <truncated_result>` is written to stderr
+#### Scenario: Agent start event emitted via hook
 
-#### Scenario: Long tool results are truncated
+- **WHEN** the agent run begins and `on_agent_start` fires
+- **THEN** stderr contains a JSON line with `"type": "agent_start"` and `"data": {"agent": "TaskRunner"}`
 
-- **WHEN** a tool result exceeds 500 characters
-- **THEN** the logged result is truncated to 500 characters with `...` appended
+#### Scenario: Tool call event emitted with args via streaming loop
+
+- **WHEN** the streaming event loop receives a `tool_called` event for `execute_command` with args `{"command": "git clone https://example.com/repo.git"}`
+- **THEN** stderr contains a JSON line with `"type": "tool_call"` and `"data": {"tool": "execute_command", "args": {"command": "git clone https://example.com/repo.git"}}`
+
+#### Scenario: Tool result event emitted with truncation
+
+- **WHEN** a tool returns a result of 800 characters
+- **THEN** stderr contains a JSON line with `"type": "tool_result"`, `"output"` truncated to 500 characters with `...` appended, and `"length": 800`
+
+#### Scenario: Tool result event emitted without truncation
+
+- **WHEN** a tool returns a result of 200 characters
+- **THEN** stderr contains a JSON line with `"type": "tool_result"`, the full `"output"`, and `"length": 200`
+
+#### Scenario: Agent end event emitted via hook
+
+- **WHEN** the agent produces final output and `on_agent_end` fires
+- **THEN** stderr contains a JSON line with `"type": "agent_end"` and `"data"` containing the output
+
+#### Scenario: LLM start/end logged at debug level
+
+- **WHEN** `on_llm_start` or `on_llm_end` fires
+- **THEN** a DEBUG-level log message is written (visible only when LOG_LEVEL=DEBUG)
 
 ### Requirement: Post-run tool call summary
 
-The task runner SHALL log a summary count of tool calls after `Runner.run()` completes by counting `ToolCallOutputItem` entries in `result.new_items`.
+The task runner SHALL log a summary count of tool calls after the streaming run completes by counting `tool_call_output_item` entries in `result.new_items`. The summary SHALL be logged at INFO level to stderr (as a standard log line, not a structured event).
 
 #### Scenario: Tool call summary is logged
 
-- **WHEN** the agent run completes and tool calls were made
-- **THEN** a log line of the form `TOOL_SUMMARY total_tool_calls=<count>` is written to stderr
-
-### Requirement: Tool call log format
-
-All tool call log lines SHALL use the prefix `TOOL_CALL` for invocations and `TOOL_RESULT` for results. The tool name SHALL appear in square brackets immediately after the prefix. This format SHALL be consistent across all tool types to allow grepping for tool activity in runner_logs.
-
-#### Scenario: Log lines are greppable
-
-- **WHEN** runner_logs are searched for `TOOL_CALL` or `TOOL_RESULT`
-- **THEN** all tool invocations and their results are returned regardless of tool type
+- **WHEN** the agent streaming run completes and tool calls were made
+- **THEN** a log line of the form `TOOL_SUMMARY total_tool_calls=<count>` is written to stderr at INFO level
