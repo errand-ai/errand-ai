@@ -29,7 +29,7 @@ import logging
 from main import (
     read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
-    emit_event, get_reasoning_effort,
+    emit_event, get_reasoning_effort, extract_json,
 )
 
 
@@ -318,6 +318,48 @@ def test_task_runner_output_has_required_fields():
     assert "status" in TaskRunnerOutput.model_fields
     assert "result" in TaskRunnerOutput.model_fields
     assert "questions" in TaskRunnerOutput.model_fields
+
+
+# --- extract_json() ---
+
+
+def test_extract_json_direct_parse():
+    """Direct JSON string is parsed successfully."""
+    raw = '{"status": "completed", "result": "done", "questions": []}'
+    parsed = extract_json(raw)
+    assert parsed == {"status": "completed", "result": "done", "questions": []}
+
+
+def test_extract_json_with_preamble():
+    """JSON embedded after preamble text is extracted via brace strategy."""
+    raw = 'Now let me create a report:\n\n{"status": "completed", "result": "report content", "questions": []}'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["status"] == "completed"
+    assert parsed["result"] == "report content"
+
+
+def test_extract_json_code_fence():
+    """JSON inside a markdown code fence is extracted."""
+    raw = 'Here is the output:\n\n```json\n{"status": "completed", "result": "fenced", "questions": []}\n```'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["result"] == "fenced"
+
+
+def test_extract_json_returns_none_for_invalid():
+    """Returns None when no valid TaskRunnerOutput JSON is found."""
+    assert extract_json("just plain text") is None
+    assert extract_json("") is None
+    assert extract_json('{"not": "valid schema"}') is None
+
+
+def test_extract_json_with_trailing_text():
+    """JSON followed by trailing text is extracted via brace strategy."""
+    raw = '{"status": "completed", "result": "ok", "questions": []}\n\nSome trailing text.'
+    parsed = extract_json(raw)
+    assert parsed is not None
+    assert parsed["result"] == "ok"
 
 
 # --- Log level configuration ---

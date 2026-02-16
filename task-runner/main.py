@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from contextlib import AsyncExitStack
@@ -31,6 +32,50 @@ def _truncate(text: str, max_length: int = TOOL_RESULT_MAX_LENGTH) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length] + "..."
+
+
+def extract_json(text: str) -> dict | None:
+    """Extract a valid TaskRunnerOutput JSON object from LLM output.
+
+    Tries three strategies in order:
+    1. Direct parse of the full text
+    2. Extract content from a markdown code fence
+    3. Extract substring from first '{' to last '}'
+
+    Returns the parsed dict if valid TaskRunnerOutput, otherwise None.
+    """
+    stripped = text.strip()
+
+    # Strategy 1: direct parse
+    try:
+        parsed = json.loads(stripped)
+        TaskRunnerOutput(**parsed)
+        return parsed
+    except (json.JSONDecodeError, TypeError, Exception):
+        pass
+
+    # Strategy 2: code fence extraction
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", stripped, re.DOTALL)
+    if fence_match:
+        try:
+            parsed = json.loads(fence_match.group(1).strip())
+            TaskRunnerOutput(**parsed)
+            return parsed
+        except (json.JSONDecodeError, TypeError, Exception):
+            pass
+
+    # Strategy 3: first '{' to last '}'
+    first_brace = stripped.find("{")
+    last_brace = stripped.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        try:
+            parsed = json.loads(stripped[first_brace:last_brace + 1])
+            TaskRunnerOutput(**parsed)
+            return parsed
+        except (json.JSONDecodeError, TypeError, Exception):
+            pass
+
+    return None
 
 
 def emit_event(event_type: str, data: dict) -> None:
@@ -306,11 +351,10 @@ async def main():
             # Parse structured output from agent's final text response
             final_output = result.final_output
             raw_text = str(final_output) if final_output else ""
-            try:
-                parsed = json.loads(raw_text)
-                validated = TaskRunnerOutput(**parsed)
-                output = validated.model_dump_json()
-            except (json.JSONDecodeError, TypeError, Exception):
+            parsed = extract_json(raw_text)
+            if parsed:
+                output = TaskRunnerOutput(**parsed).model_dump_json()
+            else:
                 # Fallback: wrap raw output as completed
                 output = json.dumps({
                     "status": "completed",
