@@ -4,15 +4,15 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
+from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from agents import Agent, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, ItemHelpers, ModelSettings, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
@@ -33,26 +33,42 @@ def _truncate(text: str, max_length: int = TOOL_RESULT_MAX_LENGTH) -> str:
     return text[:max_length] + "..."
 
 
-class ToolCallLogger(RunHooks):
-    """Logs tool calls (name, result) to stderr via the logger."""
+def emit_event(event_type: str, data: dict) -> None:
+    """Write a single-line JSON event to stderr."""
+    print(json.dumps({"type": event_type, "data": data}), file=sys.stderr, flush=True)
+
+
+class StreamEventEmitter(RunHooks):
+    """Emits structured JSON events to stderr for agent lifecycle callbacks."""
+
+    async def on_agent_start(self, context, agent) -> None:
+        emit_event("agent_start", {"agent": agent.name})
 
     async def on_tool_start(self, context, agent, tool) -> None:
-        logger.info("TOOL_CALL [%s]", tool.name)
+        # tool_call event is emitted from the streaming loop (tool_called) with full arguments
+        pass
 
     async def on_tool_end(self, context, agent, tool, result) -> None:
         result_str = str(result)
-        logger.info("TOOL_RESULT [%s] (%d chars): %s", tool.name, len(result_str), _truncate(result_str))
+        original_length = len(result_str)
+        emit_event("tool_result", {
+            "tool": tool.name,
+            "output": _truncate(result_str),
+            "length": original_length,
+        })
 
+    async def on_agent_end(self, context, agent, output) -> None:
+        try:
+            output_data = output.model_dump() if hasattr(output, "model_dump") else {"raw": str(output)}
+        except Exception:
+            output_data = {"raw": str(output)}
+        emit_event("agent_end", {"output": output_data})
 
-OVERARCHING_PROMPT = """You MUST produce your final response as a JSON object with exactly this schema:
-{"status": "completed" | "needs_input", "result": "<your response text>", "questions": ["<question>"]}
+    async def on_llm_start(self, context, agent, *args, **kwargs) -> None:
+        logger.debug("LLM call starting for agent %s", agent.name)
 
-Rules:
-- If you are asked to do something at timed intervals (like every 30 minutes), just perform the task now and do not be concerned with the next time the task needs to be completed. 
-- If you have fully addressed the user's request, set status to "completed", put your answer in "result", and set "questions" to an empty list [].
-- If you cannot proceed without user clarification, set status to "needs_input", explain what is unclear in "result", and list specific questions in "questions".
-- Output ONLY the JSON object as your final response. No markdown fences, no extra text.
-- Keep your result concise and focused."""
+    async def on_llm_end(self, context, agent, *args, **kwargs) -> None:
+        logger.debug("LLM call completed for agent %s", agent.name)
 
 
 class TaskRunnerOutput(BaseModel):
@@ -61,47 +77,14 @@ class TaskRunnerOutput(BaseModel):
     questions: list[str] = []
 
 
-def extract_json(text: str) -> str | None:
-    """Extract a valid TaskRunnerOutput JSON string from LLM output.
+OUTPUT_INSTRUCTIONS = """
 
-    Tries three strategies in order:
-    1. Direct parse of the full text
-    2. Extract content from a markdown code fence (```json...``` or ```...```) anywhere in text
-    3. Extract substring from first '{' to last '}'
+When you have completed the task, respond with ONLY a JSON object (no markdown, no extra text):
+{"status": "completed", "result": "<your detailed result>", "questions": []}
 
-    Returns the JSON string if valid TaskRunnerOutput, otherwise None.
-    """
-    stripped = text.strip()
-
-    # Strategy 1: direct parse
-    try:
-        TaskRunnerOutput.model_validate_json(stripped)
-        return stripped
-    except Exception:
-        pass
-
-    # Strategy 2: code fence extraction
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", stripped, re.DOTALL)
-    if fence_match:
-        fenced_content = fence_match.group(1).strip()
-        try:
-            TaskRunnerOutput.model_validate_json(fenced_content)
-            return fenced_content
-        except Exception:
-            pass
-
-    # Strategy 3: first '{' to last '}'
-    first_brace = stripped.find("{")
-    last_brace = stripped.rfind("}")
-    if first_brace != -1 and last_brace > first_brace:
-        brace_content = stripped[first_brace:last_brace + 1]
-        try:
-            TaskRunnerOutput.model_validate_json(brace_content)
-            return brace_content
-        except Exception:
-            pass
-
-    return None
+If you need more information, respond with:
+{"status": "needs_input", "result": "<what you've done so far>", "questions": ["<question 1>", "<question 2>"]}
+"""
 
 
 def read_env_vars() -> dict[str, str]:
@@ -239,6 +222,14 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
         return f"Error executing command: {e}"
 
 
+def get_reasoning_effort() -> str:
+    """Read REASONING_EFFORT env var, defaulting to 'medium'."""
+    effort = os.environ.get("REASONING_EFFORT", "medium").lower()
+    if effort not in ("low", "medium", "high"):
+        effort = "medium"
+    return effort
+
+
 async def main():
     # 1. Read and validate environment variables
     env = read_env_vars()
@@ -258,21 +249,51 @@ async def main():
     async with AsyncExitStack() as stack:
         mcp_servers = await connect_mcp_servers(mcp_config, stack)
 
-        # 5. Build combined system prompt
-        combined_instructions = system_prompt + "\n\n" + OVERARCHING_PROMPT if system_prompt.strip() else OVERARCHING_PROMPT
-
-        # 6. Create and run agent
+        # 5. Create agent with reasoning settings
+        reasoning_effort = get_reasoning_effort()
         agent = Agent(
             name="TaskRunner",
-            instructions=combined_instructions,
+            instructions=system_prompt + OUTPUT_INSTRUCTIONS,
             model=env["OPENAI_MODEL"],
             tools=[execute_command],
             mcp_servers=mcp_servers if mcp_servers else [],
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort=reasoning_effort, generate_summary="auto"),
+            ),
         )
 
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            result = await Runner.run(agent, user_prompt, max_turns=max_turns, hooks=ToolCallLogger())
+            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter())
+
+            # Iterate streaming events, emitting thinking/reasoning to stderr
+            async for event in result.stream_events():
+                if event.type == "raw_response_event":
+                    continue
+                elif event.type == "run_item_stream_event":
+                    if event.item.type == "message_output_item":
+                        text = ItemHelpers.text_message_output(event.item)
+                        if text:
+                            emit_event("thinking", {"text": text})
+                    elif event.item.type == "reasoning_item":
+                        summary = getattr(event.item, "summary", None)
+                        if summary:
+                            texts = []
+                            for part in summary:
+                                t = getattr(part, "text", None)
+                                if t:
+                                    texts.append(t)
+                            if texts:
+                                emit_event("reasoning", {"text": "\n".join(texts)})
+                    elif event.name == "tool_called" and event.item.type == "tool_call_item":
+                        raw = event.item.raw_item
+                        tool_name = getattr(raw, "name", "unknown")
+                        args_str = getattr(raw, "arguments", "{}")
+                        try:
+                            args = json.loads(args_str)
+                        except (json.JSONDecodeError, TypeError):
+                            args = {"raw": args_str}
+                        emit_event("tool_call", {"tool": tool_name, "args": args})
 
             # Log summary of tool calls from run items
             tool_call_count = sum(
@@ -282,26 +303,27 @@ async def main():
             if tool_call_count:
                 logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
 
-            raw_output = result.final_output
-
-            # Extract structured JSON from LLM output (handles preamble text, code fences, etc.)
-            extracted = extract_json(raw_output)
-            if extracted is not None:
-                parsed = TaskRunnerOutput.model_validate_json(extracted)
-                output = parsed.model_dump_json()
-            else:
-                # If no valid structured JSON found, wrap as completed
+            # Parse structured output from agent's final text response
+            final_output = result.final_output
+            raw_text = str(final_output) if final_output else ""
+            try:
+                parsed = json.loads(raw_text)
+                validated = TaskRunnerOutput(**parsed)
+                output = validated.model_dump_json()
+            except (json.JSONDecodeError, TypeError, Exception):
+                # Fallback: wrap raw output as completed
                 output = json.dumps({
                     "status": "completed",
-                    "result": raw_output,
+                    "result": raw_text,
                     "questions": [],
                 })
 
-            # 7. Output to stdout
+            # Output to stdout
             print(output)
             sys.exit(0)
 
         except Exception as e:
+            emit_event("error", {"message": str(e)})
             logger.error("Agent execution failed: %s", e)
             sys.exit(1)
 

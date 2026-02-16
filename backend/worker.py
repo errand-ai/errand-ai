@@ -671,15 +671,44 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         except Exception:
             logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
 
-        # Stream stderr in real-time, publishing each chunk to Valkey
+        # Stream stderr in real-time, publishing structured events to Valkey.
+        # Docker's streaming API sends data in arbitrary byte chunks that may
+        # not align with newline boundaries, so we buffer and split on newlines.
         try:
+            buf = ""
             for chunk in container.logs(stream=True, follow=True, stderr=True, stdout=False):
-                line = chunk.decode("utf-8", errors="replace")
-                if log_redis is not None:
-                    try:
-                        log_redis.publish(log_channel, json.dumps({"event": "task_log", "line": line}))
-                    except Exception:
-                        logger.warning("Failed to publish log line to Valkey", exc_info=True)
+                buf += chunk.decode("utf-8", errors="replace")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    if not line:
+                        continue
+                    if log_redis is not None:
+                        try:
+                            parsed_event = json.loads(line)
+                            if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
+                                msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
+                            else:
+                                msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                        except (json.JSONDecodeError, ValueError):
+                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                        try:
+                            log_redis.publish(log_channel, msg)
+                        except Exception:
+                            logger.warning("Failed to publish log line to Valkey", exc_info=True)
+            # Flush any remaining buffered content
+            if buf.strip() and log_redis is not None:
+                try:
+                    parsed_event = json.loads(buf.strip())
+                    if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
+                        msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
+                    else:
+                        msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
+                except (json.JSONDecodeError, ValueError):
+                    msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
+                try:
+                    log_redis.publish(log_channel, msg)
+                except Exception:
+                    logger.warning("Failed to publish log line to Valkey", exc_info=True)
         except Exception:
             logger.warning("Error during stderr streaming for task %s", task.id, exc_info=True)
 

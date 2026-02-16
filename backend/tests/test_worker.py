@@ -1318,6 +1318,217 @@ def test_process_task_completes_when_valkey_unavailable():
     assert "stderr line" in stderr
 
 
+# --- Structured event parsing from stderr to Valkey ---
+
+
+def test_process_task_publishes_structured_events_to_valkey():
+    """Structured JSON stderr lines are published as task_event messages to Valkey."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-ev1"
+    mock_container.short_id = "contev1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+
+    tool_call_event = json.dumps({"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls"}}})
+
+    def mock_logs(**kwargs):
+        if kwargs.get("stream"):
+            return iter([tool_call_event.encode() + b"\n"])
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            return b'{"status":"completed","result":"done","questions":[]}'
+        return tool_call_event.encode() + b"\n"
+
+    mock_container.logs.side_effect = mock_logs
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    mock_redis = MagicMock()
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+             patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Find the task_event publish call (not the task_log_end)
+    publish_calls = mock_redis.publish.call_args_list
+    event_calls = [c for c in publish_calls if "task_event" in str(c)]
+    assert len(event_calls) >= 1
+    published_msg = json.loads(event_calls[0][0][1])
+    assert published_msg["event"] == "task_event"
+    assert published_msg["type"] == "tool_call"
+    assert published_msg["data"]["tool"] == "execute_command"
+
+
+def test_process_task_publishes_raw_event_for_non_json_stderr():
+    """Non-JSON stderr lines are published as raw events."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-ev2"
+    mock_container.short_id = "contev2"
+    mock_container.wait.return_value = {"StatusCode": 0}
+
+    def mock_logs(**kwargs):
+        if kwargs.get("stream"):
+            return iter([b"Traceback (most recent call last):\n"])
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            return b'{"status":"completed","result":"done","questions":[]}'
+        return b"Traceback (most recent call last):\n"
+
+    mock_container.logs.side_effect = mock_logs
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    mock_redis = MagicMock()
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+             patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Find the raw event publish call
+    publish_calls = mock_redis.publish.call_args_list
+    event_calls = [c for c in publish_calls if "task_event" in str(c)]
+    assert len(event_calls) >= 1
+    published_msg = json.loads(event_calls[0][0][1])
+    assert published_msg["event"] == "task_event"
+    assert published_msg["type"] == "raw"
+    assert "Traceback" in published_msg["data"]["line"]
+
+
+def test_process_task_buffers_chunked_stderr_lines():
+    """JSON lines split across Docker chunks are reassembled before parsing."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-ev3"
+    mock_container.short_id = "contev3"
+    mock_container.wait.return_value = {"StatusCode": 0}
+
+    # Simulate a JSON line split across two Docker chunks
+    full_line = json.dumps({"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "cat file.txt"}}})
+    split_point = len(full_line) // 2
+    chunk1 = full_line[:split_point].encode()
+    chunk2 = (full_line[split_point:] + "\n").encode()
+
+    def mock_logs(**kwargs):
+        if kwargs.get("stream"):
+            return iter([chunk1, chunk2])
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            return b'{"status":"completed","result":"done","questions":[]}'
+        return full_line.encode() + b"\n"
+
+    mock_container.logs.side_effect = mock_logs
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    mock_redis = MagicMock()
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+             patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # The split JSON should be reassembled into a structured event, not raw
+    publish_calls = mock_redis.publish.call_args_list
+    event_calls = [c for c in publish_calls if "task_event" in str(c) and "task_log_end" not in str(c)]
+    assert len(event_calls) == 1
+    published_msg = json.loads(event_calls[0][0][1])
+    assert published_msg["event"] == "task_event"
+    assert published_msg["type"] == "tool_call"
+    assert published_msg["data"]["tool"] == "execute_command"
+
+
+def test_process_task_publishes_end_sentinel():
+    """task_log_end sentinel is still published after container exit."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-ev3"
+    mock_container.short_id = "contev3"
+    mock_container.wait.return_value = {"StatusCode": 0}
+
+    def mock_logs(**kwargs):
+        if kwargs.get("stream"):
+            return iter([])
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            return b'{"status":"completed","result":"done","questions":[]}'
+        return b""
+
+    mock_container.logs.side_effect = mock_logs
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    mock_redis = MagicMock()
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+             patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # The last publish call should be task_log_end
+    last_call = mock_redis.publish.call_args_list[-1]
+    published_msg = json.loads(last_call[0][1])
+    assert published_msg == {"event": "task_log_end"}
+
+
 # --- Structured output parsing ---
 
 
