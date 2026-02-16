@@ -7,6 +7,7 @@ import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
 import TaskEditModal from './TaskEditModal.vue'
 import TaskOutputModal from './TaskOutputModal.vue'
+import TaskLogModal from './TaskLogModal.vue'
 
 const REORDERABLE_COLUMNS: TaskStatus[] = ['new', 'pending']
 
@@ -34,6 +35,9 @@ const deleteDialogRef = ref<HTMLDialogElement | null>(null)
 
 // Output viewer modal state
 const outputTask = ref<TaskData | null>(null)
+
+// Log viewer modal state
+const logTask = ref<TaskData | null>(null)
 
 function onDragStart(e: DragEvent, task: TaskData) {
   e.dataTransfer!.effectAllowed = 'move'
@@ -206,6 +210,10 @@ function onViewOutput(task: TaskData) {
   outputTask.value = task
 }
 
+function onViewLogs(task: TaskData) {
+  logTask.value = task
+}
+
 function onCancel() {
   editingTask.value = null
 }
@@ -274,6 +282,7 @@ onUnmounted(() => store.stop())
             @edit="onEdit(task)"
             @delete="onDelete(task)"
             @view-output="onViewOutput(task)"
+            @view-logs="onViewLogs(task)"
           />
         </template>
         <div
@@ -297,6 +306,13 @@ onUnmounted(() => store.stop())
     :title="outputTask.title"
     :output="outputTask.output ?? null"
     @close="outputTask = null"
+  />
+
+  <TaskLogModal
+    v-if="logTask"
+    :task-id="logTask.id"
+    :title="logTask.title"
+    @close="logTask = null"
   />
 
   <!-- Delete confirmation modal -->

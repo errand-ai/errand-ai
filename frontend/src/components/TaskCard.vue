@@ -15,6 +15,7 @@ defineEmits<{
   edit: []
   delete: []
   'view-output': []
+  'view-logs': []
 }>()
 
 const hasExecuteAt = computed(() => !!props.task.execute_at)
@@ -27,6 +28,8 @@ const relativeTime = computed(() => {
   if (!props.task.execute_at) return ''
   return formatRelativeTime(props.task.execute_at, now.value)
 })
+
+const showLogButton = computed(() => props.columnStatus === 'running')
 
 const showOutputButton = computed(() => {
   const col = props.columnStatus
@@ -46,6 +49,16 @@ const showOutputButton = computed(() => {
     <div class="flex items-start justify-between gap-2">
       <p class="text-sm text-gray-800">{{ task.title }}</p>
       <div class="flex shrink-0 gap-0.5">
+        <button
+          v-if="showLogButton"
+          class="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+          title="View logs"
+          @click.stop="$emit('view-logs')"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
+          </svg>
+        </button>
         <button
           v-if="showOutputButton"
           class="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600"

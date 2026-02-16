@@ -1041,3 +1041,72 @@ async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
         ping_task.cancel()
         await pubsub.unsubscribe(CHANNEL)
         await pubsub.aclose()
+
+
+@app.websocket("/api/ws/tasks/{task_id}/logs")
+async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(default=None)):
+    # Authenticate via query parameter (same pattern as ws_tasks)
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        claims = auth_module.oidc.decode_token(token)
+        roles = auth_module.oidc.extract_roles(claims)
+        if not roles:
+            await websocket.close(code=4001, reason="No roles")
+            return
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    # Check task exists and status
+    try:
+        task_uuid = uuid.UUID(task_id)
+    except ValueError:
+        await websocket.close(code=4004, reason="Invalid task ID")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_uuid))
+        task = result.scalar_one_or_none()
+        if task is None:
+            await websocket.close(code=4004, reason="Task not found")
+            return
+        task_status = task.status
+
+    await websocket.accept()
+
+    # If not running, send end sentinel and close
+    if task_status != "running":
+        await websocket.send_json({"event": "task_log_end"})
+        await websocket.close(code=1000)
+        return
+
+    valkey = get_valkey()
+    if valkey is None:
+        await websocket.close(code=1011, reason="Event bus unavailable")
+        return
+
+    log_channel = f"task_logs:{task_id}"
+    pubsub = valkey.pubsub()
+    await pubsub.subscribe(log_channel)
+
+    try:
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg["type"] == "message":
+                data = msg["data"]
+                await websocket.send_text(data)
+                # Check for end sentinel
+                try:
+                    parsed = json.loads(data)
+                    if parsed.get("event") == "task_log_end":
+                        await websocket.close(code=1000)
+                        return
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
+    finally:
+        await pubsub.unsubscribe(log_channel)
+        await pubsub.aclose()

@@ -100,6 +100,7 @@ services:
       USE_PERPLEXITY: "true"
       PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
       BACKEND_MCP_URL: http://backend:8000/mcp
+      MAX_TURNS: "200"
     depends_on:
       migrate:
         condition: service_completed_successfully
