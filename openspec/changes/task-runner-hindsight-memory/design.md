@@ -39,7 +39,7 @@ The worker currently injects MCP servers (Perplexity, content-manager backend) a
 
 **Choice:** The worker calls Hindsight's REST API directly via `httpx` (already a backend dependency) rather than adding the `hindsight-client` Python package.
 
-**Why:** The worker only needs one operation (recall). Adding a whole SDK for one HTTP call is overkill. `httpx` is already available in the backend. The REST API is simple: `POST /api/banks/{bank_id}/recall` with `{"query": "..."}`.
+**Why:** The worker only needs one operation (recall). Adding a whole SDK for one HTTP call is overkill. `httpx` is already available in the backend. The REST API is simple: `POST /v1/default/banks/{bank_id}/memories/recall` with `{"query": "..."}`.
 
 **Alternatives considered:**
 - `hindsight-client` Python SDK: Clean interface but new dependency for one call
@@ -64,14 +64,14 @@ The worker currently injects MCP servers (Perplexity, content-manager backend) a
 
 **Why:** Consistency with existing code. The pattern is proven and well-understood. Environment variable gating means Hindsight is opt-in per deployment.
 
-### Decision 5: Docker-compose uses slim image with LiteLLM
+### Decision 5: Docker-compose uses latest image with LiteLLM
 
-**Choice:** Add Hindsight to docker-compose using the `slim` image (~500MB) with embedded pg0 storage, pointed at the existing LiteLLM endpoint for LLM operations.
+**Choice:** Add Hindsight to docker-compose using the `latest` image with embedded pg0 storage, pointed at the existing LiteLLM endpoint for LLM operations. The `HINDSIGHT_API_LLM_MODEL` environment variable is set explicitly to avoid Hindsight's default model (`o3-mini`) which may not be available on the LLM provider. Persistent Docker volumes are used for pg0 data and model cache to preserve state across restarts. An init container fixes volume ownership since the container runs as uid 1000 (`hindsight`) but Docker creates volumes as root.
 
-**Why:** The `latest` image is ~9GB (includes local ML models) which is excessive for local dev. The slim image requires an external LLM provider — we already have LiteLLM configured via `OPENAI_BASE_URL`. Embedded pg0 avoids needing a second PostgreSQL instance.
+**Why:** The `slim` tag does not exist on GHCR — only `latest` is published. The latest image includes local embedding/reranking models (~9GB) but these are cached in a persistent volume so only the first pull is slow. Embedded pg0 avoids needing a second PostgreSQL instance.
 
 **Alternatives considered:**
-- `latest` (full) image: Self-contained but 9GB download
+- `slim` image: Would be smaller but does not exist as a published tag
 - Shared PostgreSQL: Possible but adds migration complexity and risks conflicts
 
 ### Decision 6: Worker recall query constructed from task context
@@ -85,4 +85,4 @@ The worker currently injects MCP servers (Perplexity, content-manager backend) a
 - **Memory noise**: Recall may return irrelevant memories, cluttering the system prompt → Mitigation: Use a conservative `max_tokens` limit (2048) for pre-loaded context; agent can always recall more via MCP if needed
 - **Hindsight unavailability**: If Hindsight is down, worker pre-loading and MCP tools both fail → Mitigation: Worker catches recall failures gracefully (log warning, continue without context); MCP connection failure is already handled by the task runner's existing error handling
 - **Turn cost**: MCP retain/recall/reflect consume agent turns → Mitigation: Pre-loading reduces the need for recall turns; retain is low-cost (one call at end of task); acceptable trade-off for persistent memory
-- **Docker-compose startup time**: Hindsight slim image needs to initialise on first run → Mitigation: Worker doesn't depend on Hindsight being healthy; tasks still run without memory
+- **Docker-compose startup time**: Hindsight image needs to initialise on first run (~9GB pull, embedding model download) → Mitigation: Persistent volumes cache models after first run; worker doesn't depend on Hindsight being healthy; tasks still run without memory

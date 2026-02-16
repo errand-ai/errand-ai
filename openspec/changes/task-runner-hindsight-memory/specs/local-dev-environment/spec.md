@@ -18,12 +18,12 @@ A `docker-compose.yml` at the repository root SHALL define services for PostgreS
 
 ### Requirement: Hindsight service in Docker Compose
 
-The Docker Compose configuration SHALL include a `hindsight` service using the `ghcr.io/vectorize-io/hindsight:slim` image. The service SHALL expose port 8888 on the host. The service SHALL receive `HINDSIGHT_API_LLM_API_KEY` set to `${OPENAI_API_KEY}` and `HINDSIGHT_API_LLM_BASE_URL` set to `${OPENAI_BASE_URL:-}` so it uses the same LLM provider as the rest of the stack. The service SHALL use embedded pg0 storage (no external PostgreSQL dependency). The service SHALL include a healthcheck.
+The Docker Compose configuration SHALL include a `hindsight` service using the `ghcr.io/vectorize-io/hindsight:latest` image. The service SHALL expose port 8888 (API) and port 9999 (control plane UI) on the host. The service SHALL receive `HINDSIGHT_API_LLM_API_KEY` set to `${OPENAI_API_KEY}`, `HINDSIGHT_API_LLM_BASE_URL` set to `${OPENAI_BASE_URL:-}`, and `HINDSIGHT_API_LLM_MODEL` set explicitly to avoid Hindsight's default model which may not be available on the LLM provider. The service SHALL use embedded pg0 storage (no external PostgreSQL dependency) with persistent Docker volumes for the pg0 data directory and model cache. A `hindsight-init` service SHALL run before hindsight to fix volume ownership (the container runs as uid 1000 but Docker creates volumes as root). The service SHALL include a healthcheck against `/health`.
 
 #### Scenario: Hindsight service starts
 
 - **WHEN** `docker compose up` is run with `OPENAI_API_KEY` configured
-- **THEN** the Hindsight service starts and the API is accessible at `http://localhost:8888`
+- **THEN** the Hindsight service starts, the API is accessible at `http://localhost:8888`, and the control plane UI is accessible at `http://localhost:9999`
 
 #### Scenario: Hindsight uses same LLM provider
 

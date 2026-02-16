@@ -1,6 +1,6 @@
 ## 1. Docker Compose: Hindsight Service
 
-- [x] 1.1 Add `hindsight` service to `docker-compose.yml` using `ghcr.io/vectorize-io/hindsight:slim` image with port 8888, `HINDSIGHT_API_LLM_API_KEY=${OPENAI_API_KEY}`, `HINDSIGHT_API_LLM_BASE_URL=${OPENAI_BASE_URL:-}`, and a healthcheck
+- [x] 1.1 Add `hindsight` service to `docker-compose.yml` using `ghcr.io/vectorize-io/hindsight:latest` image with ports 8888 (API) and 9999 (control plane UI), `HINDSIGHT_API_LLM_API_KEY=${OPENAI_API_KEY}`, `HINDSIGHT_API_LLM_BASE_URL=${OPENAI_BASE_URL:-}`, `HINDSIGHT_API_LLM_MODEL=claude-sonnet-4-5-20250929`, persistent volumes for pg0 data and model cache, an init container for volume permissions, and a healthcheck
 - [x] 1.2 Add `HINDSIGHT_URL=http://hindsight:8888` environment variable to the worker service in `docker-compose.yml`
 
 ## 2. Worker: Hindsight MCP Injection
@@ -11,7 +11,7 @@
 
 ## 3. Worker: Memory Pre-loading
 
-- [x] 3.1 Add `recall_from_hindsight(hindsight_url, bank_id, query, max_tokens=2048)` function that calls `POST {hindsight_url}/api/banks/{bank_id}/recall` via `httpx` and returns the recalled text (or `None` on failure)
+- [x] 3.1 Add `recall_from_hindsight(hindsight_url, bank_id, query, max_tokens=2048)` function that calls `POST {hindsight_url}/v1/default/banks/{bank_id}/memories/recall` via `httpx` and returns the recalled text (or `None` on failure)
 - [x] 3.2 Call `recall_from_hindsight` in `process_task_in_container` before writing system prompt, using task title + description as the query
 - [x] 3.3 Inject recalled content into system prompt as `## Relevant Context from Memory` section (after admin system prompt, before Perplexity/skill/MCP instructions)
 
