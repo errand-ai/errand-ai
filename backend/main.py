@@ -36,6 +36,7 @@ from models import PlatformCredential, Setting, Skill, SkillFile, Tag, Task, tas
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
+from platforms.slack.routes import router as slack_router
 from scheduler import run_scheduler, release_lock
 
 security = HTTPBearer()
@@ -72,8 +73,10 @@ async def lifespan(app: FastAPI):
 
     # Register platforms
     from platforms.twitter import TwitterPlatform
+    from platforms.slack import SlackPlatform
     registry = get_registry()
     registry.register(TwitterPlatform())
+    registry.register(SlackPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:
@@ -137,6 +140,8 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(slack_router)
+
 app.mount("/mcp", create_mcp_app())
 
 

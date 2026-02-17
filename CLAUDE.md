@@ -247,4 +247,4 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
 - Tests: 363 backend (pytest, includes task-runner) + 267 frontend (vitest) — CI `test` job gates both build jobs
-- 41 component specs in `openspec/specs/`
+- 51 component specs in `openspec/specs/`
