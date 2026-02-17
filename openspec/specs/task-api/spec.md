@@ -47,7 +47,7 @@ The `GET /api/tasks` and `GET /api/tasks/{id}` endpoints SHALL continue to use `
 The `DELETE /api/tasks/{id}` endpoint SHALL set the task's `status` to `"deleted"` instead of removing the row from the database. The endpoint SHALL NOT delete the task's tag associations from `task_tags`. The endpoint SHALL still return HTTP 204 and emit a `task_deleted` WebSocket event. The endpoint SHALL require the `editor` or `admin` role.
 
 #### Scenario: Delete moves task to deleted status
-- **WHEN** an editor sends `DELETE /api/tasks/{id}` for a task in "new" status
+- **WHEN** an editor sends `DELETE /api/tasks/{id}` for a task in "review" status
 - **THEN** the task's status is set to "deleted", the row and all associations persist in the database, and the endpoint returns HTTP 204
 
 #### Scenario: Delete emits WebSocket event
@@ -60,7 +60,7 @@ The `DELETE /api/tasks/{id}` endpoint SHALL set the task's `status` to `"deleted
 
 ### Requirement: Task list excludes hidden statuses
 
-The `GET /api/tasks` endpoint SHALL exclude tasks with `status` of `"deleted"` or `"archived"`. Only tasks in active workflow states (new, scheduled, pending, running, review, completed) SHALL be returned.
+The `GET /api/tasks` endpoint SHALL exclude tasks with `status` of `"deleted"` or `"archived"`. Only tasks in active workflow states (scheduled, pending, running, review, completed) SHALL be returned.
 
 #### Scenario: Deleted task not in list
 - **WHEN** a task has `status = "deleted"`
@@ -71,8 +71,12 @@ The `GET /api/tasks` endpoint SHALL exclude tasks with `status` of `"deleted"` o
 - **THEN** it does not appear in `GET /api/tasks` results
 
 #### Scenario: Active tasks still returned
-- **WHEN** tasks exist in new, scheduled, pending, running, review, and completed statuses
+- **WHEN** tasks exist in scheduled, pending, running, review, and completed statuses
 - **THEN** all are returned by `GET /api/tasks`
+
+#### Scenario: Task with status new not returned
+- **WHEN** a legacy task somehow has `status = "new"` in the database
+- **THEN** it does not appear in `GET /api/tasks` results (not in active workflow states)
 
 ### Requirement: Archived tasks endpoint
 
@@ -103,13 +107,33 @@ The `PATCH /api/tasks/{id}` endpoint SHALL return HTTP 409 Conflict with `{"deta
 - **THEN** the backend returns HTTP 409 with `{"detail": "Cannot edit a running task"}`
 
 #### Scenario: PATCH on non-running task allowed
-- **WHEN** an editor sends `PATCH /api/tasks/{id}` for a task with `status = "new"`
+- **WHEN** an editor sends `PATCH /api/tasks/{id}` for a task with `status = "review"`
 - **THEN** the request proceeds normally
 
 ### Requirement: VALID_STATUSES includes hidden states
 
-The `VALID_STATUSES` constant SHALL include `"deleted"` and `"archived"` in addition to the existing active statuses. The PATCH endpoint's status validation SHALL accept these values. However, setting a task to `"deleted"` via PATCH is not the intended workflow — soft delete is via the DELETE endpoint.
+The `VALID_STATUSES` constant SHALL include `"scheduled"`, `"pending"`, `"running"`, `"review"`, `"completed"`, `"deleted"`, and `"archived"`. The status `"new"` SHALL NOT be included. The PATCH endpoint's status validation SHALL accept these values. However, setting a task to `"deleted"` via PATCH is not the intended workflow — soft delete is via the DELETE endpoint.
+
+#### Scenario: Review status accepted in validation
+- **WHEN** the PATCH endpoint validates a status value of `"review"`
+- **THEN** the validation passes (the status is in VALID_STATUSES)
+
+#### Scenario: New status rejected in validation
+- **WHEN** the PATCH endpoint validates a status value of `"new"`
+- **THEN** the validation fails with HTTP 422
 
 #### Scenario: Archived status accepted in validation
 - **WHEN** the PATCH endpoint validates a status value of `"archived"`
 - **THEN** the validation passes (the status is in VALID_STATUSES)
+
+### Requirement: Migration to move existing new tasks to review
+
+An Alembic migration SHALL update all tasks with `status = 'new'` to `status = 'review'`. The migration SHALL be reversible (downgrade sets `status = 'new'` where `status = 'review'` and the task was migrated).
+
+#### Scenario: Migration updates new tasks
+- **WHEN** the migration runs against a database containing tasks with `status = 'new'`
+- **THEN** those tasks are updated to `status = 'review'`
+
+#### Scenario: Migration is idempotent
+- **WHEN** the migration runs against a database with no tasks in `status = 'new'`
+- **THEN** no rows are affected and the migration succeeds

@@ -69,7 +69,7 @@ Each task SHALL have a `repeat_until` field (timestamptz, nullable) storing when
 - **THEN** `repeat_until` is null
 
 ### Requirement: Auto-routing after task creation
-After a task is created and categorised, the backend SHALL automatically set the task's status based on its category and tags. If the task has a "Needs Info" tag, the task SHALL remain in status `new` regardless of category. Otherwise: `immediate` tasks SHALL be moved to `pending`, and `scheduled` or `repeating` tasks SHALL be moved to `scheduled`.
+After a task is created and categorised, the backend SHALL automatically set the task's status based on its category and tags. If the task has a "Needs Info" tag, the task SHALL be set to status `review`. Otherwise: `immediate` tasks SHALL be moved to `pending`, and `scheduled` or `repeating` tasks SHALL be moved to `scheduled`.
 
 #### Scenario: Immediate task without Needs Info moves to pending
 - **WHEN** a task is created with category `immediate` and no "Needs Info" tag
@@ -83,36 +83,17 @@ After a task is created and categorised, the backend SHALL automatically set the
 - **WHEN** a task is created with category `repeating` and no "Needs Info" tag
 - **THEN** the task's status is set to `scheduled`
 
-#### Scenario: Task with Needs Info stays in new
+#### Scenario: Task with Needs Info goes to review
 - **WHEN** a task is created with category `immediate` but has the "Needs Info" tag
-- **THEN** the task's status remains `new`
+- **THEN** the task's status is set to `review`
 
-#### Scenario: Short input stays in new
+#### Scenario: Short input goes to review
 - **WHEN** a task is created with a short input (5 words or fewer)
-- **THEN** the task gets the "Needs Info" tag and remains in status `new`
+- **THEN** the task gets the "Needs Info" tag and is set to status `review`
 
-### Requirement: Auto-promotion from New on edit
-When a task in the "New" column with a "Needs Info" tag is updated via `PATCH /api/tasks/{id}`, and the update includes a non-empty `description` AND an `execute_at` or `repeat_interval` value, the backend SHALL automatically remove the "Needs Info" tag and set the task's status to `scheduled`.
-
-#### Scenario: Task promoted from New to Scheduled on edit
-- **WHEN** a task has status `new` and the "Needs Info" tag, and a PATCH updates description to "Generate the quarterly financial report" and execute_at to "2026-02-15T17:00:00Z"
-- **THEN** the "Needs Info" tag is removed, the task's status is set to `scheduled`, and the updated task is returned
-
-#### Scenario: Task with description and repeat_interval promoted
-- **WHEN** a task has status `new` and the "Needs Info" tag, and a PATCH updates description to "Check server health" and repeat_interval to "1h"
-- **THEN** the "Needs Info" tag is removed and the task's status is set to `scheduled`
-
-#### Scenario: Description alone does not trigger promotion
-- **WHEN** a task has status `new` and the "Needs Info" tag, and a PATCH updates only the description (no execute_at or repeat_interval)
-- **THEN** the "Needs Info" tag remains and the task stays in status `new`
-
-#### Scenario: Scheduling fields alone do not trigger promotion
-- **WHEN** a task has status `new` and the "Needs Info" tag, and a PATCH updates only execute_at (no description update)
-- **THEN** the "Needs Info" tag remains and the task stays in status `new`
-
-#### Scenario: Promotion only applies to tasks in New with Needs Info
-- **WHEN** a task has status `running` (not `new`) and a PATCH updates description and execute_at
-- **THEN** the auto-promotion logic does not apply; the task status is unchanged by this logic
+#### Scenario: LLM failure goes to review
+- **WHEN** a task is created with a long input but the LLM call fails
+- **THEN** the task gets the "Needs Info" tag and is set to status `review`
 
 ### Requirement: Database migration for categorisation fields
 An Alembic migration SHALL add four columns to the `tasks` table: `category` (text, nullable, default `immediate`), `execute_at` (timestamptz, nullable), `repeat_interval` (text, nullable), and `repeat_until` (timestamptz, nullable). Existing tasks SHALL receive `category = 'immediate'` via the column default.
