@@ -462,3 +462,54 @@ class TestNewCommandChannelMessage:
             )
             data = response.json()
             assert "_task_id" not in data
+
+
+# --- LLM title generation ---
+
+
+class TestTitleGeneration:
+    @pytest.mark.asyncio
+    async def test_long_input_uses_llm_title(self, slack_client):
+        """Inputs >5 words should go through generate_title for a short title."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            from llm import LLMResult
+            mock_gen.return_value = LLMResult(
+                title="Deploy Staging App", category="immediate", success=True,
+            )
+            response = await _post_command(
+                slack_client, text="new Deploy the new version of the app to staging"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Deploy Staging App" in fields_text
+            mock_gen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_short_input_skips_llm(self, slack_client):
+        """Inputs <=5 words should use text directly as title, no LLM call."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            response = await _post_command(slack_client, text="new Fix login bug")
+            assert response.status_code == 200
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Fix login bug" in fields_text
+            mock_gen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_long_input_sets_description(self, slack_client):
+        """For long inputs, the original text becomes the description."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            from llm import LLMResult
+            mock_gen.return_value = LLMResult(
+                title="Weekly Report", category="scheduled", success=True,
+                execute_at="2026-03-01T09:00:00Z",
+            )
+            response = await _post_command(
+                slack_client, text="new Generate the weekly status report and send it to the team"
+            )
+            assert response.status_code == 200
+            # Verify title is the LLM-generated one
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Weekly Report" in fields_text

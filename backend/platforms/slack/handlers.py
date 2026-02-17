@@ -1,9 +1,11 @@
 """Slack command handler functions."""
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from llm import generate_title
 from models import Task
 from platforms.slack.blocks import (
     error_blocks,
@@ -52,8 +54,34 @@ async def find_task_by_prefix(prefix: str, session: AsyncSession) -> Task | dict
 
 async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
     """Create a new task. Returns Block Kit response dict."""
-    if not args.strip():
+    input_text = args.strip()
+    if not input_text:
         return error_blocks("Usage: `/task new <title>`")
+
+    words = input_text.split()
+    title = input_text
+    description = None
+    category = "immediate"
+    execute_at = None
+    tag_names: list[str] = []
+
+    if len(words) > 5:
+        llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
+        title = llm_result.title
+        description = input_text
+        category = llm_result.category or "immediate"
+        if llm_result.execute_at:
+            try:
+                execute_at = datetime.fromisoformat(llm_result.execute_at)
+            except (ValueError, TypeError):
+                pass
+        if not llm_result.success:
+            tag_names.append("Needs Info")
+    else:
+        tag_names.append("Needs Info")
+
+    if category == "immediate":
+        execute_at = datetime.now(timezone.utc)
 
     max_pos_result = await session.execute(
         select(func.max(Task.position)).where(Task.status == "pending")
@@ -61,15 +89,19 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
     position = (max_pos_result.scalar() or 0) + 1
 
     task = Task(
-        title=args.strip(),
+        title=title,
+        description=description,
         created_by=user_email,
-        category="immediate",
+        category=category,
         status="pending",
         position=position,
+        execute_at=execute_at,
     )
     session.add(task)
     await session.flush()
     await add_tag(session, task.id, "slack")
+    for tag_name in tag_names:
+        await add_tag(session, task.id, tag_name)
     await session.commit()
     await session.refresh(task)
     response = task_created_blocks(task)

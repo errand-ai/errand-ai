@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, get_session
+from llm import generate_title
 from models import SlackMessageRef, Task
 from platforms.credentials import load_credentials
 from platforms.slack.blocks import help_blocks, task_created_blocks
@@ -139,9 +141,9 @@ async def _handle_mention(event: dict) -> None:
     user_id = event.get("user", "")
     channel = event.get("channel", "")
 
-    # Strip bot mention to get task title
-    title = _BOT_MENTION_RE.sub("", text).strip()
-    if not title:
+    # Strip bot mention to get input text
+    input_text = _BOT_MENTION_RE.sub("", text).strip()
+    if not input_text:
         return  # Empty mention, silently ignore
 
     async with async_session() as session:
@@ -153,6 +155,32 @@ async def _handle_mention(event: dict) -> None:
         email = await resolve_slack_email(user_id, bot_token) if user_id and bot_token else None
         user_email = email or f"slack:{user_id}"
 
+        # Generate title via LLM for longer inputs
+        words = input_text.split()
+        title = input_text
+        description = None
+        category = "immediate"
+        execute_at = None
+        tag_names: list[str] = []
+
+        if len(words) > 5:
+            llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
+            title = llm_result.title
+            description = input_text
+            category = llm_result.category or "immediate"
+            if llm_result.execute_at:
+                try:
+                    execute_at = datetime.fromisoformat(llm_result.execute_at)
+                except (ValueError, TypeError):
+                    pass
+            if not llm_result.success:
+                tag_names.append("Needs Info")
+        else:
+            tag_names.append("Needs Info")
+
+        if category == "immediate":
+            execute_at = datetime.now(timezone.utc)
+
         # Create task
         max_pos_result = await session.execute(
             select(func.max(Task.position)).where(Task.status == "pending")
@@ -161,14 +189,18 @@ async def _handle_mention(event: dict) -> None:
 
         task = Task(
             title=title,
+            description=description,
             created_by=user_email,
-            category="immediate",
+            category=category,
             status="pending",
             position=position,
+            execute_at=execute_at,
         )
         session.add(task)
         await session.flush()
         await add_tag(session, task.id, "slack")
+        for tag_name in tag_names:
+            await add_tag(session, task.id, tag_name)
         await session.commit()
         await session.refresh(task)
 
