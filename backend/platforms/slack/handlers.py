@@ -72,7 +72,9 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
     await add_tag(session, task.id, "slack")
     await session.commit()
     await session.refresh(task)
-    return task_created_blocks(task)
+    response = task_created_blocks(task)
+    response["_task_id"] = str(task.id)  # metadata for route (stripped before sending)
+    return response
 
 
 async def handle_status(args: str, session: AsyncSession) -> dict:

@@ -116,12 +116,12 @@ async def slack_client() -> AsyncGenerator[AsyncClient, None]:
     await engine.dispose()
 
 
-async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123"):
+async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123", channel_id: str = ""):
     """Post a slash command to /slack/commands."""
-    return await client.post(
-        "/slack/commands",
-        data={"command": "/task", "text": text, "user_id": user_id},
-    )
+    data = {"command": "/task", "text": text, "user_id": user_id}
+    if channel_id:
+        data["channel_id"] = channel_id
+    return await client.post("/slack/commands", data=data)
 
 
 def _extract_short_id(create_response) -> str:
@@ -403,3 +403,62 @@ class TestSlackTag:
         assert response2.status_code == 200
         # Both should succeed without errors (tag reuse works)
         assert response2.json()["blocks"][0]["text"]["text"] == "Task Created"
+
+
+# --- Channel message for live updates ---
+
+
+class TestNewCommandChannelMessage:
+    @pytest.mark.asyncio
+    async def test_posts_channel_message_when_channel_id_present(self, slack_client):
+        """When channel_id is provided, /task new should also post a visible channel message."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock(
+                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
+            )
+            response = await _post_command(
+                slack_client, text="new Channel task", channel_id="C456"
+            )
+            assert response.status_code == 200
+            assert response.json()["blocks"][0]["text"]["text"] == "Task Created"
+
+            # Background task posts to the channel
+            mock_client.post_message.assert_called_once()
+            call_args = mock_client.post_message.call_args
+            assert call_args[0][0] == "xoxb-test"  # bot token
+            assert call_args[0][1] == "C456"  # channel
+            assert isinstance(call_args[0][2], list)  # blocks
+
+    @pytest.mark.asyncio
+    async def test_no_channel_message_without_channel_id(self, slack_client):
+        """When no channel_id, no channel message is posted."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock()
+            response = await _post_command(slack_client, text="new No channel task")
+            assert response.status_code == 200
+            mock_client.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_channel_message_on_error(self, slack_client):
+        """When /task new fails (missing title), no channel message is posted."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock()
+            response = await _post_command(
+                slack_client, text="new", channel_id="C456"
+            )
+            assert response.status_code == 200
+            assert ":warning:" in response.json()["blocks"][0]["text"]["text"]
+            mock_client.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_task_id_stripped_from_response(self, slack_client):
+        """The _task_id metadata field should not appear in the HTTP response."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock(
+                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
+            )
+            response = await _post_command(
+                slack_client, text="new Metadata test", channel_id="C456"
+            )
+            data = response.json()
+            assert "_task_id" not in data

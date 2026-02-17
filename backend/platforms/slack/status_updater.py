@@ -64,6 +64,7 @@ async def run_status_updater(
 
     Runs as a long-lived background task. Reconnects on connection loss.
     """
+    pubsub = None
     while True:
         try:
             valkey = get_valkey_fn()
@@ -92,11 +93,12 @@ async def run_status_updater(
 
         except asyncio.CancelledError:
             logger.info("Slack status updater shutting down")
-            try:
-                await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
-            except Exception:
-                pass
+            if pubsub is not None:
+                try:
+                    await pubsub.unsubscribe(channel)
+                    await pubsub.aclose()
+                except Exception:
+                    logger.debug("Error cleaning up pubsub on shutdown", exc_info=True)
             raise
         except Exception:
             logger.exception("Slack status updater error, reconnecting in 5s")

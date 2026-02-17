@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from fastapi import Request
 
 import events as events_module
 from main import app
 from database import get_session
-from models import SlackMessageRef, Task
+from models import SlackMessageRef
 from platforms.slack.routes import _processed_events
 from platforms.slack.verification import verify_slack_request
 

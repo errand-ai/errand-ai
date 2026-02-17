@@ -1,5 +1,4 @@
 """Tests for SlackClient (httpx-based Slack API wrapper)."""
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

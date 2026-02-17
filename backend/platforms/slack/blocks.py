@@ -54,7 +54,7 @@ def task_created_blocks(task) -> dict:
             },
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Created by {task.created_by}"}],
+                "elements": [{"type": "mrkdwn", "text": f"Created by {task.created_by or 'unknown'}"}],
             },
             _task_action_buttons(task.id),
         ],

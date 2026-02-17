@@ -58,6 +58,7 @@ def _is_duplicate_event(event_id: str) -> bool:
 
 @router.post("/commands")
 async def slack_commands(
+    background_tasks: BackgroundTasks,
     body: bytes = Depends(verify_slack_request),
     session: AsyncSession = Depends(get_session),
 ):
@@ -65,6 +66,7 @@ async def slack_commands(
     form_data = parse_qs(body.decode())
     text = form_data.get("text", [""])[0]
     user_id = form_data.get("user_id", [""])[0]
+    channel_id = form_data.get("channel_id", [""])[0]
 
     # Parse subcommand
     parts = text.split(None, 1)
@@ -91,6 +93,17 @@ async def slack_commands(
     else:
         response = help_blocks()
 
+    # If a task was just created, also post a channel message for live status updates
+    task_id = response.pop("_task_id", None)
+    if task_id and bot_token and channel_id:
+        background_tasks.add_task(
+            _post_channel_message_and_store_ref,
+            bot_token=bot_token,
+            channel_id=channel_id,
+            task_id=task_id,
+            blocks=response.get("blocks", []),
+        )
+
     return JSONResponse(content=response)
 
 
@@ -111,7 +124,7 @@ async def slack_events(
         event_id = data.get("event_id", "")
 
         if event.get("type") == "app_mention":
-            if not _is_duplicate_event(event_id):
+            if event_id and not _is_duplicate_event(event_id):
                 background_tasks.add_task(
                     _handle_mention,
                     event=event,
@@ -193,7 +206,10 @@ async def slack_interactions(
     if not payload_str:
         return JSONResponse(content={"ok": True}, status_code=200)
 
-    payload = json.loads(payload_str)
+    try:
+        payload = json.loads(payload_str)
+    except (json.JSONDecodeError, TypeError):
+        return JSONResponse(content={"ok": True}, status_code=200)
 
     if payload.get("type") == "block_actions":
         response_url = payload.get("response_url", "")
@@ -218,6 +234,25 @@ async def slack_interactions(
 
     # Always acknowledge with 200 — actual response sent via response_url
     return JSONResponse(content={"ok": True}, status_code=200)
+
+
+async def _post_channel_message_and_store_ref(
+    bot_token: str, channel_id: str, task_id: str, blocks: list,
+) -> None:
+    """Post a visible channel message for a new task and store the ref for live updates."""
+    try:
+        resp = await _slack_client.post_message(bot_token, channel_id, blocks)
+        if resp.get("ok"):
+            async with async_session() as session:
+                msg_ref = SlackMessageRef(
+                    task_id=task_id,
+                    channel_id=resp.get("channel", channel_id),
+                    message_ts=resp["ts"],
+                )
+                session.add(msg_ref)
+                await session.commit()
+    except Exception:
+        logger.exception("Failed to post channel message for task %s", task_id)
 
 
 async def _post_interaction_response(response_url: str, blocks: list) -> None:

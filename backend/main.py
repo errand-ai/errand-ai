@@ -130,11 +130,11 @@ async def lifespan(app: FastAPI):
     try:
         await scheduler_task
     except asyncio.CancelledError:
-        pass
+        pass  # Expected after explicit cancel()
     try:
         await slack_updater_task
     except asyncio.CancelledError:
-        pass
+        pass  # Expected after explicit cancel()
     await release_lock()
     await close_valkey()
     await engine.dispose()

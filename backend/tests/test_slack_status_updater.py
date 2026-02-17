@@ -1,6 +1,5 @@
 """Tests for Slack status updater (Valkey subscriber)."""
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
