@@ -1,22 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, onBeforeUnmount } from 'vue'
+import { onMounted, ref, provide } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import SystemPromptSettings from '../components/settings/SystemPromptSettings.vue'
-import SkillsSettings from '../components/settings/SkillsSettings.vue'
-import SkillsRepoSettings from '../components/settings/SkillsRepoSettings.vue'
-import LlmModelSettings from '../components/settings/LlmModelSettings.vue'
-import TaskManagementSettings from '../components/settings/TaskManagementSettings.vue'
-import McpApiKeySettings from '../components/settings/McpApiKeySettings.vue'
-import PlatformSettings from '../components/settings/PlatformSettings.vue'
-import GitSshKeySettings from '../components/settings/GitSshKeySettings.vue'
-import McpServerConfigSettings from '../components/settings/McpServerConfigSettings.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 const DEFAULT_TASK_PROCESSING_MODEL = 'claude-sonnet-4-5-20250929'
 
-// Loaded settings state
+// Settings state (provided to child routes)
 const systemPrompt = ref('')
 const mcpServersText = ref('')
 const llmModel = ref(DEFAULT_MODEL)
@@ -31,25 +24,6 @@ const gitSshHosts = ref<string[]>([])
 const skillsGitRepo = ref<{ url?: string; branch?: string; path?: string } | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
-
-// Child component refs for dirty detection
-const systemPromptRef = ref<InstanceType<typeof SystemPromptSettings> | null>(null)
-const llmModelRef = ref<InstanceType<typeof LlmModelSettings> | null>(null)
-const taskMgmtRef = ref<InstanceType<typeof TaskManagementSettings> | null>(null)
-const mcpConfigRef = ref<InstanceType<typeof McpServerConfigSettings> | null>(null)
-
-const hasUnsavedChanges = computed(() =>
-  systemPromptRef.value?.isDirty
-  || llmModelRef.value?.isDirty
-  || taskMgmtRef.value?.isDirty
-  || mcpConfigRef.value?.isDirty
-)
-
-function onBeforeUnload(e: BeforeUnloadEvent) {
-  if (hasUnsavedChanges.value) {
-    e.preventDefault()
-  }
-}
 
 async function settingsFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -104,18 +78,29 @@ async function loadSettings() {
   }
 }
 
-onMounted(async () => {
-  window.addEventListener('beforeunload', onBeforeUnload)
-  await loadSettings()
+provide('settings-state', {
+  systemPrompt,
+  mcpServersText,
+  llmModel,
+  taskProcessingModel,
+  transcriptionModel,
+  taskRunnerLogLevel,
+  timezoneValue,
+  archiveAfterDays,
+  mcpApiKey,
+  sshPublicKey,
+  gitSshHosts,
+  skillsGitRepo,
+  saveSettings,
 })
 
-onBeforeUnmount(() => {
-  window.removeEventListener('beforeunload', onBeforeUnload)
+onMounted(() => {
+  loadSettings()
 })
 </script>
 
 <template>
-  <div class="mx-auto max-w-4xl">
+  <div class="mx-auto max-w-6xl">
     <h2 class="text-2xl font-bold text-gray-900 mb-6">Settings</h2>
 
     <div v-if="error" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
@@ -132,72 +117,43 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <template v-else>
-      <!-- ===== Agent Configuration ===== -->
-      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4" data-testid="group-agent-configuration">Agent Configuration</h3>
+    <div v-else class="flex gap-8">
+      <nav class="w-48 flex-shrink-0" data-testid="settings-sidebar">
+        <div class="sticky top-6 space-y-1">
+          <router-link
+            to="/settings/agent"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/agent' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Agent Configuration
+          </router-link>
+          <router-link
+            to="/settings/tasks"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/tasks' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Task Management
+          </router-link>
+          <router-link
+            to="/settings/security"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/security' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Security
+          </router-link>
+          <router-link
+            to="/settings/integrations"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/integrations' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Integrations
+          </router-link>
+        </div>
+      </nav>
 
-      <SystemPromptSettings
-        ref="systemPromptRef"
-        :system-prompt="systemPrompt"
-        :save-settings="saveSettings"
-        @update:system-prompt="systemPrompt = $event"
-      />
-
-      <SkillsSettings />
-
-      <SkillsRepoSettings
-        :skills-git-repo="skillsGitRepo"
-        :save-settings="saveSettings"
-      />
-
-      <LlmModelSettings
-        ref="llmModelRef"
-        :llm-model="llmModel"
-        :task-processing-model="taskProcessingModel"
-        :transcription-model="transcriptionModel"
-        @update:llm-model="llmModel = $event"
-        @update:task-processing-model="taskProcessingModel = $event"
-        @update:transcription-model="transcriptionModel = $event"
-      />
-
-      <!-- ===== Task Management ===== -->
-      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4 mt-8" data-testid="group-task-management">Task Management</h3>
-
-      <TaskManagementSettings
-        ref="taskMgmtRef"
-        :timezone="timezoneValue"
-        :archive-after-days="archiveAfterDays"
-        :task-runner-log-level="taskRunnerLogLevel"
-        :save-settings="saveSettings"
-        @update:timezone="timezoneValue = $event"
-        @update:archive-after-days="archiveAfterDays = $event"
-        @update:task-runner-log-level="taskRunnerLogLevel = $event"
-      />
-
-      <!-- ===== Integrations & Security ===== -->
-      <h3 class="text-lg font-semibold text-gray-600 uppercase tracking-wide mb-4 mt-8" data-testid="group-integrations-security">Integrations & Security</h3>
-
-      <McpApiKeySettings
-        :mcp-api-key="mcpApiKey"
-        @update:mcp-api-key="mcpApiKey = $event"
-      />
-
-      <PlatformSettings />
-
-      <GitSshKeySettings
-        :ssh-public-key="sshPublicKey"
-        :git-ssh-hosts="gitSshHosts"
-        :save-settings="saveSettings"
-        @update:ssh-public-key="sshPublicKey = $event"
-        @update:git-ssh-hosts="gitSshHosts = $event"
-      />
-
-      <McpServerConfigSettings
-        ref="mcpConfigRef"
-        :mcp-servers-text="mcpServersText"
-        :save-settings="saveSettings"
-        @update:mcp-servers-text="mcpServersText = $event"
-      />
-    </template>
+      <div class="flex-1 min-w-0">
+        <router-view />
+      </div>
+    </div>
   </div>
 </template>

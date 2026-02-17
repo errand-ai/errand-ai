@@ -82,7 +82,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
               v-if="auth.isAdmin"
               to="/settings"
               class="rounded-md px-3 py-1.5 text-sm font-medium"
-              :class="route.path === '/settings' ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:text-gray-900'"
+              :class="route.path.startsWith('/settings') ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:text-gray-900'"
             >
               Settings
             </router-link>

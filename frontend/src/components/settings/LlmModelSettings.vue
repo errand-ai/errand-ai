@@ -73,7 +73,7 @@ defineExpose({ isDirty })
     </div>
 
     <div class="mb-4">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Task Processing Model</label>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Default Model</label>
       <select
         v-model="localTaskModel"
         :disabled="llmModels.length === 0"

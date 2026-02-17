@@ -41,7 +41,17 @@ function makeRouter() {
     routes: [
       { path: '/', component: { template: '<div>Home</div>' } },
       { path: '/archived', component: { template: '<div>Archived</div>' } },
-      { path: '/settings', component: { template: '<div>Settings</div>' } },
+      {
+        path: '/settings',
+        component: { template: '<div>Settings<router-view /></div>' },
+        children: [
+          { path: '', redirect: { name: 'settings-agent' } },
+          { path: 'agent', name: 'settings-agent', component: { template: '<div>Agent</div>' } },
+          { path: 'tasks', name: 'settings-tasks', component: { template: '<div>Tasks</div>' } },
+          { path: 'security', name: 'settings-security', component: { template: '<div>Security</div>' } },
+          { path: 'integrations', name: 'settings-integrations', component: { template: '<div>Integrations</div>' } },
+        ],
+      },
     ],
   })
 }
@@ -124,6 +134,25 @@ describe('App navigation', () => {
     const boardLink = nav.findAll('a')[0]
     expect(boardLink.classes()).toContain('bg-gray-100')
     expect(boardLink.classes()).toContain('text-gray-900')
+  })
+
+  it('Settings link is highlighted on settings sub-pages', async () => {
+    const auth = useAuthStore()
+    auth.setToken(fakeJwt({
+      name: 'Admin',
+      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+    }))
+
+    const router = makeRouter()
+    await router.push('/settings/security')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const nav = wrapper.find('[data-testid="main-nav"]')
+    const settingsLink = nav.findAll('a').find(l => l.text() === 'Settings')
+    expect(settingsLink).toBeTruthy()
+    expect(settingsLink!.classes()).toContain('bg-gray-100')
+    expect(settingsLink!.classes()).toContain('text-gray-900')
   })
 
   it('dropdown only contains Log out', async () => {
