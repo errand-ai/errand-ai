@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import TaskLogModal from '../TaskLogModal.vue'
+import TaskEventLog from '../TaskEventLog.vue'
 import { useAuthStore } from '../../stores/auth'
 
 class MockWebSocket {
@@ -737,6 +738,19 @@ describe('TaskLogModal', () => {
     const el = wrapper.find('[data-testid="event-raw"]')
     expect(el.exists()).toBe(true)
     expect(el.text()).toContain('plain text message')
+
+    wrapper.unmount()
+  })
+
+  // --- Delegation to TaskEventLog ---
+
+  it('delegates event rendering to TaskEventLog component', () => {
+    const wrapper = mount(TaskLogModal, {
+      props: { taskId: 'abc-123', title: 'My Task' },
+    })
+
+    const eventLog = wrapper.findComponent(TaskEventLog)
+    expect(eventLog.exists()).toBe(true)
 
     wrapper.unmount()
   })

@@ -294,7 +294,7 @@ onUnmounted(() => store.stop())
   <TaskEditModal
     v-if="editingTask"
     :task="editingTask"
-    :read-only="auth.isViewer || editingTask.status === 'running'"
+    :read-only="auth.isViewer || editingTask.status === 'running' || editingTask.status === 'completed'"
     @save="onSave"
     @cancel="onCancel"
     @delete="onModalDelete"

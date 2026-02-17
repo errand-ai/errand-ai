@@ -89,6 +89,21 @@ describe('TaskEditModal — read-only mode', () => {
   })
 })
 
+describe('TaskEditModal — completed task read-only mode', () => {
+  it('completed task with readOnly shows disabled fields and no Save/Delete', () => {
+    const completedTask: TaskData = { ...baseTask, status: 'completed' }
+    const wrapper = mount(TaskEditModal, { props: { task: completedTask, readOnly: true } })
+
+    expect((wrapper.find('#edit-title').element as HTMLInputElement).disabled).toBe(true)
+    expect((wrapper.find('#edit-description').element as HTMLTextAreaElement).disabled).toBe(true)
+    const buttons = wrapper.findAll('button')
+    const buttonTexts = buttons.map((b) => b.text())
+    expect(buttonTexts).not.toContain('Save')
+    expect(buttonTexts).not.toContain('Delete')
+    expect(buttonTexts).toContain('Close')
+  })
+})
+
 describe('TaskEditModal — running task is read-only in KanbanBoard context', () => {
   it('shows readOnly behavior for running tasks when readOnly prop is passed', () => {
     const runningTask: TaskData = { ...baseTask, status: 'running' }
