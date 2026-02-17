@@ -769,7 +769,11 @@ async def save_platform_credentials(
             last_verified_at=now,
         ))
     await session.commit()
-    return {"status": "connected"}
+    return {
+        "platform_id": platform_id,
+        "status": "connected",
+        "last_verified_at": now.isoformat(),
+    }
 
 
 @app.delete("/api/platforms/{platform_id}/credentials", status_code=204)

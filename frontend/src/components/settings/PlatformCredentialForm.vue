@@ -50,7 +50,7 @@ function onSubmit() {
       class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
       data-testid="credential-save"
     >
-      {{ saving ? 'Saving...' : 'Save Credentials' }}
+      {{ saving ? 'Testing...' : 'Test & Save' }}
     </button>
   </form>
 </template>

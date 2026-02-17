@@ -77,4 +77,4 @@
 
 - [x] 11.1 Run full backend test suite and fix any failures
 - [x] 11.2 Run full frontend test suite and fix any failures
-- [ ] 11.3 Test locally with `docker compose up --build` — verify platform settings UI, credential save/verify, tweet posting via MCP
+- [x] 11.3 Test locally with `docker compose up --build` — verify platform settings UI, credential save/verify, tweet posting via MCP
