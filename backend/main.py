@@ -63,14 +63,11 @@ async def lifespan(app: FastAPI):
     await init_valkey()
     init_llm_client()
 
-    # Credential encryption key — generate if not set
+    # Credential encryption key — required for persistent credential storage
     if not os.environ.get("CREDENTIAL_ENCRYPTION_KEY"):
-        from cryptography.fernet import Fernet
-        generated_key = Fernet.generate_key().decode()
-        os.environ["CREDENTIAL_ENCRYPTION_KEY"] = generated_key
         logger.warning(
-            "CREDENTIAL_ENCRYPTION_KEY not set — generated a temporary key. "
-            "Set this env var for persistent credential storage."
+            "CREDENTIAL_ENCRYPTION_KEY not set — platform credential storage is disabled. "
+            "Set this env var to enable saving platform credentials."
         )
 
     # Register platforms
@@ -813,7 +810,16 @@ async def get_platform_credential_status(
             "configured_fields": [],
         }
 
-    configured_fields = list(decrypt_credentials(cred.encrypted_data).keys())
+    try:
+        configured_fields = list(decrypt_credentials(cred.encrypted_data).keys())
+    except Exception:
+        logger.exception("Failed to decrypt credentials for platform '%s'", platform_id)
+        return {
+            "platform_id": platform_id,
+            "status": "error",
+            "last_verified_at": cred.last_verified_at.isoformat() if cred.last_verified_at else None,
+            "configured_fields": [],
+        }
     return {
         "platform_id": platform_id,
         "status": cred.status,
@@ -840,7 +846,16 @@ async def verify_platform_credentials(
     if cred is None:
         raise HTTPException(status_code=400, detail=f"No credentials configured for platform '{platform_id}'")
 
-    credentials = decrypt_credentials(cred.encrypted_data)
+    try:
+        credentials = decrypt_credentials(cred.encrypted_data)
+    except Exception:
+        logger.exception("Failed to decrypt credentials for platform '%s'", platform_id)
+        cred.status = "error"
+        await session.commit()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to decrypt credentials for platform '{platform_id}'. They may need to be re-entered.",
+        )
     verified = await platform.verify_credentials(credentials)
     now = datetime.now(timezone.utc)
 

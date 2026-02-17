@@ -68,3 +68,8 @@ spec:
                   name: {{ .Values.credentialEncryption.existingSecret }}
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
+          {{- if .Values.twitter.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.twitter.existingSecret }}
+          {{- end }}

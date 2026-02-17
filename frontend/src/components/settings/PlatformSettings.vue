@@ -34,9 +34,8 @@ async function loadPlatforms() {
 async function onSaveCredentials(platform: PlatformInfo, credentials: Record<string, string>) {
   savingId.value = platform.id
   try {
-    const result = await savePlatformCredentials(platform.id, credentials)
-    const idx = platforms.value.findIndex(p => p.id === platform.id)
-    if (idx !== -1) platforms.value[idx] = { ...platforms.value[idx], status: result.status }
+    await savePlatformCredentials(platform.id, credentials)
+    await loadPlatforms()
     toast.success(`${platform.label} credentials saved.`)
   } catch {
     toast.error(`Failed to save ${platform.label} credentials.`)
@@ -127,7 +126,7 @@ onMounted(loadPlatforms)
           <div class="flex items-center gap-2">
             <span
               class="inline-block h-2.5 w-2.5 rounded-full"
-              :class="platform.status === 'connected' ? 'bg-green-500' : 'bg-gray-400'"
+              :class="platform.status === 'connected' ? 'bg-green-500' : platform.status === 'error' ? 'bg-red-500' : 'bg-gray-400'"
               :data-testid="`platform-status-${platform.id}`"
             ></span>
             <h4 class="font-medium text-gray-800">{{ platform.label }}</h4>
