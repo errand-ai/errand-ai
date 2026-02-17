@@ -188,7 +188,7 @@ async def require_admin(
 
 # --- Schemas ---
 
-VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed", "deleted", "archived"]
+VALID_STATUSES = ["scheduled", "pending", "running", "review", "completed", "deleted", "archived"]
 
 
 class TaskCreate(BaseModel):
@@ -319,7 +319,7 @@ async def list_tasks(
     active = await session.execute(
         select(Task)
         .options(selectinload(Task.tags))
-        .where(Task.status.not_in(["deleted", "archived", "completed"]))
+        .where(Task.status.not_in(["new", "deleted", "archived", "completed"]))
         .order_by(Task.position.asc(), Task.created_at.asc())
     )
     completed = await session.execute(
@@ -394,12 +394,13 @@ async def create_task(
     if tag_names:
         await _sync_tags(session, task, tag_names)
 
-    # Auto-routing: if no "Needs Info" tag, route based on category
-    if "Needs Info" not in tag_names:
-        if category == "immediate":
-            task.status = "pending"
-        elif category in ("scheduled", "repeating"):
-            task.status = "scheduled"
+    # Auto-routing based on category and tags
+    if "Needs Info" in tag_names:
+        task.status = "review"
+    elif category == "immediate":
+        task.status = "pending"
+    elif category in ("scheduled", "repeating"):
+        task.status = "scheduled"
 
     # Assign position at the bottom of the target column
     task.position = await _next_position(session, task.status)
@@ -508,20 +509,6 @@ async def update_task(
             task.repeat_until = None
     if body.tags is not None:
         await _sync_tags(session, task, body.tags)
-
-    # Auto-promotion: new + "Needs Info" + description + scheduling → scheduled
-    has_needs_info = any(t.name == "Needs Info" for t in task.tags)
-    if (
-        task.status == "new"
-        and has_needs_info
-        and body.description is not None
-        and body.description.strip()
-        and (body.execute_at is not None or body.repeat_interval is not None)
-    ):
-        task.status = "scheduled"
-        # Remove "Needs Info" tag
-        current_tags = [t.name for t in task.tags if t.name != "Needs Info"]
-        await _sync_tags(session, task, current_tags)
 
     await session.commit()
     await session.refresh(task, ["tags"])

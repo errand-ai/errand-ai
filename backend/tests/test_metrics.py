@@ -5,7 +5,7 @@ async def create_task_with_status(client: AsyncClient, title: str, status: str) 
     resp = await client.post("/api/tasks", json={"input": title})
     assert resp.status_code == 201
     task = resp.json()
-    if status != "new":
+    if status != "review":
         resp = await client.patch(f"/api/tasks/{task['id']}", json={"status": status})
         assert resp.status_code == 200
         task = resp.json()
@@ -25,7 +25,7 @@ async def test_queue_depth_with_pending_tasks(client: AsyncClient):
 
 async def test_queue_depth_zero(client: AsyncClient):
     # Create a task that is NOT pending
-    await create_task_with_status(client, "New task", "new")
+    await create_task_with_status(client, "Review task", "review")
 
     resp = await client.get("/metrics/queue")
     assert resp.status_code == 200

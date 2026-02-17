@@ -198,7 +198,7 @@ async def test_create_task_short_input_no_llm(client: AsyncClient):
     assert data["description"] is None
     assert data["category"] == "immediate"
     assert "Needs Info" in data["tags"]
-    assert data["status"] == "new"  # stays new due to Needs Info
+    assert data["status"] == "review"  # Needs Info routes to review
     mock_client.chat.completions.create.assert_not_called()
 
 
@@ -220,7 +220,7 @@ async def test_create_task_llm_returns_invalid_json(client: AsyncClient):
     assert data["title"] == "Just a plain title response"
     assert data["category"] == "immediate"
     assert "Needs Info" in data["tags"]
-    assert data["status"] == "new"
+    assert data["status"] == "review"
 
 
 async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):

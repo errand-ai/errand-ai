@@ -23,7 +23,7 @@ vi.mock('../../composables/useWebSocket', () => ({
 // Mock useApi to prevent actual fetch calls
 vi.mock('../../composables/useApi', () => ({
   fetchTasks: vi.fn().mockResolvedValue([]),
-  createTask: vi.fn().mockResolvedValue({ id: 'new-1', title: 'New', description: null, status: 'new', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], created_at: '', updated_at: '', output: null, runner_logs: null, retry_count: 0 }),
+  createTask: vi.fn().mockResolvedValue({ id: 'new-1', title: 'New', description: null, status: 'review', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], created_at: '', updated_at: '', output: null, runner_logs: null, retry_count: 0 }),
   updateTask: vi.fn().mockResolvedValue({ id: '1', title: 'Test', description: null, status: 'running', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], created_at: '', updated_at: '', output: null, runner_logs: null, retry_count: 0 }),
   deleteTask: vi.fn().mockResolvedValue(undefined),
 }))
@@ -47,7 +47,7 @@ describe('TaskStore WebSocket integration', () => {
 
     capturedOptions!.onMessage({
       event: 'task_created',
-      task: { id: 'ws-1', title: 'WebSocket task', description: null, status: 'new', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], output: null, runner_logs: null, retry_count: 0, created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
+      task: { id: 'ws-1', title: 'WebSocket task', description: null, status: 'review', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], output: null, runner_logs: null, retry_count: 0, created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
     })
 
     expect(store.tasks).toHaveLength(1)
@@ -58,7 +58,7 @@ describe('TaskStore WebSocket integration', () => {
   it('updates an existing task on task_updated event', () => {
     const store = useTaskStore()
     store.tasks = [
-      { id: 'existing-1', title: 'Existing', description: null, status: 'new', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], output: null, runner_logs: null, retry_count: 0, created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
+      { id: 'existing-1', title: 'Existing', description: null, status: 'review', position: 0, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [], output: null, runner_logs: null, retry_count: 0, created_at: '2026-01-01T00:00:00', updated_at: '2026-01-01T00:00:00' },
     ]
 
     capturedOptions!.onMessage({
@@ -72,7 +72,7 @@ describe('TaskStore WebSocket integration', () => {
   it('does not duplicate task on repeated task_created', () => {
     const store = useTaskStore()
 
-    const task = { id: 'dup-1', title: 'Dup', description: null, status: 'new' as const, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [] as string[], output: null, runner_logs: null, retry_count: 0, created_at: '', updated_at: '' }
+    const task = { id: 'dup-1', title: 'Dup', description: null, status: 'review' as const, category: 'immediate', execute_at: null, repeat_interval: null, repeat_until: null, tags: [] as string[], output: null, runner_logs: null, retry_count: 0, created_at: '', updated_at: '' }
     capturedOptions!.onMessage({ event: 'task_created', task })
     capturedOptions!.onMessage({ event: 'task_created', task })
 

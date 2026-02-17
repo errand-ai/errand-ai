@@ -18,14 +18,14 @@ vi.mock('../../composables/useApi', async () => {
   }
 })
 
-const COLUMN_LABELS = ['New', 'Scheduled', 'Pending', 'Running', 'Review', 'Completed']
+const COLUMN_LABELS = ['Review', 'Scheduled', 'Pending', 'Running', 'Completed']
 
 function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
   return overrides.map((o, i) => ({
     id: String(i + 1),
     title: `Task ${i + 1}`,
     description: null,
-    status: 'new' as const,
+    status: 'review' as const,
     position: i + 1,
     category: 'immediate',
     execute_at: null,
@@ -56,8 +56,8 @@ describe('KanbanBoard', () => {
     setActivePinia(createPinia())
   })
 
-  it('renders 6 columns with correct labels when tasks exist', () => {
-    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'new' }]))
+  it('renders 5 columns with correct labels when tasks exist', () => {
+    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'review' }]))
     const headings = wrapper.findAll('h2')
     const labels = headings.map((h) => h.text().replace(/\d+/, '').trim())
     expect(labels).toEqual(COLUMN_LABELS)
@@ -65,18 +65,18 @@ describe('KanbanBoard', () => {
 
   it('places tasks in correct columns', () => {
     const { wrapper } = mountWithTasks(makeTasks([
-      { title: 'Alpha', status: 'new' },
+      { title: 'Alpha', status: 'review' },
       { title: 'Beta', status: 'running' },
       { title: 'Gamma', status: 'completed' },
     ]))
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // New column (index 0) should contain Alpha
+    // Review column (index 0) should contain Alpha
     expect(columns[0].text()).toContain('Alpha')
     // Running column (index 3) should contain Beta
     expect(columns[3].text()).toContain('Beta')
-    // Completed column (index 5) should contain Gamma
-    expect(columns[5].text()).toContain('Gamma')
+    // Completed column (index 4) should contain Gamma
+    expect(columns[4].text()).toContain('Gamma')
   })
 
   it('shows board-level empty state when no tasks exist', () => {
@@ -89,19 +89,19 @@ describe('KanbanBoard', () => {
 
   it('shows pill badge with count in column headers', () => {
     const { wrapper } = mountWithTasks(makeTasks([
-      { title: 'Alpha', status: 'new' },
-      { title: 'Beta', status: 'new' },
+      { title: 'Alpha', status: 'review' },
+      { title: 'Beta', status: 'review' },
     ]))
 
     const badges = wrapper.findAll('[data-testid="column-count"]')
-    expect(badges.length).toBe(6)
-    // New column should show 2
+    expect(badges.length).toBe(5)
+    // Review column should show 2
     expect(badges[0].text()).toBe('2')
   })
 
   it('calls store.updateTask on drop to different column', async () => {
     const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '42', title: 'Drag me', status: 'new' }])
+      makeTasks([{ id: '42', title: 'Drag me', status: 'review' }])
     )
     store.updateTask = vi.fn().mockResolvedValue(undefined)
 
@@ -123,18 +123,18 @@ describe('KanbanBoard', () => {
     store.updateTask = vi.fn()
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Drop on "Completed" column (index 5) — same as current status, non-reorderable
+    // Drop on "Completed" column (index 4) — same as current status, non-reorderable
     const dropEvent = new Event('drop', { bubbles: true }) as any
     dropEvent.dataTransfer = { getData: () => '42' }
     dropEvent.preventDefault = vi.fn()
-    columns[5].element.dispatchEvent(dropEvent)
+    columns[4].element.dispatchEvent(dropEvent)
     await nextTick()
 
     expect(store.updateTask).not.toHaveBeenCalled()
   })
 
   it('highlights column on drag enter', async () => {
-    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'new' }]))
+    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'review' }]))
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
     await columns[1].trigger('dragenter')
@@ -209,14 +209,14 @@ describe('KanbanBoard', () => {
   it('calls store.updateTask with position on same-column drop in reorderable column', async () => {
     const { wrapper, store } = mountWithTasks(
       makeTasks([
-        { id: '1', title: 'First', status: 'new', position: 1 },
-        { id: '2', title: 'Second', status: 'new', position: 2 },
+        { id: '1', title: 'First', status: 'review', position: 1 },
+        { id: '2', title: 'Second', status: 'review', position: 2 },
       ])
     )
     store.updateTask = vi.fn().mockResolvedValue(undefined)
 
     const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Drop task '1' (position 1) on the New column (same status, reorderable)
+    // Drop task '1' (position 1) on the Review column (same status, reorderable)
     // In jsdom getBoundingClientRect returns zeros, so insertIndex = cards.length = 2
     // targetPosition = lastTask.position + 1 = 3, which differs from task.position = 1
     const dropEvent = new Event('drop', { bubbles: true }) as any

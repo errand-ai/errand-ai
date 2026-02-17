@@ -6,7 +6,7 @@ from httpx import AsyncClient
 
 import llm as llm_module
 
-VALID_STATUSES = ["new", "scheduled", "pending", "running", "review", "completed"]
+VALID_STATUSES = ["scheduled", "pending", "running", "review", "completed"]
 VALID_CATEGORIES = ["immediate", "scheduled", "repeating"]
 
 
@@ -42,7 +42,7 @@ async def test_list_tasks_ordered_by_position_asc(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
-    # Both are "new" status, t1 gets position 1, t2 gets position 2
+    # Both are "review" status (short input), t1 gets position 1, t2 gets position 2
     assert data[0]["id"] == t1["id"]
     assert data[1]["id"] == t2["id"]
     assert data[0]["position"] < data[1]["position"]
@@ -91,12 +91,12 @@ async def test_pending_tasks_still_ordered_by_position_asc(client: AsyncClient):
 
 
 async def test_create_task_short_input(client: AsyncClient):
-    """Short input (<=5 words) becomes the title directly with Needs Info tag."""
+    """Short input (<=5 words) becomes the title directly with Needs Info tag, status=review."""
     resp = await client.post("/api/tasks", json={"input": "Run analysis"})
     assert resp.status_code == 201
     data = resp.json()
     assert data["title"] == "Run analysis"
-    assert data["status"] == "new"
+    assert data["status"] == "review"
     assert data["description"] is None
     assert data["category"] == "immediate"
     assert "Needs Info" in data["tags"]
@@ -158,12 +158,12 @@ async def test_auto_route_scheduled_to_scheduled(client: AsyncClient):
     assert resp.json()["status"] == "scheduled"
 
 
-async def test_auto_route_needs_info_stays_new(client: AsyncClient):
-    """Task with Needs Info stays in new regardless of category."""
+async def test_auto_route_needs_info_goes_to_review(client: AsyncClient):
+    """Task with Needs Info goes to review regardless of category."""
     resp = await client.post("/api/tasks", json={"input": "Fix login"})
     assert resp.status_code == 201
     data = resp.json()
-    assert data["status"] == "new"
+    assert data["status"] == "review"
     assert "Needs Info" in data["tags"]
 
 
@@ -212,6 +212,13 @@ async def test_update_task_not_found(client: AsyncClient):
 async def test_update_task_invalid_status(client: AsyncClient):
     task = await create_task(client)
     resp = await client.patch(f"/api/tasks/{task['id']}", json={"status": "invalid"})
+    assert resp.status_code == 422
+
+
+async def test_update_task_new_status_rejected(client: AsyncClient):
+    """PATCH with status='new' is rejected since 'new' is no longer a valid status."""
+    task = await create_task(client)
+    resp = await client.patch(f"/api/tasks/{task['id']}", json={"status": "new"})
     assert resp.status_code == 422
 
 
@@ -272,66 +279,6 @@ async def test_all_valid_categories_accepted(client: AsyncClient, cat: str):
     resp = await client.patch(f"/api/tasks/{task['id']}", json={"category": cat})
     assert resp.status_code == 200
     assert resp.json()["category"] == cat
-
-
-# --- Auto-promotion ---
-
-
-async def test_auto_promotion_new_with_needs_info_description_and_execute_at(client: AsyncClient):
-    """Task in new with Needs Info, PATCH with description + execute_at → scheduled, tag removed."""
-    # Create short-input task (new + Needs Info)
-    task = await create_task(client, "Fix login")
-    assert task["status"] == "new"
-    assert "Needs Info" in task["tags"]
-
-    resp = await client.patch(
-        f"/api/tasks/{task['id']}",
-        json={"description": "Fix the login bug on mobile", "execute_at": "2026-02-15T17:00:00Z"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "scheduled"
-    assert "Needs Info" not in data["tags"]
-
-
-async def test_auto_promotion_description_only_stays_new(client: AsyncClient):
-    """Description alone does not trigger promotion."""
-    task = await create_task(client, "Fix login")
-    resp = await client.patch(
-        f"/api/tasks/{task['id']}",
-        json={"description": "Some details"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "new"
-    assert "Needs Info" in data["tags"]
-
-
-async def test_auto_promotion_scheduling_only_stays_new(client: AsyncClient):
-    """Scheduling fields alone do not trigger promotion."""
-    task = await create_task(client, "Fix login")
-    resp = await client.patch(
-        f"/api/tasks/{task['id']}",
-        json={"execute_at": "2026-02-15T17:00:00Z"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "new"
-    assert "Needs Info" in data["tags"]
-
-
-async def test_auto_promotion_non_new_task_unaffected(client: AsyncClient):
-    """Auto-promotion only applies to tasks in new status."""
-    task = await create_task(client, "Fix login")
-    # Move to pending first (not running, since running tasks reject PATCH)
-    await client.patch(f"/api/tasks/{task['id']}", json={"status": "pending"})
-
-    resp = await client.patch(
-        f"/api/tasks/{task['id']}",
-        json={"description": "Details", "execute_at": "2026-02-15T17:00:00Z"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "pending"
 
 
 # --- Valid status enforcement ---

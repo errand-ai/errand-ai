@@ -1,6 +1,6 @@
 import { useAuthStore } from '../stores/auth'
 
-export type TaskStatus = 'new' | 'scheduled' | 'pending' | 'running' | 'review' | 'completed'
+export type TaskStatus = 'scheduled' | 'pending' | 'running' | 'review' | 'completed'
 
 export interface TaskData {
   id: string
