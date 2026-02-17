@@ -27,9 +27,9 @@ The `/settings` route SHALL have a navigation guard that checks `isAdmin` from t
 - **THEN** the user is redirected to `/auth/login` (handled by existing auth logic)
 
 ### Requirement: Settings page layout
-The Settings page SHALL display a heading "Settings" and organise its sections into three labelled groups. The **"Agent Configuration"** group SHALL contain "System Prompt", "Skills", "Skills Repository", and "LLM Models" sections (in that order). The **"Task Management"** group SHALL contain "Task Archiving", "Task Runner", and "Timezone" sections. The **"Integrations & Security"** group SHALL contain "MCP API Key", "Git SSH Key", and "MCP Server Configuration" sections. Each group SHALL have a visible group header label. The "Skills" section SHALL be always visible (not collapsible). The "MCP Server Configuration" section SHALL remain collapsible.
+The Settings page SHALL use a sidebar navigation layout with four sub-pages instead of a single scrolling page. The **"Agent Configuration"** sub-page (`/settings/agent`) SHALL contain "System Prompt", "Skills", "Skills Repository", and "MCP Server Configuration" sections (in that order). The **"Task Management"** sub-page (`/settings/tasks`) SHALL contain "LLM Models" and "Task Management" sections (in that order). The **"Security"** sub-page (`/settings/security`) SHALL contain "Git SSH Key" and "MCP API Key" sections. The **"Integrations"** sub-page (`/settings/integrations`) SHALL contain the platform integrations section. The "MCP Server Configuration" section SHALL remain collapsible.
 
-Each settings section SHALL be a separate Vue component in `frontend/src/components/settings/`:
+Each settings section SHALL remain a separate Vue component in `frontend/src/components/settings/`:
 - `SystemPromptSettings.vue`
 - `SkillsSettings.vue`
 - `SkillsRepoSettings.vue`
@@ -39,25 +39,35 @@ Each settings section SHALL be a separate Vue component in `frontend/src/compone
 - `GitSshKeySettings.vue`
 - `McpServerConfigSettings.vue`
 
-#### Scenario: Settings page renders grouped sections with Skills Repository
-- **WHEN** an admin views the Settings page
-- **THEN** the page displays a "Settings" heading followed by three groups: "Agent Configuration" (containing System Prompt, Skills, Skills Repository, LLM Models), "Task Management" (containing Task Archiving, Task Runner, Timezone), and "Integrations & Security" (containing MCP API Key, Git SSH Key, MCP Server Configuration)
+Four new sub-page components SHALL exist in `frontend/src/pages/settings/`:
+- `AgentConfigurationPage.vue`
+- `TaskManagementPage.vue`
+- `SecurityPage.vue`
+- `IntegrationsPage.vue`
 
-#### Scenario: Skills Repository section positioned after Skills
-- **WHEN** an admin views the Agent Configuration group
-- **THEN** the "Skills Repository" section appears after the "Skills" section and before "LLM Models"
+#### Scenario: Agent Configuration sub-page renders its sections
+- **WHEN** an admin navigates to `/settings/agent`
+- **THEN** the page displays System Prompt, Skills, Skills Repository, and MCP Server Configuration sections
 
-#### Scenario: Consolidated Task Management card
-- **WHEN** an admin views the Task Management group
-- **THEN** Timezone, Task Archiving, and Task Runner settings appear in a single white card with dividers between each section
+#### Scenario: Task Management sub-page renders its sections
+- **WHEN** an admin navigates to `/settings/tasks`
+- **THEN** the page displays LLM Models and Task Management sections
+
+#### Scenario: Security sub-page renders its sections
+- **WHEN** an admin navigates to `/settings/security`
+- **THEN** the page displays Git SSH Key and MCP API Key sections
+
+#### Scenario: Integrations sub-page renders its sections
+- **WHEN** an admin navigates to `/settings/integrations`
+- **THEN** the page displays the platform integrations section
 
 ### Requirement: Consistent explicit save pattern
 All settings sections SHALL use explicit Save buttons. The three previously auto-saving controls (LLM model dropdowns, Timezone dropdown, Task Runner Log Level dropdown) SHALL no longer auto-save on change. Instead, they SHALL require the user to click a Save button. Each section SHALL track whether its current values differ from the last-saved values. When a section has unsaved changes, it SHALL display a "Unsaved changes" indicator (`text-xs text-amber-600`) near its Save button.
 
-The Settings page SHALL register a `beforeunload` event listener when any child section has unsaved changes. The listener SHALL show the browser's native "Leave page?" confirmation when the user attempts to navigate away.
+The active sub-page SHALL register a `beforeunload` event listener when any child section has unsaved changes. The listener SHALL show the browser's native "Leave page?" confirmation when the user attempts to navigate away from the settings pages entirely.
 
 #### Scenario: LLM model requires explicit save
-- **WHEN** an admin changes the task processing model dropdown
+- **WHEN** an admin changes the Default Model dropdown
 - **THEN** the change is not saved until the user clicks the Save button and an "Unsaved changes" indicator appears
 
 #### Scenario: Timezone requires explicit save
@@ -69,11 +79,11 @@ The Settings page SHALL register a `beforeunload` event listener when any child 
 - **THEN** a "Unsaved changes" label appears in amber near the Save button
 
 #### Scenario: Beforeunload guard
-- **WHEN** any settings section has unsaved changes and the user attempts to navigate away
+- **WHEN** any settings section on the active sub-page has unsaved changes and the user attempts to navigate away from settings
 - **THEN** the browser shows a "Leave page?" confirmation dialog
 
 #### Scenario: No guard when all saved
-- **WHEN** all settings sections have their saved values unchanged
+- **WHEN** all settings sections on the active sub-page have their saved values unchanged
 - **THEN** navigating away does not trigger any confirmation
 
 ### Requirement: Skill deletion confirmation
@@ -174,18 +184,18 @@ The Settings page SHALL display a "LLM Model" section with a dropdown to select 
 - **THEN** the dropdown is disabled and an error message is displayed indicating the model list could not be loaded
 
 ### Requirement: Task processing model selector on settings page
-The Settings page SHALL display a "Task Processing Model" dropdown within the "LLM Models" section. The dropdown SHALL be populated by calling `GET /api/llm/models` (same endpoint as the title-generation model). The current selection SHALL be loaded from `GET /api/settings` (key `task_processing_model`). If no `task_processing_model` setting exists, the dropdown SHALL default to `claude-sonnet-4-5-20250929`. Changing the selection SHALL immediately save the choice via `PUT /api/settings` with `{"task_processing_model": "<selected>"}`.
+The Settings page SHALL display a "Default Model" dropdown (previously labelled "Task Processing Model") within the "LLM Models" section on the Task Management sub-page. The dropdown SHALL be populated by calling `GET /api/llm/models` (same endpoint as the title-generation model). The current selection SHALL be loaded from `GET /api/settings` (key `task_processing_model`). If no `task_processing_model` setting exists, the dropdown SHALL default to `claude-sonnet-4-5-20250929`. Changing the selection SHALL immediately save the choice via `PUT /api/settings` with `{"task_processing_model": "<selected>"}`.
 
 #### Scenario: Task processing model dropdown loads with current selection
 - **WHEN** the Settings page loads and the `task_processing_model` setting is "claude-sonnet-4-5-20250929"
-- **THEN** the "Task Processing Model" dropdown shows available models with "claude-sonnet-4-5-20250929" selected
+- **THEN** the "Default Model" dropdown shows available models with "claude-sonnet-4-5-20250929" selected
 
 #### Scenario: Task processing model dropdown with default
 - **WHEN** the Settings page loads and no `task_processing_model` setting exists
-- **THEN** the "Task Processing Model" dropdown shows available models with "claude-sonnet-4-5-20250929" selected
+- **THEN** the "Default Model" dropdown shows available models with "claude-sonnet-4-5-20250929" selected
 
 #### Scenario: Change task processing model
-- **WHEN** the admin selects a different model from the "Task Processing Model" dropdown
+- **WHEN** the admin selects a different model from the "Default Model" dropdown
 - **THEN** the frontend sends `PUT /api/settings` with the new `task_processing_model` value and shows a success indication
 
 #### Scenario: Models endpoint unavailable disables both dropdowns
