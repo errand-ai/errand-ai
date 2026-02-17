@@ -25,6 +25,21 @@ class SlackClient:
                 logger.error("chat.postMessage failed: %s", data.get("error"))
             return data
 
+    async def post_response_url(self, response_url: str, blocks: list, *, ephemeral: bool = True) -> None:
+        """Post a message to a Slack response_url (interaction follow-up).
+
+        Unlike Slack API methods, response_url does not need a bearer token — the URL
+        itself is a one-time-use signed webhook.
+        """
+        payload: dict = {
+            "response_type": "ephemeral" if ephemeral else "in_channel",
+            "replace_original": False,
+            "blocks": blocks,
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(response_url, json=payload)
+            resp.raise_for_status()
+
     async def update_message(self, token: str, channel: str, ts: str, blocks: list) -> dict:
         """Update an existing Slack message. Returns the API response JSON."""
         async with httpx.AsyncClient() as client:

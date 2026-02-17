@@ -129,13 +129,14 @@ async def _create_test_task(session_maker, title="Test Task", status="pending") 
         return task.id
 
 
-def _interaction_payload(action_id: str, value: str) -> str:
+def _interaction_payload(action_id: str, value: str, response_url: str = "https://hooks.slack.com/actions/T123/456/test") -> str:
     """Build a form-encoded interaction payload."""
     payload = json.dumps({
         "type": "block_actions",
         "actions": [{"action_id": action_id, "value": value}],
         "user": {"id": "U123"},
         "channel": {"id": "C123"},
+        "response_url": response_url,
     })
     return urlencode({"payload": payload})
 
@@ -146,30 +147,43 @@ class TestInteractionsEndpoint:
         client, session_maker = interactions_client
         task_id = await _create_test_task(session_maker, title="Status Test")
 
-        response = await client.post(
-            "/slack/interactions",
-            content=_interaction_payload("task_status", str(task_id)),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["blocks"][0]["type"] == "header"
-        assert data["blocks"][0]["text"]["text"] == "Status Test"
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_response_url = AsyncMock()
+            response = await client.post(
+                "/slack/interactions",
+                content=_interaction_payload("task_status", str(task_id)),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            assert response.status_code == 200
+            assert response.json() == {"ok": True}
+
+            # Background task posts ephemeral response via response_url
+            mock_client.post_response_url.assert_called_once()
+            call_args = mock_client.post_response_url.call_args
+            assert call_args[0][0] == "https://hooks.slack.com/actions/T123/456/test"
+            blocks = call_args[0][1]
+            assert blocks[0]["type"] == "header"
+            assert blocks[0]["text"]["text"] == "Status Test"
 
     @pytest.mark.asyncio
     async def test_task_output_button(self, interactions_client):
         client, session_maker = interactions_client
         task_id = await _create_test_task(session_maker, title="Output Test")
 
-        response = await client.post(
-            "/slack/interactions",
-            content=_interaction_payload("task_output", str(task_id)),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["blocks"][0]["type"] == "header"
-        assert "Output: Output Test" in data["blocks"][0]["text"]["text"]
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_response_url = AsyncMock()
+            response = await client.post(
+                "/slack/interactions",
+                content=_interaction_payload("task_output", str(task_id)),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            assert response.status_code == 200
+            assert response.json() == {"ok": True}
+
+            mock_client.post_response_url.assert_called_once()
+            blocks = mock_client.post_response_url.call_args[0][1]
+            assert blocks[0]["type"] == "header"
+            assert "Output: Output Test" in blocks[0]["text"]["text"]
 
     @pytest.mark.asyncio
     async def test_unknown_action_returns_200(self, interactions_client):

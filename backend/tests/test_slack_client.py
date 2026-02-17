@@ -134,3 +134,46 @@ class TestUpdateMessage:
 
         assert result["ok"] is False
         assert result["error"] == "message_not_found"
+
+
+class TestPostResponseUrl:
+    @pytest.mark.asyncio
+    async def test_post_response_url_sends_ephemeral(self, slack_client):
+        mock_resp = _mock_httpx_response({})
+        with patch("platforms.slack.client.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post.return_value = mock_resp
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
+
+            await slack_client.post_response_url(
+                "https://hooks.slack.com/actions/T1/B1/test",
+                [{"type": "section", "text": {"type": "mrkdwn", "text": "hello"}}],
+            )
+
+        call_args = instance.post.call_args
+        assert call_args[0][0] == "https://hooks.slack.com/actions/T1/B1/test"
+        body = call_args[1]["json"]
+        assert body["response_type"] == "ephemeral"
+        assert body["replace_original"] is False
+        assert len(body["blocks"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_post_response_url_in_channel(self, slack_client):
+        mock_resp = _mock_httpx_response({})
+        with patch("platforms.slack.client.httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.post.return_value = mock_resp
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = instance
+
+            await slack_client.post_response_url(
+                "https://hooks.slack.com/actions/T1/B1/test",
+                [{"type": "section"}],
+                ephemeral=False,
+            )
+
+        body = instance.post.call_args[1]["json"]
+        assert body["response_type"] == "in_channel"

@@ -178,10 +178,16 @@ async def _handle_mention(event: dict) -> None:
 
 @router.post("/interactions")
 async def slack_interactions(
+    background_tasks: BackgroundTasks,
     body: bytes = Depends(verify_slack_request),
     session: AsyncSession = Depends(get_session),
 ):
-    """Handle Slack interactivity payloads (button clicks)."""
+    """Handle Slack interactivity payloads (button clicks).
+
+    For block_actions, the direct HTTP response only acknowledges receipt.
+    Actual responses are sent via the response_url as ephemeral messages,
+    since response_type is only honoured when posted to response_url.
+    """
     form_data = parse_qs(body.decode())
     payload_str = form_data.get("payload", [""])[0]
     if not payload_str:
@@ -190,17 +196,33 @@ async def slack_interactions(
     payload = json.loads(payload_str)
 
     if payload.get("type") == "block_actions":
+        response_url = payload.get("response_url", "")
         actions = payload.get("actions", [])
         for action in actions:
             action_id = action.get("action_id")
             task_id = action.get("value", "")
 
-            if action_id == "task_status":
-                response = await handle_status(task_id, session)
-                return JSONResponse(content=response)
-            elif action_id == "task_output":
-                response = await handle_output(task_id, session)
-                return JSONResponse(content=response)
+            if action_id in ("task_status", "task_output"):
+                if action_id == "task_status":
+                    response = await handle_status(task_id, session)
+                else:
+                    response = await handle_output(task_id, session)
 
-    # Unknown action or type — acknowledge with 200
+                if response_url:
+                    background_tasks.add_task(
+                        _post_interaction_response,
+                        response_url=response_url,
+                        blocks=response.get("blocks", []),
+                    )
+                break
+
+    # Always acknowledge with 200 — actual response sent via response_url
     return JSONResponse(content={"ok": True}, status_code=200)
+
+
+async def _post_interaction_response(response_url: str, blocks: list) -> None:
+    """Post an ephemeral response to a Slack interaction response_url."""
+    try:
+        await _slack_client.post_response_url(response_url, blocks)
+    except Exception:
+        logger.exception("Failed to post interaction response to %s", response_url)
