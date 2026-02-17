@@ -7,6 +7,8 @@ services:
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -100,6 +102,7 @@ services:
       USE_PERPLEXITY: "true"
       PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
       BACKEND_MCP_URL: http://backend:8000/mcp
+      HINDSIGHT_URL: http://hindsight:8888
       MAX_TURNS: "200"
     depends_on:
       migrate:
@@ -113,9 +116,43 @@ services:
     volumes:
       - ./backend:/app
 
+  hindsight-init:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    user: root
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+      - hindsight-models:/home/hindsight/.cache
+    command: chown -R hindsight:hindsight /home/hindsight/.pg0 /home/hindsight/.cache
+
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    environment:
+      HINDSIGHT_API_LLM_API_KEY: ${OPENAI_API_KEY}
+      HINDSIGHT_API_LLM_BASE_URL: ${OPENAI_BASE_URL:-}
+      HINDSIGHT_API_LLM_MODEL: claude-sonnet-4-5-20250929
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+      - hindsight-models:/home/hindsight/.cache
+    depends_on:
+      hindsight-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   frontend:
     build: ./frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
+
+volumes:
+  postgres-data:
+  hindsight-data:
+  hindsight-models:

@@ -19,6 +19,7 @@ from worker import (
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
     substitute_env_vars, extract_json, generate_ssh_config, put_archive_ssh,
     build_skills_archive, build_skill_manifest,
+    recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
 )
 
 
@@ -2492,3 +2493,353 @@ async def test_read_settings_skills_git_repo_empty_url(worker_session: AsyncSess
 
     settings = await read_settings(worker_session)
     assert settings["skills_git_repo"] is None
+
+
+# --- Hindsight integration tests ---
+
+
+def test_recall_from_hindsight_success():
+    """recall_from_hindsight returns recalled text on successful API call."""
+    with patch("worker.httpx.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"results": [{"text": "Previous task deployed v2 to staging."}]}
+        mock_post.return_value = mock_resp
+
+        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "Deploy frontend")
+
+    assert result == "Previous task deployed v2 to staging."
+    mock_post.assert_called_once_with(
+        "http://hindsight:8888/v1/default/banks/my-bank/memories/recall",
+        json={"query": "Deploy frontend", "max_tokens": 2048},
+        timeout=30,
+    )
+
+
+def test_recall_from_hindsight_api_failure():
+    """recall_from_hindsight returns None and logs warning on API failure."""
+    with patch("worker.httpx.post") as mock_post:
+        mock_post.side_effect = Exception("Connection refused")
+
+        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "Deploy frontend")
+
+    assert result is None
+
+
+def test_recall_from_hindsight_empty_result():
+    """recall_from_hindsight returns None when API returns empty content."""
+    with patch("worker.httpx.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"results": []}
+        mock_post.return_value = mock_resp
+
+        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "query")
+
+    assert result is None
+
+
+def test_hindsight_mcp_injected_when_configured():
+    """When HINDSIGHT_URL is set, hindsight MCP server is injected into mcp.json."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"other": {"url": "http://other/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-hs1"
+    mock_container.short_id = "conths1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+        }), patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json from put_archive call
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert "hindsight" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://hindsight-api:8888/mcp/content-manager-tasks/"
+    # Existing server preserved
+    assert "other" in mcp_config["mcpServers"]
+
+
+def test_hindsight_mcp_skipped_when_already_in_database():
+    """When database mcp_servers already has hindsight, the database value is preserved."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"hindsight": {"url": "http://custom-hindsight/mcp/custom-bank/"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-hs2"
+    mock_container.short_id = "conths2"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+        }), patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — database value should be preserved
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://custom-hindsight/mcp/custom-bank/"
+
+
+def test_hindsight_memory_context_in_system_prompt():
+    """When Hindsight recall returns content, it appears in the system prompt."""
+    task = _make_mock_task(title="Deploy v2", description="Deploy frontend v2 to staging")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-hs3"
+    mock_container.short_id = "conths3"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight:8888",
+        }), patch("worker.recall_from_hindsight", return_value="Last deploy used blue-green strategy."):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract system_prompt.txt
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    system_prompt_member = tar.extractfile("system_prompt.txt")
+    system_prompt_content = system_prompt_member.read().decode("utf-8")
+
+    assert "## Relevant Context from Memory" in system_prompt_content
+    assert "Last deploy used blue-green strategy." in system_prompt_content
+    assert "## Persistent Memory (Hindsight)" in system_prompt_content
+    # Memory context appears before Hindsight instructions
+    memory_pos = system_prompt_content.index("Relevant Context from Memory")
+    instructions_pos = system_prompt_content.index("Persistent Memory (Hindsight)")
+    assert memory_pos < instructions_pos
+
+
+def test_hindsight_skipped_when_url_not_configured():
+    """When HINDSIGHT_URL is not set and hindsight_url setting is empty, no Hindsight integration occurs."""
+    task = _make_mock_task(description="Normal task")
+    original_prompt = "You are a helpful assistant."
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": original_prompt,
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-hs4"
+    mock_container.short_id = "conths4"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — should NOT have hindsight
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert "hindsight" not in mcp_config.get("mcpServers", {})
+
+    # Extract system_prompt.txt — should NOT have Hindsight sections
+    system_prompt_member = tar.extractfile("system_prompt.txt")
+    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    assert "Relevant Context from Memory" not in system_prompt_content
+    assert "Persistent Memory" not in system_prompt_content
+
+
+async def test_read_settings_hindsight_defaults(worker_session: AsyncSession):
+    """read_settings returns empty strings for hindsight settings when not configured."""
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_url"] == ""
+    assert settings["hindsight_bank_id"] == ""
+
+
+async def test_read_settings_hindsight_configured(worker_session: AsyncSession):
+    """read_settings returns hindsight settings when configured."""
+    from models import Setting
+    worker_session.add(Setting(key="hindsight_url", value="http://hindsight:8888"))
+    worker_session.add(Setting(key="hindsight_bank_id", value="my-bank"))
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_url"] == "http://hindsight:8888"
+    assert settings["hindsight_bank_id"] == "my-bank"
+
+
+def test_hindsight_env_var_takes_precedence_over_setting():
+    """HINDSIGHT_URL env var takes precedence over hindsight_url admin setting."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "http://setting-hindsight:8888",
+        "hindsight_bank_id": "setting-bank",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-prec1"
+    mock_container.short_id = "contprec1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://env-hindsight:9999",
+            "HINDSIGHT_BANK_ID": "env-bank",
+        }), patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — should use env var values, not settings
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://env-hindsight:9999/mcp/env-bank/"
+
+
+def test_hindsight_falls_back_to_admin_setting():
+    """When HINDSIGHT_URL env var is not set, hindsight_url admin setting is used."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "http://setting-hindsight:8888",
+        "hindsight_bank_id": "setting-bank",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-fall1"
+    mock_container.short_id = "contfall1"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True), patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Extract mcp.json — should use admin setting values
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://setting-hindsight:8888/mcp/setting-bank/"

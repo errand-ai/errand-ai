@@ -62,6 +62,14 @@ spec:
             - name: PERPLEXITY_URL
               value: "http://{{ include "content-manager.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
             {{- end }}
+            {{- if .Values.hindsight.url }}
+            - name: HINDSIGHT_URL
+              value: {{ .Values.hindsight.url | quote }}
+            {{- end }}
+            {{- if .Values.hindsight.bankId }}
+            - name: HINDSIGHT_BANK_ID
+              value: {{ .Values.hindsight.bankId | quote }}
+            {{- end }}
         - name: dind
           image: {{ .Values.dind.image }}
           securityContext:
