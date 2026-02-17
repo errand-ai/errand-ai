@@ -86,6 +86,7 @@ async def new_task(description: str) -> str:
             category=category,
             status=status,
             position=position,
+            created_by="mcp",
         )
         session.add(task)
         await session.commit()
@@ -160,31 +161,44 @@ async def post_tweet(message: str) -> str:
     if len(message) > 280:
         return f"Error: Message exceeds 280 character limit (got {len(message)} characters)"
 
-    api_key = os.environ.get("TWITTER_API_KEY", "")
-    api_secret = os.environ.get("TWITTER_API_SECRET", "")
-    access_token = os.environ.get("TWITTER_ACCESS_TOKEN", "")
-    access_secret = os.environ.get("TWITTER_ACCESS_SECRET", "")
+    # Load credentials from DB via platform registry, fall back to env vars
+    from platforms import get_registry
+    from platforms.credentials import load_credentials
 
-    if not all([api_key, api_secret, access_token, access_secret]):
+    credentials = None
+    try:
+        async with async_session() as session:
+            credentials = await load_credentials("twitter", session)
+    except Exception:
+        logger.debug("Failed to load Twitter credentials from DB, trying env vars")
+
+    if not credentials:
+        api_key = os.environ.get("TWITTER_API_KEY", "")
+        api_secret = os.environ.get("TWITTER_API_SECRET", "")
+        access_token = os.environ.get("TWITTER_ACCESS_TOKEN", "")
+        access_secret = os.environ.get("TWITTER_ACCESS_SECRET", "")
+
+        if all([api_key, api_secret, access_token, access_secret]):
+            credentials = {
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "access_token": access_token,
+                "access_secret": access_secret,
+            }
+
+    if not credentials:
         return "Error: Twitter API credentials not configured"
 
-    try:
-        import tweepy
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return "Error: Twitter platform not registered"
 
-        client = tweepy.Client(
-            consumer_key=api_key,
-            consumer_secret=api_secret,
-            access_token=access_token,
-            access_token_secret=access_secret,
-        )
-        response = client.create_tweet(text=message)
-        tweet_id = response.data["id"]
-        # Get the authenticated user's username for the URL
-        user = client.get_me()
-        username = user.data.username if user.data else "i"
-        return f"Tweet posted: https://x.com/{username}/status/{tweet_id}"
-    except Exception as e:
-        return f"Error posting tweet: {e}"
+    result = await platform.post(message, credentials=credentials)
+    if result.success:
+        return f"Tweet posted: {result.url}"
+    else:
+        return f"Error posting tweet: {result.error}"
 
 
 def create_mcp_app() -> Starlette:

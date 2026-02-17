@@ -61,8 +61,10 @@ spec:
             - name: OPENAI_API_KEY
               value: {{ .Values.openai.apiKey | quote }}
             {{- end }}
-          {{- if .Values.twitter.existingSecret }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.twitter.existingSecret }}
-          {{- end }}
+            {{- if .Values.credentialEncryption.existingSecret }}
+            - name: CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentialEncryption.existingSecret }}
+                  key: {{ .Values.credentialEncryption.secretKey }}
+            {{- end }}

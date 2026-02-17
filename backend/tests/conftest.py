@@ -7,7 +7,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import events as events_module
-from models import Base, Task
+from models import Base, PlatformCredential, Task
 from main import app, get_current_user, require_editor, require_admin
 from database import get_session
 
@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     output TEXT,
     runner_logs TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
+    created_by TEXT,
+    updated_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )
@@ -84,6 +86,16 @@ CREATE TABLE IF NOT EXISTS task_tags (
     task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, tag_id)
+)
+"""
+
+_PLATFORM_CREDENTIALS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS platform_credentials (
+    platform_id TEXT NOT NULL PRIMARY KEY,
+    encrypted_data TEXT NOT NULL,
+    status TEXT DEFAULT 'disconnected' NOT NULL,
+    last_verified_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )
 """
 
@@ -116,6 +128,7 @@ async def _create_tables(engine):
         await conn.execute(text(_SETTINGS_TABLE_SQL))
         await conn.execute(text(_TAGS_TABLE_SQL))
         await conn.execute(text(_TASK_TAGS_TABLE_SQL))
+        await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
         await conn.execute(text(_SKILLS_TABLE_SQL))
         await conn.execute(text(_SKILL_FILES_TABLE_SQL))
 

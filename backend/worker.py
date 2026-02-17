@@ -471,6 +471,8 @@ def _task_to_dict(task: Task) -> dict:
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        "created_by": task.created_by,
+        "updated_by": task.updated_by,
     }
 
 
@@ -818,6 +820,7 @@ async def _schedule_retry(task: Task, output: str | None = None, runner_logs: st
             "position": new_position,
             "retry_count": new_retry,
             "execute_at": execute_at,
+            "updated_by": "system",
             "updated_at": datetime.now(timezone.utc),
         }
         if output is not None:
@@ -892,6 +895,7 @@ async def _reschedule_if_repeating(task: Task) -> None:
             output=None,
             runner_logs=None,
             retry_count=0,
+            created_by="system",
         )
         session.add(new_task)
         await session.flush()
@@ -944,6 +948,7 @@ async def run() -> None:
 
             # Set status to running
             task.status = "running"
+            task.updated_by = "system"
             await session.commit()
             await session.refresh(task)
             await publish_event("task_updated", _task_to_dict(task))
@@ -982,6 +987,7 @@ async def run() -> None:
                         "output": parsed.result,
                         "runner_logs": stderr,
                         "retry_count": 0,
+                        "updated_by": "system",
                         "updated_at": datetime.now(timezone.utc),
                     }
                     await session.execute(
@@ -1051,6 +1057,7 @@ async def run() -> None:
                             status="review",
                             position=new_position,
                             output=str(e),
+                            updated_by="system",
                             updated_at=datetime.now(timezone.utc),
                         )
                     )

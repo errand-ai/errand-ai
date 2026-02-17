@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     output TEXT,
     runner_logs TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
+    created_by TEXT,
+    updated_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

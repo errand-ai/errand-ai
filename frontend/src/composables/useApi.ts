@@ -187,3 +187,50 @@ export async function saveTranscriptionModel(model: string | null): Promise<Reco
   if (!res.ok) throw new Error(`Failed to save transcription model: ${res.status}`)
   return res.json()
 }
+
+export interface PlatformCredentialField {
+  key: string
+  label: string
+  type: string
+  required: boolean
+}
+
+export interface PlatformInfo {
+  id: string
+  label: string
+  capabilities: string[]
+  credential_schema: PlatformCredentialField[]
+  status: string
+  last_verified_at: string | null
+}
+
+export async function fetchPlatforms(): Promise<PlatformInfo[]> {
+  const res = await authFetch(`${BASE}/platforms`)
+  if (!res.ok) throw new Error(`Failed to fetch platforms: ${res.status}`)
+  return res.json()
+}
+
+export async function savePlatformCredentials(platformId: string, credentials: Record<string, string>): Promise<{ status: string }> {
+  const res = await authFetch(`${BASE}/platforms/${platformId}/credentials`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials),
+  })
+  if (!res.ok) throw new Error(`Failed to save credentials: ${res.status}`)
+  return res.json()
+}
+
+export async function deletePlatformCredentials(platformId: string): Promise<void> {
+  const res = await authFetch(`${BASE}/platforms/${platformId}/credentials`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(`Failed to delete credentials: ${res.status}`)
+}
+
+export async function verifyPlatformCredentials(platformId: string): Promise<{ status: string; last_verified_at: string | null }> {
+  const res = await authFetch(`${BASE}/platforms/${platformId}/credentials/verify`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`Failed to verify credentials: ${res.status}`)
+  return res.json()
+}

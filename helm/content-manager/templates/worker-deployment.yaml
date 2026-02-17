@@ -50,6 +50,13 @@ spec:
             - name: OPENAI_API_KEY
               value: {{ .Values.openai.apiKey | quote }}
             {{- end }}
+            {{- if .Values.credentialEncryption.existingSecret }}
+            - name: CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentialEncryption.existingSecret }}
+                  key: {{ .Values.credentialEncryption.secretKey }}
+            {{- end }}
             - name: BACKEND_MCP_URL
               value: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/mcp"
             {{- if .Values.worker.maxTurns }}

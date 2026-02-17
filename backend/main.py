@@ -32,7 +32,9 @@ from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import init_llm_client, get_llm_client, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
-from models import Setting, Skill, SkillFile, Tag, Task, task_tags
+from models import PlatformCredential, Setting, Skill, SkillFile, Tag, Task, task_tags
+from platforms import get_registry
+from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
 from scheduler import run_scheduler, release_lock
 
@@ -60,6 +62,21 @@ async def lifespan(app: FastAPI):
     await auth_module.oidc.discover()
     await init_valkey()
     init_llm_client()
+
+    # Credential encryption key — generate if not set
+    if not os.environ.get("CREDENTIAL_ENCRYPTION_KEY"):
+        from cryptography.fernet import Fernet
+        generated_key = Fernet.generate_key().decode()
+        os.environ["CREDENTIAL_ENCRYPTION_KEY"] = generated_key
+        logger.warning(
+            "CREDENTIAL_ENCRYPTION_KEY not set — generated a temporary key. "
+            "Set this env var for persistent credential storage."
+        )
+
+    # Register platforms
+    from platforms.twitter import TwitterPlatform
+    registry = get_registry()
+    registry.register(TwitterPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:
@@ -230,6 +247,8 @@ class TaskResponse(BaseModel):
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -251,6 +270,8 @@ class TaskResponse(BaseModel):
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
+            created_by=task.created_by,
+            updated_by=task.updated_by,
         )
 
 
@@ -387,6 +408,7 @@ async def create_task(
         execute_at=execute_at,
         repeat_interval=repeat_interval,
         repeat_until=repeat_until,
+        created_by=_user.get("email"),
     )
     session.add(task)
     await session.flush()
@@ -459,6 +481,7 @@ async def update_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status == "running":
         raise HTTPException(status_code=409, detail="Cannot edit a running task")
+    task.updated_by = _user.get("email")
     if body.title is not None:
         task.title = body.title
     if body.description is not None:
@@ -681,6 +704,154 @@ async def regenerate_mcp_key(
         session.add(Setting(key="mcp_api_key", value=new_key))
     await session.commit()
     return {"mcp_api_key": new_key}
+
+
+# --- Platform credential endpoints ---
+
+
+@app.get("/api/platforms")
+async def list_platforms(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(get_current_user),
+):
+    registry = get_registry()
+    all_platforms = registry.list_all()
+
+    # Load all credentials in one query
+    result = await session.execute(select(PlatformCredential))
+    creds_by_id = {c.platform_id: c for c in result.scalars().all()}
+
+    platforms = []
+    for info in all_platforms:
+        cred = creds_by_id.get(info.id)
+        platforms.append({
+            "id": info.id,
+            "label": info.label,
+            "capabilities": sorted(info.capabilities),
+            "credential_schema": info.credential_schema,
+            "status": cred.status if cred else "disconnected",
+            "last_verified_at": cred.last_verified_at.isoformat() if cred and cred.last_verified_at else None,
+        })
+    return platforms
+
+
+@app.put("/api/platforms/{platform_id}/credentials")
+async def save_platform_credentials(
+    platform_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    registry = get_registry()
+    platform = registry.get(platform_id)
+    if platform is None:
+        raise HTTPException(status_code=404, detail=f"Platform '{platform_id}' not found")
+
+    try:
+        verified = await platform.verify_credentials(body)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Credential verification failed: {exc}")
+    if not verified:
+        raise HTTPException(status_code=400, detail="Credential verification failed")
+
+    now = datetime.now(timezone.utc)
+    encrypted = encrypt_credentials(body)
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == platform_id)
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.encrypted_data = encrypted
+        existing.status = "connected"
+        existing.last_verified_at = now
+    else:
+        session.add(PlatformCredential(
+            platform_id=platform_id,
+            encrypted_data=encrypted,
+            status="connected",
+            last_verified_at=now,
+        ))
+    await session.commit()
+    return {"status": "connected"}
+
+
+@app.delete("/api/platforms/{platform_id}/credentials", status_code=204)
+async def delete_platform_credentials(
+    platform_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == platform_id)
+    )
+    cred = result.scalar_one_or_none()
+    if cred is not None:
+        await session.delete(cred)
+        await session.commit()
+
+
+@app.get("/api/platforms/{platform_id}/credentials")
+async def get_platform_credential_status(
+    platform_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    registry = get_registry()
+    platform = registry.get(platform_id)
+    if platform is None:
+        raise HTTPException(status_code=404, detail=f"Platform '{platform_id}' not found")
+
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == platform_id)
+    )
+    cred = result.scalar_one_or_none()
+    if cred is None:
+        return {
+            "platform_id": platform_id,
+            "status": "disconnected",
+            "last_verified_at": None,
+            "configured_fields": [],
+        }
+
+    configured_fields = list(decrypt_credentials(cred.encrypted_data).keys())
+    return {
+        "platform_id": platform_id,
+        "status": cred.status,
+        "last_verified_at": cred.last_verified_at.isoformat() if cred.last_verified_at else None,
+        "configured_fields": configured_fields,
+    }
+
+
+@app.post("/api/platforms/{platform_id}/credentials/verify")
+async def verify_platform_credentials(
+    platform_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    registry = get_registry()
+    platform = registry.get(platform_id)
+    if platform is None:
+        raise HTTPException(status_code=404, detail=f"Platform '{platform_id}' not found")
+
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == platform_id)
+    )
+    cred = result.scalar_one_or_none()
+    if cred is None:
+        raise HTTPException(status_code=400, detail=f"No credentials configured for platform '{platform_id}'")
+
+    credentials = decrypt_credentials(cred.encrypted_data)
+    verified = await platform.verify_credentials(credentials)
+    now = datetime.now(timezone.utc)
+
+    cred.status = "connected" if verified else "error"
+    cred.last_verified_at = now
+    await session.commit()
+
+    return {
+        "status": cred.status,
+        "last_verified_at": now.isoformat(),
+    }
 
 
 # --- Skill validation helpers ---

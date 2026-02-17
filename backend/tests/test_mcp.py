@@ -36,6 +36,8 @@ _TABLES_SQL = [
         output TEXT,
         runner_logs TEXT,
         retry_count INTEGER DEFAULT 0 NOT NULL,
+        created_by TEXT,
+        updated_by TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
     )""",
@@ -52,6 +54,13 @@ _TABLES_SQL = [
         task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
         PRIMARY KEY (task_id, tag_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS platform_credentials (
+        platform_id TEXT NOT NULL PRIMARY KEY,
+        encrypted_data TEXT NOT NULL,
+        status TEXT DEFAULT 'disconnected' NOT NULL,
+        last_verified_at DATETIME,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
     )""",
 ]
 
@@ -390,6 +399,11 @@ async def test_post_tweet_valid(monkeypatch):
     monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "token")
     monkeypatch.setenv("TWITTER_ACCESS_SECRET", "access")
 
+    from platforms import get_registry
+    from platforms.twitter import TwitterPlatform
+    registry = get_registry()
+    registry.register(TwitterPlatform())
+
     mock_response = type("Response", (), {"data": {"id": "123456"}})()
     mock_user = type("User", (), {"data": type("Data", (), {"username": "testuser"})()})()
 
@@ -450,6 +464,11 @@ async def test_post_tweet_twitter_api_error(monkeypatch):
     monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "token")
     monkeypatch.setenv("TWITTER_ACCESS_SECRET", "access")
 
+    from platforms import get_registry
+    from platforms.twitter import TwitterPlatform
+    registry = get_registry()
+    registry.register(TwitterPlatform())
+
     with patch("tweepy.Client") as MockClient:
         instance = MockClient.return_value
         instance.create_tweet.side_effect = Exception("403 Forbidden: duplicate tweet")
@@ -459,3 +478,62 @@ async def test_post_tweet_twitter_api_error(monkeypatch):
 
     assert "Error posting tweet" in result
     assert "403 Forbidden" in result
+
+
+# --- post_tweet with DB credentials (Task 8.4) ---
+
+
+async def test_post_tweet_uses_db_credentials(db_session, monkeypatch):
+    """post_tweet loads credentials from DB when available."""
+    monkeypatch.delenv("TWITTER_API_KEY", raising=False)
+    monkeypatch.delenv("TWITTER_API_SECRET", raising=False)
+    monkeypatch.delenv("TWITTER_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("TWITTER_ACCESS_SECRET", raising=False)
+
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", key)
+
+    # Register the twitter platform
+    from platforms import get_registry
+    from platforms.twitter import TwitterPlatform
+    registry = get_registry()
+    registry.register(TwitterPlatform())
+
+    # Store encrypted credentials in DB
+    from platforms.credentials import encrypt
+    from models import PlatformCredential
+    creds = {
+        "api_key": "db-key",
+        "api_secret": "db-secret",
+        "access_token": "db-token",
+        "access_secret": "db-access",
+    }
+    _, session_factory = db_session
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="twitter",
+            encrypted_data=encrypt(creds),
+            status="connected",
+        ))
+        await session.commit()
+
+    mock_response = type("Response", (), {"data": {"id": "777"}})()
+    mock_user = type("User", (), {"data": type("Data", (), {"username": "dbuser"})()})()
+
+    with patch("tweepy.Client") as MockClient:
+        instance = MockClient.return_value
+        instance.create_tweet.return_value = mock_response
+        instance.get_me.return_value = mock_user
+
+        from mcp_server import post_tweet
+        result = await post_tweet("DB tweet!")
+
+    assert "https://x.com/dbuser/status/777" in result
+    # Verify the DB credentials were used
+    MockClient.assert_called_once_with(
+        consumer_key="db-key",
+        consumer_secret="db-secret",
+        access_token="db-token",
+        access_token_secret="db-access",
+    )
