@@ -1,5 +1,4 @@
 """Tests for credential encryption/decryption (Task 4.3)."""
-import os
 
 import pytest
 from cryptography.fernet import Fernet

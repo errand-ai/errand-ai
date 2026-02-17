@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -30,11 +30,11 @@ class PostResult:
 class Platform(ABC):
     @abstractmethod
     def info(self) -> PlatformInfo:
-        ...
+        pass
 
     @abstractmethod
     async def verify_credentials(self, credentials: dict) -> bool:
-        ...
+        pass
 
     async def post(self, message: str, **kwargs) -> PostResult:
         raise NotImplementedError

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from platforms import PlatformRegistry
-from platforms.base import Platform, PlatformCapability, PlatformInfo, PostResult
+from platforms.base import Platform, PlatformCapability, PlatformInfo
 from platforms.twitter import TwitterPlatform
 
 

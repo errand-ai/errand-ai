@@ -145,7 +145,6 @@ async def test_verify_credentials_no_creds(admin_client):
 async def test_verify_credentials_failure(admin_client):
     # Register a platform that fails verification
     registry = get_registry()
-    failing = FakePlatform(verify_result=False)
     # Override info to use a different ID
     class FailingPlatform(FakePlatform):
         def info(self):
