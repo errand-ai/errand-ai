@@ -7,18 +7,13 @@ from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from fastapi import Request
 
 import events as events_module
 from main import app
 from database import get_session
 from models import Task
-from platforms.slack.routes import router as slack_router
 from platforms.slack.verification import verify_slack_request
-
-# Include slack router in app for testing
-app.include_router(slack_router)
 
 _TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (

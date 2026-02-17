@@ -5,7 +5,7 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 
 from platforms.slack.verification import verify_slack_request
 

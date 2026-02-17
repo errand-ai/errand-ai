@@ -1,6 +1,5 @@
 """Slack command handler functions."""
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,9 +31,10 @@ async def find_task_by_prefix(prefix: str, session: AsyncSession) -> Task | dict
     except ValueError:
         pass
 
-    # Try prefix match
+    # Try prefix match — escape SQL wildcard characters in user input
+    safe_prefix = prefix.replace("%", "\\%").replace("_", "\\_")
     result = await session.execute(
-        select(Task).where(cast(Task.id, String).like(f"{prefix}%"))
+        select(Task).where(cast(Task.id, String).like(f"{safe_prefix}%"))
     )
     matches = result.scalars().all()
 

@@ -42,7 +42,7 @@ def task_created_blocks(task) -> dict:
 def task_status_blocks(task) -> dict:
     """Block Kit response for task status."""
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": task.title}},
+        {"type": "header", "text": {"type": "plain_text", "text": task.title[:150]}},
         {
             "type": "section",
             "fields": [
@@ -95,7 +95,7 @@ def task_list_blocks(tasks: list, status_filter: str | None = None) -> dict:
 def task_output_blocks(task) -> dict:
     """Block Kit response for task output."""
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"Output: {task.title}"}},
+        {"type": "header", "text": {"type": "plain_text", "text": f"Output: {task.title}"[:150]}},
     ]
     if not task.output:
         blocks.append({
