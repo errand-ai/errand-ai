@@ -11,6 +11,7 @@ from platforms.slack.blocks import (
     task_list_blocks,
     task_output_blocks,
     task_status_blocks,
+    task_updated_blocks,
 )
 
 
@@ -66,12 +67,13 @@ class TestTaskCreatedBlocks:
         task = _make_task()
         result = task_created_blocks(task)
         assert result["response_type"] == "ephemeral"
-        assert len(result["blocks"]) == 3
+        assert len(result["blocks"]) == 4
         assert result["blocks"][0]["type"] == "header"
         assert result["blocks"][0]["text"]["text"] == "Task Created"
         assert result["blocks"][1]["type"] == "section"
         assert len(result["blocks"][1]["fields"]) == 4
         assert result["blocks"][2]["type"] == "context"
+        assert result["blocks"][3]["type"] == "actions"
 
     def test_includes_task_id_prefix(self):
         task_id = uuid.uuid4()
@@ -85,6 +87,55 @@ class TestTaskCreatedBlocks:
         result = task_created_blocks(task)
         context_text = result["blocks"][2]["elements"][0]["text"]
         assert "alice@example.com" in context_text
+
+    def test_action_buttons_present(self):
+        task_id = uuid.uuid4()
+        task = _make_task(id=task_id)
+        result = task_created_blocks(task)
+        actions = result["blocks"][3]
+        assert actions["type"] == "actions"
+        assert len(actions["elements"]) == 2
+
+        status_btn = actions["elements"][0]
+        assert status_btn["action_id"] == "task_status"
+        assert status_btn["value"] == str(task_id)
+        assert status_btn["text"]["text"] == "View Status"
+
+        output_btn = actions["elements"][1]
+        assert output_btn["action_id"] == "task_output"
+        assert output_btn["value"] == str(task_id)
+        assert output_btn["text"]["text"] == "View Output"
+
+
+class TestTaskUpdatedBlocks:
+    def test_returns_list_of_blocks(self):
+        task = _make_task()
+        result = task_updated_blocks(task)
+        assert isinstance(result, list)
+        assert len(result) == 4
+
+    def test_structure_matches_created(self):
+        task = _make_task()
+        result = task_updated_blocks(task)
+        assert result[0]["type"] == "header"
+        assert result[0]["text"]["text"] == "Task Created"
+        assert result[1]["type"] == "section"
+        assert result[2]["type"] == "context"
+        assert result[3]["type"] == "actions"
+
+    def test_reflects_updated_status(self):
+        task = _make_task(status="running")
+        result = task_updated_blocks(task)
+        fields_text = " ".join(f["text"] for f in result[1]["fields"])
+        assert ":gear: running" in fields_text
+
+    def test_action_buttons_with_full_uuid(self):
+        task_id = uuid.uuid4()
+        task = _make_task(id=task_id)
+        result = task_updated_blocks(task)
+        actions = result[3]
+        assert actions["elements"][0]["value"] == str(task_id)
+        assert actions["elements"][1]["value"] == str(task_id)
 
 
 class TestTaskStatusBlocks:

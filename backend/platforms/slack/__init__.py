@@ -1,3 +1,22 @@
+"""Slack platform integration.
+
+Slack App Configuration Requirements:
+  Bot Token Scopes:
+    - chat:write        Post and update messages in channels
+    - users:read        Resolve user IDs to email addresses
+    - users:read.email  Access user email addresses
+    - commands          Respond to slash commands
+
+  Event Subscriptions:
+    - app_mentions:read  Receive @mention events
+    - Request URL: https://<domain>/slack/events
+
+  Interactivity & Shortcuts:
+    - Request URL: https://<domain>/slack/interactions
+
+  Slash Commands:
+    - /task → https://<domain>/slack/commands
+"""
 import logging
 
 from platforms.base import Platform, PlatformCapability, PlatformInfo

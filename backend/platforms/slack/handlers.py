@@ -12,6 +12,7 @@ from platforms.slack.blocks import (
     task_output_blocks,
     task_status_blocks,
 )
+from tags import add_tag
 
 
 async def find_task_by_prefix(prefix: str, session: AsyncSession) -> Task | dict:
@@ -67,6 +68,8 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
         position=position,
     )
     session.add(task)
+    await session.flush()
+    await add_tag(session, task.id, "slack")
     await session.commit()
     await session.refresh(task)
     return task_created_blocks(task)

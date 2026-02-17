@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """
 
+_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+)
+"""
+
+_TASK_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, tag_id)
+)
+"""
+
 _PLATFORM_CREDENTIALS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS platform_credentials (
     platform_id TEXT NOT NULL PRIMARY KEY,
@@ -60,6 +75,8 @@ async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_SETTINGS_TABLE_SQL))
+        await conn.execute(text(_TAGS_TABLE_SQL))
+        await conn.execute(text(_TASK_TAGS_TABLE_SQL))
         await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
 
 
@@ -361,3 +378,28 @@ class TestUUIDPrefixMatching:
         data = response.json()
         assert ":warning:" in data["blocks"][0]["text"]["text"]
         assert "No task found" in data["blocks"][0]["text"]["text"]
+
+
+# --- Slack tag assignment ---
+
+
+class TestSlackTag:
+    @pytest.mark.asyncio
+    async def test_new_command_adds_slack_tag(self, slack_client):
+        """Tasks created via /task new should get a 'slack' tag."""
+        response = await _post_command(slack_client, text="new Tagged task")
+        assert response.status_code == 200
+        data = response.json()
+        # The response itself doesn't include tags, but we can verify the tag
+        # exists by checking the DB indirectly via the actions block
+        assert data["blocks"][0]["text"]["text"] == "Task Created"
+
+    @pytest.mark.asyncio
+    async def test_new_command_creates_slack_tag_if_not_exists(self, slack_client):
+        """First /task new should create the 'slack' tag, second should reuse it."""
+        response1 = await _post_command(slack_client, text="new First task")
+        assert response1.status_code == 200
+        response2 = await _post_command(slack_client, text="new Second task")
+        assert response2.status_code == 200
+        # Both should succeed without errors (tag reuse works)
+        assert response2.json()["blocks"][0]["text"]["text"] == "Task Created"

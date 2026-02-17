@@ -124,26 +124,36 @@ Twitter/X integration enables posting content from tasks.
 
 ### Slack
 
-Slack integration enables managing tasks directly from Slack via slash commands: `/task new`, `/task status`, `/task list`, `/task run`, `/task output`.
+Slack integration enables managing tasks from Slack via slash commands and @mentions. Task confirmations include interactive buttons and update automatically as task status changes.
+
+- **Slash commands**: `/task new`, `/task status`, `/task list`, `/task run`, `/task output`
+- **@mentions**: Mention the bot in any channel to create a task from the message text
+- **Interactive buttons**: View Status and View Output buttons on task confirmations
+- **Live status updates**: Slack messages update automatically when task status changes (e.g. pending → running → completed)
 
 #### Creating the Slack App
 
 1. Go to the [Slack API dashboard](https://api.slack.com/apps) and click **Create New App**
-2. Choose **From scratch**, give it a name (e.g. "Content Manager"), and select your workspace
+2. Choose **From scratch**, give it a name (e.g. "H.A.L."), and select your workspace
 3. Under **OAuth & Permissions**, add the following **Bot Token Scopes**:
    - `commands` — register and receive slash commands
-   - `chat:write` — send messages (for future notification support)
+   - `chat:write` — post and update messages in channels
+   - `users:read` — resolve user IDs to profile information
    - `users:read.email` — resolve Slack users to email addresses for audit trail
+   - `app_mentions:read` — receive @mention events
 4. Under **Slash Commands**, create a new command:
    - **Command**: `/task`
    - **Request URL**: `https://<your-domain>/slack/commands`
    - **Short Description**: Manage tasks
    - **Usage Hint**: `new <title> | status <id> | list [status] | run <id> | output <id>`
-5. Under **Event Subscriptions** (optional, for future use):
-   - **Request URL**: `https://<your-domain>/slack/events`
+5. Under **Event Subscriptions**:
+   - Enable events and set the **Request URL** to `https://<your-domain>/slack/events`
    - The endpoint responds to URL verification automatically
-6. Install the app to your workspace — this generates the **Bot Token**
-7. Note the **Signing Secret** from **Basic Information > App Credentials**
+   - Under **Subscribe to bot events**, add `app_mention`
+6. Under **Interactivity & Shortcuts**:
+   - Enable interactivity and set the **Request URL** to `https://<your-domain>/slack/interactions`
+7. Install the app to your workspace — this generates the **Bot Token**
+8. Note the **Signing Secret** from **Basic Information > App Credentials**
 
 #### Configuring credentials
 
@@ -165,7 +175,22 @@ The UI verifies the bot token against the Slack API (`auth.test`) before saving.
 | `/task output <id>` | View task output |
 | `/task help` | Show available commands |
 
-All responses are ephemeral (visible only to you). Tasks created or modified via Slack record the user's email in the audit fields (`created_by`/`updated_by`).
+#### @mention usage
+
+Mention the bot in any channel to create a task:
+
+```
+@H.A.L. Deploy the new version to staging
+```
+
+The bot posts a confirmation message with task details and interactive buttons. The message updates automatically as the task progresses through statuses.
+
+#### Behaviour notes
+
+- Slash command responses are **ephemeral** (visible only to you) and do not auto-update
+- @mention confirmations are **posted to the channel** and update in real-time as task status changes
+- All Slack-originated tasks are automatically tagged with `slack`
+- Tasks created via Slack record the user's email in the audit fields (`created_by`/`updated_by`)
 
 ## Project Structure
 
