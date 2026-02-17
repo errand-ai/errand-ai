@@ -240,6 +240,7 @@ class TaskResponse(BaseModel):
     repeat_until: Optional[datetime] = None
     output: Optional[str] = None
     runner_logs: Optional[str] = None
+    questions: Optional[list[str]] = None
     retry_count: int = 0
     tags: list[str] = []
     created_at: datetime
@@ -263,6 +264,7 @@ class TaskResponse(BaseModel):
             repeat_until=task.repeat_until,
             output=task.output,
             runner_logs=task.runner_logs,
+            questions=task.questions,
             retry_count=task.retry_count,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,

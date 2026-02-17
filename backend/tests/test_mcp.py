@@ -35,6 +35,7 @@ _TABLES_SQL = [
         position INTEGER DEFAULT 0 NOT NULL,
         output TEXT,
         runner_logs TEXT,
+        questions TEXT,
         retry_count INTEGER DEFAULT 0 NOT NULL,
         created_by TEXT,
         updated_by TEXT,

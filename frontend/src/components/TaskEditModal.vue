@@ -393,6 +393,12 @@ function onTagBlur() {
 
         <!-- Right column: content fields -->
         <div class="flex flex-col gap-4">
+          <div v-if="task?.questions?.length" class="rounded-md border border-amber-200 bg-amber-50 p-3">
+            <h4 class="mb-2 text-sm font-medium text-amber-800">Questions from task runner</h4>
+            <ul class="list-disc pl-5 space-y-1">
+              <li v-for="(q, i) in task.questions" :key="i" class="text-sm text-amber-700">{{ q }}</li>
+            </ul>
+          </div>
           <div class="flex-1 flex flex-col">
             <label for="edit-description" class="mb-1 block text-sm font-medium text-gray-700">Description</label>
             <textarea
