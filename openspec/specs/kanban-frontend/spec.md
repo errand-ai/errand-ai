@@ -97,8 +97,8 @@ The delete icon on task cards SHALL NOT be displayed when the user has the `view
 - **WHEN** a viewer user views a task card in any column
 - **THEN** the delete icon is not rendered on the card
 
-#### Scenario: Editor sees delete button on non-running task
-- **WHEN** an editor views a task card in the New column
+#### Scenario: Editor sees delete button on review task
+- **WHEN** an editor views a task card in the Review column
 - **THEN** the delete icon is visible on the card
 
 #### Scenario: No delete button on running tasks
@@ -111,6 +111,16 @@ The delete icon on task cards SHALL NOT be displayed when the user has the `view
 
 ### Requirement: Kanban column layout
 Each Kanban column SHALL have a minimum width of `min-w-[240px]` and use `flex-1` to fill available space. Column headers SHALL display the column label and a task count in a pill badge (`rounded-full bg-white/70 px-1.5 text-xs font-medium`).
+
+The board SHALL display 5 columns in the following order: Review, Scheduled, Pending, Running, Completed. The "New" column SHALL NOT exist.
+
+#### Scenario: Column order
+- **WHEN** the Kanban board renders
+- **THEN** the columns appear left-to-right as: Review, Scheduled, Pending, Running, Completed
+
+#### Scenario: No New column
+- **WHEN** the Kanban board renders
+- **THEN** there is no column labelled "New"
 
 #### Scenario: Column count displayed as pill badge
 - **WHEN** the Review column contains 3 tasks
@@ -128,15 +138,15 @@ When the board has zero tasks across all columns, the board area SHALL display a
 - **THEN** the board displays a centered empty state icon with guidance text instead of the column layout
 
 #### Scenario: Individual empty column
-- **WHEN** the New column has zero tasks but other columns have tasks
-- **THEN** the New column shows no placeholder text
+- **WHEN** the Review column has zero tasks but other columns have tasks
+- **THEN** the Review column shows no placeholder text
 
 ### Requirement: Kanban skeleton loading state
-While tasks are loading, the board SHALL display skeleton placeholders that match the column layout: 6 gray rounded column shapes with `animate-pulse`, each containing 2-3 skeleton card shapes. The "Loading tasks..." text SHALL be replaced by these skeleton placeholders.
+While tasks are loading, the board SHALL display skeleton placeholders that match the column layout: 5 gray rounded column shapes with `animate-pulse`, each containing 2-3 skeleton card shapes.
 
 #### Scenario: Skeleton shown during initial load
 - **WHEN** the Kanban board is fetching tasks for the first time
-- **THEN** the board displays 6 skeleton columns with pulsing card placeholders instead of "Loading tasks..." text
+- **THEN** the board displays 5 skeleton columns with pulsing card placeholders
 
 ### Requirement: Task creation hidden for viewer
 

@@ -29,7 +29,7 @@ function makeTask(overrides: Partial<TaskData> = {}): TaskData {
     id: '1',
     title: 'Task',
     description: null,
-    status: 'new',
+    status: 'review',
     position: 1,
     category: 'immediate',
     execute_at: null,
@@ -53,12 +53,12 @@ describe('tasksByStatus sorting', () => {
   it('sorts non-scheduled columns by position ascending', () => {
     const store = useTaskStore()
     store.tasks = [
-      makeTask({ id: '1', status: 'new', position: 3, created_at: '2024-01-01T00:00:00Z' }),
-      makeTask({ id: '2', status: 'new', position: 1, created_at: '2024-01-02T00:00:00Z' }),
-      makeTask({ id: '3', status: 'new', position: 2, created_at: '2024-01-03T00:00:00Z' }),
+      makeTask({ id: '1', status: 'review', position: 3, created_at: '2024-01-01T00:00:00Z' }),
+      makeTask({ id: '2', status: 'review', position: 1, created_at: '2024-01-02T00:00:00Z' }),
+      makeTask({ id: '3', status: 'review', position: 2, created_at: '2024-01-03T00:00:00Z' }),
     ]
 
-    const result = store.tasksByStatus('new')
+    const result = store.tasksByStatus('review')
     expect(result.map((t) => t.id)).toEqual(['2', '3', '1'])
   })
 
@@ -126,7 +126,7 @@ describe('tasksByStatus sorting', () => {
   it('returns empty array for status with no tasks', () => {
     const store = useTaskStore()
     store.tasks = [
-      makeTask({ id: '1', status: 'new' }),
+      makeTask({ id: '1', status: 'review' }),
     ]
 
     expect(store.tasksByStatus('completed')).toEqual([])

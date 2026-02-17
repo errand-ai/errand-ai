@@ -17,11 +17,10 @@ const emit = defineEmits<{
 }>()
 
 const statuses: { key: TaskStatus; label: string }[] = [
-  { key: 'new', label: 'New' },
+  { key: 'review', label: 'Review' },
   { key: 'scheduled', label: 'Scheduled' },
   { key: 'pending', label: 'Pending' },
   { key: 'running', label: 'Running' },
-  { key: 'review', label: 'Review' },
   { key: 'completed', label: 'Completed' },
 ]
 

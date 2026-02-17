@@ -31,7 +31,7 @@ async def test_create_task_publishes_event(client: AsyncClient, fake_valkey: Fak
     assert payload["event"] == "task_created"
     assert payload["task"]["id"] == task["id"]
     assert payload["task"]["title"] == "Event test"
-    assert payload["task"]["status"] == "new"
+    assert payload["task"]["status"] == "review"
 
     await pubsub.unsubscribe(CHANNEL)
     await pubsub.aclose()

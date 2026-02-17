@@ -22,7 +22,7 @@ _TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     title TEXT NOT NULL,
-    status TEXT DEFAULT 'new' NOT NULL,
+    status TEXT DEFAULT 'review' NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    status TEXT DEFAULT 'new' NOT NULL,
+    status TEXT DEFAULT 'review' NOT NULL,
     category TEXT DEFAULT 'immediate',
     execute_at DATETIME,
     repeat_interval TEXT,
@@ -149,7 +149,7 @@ async def _create_full_tables(engine):
         await conn.execute(text(_FULL_TASKS_TABLE_SQL))
 
 
-async def _insert_task(session_factory, task_id, status="new"):
+async def _insert_task(session_factory, task_id, status="review"):
     # Store as 32-char hex (no hyphens) to match SQLAlchemy UUID(as_uuid=True) format
     hex_id = uuid.UUID(task_id).hex
     async with session_factory() as session:

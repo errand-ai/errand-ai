@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    status TEXT DEFAULT 'new' NOT NULL,
+    status TEXT DEFAULT 'review' NOT NULL,
     category TEXT DEFAULT 'immediate',
     execute_at DATETIME,
     repeat_interval TEXT,

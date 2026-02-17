@@ -54,14 +54,14 @@ describe('TaskEditModal', () => {
     expect(statusSelect.value).toBe('running')
   })
 
-  it('status selector shows 6 valid statuses (no need-input)', () => {
+  it('status selector shows 5 valid statuses (no new or need-input)', () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
     const options = wrapper.findAll('#edit-status option')
-    expect(options).toHaveLength(6)
+    expect(options).toHaveLength(5)
 
     const labels = options.map((o) => o.text())
     expect(labels).toEqual([
-      'New', 'Scheduled', 'Pending', 'Running', 'Review', 'Completed',
+      'Review', 'Scheduled', 'Pending', 'Running', 'Completed',
     ])
   })
 

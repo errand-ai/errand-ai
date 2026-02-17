@@ -9,17 +9,16 @@ import TaskEditModal from './TaskEditModal.vue'
 import TaskOutputModal from './TaskOutputModal.vue'
 import TaskLogModal from './TaskLogModal.vue'
 
-const REORDERABLE_COLUMNS: TaskStatus[] = ['new', 'pending']
+const REORDERABLE_COLUMNS: TaskStatus[] = ['review', 'pending']
 
 const store = useTaskStore()
 const auth = useAuthStore()
 
 const columns: { key: TaskStatus; label: string; color: string }[] = [
-  { key: 'new', label: 'New', color: 'bg-sky-100' },
+  { key: 'review', label: 'Review', color: 'bg-pink-100' },
   { key: 'scheduled', label: 'Scheduled', color: 'bg-purple-100' },
   { key: 'pending', label: 'Pending', color: 'bg-yellow-100' },
   { key: 'running', label: 'Running', color: 'bg-blue-100' },
-  { key: 'review', label: 'Review', color: 'bg-pink-100' },
   { key: 'completed', label: 'Completed', color: 'bg-green-100' },
 ]
 
@@ -230,7 +229,7 @@ onUnmounted(() => store.stop())
 
   <!-- Skeleton loading state -->
   <div v-if="store.loading && store.tasks.length === 0" class="flex gap-4 overflow-x-auto pb-4" data-testid="skeleton-loading">
-    <div v-for="i in 6" :key="i" class="min-w-[240px] flex-1 rounded-lg bg-gray-100 p-4">
+    <div v-for="i in 5" :key="i" class="min-w-[240px] flex-1 rounded-lg bg-gray-100 p-4">
       <div class="mb-3 h-4 w-24 animate-pulse rounded bg-gray-300"></div>
       <div class="space-y-2">
         <div class="h-16 animate-pulse rounded-lg bg-gray-200"></div>

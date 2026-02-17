@@ -49,7 +49,7 @@ function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
     id: String(i + 1),
     title: `Task ${i + 1}`,
     description: null,
-    status: 'new' as const,
+    status: 'review' as const,
     position: i + 1,
     category: 'immediate',
     execute_at: null,
@@ -124,7 +124,7 @@ describe('KanbanBoard RBAC — viewer restrictions', () => {
   })
 
   it('editor sees delete buttons on non-running task cards', () => {
-    const { wrapper } = mountAsEditor(makeTasks([{ title: 'A task', status: 'new' }]))
+    const { wrapper } = mountAsEditor(makeTasks([{ title: 'A task', status: 'review' }]))
     const deleteBtn = wrapper.find('button[title="Delete task"]')
     expect(deleteBtn.exists()).toBe(true)
   })
