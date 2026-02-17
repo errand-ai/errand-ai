@@ -8,7 +8,7 @@ A Kanban-style task management application with AI-powered task execution, platf
 - **Drag-and-drop**: Move tasks between columns by dragging cards
 - **Task categories**: Immediate, Scheduled, and Repeating tasks
 - **AI task runner**: Autonomous agent executes tasks using MCP tools, with real-time log streaming
-- **Platform integrations**: Pluggable platform abstraction with encrypted credential storage (Twitter/X supported)
+- **Platform integrations**: Pluggable platform abstraction with encrypted credential storage (Twitter/X, Slack)
 - **Real-time updates**: WebSocket-driven board updates
 - **SSO authentication**: Keycloak OIDC with role-based access control (admin/user roles)
 - **Audit metadata**: Tasks track created_by/updated_by from authenticated user
@@ -46,7 +46,7 @@ A Kanban-style task management application with AI-powered task execution, platf
 - **Backend**: FastAPI app handling API endpoints, authentication, and an MCP server for agent tools
 - **Worker**: Polls for pending tasks, orchestrates AI agent execution using the MCP SDK
 - **Task Runner**: Sandboxed Docker container for executing agent-generated commands
-- **Platforms**: Pluggable abstraction layer for external services (Twitter/X, with more planned)
+- **Platforms**: Pluggable abstraction layer for external services (Twitter/X, Slack)
 
 ## Local Development
 
@@ -101,11 +101,15 @@ kubectl create secret generic content-manager-credential-key \
   -n content-manager
 ```
 
-## Twitter/X Integration
+## Platform Integrations
 
-The platform system supports Twitter/X for posting content. Credentials can be configured via the Settings UI or environment variables.
+Platform credentials are configured via **Settings > Platforms** in the web UI. Credentials are encrypted at rest and verified against the platform API before saving.
 
-### Setting up the X Developer Portal
+### Twitter/X
+
+Twitter/X integration enables posting content from tasks.
+
+#### Setting up the X Developer Portal
 
 1. Go to the [X Developer Portal](https://developer.x.com/en/portal/dashboard) and sign in
 2. Create a new **Project** and an **App** within it
@@ -116,33 +120,58 @@ The platform system supports Twitter/X for posting content. Credentials can be c
 4. Navigate to **Keys and tokens** and generate:
    - **API Key and Secret** (under Consumer Keys)
    - **Access Token and Secret** (under Authentication Tokens — generate with Read and Write permissions)
+5. In the Content Manager UI, go to **Settings > Platforms > Twitter** and enter the four credentials
 
-### Configuring credentials
+### Slack
 
-**Option A: Via the Settings UI (recommended)**
+Slack integration enables managing tasks directly from Slack via slash commands: `/task new`, `/task status`, `/task list`, `/task run`, `/task output`.
 
-Navigate to Settings > Platforms in the web UI, enter your Twitter API credentials, and save. Credentials are encrypted and stored in the database. The UI verifies credentials against the Twitter API before saving.
+#### Creating the Slack App
 
-**Option B: Via environment variables (fallback)**
+1. Go to the [Slack API dashboard](https://api.slack.com/apps) and click **Create New App**
+2. Choose **From scratch**, give it a name (e.g. "Content Manager"), and select your workspace
+3. Under **OAuth & Permissions**, add the following **Bot Token Scopes**:
+   - `commands` — register and receive slash commands
+   - `chat:write` — send messages (for future notification support)
+   - `users:read.email` — resolve Slack users to email addresses for audit trail
+4. Under **Slash Commands**, create a new command:
+   - **Command**: `/task`
+   - **Request URL**: `https://<your-domain>/slack/commands`
+   - **Short Description**: Manage tasks
+   - **Usage Hint**: `new <title> | status <id> | list [status] | run <id> | output <id>`
+5. Under **Event Subscriptions** (optional, for future use):
+   - **Request URL**: `https://<your-domain>/slack/events`
+   - The endpoint responds to URL verification automatically
+6. Install the app to your workspace — this generates the **Bot Token**
+7. Note the **Signing Secret** from **Basic Information > App Credentials**
 
-Add the following to your `.env` file:
+#### Configuring credentials
 
-```bash
-TWITTER_API_KEY=your-api-key
-TWITTER_API_SECRET=your-api-secret
-TWITTER_ACCESS_TOKEN=your-access-token
-TWITTER_ACCESS_SECRET=your-access-token-secret
-```
+In the Content Manager UI, go to **Settings > Platforms > Slack** and enter:
 
-For Kubernetes, create a secret with keys matching the env var names above and reference it via `twitter.existingSecret` in your Helm values. The secret is injected using `envFrom`.
+- **Bot Token**: starts with `xoxb-` (from OAuth & Permissions > Bot User OAuth Token)
+- **Signing Secret**: from Basic Information > App Credentials
 
-Database-stored credentials take precedence over environment variables.
+The UI verifies the bot token against the Slack API (`auth.test`) before saving.
+
+#### Slash command reference
+
+| Command | Description |
+|---------|-------------|
+| `/task new <title>` | Create a new task |
+| `/task status <id>` | View task details (accepts UUID prefix, e.g. `a1b2c3`) |
+| `/task list [status]` | List tasks, optionally filtered by status |
+| `/task run <id>` | Queue a task for execution |
+| `/task output <id>` | View task output |
+| `/task help` | Show available commands |
+
+All responses are ephemeral (visible only to you). Tasks created or modified via Slack record the user's email in the audit fields (`created_by`/`updated_by`).
 
 ## Project Structure
 
 ```
 backend/          # FastAPI app, SQLAlchemy models, Alembic migrations, worker
-  platforms/      # Platform abstraction layer (base, twitter, credentials)
+  platforms/      # Platform abstraction layer (base, twitter, slack, credentials)
   alembic/        # Database migration scripts
 frontend/         # Vue 3 SPA (Vite + Tailwind CSS)
   src/components/ # Vue components (Kanban board, settings, modals)
@@ -155,7 +184,7 @@ openspec/         # Structured change management (spec-driven workflow)
 ## Testing
 
 ```bash
-# Backend tests (415 tests)
+# Backend tests (485 tests)
 DATABASE_URL="sqlite+aiosqlite:///:memory:" PYTHONPATH=backend \
   backend/.venv/bin/python -m pytest backend/tests/ -v
 
