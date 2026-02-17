@@ -280,7 +280,10 @@ async def db_session():
                 position INTEGER DEFAULT 0 NOT NULL,
                 output TEXT,
                 runner_logs TEXT,
+                questions TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
+                created_by TEXT,
+                updated_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -347,7 +350,10 @@ async def retry_session_factory(db_session):
                 position INTEGER DEFAULT 0 NOT NULL,
                 output TEXT,
                 runner_logs TEXT,
+                questions TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
+                created_by TEXT,
+                updated_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -2397,6 +2403,7 @@ class TestGitFailureRetry:
                     repeat_until DATETIME,
                     output TEXT,
                     runner_logs TEXT,
+                    questions TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL

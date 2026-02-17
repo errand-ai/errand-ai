@@ -1,14 +1,17 @@
 # Content Manager
 
-A Kanban-style task management application for tracking content through a multi-stage workflow.
+A Kanban-style task management application with AI-powered task execution, platform integrations, and a structured content workflow.
 
 ## Features
 
-- **7-column Kanban board**: New, Need Input, Scheduled, Pending, Running, Review, Completed
+- **5-column Kanban board**: Review, Scheduled, Pending, Running, Completed
 - **Drag-and-drop**: Move tasks between columns by dragging cards
-- **Inline editing**: Edit task title and status via a modal dialog
-- **Real-time polling**: Board auto-refreshes to reflect changes
-- **SSO authentication**: Keycloak OIDC with role-based access control
+- **Task categories**: Immediate, Scheduled, and Repeating tasks
+- **AI task runner**: Autonomous agent executes tasks using MCP tools, with real-time log streaming
+- **Platform integrations**: Pluggable platform abstraction with encrypted credential storage (Twitter/X supported)
+- **Real-time updates**: WebSocket-driven board updates
+- **SSO authentication**: Keycloak OIDC with role-based access control (admin/user roles)
+- **Audit metadata**: Tasks track created_by/updated_by from authenticated user
 
 ## Tech Stack
 
@@ -16,18 +19,41 @@ A Kanban-style task management application for tracking content through a multi-
 |-------|-----------|
 | Frontend | Vue 3, Vite, Tailwind CSS, Pinia |
 | Backend | Python, FastAPI, SQLAlchemy, Alembic |
-| Worker | Python (shared codebase with backend) |
+| Worker | Python (shared codebase with backend), Docker-in-Docker task runner |
 | Database | PostgreSQL |
+| Cache | Valkey (Redis-compatible) |
 | Auth | Keycloak OIDC (Authorization Code flow) |
-| Deployment | Helm on Kubernetes, ArgoCD, KEDA |
+| Deployment | Helm on Kubernetes, ArgoCD |
 | CI/CD | GitHub Actions |
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────┐     ┌───────────────┐
+│   Frontend   │────▶│   Backend    │────▶│  PostgreSQL   │
+│  (Vue 3 SPA) │     │  (FastAPI)   │     └───────────────┘
+└──────────────┘     │              │     ┌───────────────┐
+                     │  MCP Server  │────▶│    Valkey     │
+                     └───────┬──────┘     └───────────────┘
+                             │
+                      ┌──────▼──────┐     ┌─────────────────┐
+                      │   Worker    │────▶│  Task Runner    │
+                      │  (polling)  │     │ (DinD container)│
+                      └─────────────┘     └─────────────────┘
+```
+
+- **Frontend**: Vue 3 SPA served by nginx, communicates with backend via REST API and WebSocket
+- **Backend**: FastAPI app handling API endpoints, authentication, and an MCP server for agent tools
+- **Worker**: Polls for pending tasks, orchestrates AI agent execution using the MCP SDK
+- **Task Runner**: Sandboxed Docker container for executing agent-generated commands
+- **Platforms**: Pluggable abstraction layer for external services (Twitter/X, with more planned)
 
 ## Local Development
 
 Requires Docker and Docker Compose.
 
 ```bash
-# Start all services (postgres, migrations, backend, worker, frontend)
+# Start all services (postgres, migrations, backend, worker, frontend, valkey)
 docker compose up --build
 
 # Frontend: http://localhost:3000
@@ -37,17 +63,47 @@ docker compose up --build
 docker compose down
 ```
 
-OIDC environment variables are required for authentication. Create a `.env` file:
+### Environment Variables
 
-```
+Create a `.env` file with the required configuration:
+
+```bash
+# Authentication (required)
 OIDC_DISCOVERY_URL=https://your-keycloak/realms/your-realm/.well-known/openid-configuration
 OIDC_CLIENT_ID=content-manager
 OIDC_CLIENT_SECRET=your-secret
+
+# Credential encryption (required for platform integrations)
+CREDENTIAL_ENCRYPTION_KEY=your-fernet-key
+
+# LLM (required for AI task runner)
+OPENAI_BASE_URL=https://your-llm-endpoint
+OPENAI_API_KEY=your-api-key
 ```
 
-## Twitter/X Integration (Optional)
+### Generating a Credential Encryption Key
 
-The task runner agent can post tweets via the `post_tweet` MCP tool. To enable this, you need a Twitter/X developer account and API credentials.
+Platform credentials (e.g. Twitter API keys) are encrypted at rest using [Fernet symmetric encryption](https://cryptography.io/en/latest/fernet/). You must provide a stable `CREDENTIAL_ENCRYPTION_KEY` — without it, platform credential storage is disabled.
+
+Generate a key:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Store the generated key in your `.env` file or Kubernetes secret. The same key must be used across restarts and all replicas — losing the key means stored credentials become unrecoverable.
+
+For Kubernetes deployment, create a secret and reference it via `credentialEncryption.existingSecret` in your Helm values:
+
+```bash
+kubectl create secret generic content-manager-credential-key \
+  --from-literal=encryption-key="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
+  -n content-manager
+```
+
+## Twitter/X Integration
+
+The platform system supports Twitter/X for posting content. Credentials can be configured via the Settings UI or environment variables.
 
 ### Setting up the X Developer Portal
 
@@ -63,23 +119,46 @@ The task runner agent can post tweets via the `post_tweet` MCP tool. To enable t
 
 ### Configuring credentials
 
-Add the following to your `.env` file for local development:
+**Option A: Via the Settings UI (recommended)**
 
-```
+Navigate to Settings > Platforms in the web UI, enter your Twitter API credentials, and save. Credentials are encrypted and stored in the database. The UI verifies credentials against the Twitter API before saving.
+
+**Option B: Via environment variables (fallback)**
+
+Add the following to your `.env` file:
+
+```bash
 TWITTER_API_KEY=your-api-key
 TWITTER_API_SECRET=your-api-secret
 TWITTER_ACCESS_TOKEN=your-access-token
 TWITTER_ACCESS_SECRET=your-access-token-secret
 ```
 
-For Kubernetes deployment, create a secret with keys matching the env var names above (`TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_SECRET`) and reference it via `twitter.existingSecret` in your Helm values. The secret is injected using `envFrom`.
+For Kubernetes, create a secret with keys matching the env var names above and reference it via `twitter.existingSecret` in your Helm values. The secret is injected using `envFrom`.
+
+Database-stored credentials take precedence over environment variables.
 
 ## Project Structure
 
 ```
 backend/          # FastAPI app, SQLAlchemy models, Alembic migrations, worker
+  platforms/      # Platform abstraction layer (base, twitter, credentials)
+  alembic/        # Database migration scripts
 frontend/         # Vue 3 SPA (Vite + Tailwind CSS)
+  src/components/ # Vue components (Kanban board, settings, modals)
+  src/composables/# API client and shared logic
 helm/             # Helm chart for Kubernetes deployment
 openspec/         # Structured change management (spec-driven workflow)
-.github/          # CI: build images + Helm chart, push to GHCR
+.github/          # CI: test, build images + Helm chart, push to GHCR
+```
+
+## Testing
+
+```bash
+# Backend tests (415 tests)
+DATABASE_URL="sqlite+aiosqlite:///:memory:" PYTHONPATH=backend \
+  backend/.venv/bin/python -m pytest backend/tests/ -v
+
+# Frontend tests (329 tests)
+cd frontend && npm test
 ```

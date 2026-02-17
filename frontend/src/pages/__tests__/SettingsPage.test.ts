@@ -12,7 +12,7 @@ const { toastMock } = vi.hoisted(() => {
 })
 vi.mock('vue-sonner', () => ({ toast: toastMock }))
 
-// Mock the useApi functions used by LlmModelSettings
+// Mock the useApi functions used by LlmModelSettings and PlatformSettings
 vi.mock('../../composables/useApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../composables/useApi')>()
   return {
@@ -22,6 +22,10 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
     fetchTranscriptionModels: vi.fn().mockResolvedValue([]),
     saveTranscriptionModel: vi.fn().mockResolvedValue({}),
+    fetchPlatforms: vi.fn().mockResolvedValue([]),
+    savePlatformCredentials: vi.fn().mockResolvedValue({ status: 'connected' }),
+    deletePlatformCredentials: vi.fn().mockResolvedValue(undefined),
+    verifyPlatformCredentials: vi.fn().mockResolvedValue({ status: 'connected', last_verified_at: null }),
   }
 })
 

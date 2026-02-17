@@ -67,6 +67,12 @@ valkey:
       cpu: 50m
       memory: 64Mi
 
+credentialEncryption:
+  existingSecret: ""
+  secretKey: CREDENTIAL_ENCRYPTION_KEY
+
+# Deprecated: Twitter credentials are now managed via the platform UI.
+# Kept for backwards compatibility with existing deployments.
 twitter:
   existingSecret: ""
 

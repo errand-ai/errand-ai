@@ -467,10 +467,13 @@ def _task_to_dict(task: Task) -> dict:
         "repeat_until": task.repeat_until.isoformat() if task.repeat_until else None,
         "output": task.output,
         "runner_logs": task.runner_logs,
+        "questions": task.questions,
         "retry_count": task.retry_count,
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        "created_by": task.created_by,
+        "updated_by": task.updated_by,
     }
 
 
@@ -818,6 +821,7 @@ async def _schedule_retry(task: Task, output: str | None = None, runner_logs: st
             "position": new_position,
             "retry_count": new_retry,
             "execute_at": execute_at,
+            "updated_by": "system",
             "updated_at": datetime.now(timezone.utc),
         }
         if output is not None:
@@ -892,6 +896,7 @@ async def _reschedule_if_repeating(task: Task) -> None:
             output=None,
             runner_logs=None,
             retry_count=0,
+            created_by="system",
         )
         session.add(new_task)
         await session.flush()
@@ -944,6 +949,7 @@ async def run() -> None:
 
             # Set status to running
             task.status = "running"
+            task.updated_by = "system"
             await session.commit()
             await session.refresh(task)
             await publish_event("task_updated", _task_to_dict(task))
@@ -981,7 +987,9 @@ async def run() -> None:
                         "position": new_position,
                         "output": parsed.result,
                         "runner_logs": stderr,
+                        "questions": parsed.questions if parsed.questions else None,
                         "retry_count": 0,
+                        "updated_by": "system",
                         "updated_at": datetime.now(timezone.utc),
                     }
                     await session.execute(
@@ -1040,17 +1048,44 @@ async def run() -> None:
 
         except GitSkillsError as e:
             logger.error("Git skills error for task %s: %s", task.id, e)
+            error_str = str(e)
+            is_credential_error = any(
+                hint in error_str for hint in ("Permission denied", "publickey", "authentication failed")
+            )
             # Check if we've exceeded max retries — move to review if so
             async with async_session() as session:
                 result = await session.execute(select(Task).where(Task.id == task.id))
                 current = result.scalar_one()
+
+                # Add "Credentials" tag if this is an SSH/auth failure
+                if is_credential_error:
+                    result2 = await session.execute(
+                        select(Tag).where(Tag.name == "Credentials")
+                    )
+                    cred_tag = result2.scalar_one_or_none()
+                    if cred_tag is None:
+                        cred_tag = Tag(name="Credentials")
+                        session.add(cred_tag)
+                        await session.flush()
+                    existing = await session.execute(
+                        select(task_tags).where(
+                            task_tags.c.task_id == task.id,
+                            task_tags.c.tag_id == cred_tag.id,
+                        )
+                    )
+                    if existing.first() is None:
+                        await session.execute(
+                            task_tags.insert().values(task_id=task.id, tag_id=cred_tag.id)
+                        )
+
                 if current.retry_count >= MAX_GIT_RETRIES:
                     new_position = await _next_position(session, "review")
                     await session.execute(
                         update(Task).where(Task.id == task.id).values(
                             status="review",
                             position=new_position,
-                            output=str(e),
+                            output=error_str,
+                            updated_by="system",
                             updated_at=datetime.now(timezone.utc),
                         )
                     )
@@ -1062,7 +1097,7 @@ async def run() -> None:
                     await publish_event("task_updated", _task_to_dict(updated))
                     logger.info("Task %s moved to review after %d git retries", task.id, current.retry_count)
                 else:
-                    await _schedule_retry(task, output=str(e))
+                    await _schedule_retry(task, output=error_str)
 
         except (ImageNotFound, APIError) as e:
             logger.error("Docker error for task %s: %s", task.id, e)

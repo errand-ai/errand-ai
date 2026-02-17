@@ -7,6 +7,7 @@ import SkillsRepoSettings from '../components/settings/SkillsRepoSettings.vue'
 import LlmModelSettings from '../components/settings/LlmModelSettings.vue'
 import TaskManagementSettings from '../components/settings/TaskManagementSettings.vue'
 import McpApiKeySettings from '../components/settings/McpApiKeySettings.vue'
+import PlatformSettings from '../components/settings/PlatformSettings.vue'
 import GitSshKeySettings from '../components/settings/GitSshKeySettings.vue'
 import McpServerConfigSettings from '../components/settings/McpServerConfigSettings.vue'
 
@@ -180,6 +181,8 @@ onBeforeUnmount(() => {
         :mcp-api-key="mcpApiKey"
         @update:mcp-api-key="mcpApiKey = $event"
       />
+
+      <PlatformSettings />
 
       <GitSshKeySettings
         :ssh-public-key="sshPublicKey"

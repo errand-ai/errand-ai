@@ -137,7 +137,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     position INTEGER DEFAULT 0 NOT NULL,
     output TEXT,
     runner_logs TEXT,
+    questions TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
+    created_by TEXT,
+    updated_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

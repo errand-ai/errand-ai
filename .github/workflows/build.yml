@@ -195,6 +195,7 @@ jobs:
       - name: Package and push Helm chart
         run: |
           TAG="${{ needs.version.outputs.tag }}"
+          helm repo add valkey https://valkey.io/valkey-helm/
           helm dependency build helm/content-manager
           helm package helm/content-manager \
             --version "${TAG}" \

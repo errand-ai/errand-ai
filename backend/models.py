@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -58,9 +58,12 @@ class Task(Base):
     )
     output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     runner_logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    questions: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+    created_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
 
 
@@ -134,3 +137,23 @@ class SkillFile(Base):
         server_default=text("now()"),
     )
     skill: Mapped["Skill"] = relationship(back_populates="files")
+
+
+class PlatformCredential(Base):
+    __tablename__ = "platform_credentials"
+
+    platform_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    encrypted_data: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'disconnected'")
+    )
+    last_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
