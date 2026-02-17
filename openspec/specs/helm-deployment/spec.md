@@ -8,7 +8,7 @@ The Helm chart SHALL define Kubernetes resources for: frontend Deployment and Se
 - **THEN** all components are created: frontend, backend, worker deployments, services, migration job, and ingress
 
 ### Requirement: Ingress resource for external access
-The Helm chart SHALL include an Ingress resource with path-based routing on a single FQDN. The default path SHALL route to the frontend Service. Paths prefixed `/api` and `/auth` SHALL route to the backend Service. The `/metrics` path SHALL NOT be exposed via the Ingress. The Ingress host and TLS settings SHALL be configurable via values.
+The Helm chart SHALL include an Ingress resource with path-based routing on a single FQDN. The default path SHALL route to the frontend Service. Paths prefixed `/api`, `/auth`, and `/slack` SHALL route to the backend Service. The `/slack` path SHALL be ordered before the catch-all `/` path to ensure correct matching. The `/metrics` path SHALL NOT be exposed via the Ingress. The Ingress host and TLS settings SHALL be configurable via values.
 
 #### Scenario: Default path routes to frontend
 - **WHEN** a request arrives at the Ingress host with path `/`
@@ -21,6 +21,10 @@ The Helm chart SHALL include an Ingress resource with path-based routing on a si
 #### Scenario: Auth path routes to backend
 - **WHEN** a request arrives with path `/auth/login`
 - **THEN** it is routed to the backend Service
+
+#### Scenario: Slack webhook routed to backend
+- **WHEN** an external request arrives at `/slack/commands`
+- **THEN** the ingress routes it to the backend service
 
 #### Scenario: Metrics path is not exposed
 - **WHEN** a request arrives with path `/metrics/queue`
