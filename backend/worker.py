@@ -621,13 +621,9 @@ def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIG
                         headers={"Accept": "application/json, text/event-stream"},
                     )
             if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, dict) and "result" in data:
-                    logger.info("Playwright MCP health check passed at %s", url)
-                    return True
-                logger.debug("Playwright MCP health check got unexpected response at %s: %r", url, data)
-            else:
-                logger.debug("Playwright MCP health check got status %s at %s", resp.status_code, url)
+                logger.info("Playwright MCP health check passed at %s", url)
+                return True
+            logger.debug("Playwright MCP health check got status %s at %s", resp.status_code, url)
         except Exception:
             logger.debug("Playwright MCP health check request failed for %s", url, exc_info=True)
         time.sleep(1)

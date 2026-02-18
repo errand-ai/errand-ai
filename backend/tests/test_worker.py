@@ -2885,10 +2885,9 @@ def test_start_playwright_container_pulls_missing_image(mock_docker):
 
 @patch("worker.httpx")
 def test_health_check_playwright_success(mock_httpx):
-    """health_check_playwright returns True when server responds with valid JSON-RPC."""
+    """health_check_playwright returns True when server responds with 200."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}
     mock_httpx.post.return_value = mock_resp
     result = health_check_playwright(port=8931, timeout=5)
     assert result is True
