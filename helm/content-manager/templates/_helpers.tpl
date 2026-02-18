@@ -1,5 +1,5 @@
 {{- define "content-manager.fullname" -}}
-{{ .Release.Name }}-{{ .Chart.Name }}
+{{ .Release.Name }}
 {{- end }}
 
 {{- define "content-manager.labels" -}}
