@@ -30,6 +30,7 @@ from main import (
     read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
+    strip_old_screenshots, MAX_RETAINED_SCREENSHOTS,
 )
 
 
@@ -547,3 +548,100 @@ def test_truncate_long_string():
     result = _truncate(text)
     assert len(result) == TOOL_RESULT_MAX_LENGTH + 3  # 500 + "..."
     assert result.endswith("...")
+
+
+# --- Screenshot filter ---
+
+
+def test_strip_old_screenshots_removes_old():
+    """Old screenshots beyond retention limit are replaced with placeholder."""
+    messages = []
+    for i in range(10):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": f"Step {i}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,screenshot{i}"}},
+            ]
+        })
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        result = strip_old_screenshots(messages)
+
+    # Count remaining images
+    image_count = 0
+    removed_count = 0
+    for msg in result:
+        for part in msg.get("content", []):
+            if isinstance(part, dict):
+                if part.get("type") == "image_url":
+                    image_count += 1
+                elif part.get("type") == "text" and part.get("text") == "[screenshot removed]":
+                    removed_count += 1
+    assert image_count == 5
+    assert removed_count == 5
+
+
+def test_strip_old_screenshots_retains_recent():
+    """Screenshots below retention limit pass through unchanged."""
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]}
+    ]
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        result = strip_old_screenshots(messages)
+    assert result[0]["content"][0]["type"] == "image_url"
+
+
+def test_strip_old_screenshots_non_image_unaffected():
+    """Non-image items pass through without modification."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Response"}]},
+    ]
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        result = strip_old_screenshots(messages)
+    assert result == messages
+
+
+def test_strip_old_screenshots_custom_retention():
+    """Custom retention limit via MAX_RETAINED_SCREENSHOTS."""
+    messages = []
+    for i in range(6):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,img{i}"}},
+            ]
+        })
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 3):
+        result = strip_old_screenshots(messages)
+
+    image_count = sum(
+        1 for msg in result for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+    assert image_count == 3
+
+
+def test_strip_old_screenshots_does_not_mutate_original():
+    """Filter returns a new list, not mutating the original."""
+    messages = []
+    for i in range(10):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,img{i}"}},
+            ]
+        })
+    original_count = len([
+        1 for msg in messages for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ])
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        strip_old_screenshots(messages)
+    after_count = len([
+        1 for msg in messages for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ])
+    assert original_count == after_count  # Original unchanged

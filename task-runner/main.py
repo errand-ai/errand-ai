@@ -1,6 +1,7 @@
 """Task runner agent — reads environment variables and files, runs a ReAct agent, outputs structured JSON."""
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from agents import Agent, ItemHelpers, ModelSettings, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
@@ -231,6 +232,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
 
 
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
+MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "5"))
 
 
 @function_tool
@@ -275,6 +277,36 @@ def get_reasoning_effort() -> str:
     return effort
 
 
+def strip_old_screenshots(input: list[dict]) -> list[dict]:
+    """Filter that strips old screenshots from conversation history, keeping the most recent N."""
+    # Find all image content part locations: (message_idx, part_idx)
+    image_locations = []
+    for msg_idx, msg in enumerate(input):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part_idx, part in enumerate(content):
+            if (isinstance(part, dict)
+                and part.get("type") == "image_url"
+                and isinstance(part.get("image_url"), dict)
+                and isinstance(part["image_url"].get("url"), str)
+                and part["image_url"]["url"].startswith("data:image/")):
+                image_locations.append((msg_idx, part_idx))
+
+    if len(image_locations) <= MAX_RETAINED_SCREENSHOTS:
+        return input
+
+    # Deep copy to avoid mutating original
+    result = copy.deepcopy(input)
+
+    # Replace oldest images (keep the last N)
+    to_remove = len(image_locations) - MAX_RETAINED_SCREENSHOTS
+    for msg_idx, part_idx in image_locations[:to_remove]:
+        result[msg_idx]["content"][part_idx] = {"type": "text", "text": "[screenshot removed]"}
+
+    return result
+
+
 async def main():
     # 1. Read and validate environment variables
     env = read_env_vars()
@@ -309,7 +341,8 @@ async def main():
 
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter())
+            run_config = RunConfig(call_model_input_filter=strip_old_screenshots)
+            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
 
             # Iterate streaming events, emitting thinking/reasoning to stderr
             async for event in result.stream_events():

@@ -41,7 +41,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          for IMAGE in "ghcr.io/${{ github.repository }}-frontend" "ghcr.io/${{ github.repository }}-backend" "ghcr.io/${{ github.repository }}-task-runner"; do
+          for IMAGE in "ghcr.io/${{ github.repository }}-frontend" "ghcr.io/${{ github.repository }}-backend" "ghcr.io/${{ github.repository }}-task-runner" "ghcr.io/${{ github.repository }}-playwright-mcp"; do
             if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
               echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
               exit 1
@@ -173,8 +173,39 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository }}-task-runner:${{ needs.version.outputs.tag }}
 
+  build-playwright-mcp:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push playwright-mcp image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./playwright-mcp
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}-playwright-mcp:${{ needs.version.outputs.tag }}
+
   helm:
-    needs: [version, build-frontend, build-backend, build-task-runner]
+    needs: [version, build-frontend, build-backend, build-task-runner, build-playwright-mcp]
     runs-on: ubuntu-latest
     permissions:
       contents: read

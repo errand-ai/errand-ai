@@ -26,6 +26,15 @@ taskRunner:
     tag: ""
     pullPolicy: IfNotPresent
 
+playwrightMcp:
+  image:
+    repository: ghcr.io/devops-consultants/content-manager-playwright-mcp
+    tag: ""
+    pullPolicy: IfNotPresent
+  memoryLimit: "512m"
+  port: 8931
+  startupTimeout: 30
+
 dind:
   image: docker:27-dind
 

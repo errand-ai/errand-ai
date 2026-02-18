@@ -77,6 +77,14 @@ spec:
             - name: HINDSIGHT_BANK_ID
               value: {{ .Values.hindsight.bankId | quote }}
             {{- end }}
+            - name: PLAYWRIGHT_MCP_IMAGE
+              value: "{{ .Values.playwrightMcp.image.repository }}:{{ .Values.playwrightMcp.image.tag | default .Chart.AppVersion }}"
+            - name: PLAYWRIGHT_MEMORY_LIMIT
+              value: {{ .Values.playwrightMcp.memoryLimit | quote }}
+            - name: PLAYWRIGHT_PORT
+              value: {{ .Values.playwrightMcp.port | quote }}
+            - name: PLAYWRIGHT_STARTUP_TIMEOUT
+              value: {{ .Values.playwrightMcp.startupTimeout | quote }}
         - name: dind
           image: {{ .Values.dind.image }}
           securityContext:

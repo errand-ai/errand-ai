@@ -15,7 +15,7 @@ from typing import Literal, Optional
 
 import docker
 import httpx
-from docker.errors import DockerException, APIError, ImageNotFound
+from docker.errors import DockerException, APIError, ImageNotFound, NotFound
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,6 +84,10 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 DOCKER_HOST = os.environ.get("DOCKER_HOST", "")
 TASK_RUNNER_IMAGE = os.environ.get("TASK_RUNNER_IMAGE", "content-manager-task-runner:latest")
 MAX_OUTPUT_BYTES = int(os.environ.get("MAX_OUTPUT_BYTES", str(1024 * 1024)))  # 1MB default
+PLAYWRIGHT_MCP_IMAGE = os.environ.get("PLAYWRIGHT_MCP_IMAGE", "")
+PLAYWRIGHT_MEMORY_LIMIT = os.environ.get("PLAYWRIGHT_MEMORY_LIMIT", "512m")
+PLAYWRIGHT_PORT = int(os.environ.get("PLAYWRIGHT_PORT", "8931"))
+PLAYWRIGHT_STARTUP_TIMEOUT = int(os.environ.get("PLAYWRIGHT_STARTUP_TIMEOUT", "30"))
 
 shutdown_requested = False
 shutdown_event: Optional[asyncio.Event] = None
@@ -574,9 +578,82 @@ def put_archive_ssh(container, private_key: str, ssh_config: str) -> None:
     container.put_archive("/home/nonroot/.ssh", buf)
 
 
+def start_playwright_container():
+    """Start a Playwright MCP sidecar container in DinD. Returns the container."""
+    # Ensure image is available
+    try:
+        docker_client.images.get(PLAYWRIGHT_MCP_IMAGE)
+        logger.info("Playwright image %s found locally", PLAYWRIGHT_MCP_IMAGE)
+    except ImageNotFound:
+        logger.info("Playwright image %s not found locally, pulling...", PLAYWRIGHT_MCP_IMAGE)
+        docker_client.images.pull(PLAYWRIGHT_MCP_IMAGE)
+
+    container = docker_client.containers.create(
+        image=PLAYWRIGHT_MCP_IMAGE,
+        network_mode="host",
+        mem_limit=PLAYWRIGHT_MEMORY_LIMIT,
+        memswap_limit=PLAYWRIGHT_MEMORY_LIMIT,
+        detach=True,
+    )
+    container.start()
+    logger.info("Started Playwright MCP container %s", container.short_id)
+    return container
+
+
+def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIGHT_STARTUP_TIMEOUT) -> bool:
+    """Poll Playwright MCP endpoint until it responds or timeout. Returns True if healthy."""
+    url = f"http://localhost:{port}/mcp"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = httpx.post(url, json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "healthcheck", "version": "1.0"}}}, timeout=5)
+            if resp.status_code in (200, 201, 202, 204):
+                logger.info("Playwright MCP health check passed at %s", url)
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    logger.error("Playwright MCP health check timed out after %ds at %s", timeout, url)
+    return False
+
+
+def cleanup_playwright_container(container) -> None:
+    """Stop and remove the Playwright container. Handles already-removed case gracefully."""
+    if container is None:
+        return
+    try:
+        container.stop(timeout=5)
+    except Exception:
+        pass  # may already be stopped
+    try:
+        container.remove(force=True)
+        logger.info("Cleaned up Playwright container %s", container.short_id)
+    except NotFound:
+        logger.warning("Playwright container %s already removed (possibly OOM-killed)", container.short_id)
+    except Exception:
+        logger.warning("Failed to remove Playwright container", exc_info=True)
+
+
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
     """Run task in a Docker container via DinD. Returns (exit_code, stdout, stderr)."""
     global active_container_id
+
+    playwright_container = None
+    playwright_healthy = False
+
+    # Start Playwright sidecar if configured
+    if PLAYWRIGHT_MCP_IMAGE:
+        try:
+            playwright_container = start_playwright_container()
+            playwright_healthy = health_check_playwright()
+            if not playwright_healthy:
+                logger.error("Playwright MCP health check failed, proceeding without Playwright")
+                cleanup_playwright_container(playwright_container)
+                playwright_container = None
+        except Exception:
+            logger.warning("Failed to start Playwright container", exc_info=True)
+            cleanup_playwright_container(playwright_container)
+            playwright_container = None
 
     mcp_servers = settings.get("mcp_servers", {})
     credentials = settings.get("credentials", [])
@@ -698,6 +775,14 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
             )
 
+        # Inject Playwright MCP server if sidecar is healthy
+        if playwright_healthy:
+            mcp_servers.setdefault("mcpServers", {})
+            if "playwright" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["playwright"] = {
+                    "url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
+                }
+
         # Merge DB skills with git-sourced skills if configured
         skills = settings.get("skills", [])
         skills_git_repo = settings.get("skills_git_repo")
@@ -817,6 +902,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         except Exception:
             pass
         active_container_id = None
+        cleanup_playwright_container(playwright_container)
 
 
 async def _schedule_retry(task: Task, output: str | None = None, runner_logs: str | None = None) -> None:

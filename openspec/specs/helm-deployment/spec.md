@@ -1,4 +1,6 @@
-## ADDED Requirements
+## Purpose
+
+## Requirements
 
 ### Requirement: Helm chart deploys all application components
 The Helm chart SHALL define Kubernetes resources for: frontend Deployment and Service, backend Deployment and Service, worker Deployment, database migration Job (pre-upgrade hook), and Ingress.
