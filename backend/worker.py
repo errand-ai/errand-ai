@@ -916,7 +916,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             try:
                 container.remove(force=True)
             except Exception:
-                pass
+                logger.debug("Failed to remove task-runner container", exc_info=True)
             active_container_id = None
     finally:
         cleanup_playwright_container(playwright_container)
