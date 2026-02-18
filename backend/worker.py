@@ -650,10 +650,24 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             if "perplexity-ask" not in mcp_servers["mcpServers"]:
                 mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
             system_prompt += (
-                "\n\n## Perplexity Web Search\n\n"
-                "You have access to the `perplexity-ask` MCP tool. Use it to look up "
-                "current information online, conduct web research, or reason about "
-                "topics that require context beyond your training data."
+                "\n\n## Web Research\n\n"
+                "You have access to the `perplexity-ask` MCP tool for web search. "
+                "Try it first when you need current information online.\n\n"
+                "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
+                "fetching web content directly using the `execute_command` tool. "
+                "Both `curl` and Python's `httpx` library are available:\n\n"
+                "```\n"
+                "# Fetch a web page with curl\n"
+                "execute_command('curl -sL https://example.com')\n"
+                "\n"
+                "# Fetch JSON from an API with curl\n"
+                "execute_command('curl -sL https://api.example.com/data')\n"
+                "\n"
+                "# Use Python httpx for more complex requests\n"
+                "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
+                "```\n\n"
+                "Use this approach to retrieve documentation, API responses, or any "
+                "public web content needed to complete the task."
             )
 
         # Inject content-manager MCP server for task tools (post_tweet, new_task, etc.)
