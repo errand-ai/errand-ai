@@ -214,7 +214,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
             headers = {}
 
         try:
-            params = {"url": url, "timeout": 30}
+            params = {"url": url, "timeout": 300, "sse_read_timeout": 600}
             if headers:
                 params["headers"] = headers
 
@@ -222,6 +222,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
                 name=name,
                 params=params,
                 cache_tools_list=True,
+                client_session_timeout_seconds=300,
             )
             connected = await stack.enter_async_context(server)
             servers.append(connected)
