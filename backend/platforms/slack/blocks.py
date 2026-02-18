@@ -16,6 +16,27 @@ def status_emoji(status: str) -> str:
     return emojis.get(status, ":question:")
 
 
+def _task_action_buttons(task_id: str) -> dict:
+    """Actions block with View Status and View Output buttons."""
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View Status"},
+                "action_id": "task_status",
+                "value": str(task_id),
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View Output"},
+                "action_id": "task_output",
+                "value": str(task_id),
+            },
+        ],
+    }
+
+
 def task_created_blocks(task) -> dict:
     """Block Kit response for newly created task."""
     return {
@@ -33,10 +54,36 @@ def task_created_blocks(task) -> dict:
             },
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Created by {task.created_by}"}],
+                "elements": [{"type": "mrkdwn", "text": f"Created by {task.created_by or 'unknown'}"}],
             },
+            _task_action_buttons(task.id),
         ],
     }
+
+
+def task_updated_blocks(task) -> list:
+    """Block Kit blocks for an updated task message (used with chat.update).
+
+    Returns a list of blocks (not a full response dict) since chat.update
+    takes blocks directly, not the response_type wrapper.
+    """
+    return [
+        {"type": "header", "text": {"type": "plain_text", "text": "Task Created"}},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Title:*\n{task.title}"},
+                {"type": "mrkdwn", "text": f"*Status:*\n{status_emoji(task.status)} {task.status}"},
+                {"type": "mrkdwn", "text": f"*Category:*\n{task.category or 'N/A'}"},
+                {"type": "mrkdwn", "text": f"*ID:*\n`{str(task.id)[:8]}`"},
+            ],
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Created by {task.created_by or 'unknown'}"}],
+        },
+        _task_action_buttons(task.id),
+    ]
 
 
 def task_status_blocks(task) -> dict:

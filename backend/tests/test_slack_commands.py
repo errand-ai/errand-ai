@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """
 
+_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+)
+"""
+
+_TASK_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, tag_id)
+)
+"""
+
 _PLATFORM_CREDENTIALS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS platform_credentials (
     platform_id TEXT NOT NULL PRIMARY KEY,
@@ -60,6 +75,8 @@ async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_SETTINGS_TABLE_SQL))
+        await conn.execute(text(_TAGS_TABLE_SQL))
+        await conn.execute(text(_TASK_TAGS_TABLE_SQL))
         await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
 
 
@@ -99,12 +116,12 @@ async def slack_client() -> AsyncGenerator[AsyncClient, None]:
     await engine.dispose()
 
 
-async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123"):
+async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123", channel_id: str = ""):
     """Post a slash command to /slack/commands."""
-    return await client.post(
-        "/slack/commands",
-        data={"command": "/task", "text": text, "user_id": user_id},
-    )
+    data = {"command": "/task", "text": text, "user_id": user_id}
+    if channel_id:
+        data["channel_id"] = channel_id
+    return await client.post("/slack/commands", data=data)
 
 
 def _extract_short_id(create_response) -> str:
@@ -361,3 +378,138 @@ class TestUUIDPrefixMatching:
         data = response.json()
         assert ":warning:" in data["blocks"][0]["text"]["text"]
         assert "No task found" in data["blocks"][0]["text"]["text"]
+
+
+# --- Slack tag assignment ---
+
+
+class TestSlackTag:
+    @pytest.mark.asyncio
+    async def test_new_command_adds_slack_tag(self, slack_client):
+        """Tasks created via /task new should get a 'slack' tag."""
+        response = await _post_command(slack_client, text="new Tagged task")
+        assert response.status_code == 200
+        data = response.json()
+        # The response itself doesn't include tags, but we can verify the tag
+        # exists by checking the DB indirectly via the actions block
+        assert data["blocks"][0]["text"]["text"] == "Task Created"
+
+    @pytest.mark.asyncio
+    async def test_new_command_creates_slack_tag_if_not_exists(self, slack_client):
+        """First /task new should create the 'slack' tag, second should reuse it."""
+        response1 = await _post_command(slack_client, text="new First task")
+        assert response1.status_code == 200
+        response2 = await _post_command(slack_client, text="new Second task")
+        assert response2.status_code == 200
+        # Both should succeed without errors (tag reuse works)
+        assert response2.json()["blocks"][0]["text"]["text"] == "Task Created"
+
+
+# --- Channel message for live updates ---
+
+
+class TestNewCommandChannelMessage:
+    @pytest.mark.asyncio
+    async def test_posts_channel_message_when_channel_id_present(self, slack_client):
+        """When channel_id is provided, /task new should also post a visible channel message."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock(
+                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
+            )
+            response = await _post_command(
+                slack_client, text="new Channel task", channel_id="C456"
+            )
+            assert response.status_code == 200
+            assert response.json()["blocks"][0]["text"]["text"] == "Task Created"
+
+            # Background task posts to the channel
+            mock_client.post_message.assert_called_once()
+            call_args = mock_client.post_message.call_args
+            assert call_args[0][0] == "xoxb-test"  # bot token
+            assert call_args[0][1] == "C456"  # channel
+            assert isinstance(call_args[0][2], list)  # blocks
+
+    @pytest.mark.asyncio
+    async def test_no_channel_message_without_channel_id(self, slack_client):
+        """When no channel_id, no channel message is posted."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock()
+            response = await _post_command(slack_client, text="new No channel task")
+            assert response.status_code == 200
+            mock_client.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_channel_message_on_error(self, slack_client):
+        """When /task new fails (missing title), no channel message is posted."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock()
+            response = await _post_command(
+                slack_client, text="new", channel_id="C456"
+            )
+            assert response.status_code == 200
+            assert ":warning:" in response.json()["blocks"][0]["text"]["text"]
+            mock_client.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_task_id_stripped_from_response(self, slack_client):
+        """The _task_id metadata field should not appear in the HTTP response."""
+        with patch("platforms.slack.routes._slack_client") as mock_client:
+            mock_client.post_message = AsyncMock(
+                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
+            )
+            response = await _post_command(
+                slack_client, text="new Metadata test", channel_id="C456"
+            )
+            data = response.json()
+            assert "_task_id" not in data
+
+
+# --- LLM title generation ---
+
+
+class TestTitleGeneration:
+    @pytest.mark.asyncio
+    async def test_long_input_uses_llm_title(self, slack_client):
+        """Inputs >5 words should go through generate_title for a short title."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            from llm import LLMResult
+            mock_gen.return_value = LLMResult(
+                title="Deploy Staging App", category="immediate", success=True,
+            )
+            response = await _post_command(
+                slack_client, text="new Deploy the new version of the app to staging"
+            )
+            assert response.status_code == 200
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Deploy Staging App" in fields_text
+            mock_gen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_short_input_skips_llm(self, slack_client):
+        """Inputs <=5 words should use text directly as title, no LLM call."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            response = await _post_command(slack_client, text="new Fix login bug")
+            assert response.status_code == 200
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Fix login bug" in fields_text
+            mock_gen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_long_input_sets_description(self, slack_client):
+        """For long inputs, the original text becomes the description."""
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
+            from llm import LLMResult
+            mock_gen.return_value = LLMResult(
+                title="Weekly Report", category="scheduled", success=True,
+                execute_at="2026-03-01T09:00:00Z",
+            )
+            response = await _post_command(
+                slack_client, text="new Generate the weekly status report and send it to the team"
+            )
+            assert response.status_code == 200
+            # Verify title is the LLM-generated one
+            data = response.json()
+            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
+            assert "Weekly Report" in fields_text

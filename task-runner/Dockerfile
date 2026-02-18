@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     ca-certificates \
     busybox \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 # Create .ssh directory with correct permissions (preserved by COPY --from)
 RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
@@ -19,7 +20,7 @@ RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
 # glibc version conflicts.
 RUN mkdir -p /staged-libs && \
     echo "libc.so libdl.so libm.so libpthread.so librt.so libresolv.so libz.so libexpat.so libgcc_s.so libnsl.so libutil.so libcrypt.so liblzma.so libtirpc.so libtinfo.so libncursesw.so libreadline.so libhistory.so libbz2.so libcom_err.so libkeyutils.so" > /tmp/skip_libs && \
-    for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/lib/git-core/git-remote-https /bin/busybox; do \
+    for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/lib/git-core/git-remote-https /bin/busybox /usr/bin/curl; do \
       ldd "$bin" 2>/dev/null | awk '/ => \// {print $3}' | while read lib; do \
         basename=$(basename "$lib" | sed 's/\.so.*/.so/') ; \
         if ! grep -qw "$basename" /tmp/skip_libs; then \
@@ -45,6 +46,9 @@ COPY --from=git-builder /usr/share/git-core /usr/share/git-core
 # Copy ssh client binaries
 COPY --from=git-builder /usr/bin/ssh /usr/bin/ssh
 COPY --from=git-builder /usr/bin/ssh-keygen /usr/bin/ssh-keygen
+
+# Copy curl binary (for HTTP requests in tasks)
+COPY --from=git-builder /usr/bin/curl /usr/bin/curl
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.

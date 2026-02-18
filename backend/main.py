@@ -37,6 +37,8 @@ from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
 from platforms.slack.routes import router as slack_router
+from platforms.slack.status_updater import run_status_updater
+from platforms.credentials import load_credentials as _load_creds
 from scheduler import run_scheduler, release_lock
 
 security = HTTPBearer()
@@ -118,13 +120,21 @@ async def lifespan(app: FastAPI):
             logger.info("Created default git SSH hosts")
 
     scheduler_task = asyncio.create_task(run_scheduler())
+    slack_updater_task = asyncio.create_task(
+        run_status_updater(get_valkey, async_session, _load_creds)
+    )
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
+    slack_updater_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
-        pass
+        pass  # Expected after explicit cancel()
+    try:
+        await slack_updater_task
+    except asyncio.CancelledError:
+        pass  # Expected after explicit cancel()
     await release_lock()
     await close_valkey()
     await engine.dispose()
