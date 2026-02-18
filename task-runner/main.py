@@ -214,7 +214,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
             headers = {}
 
         try:
-            params = {"url": url}
+            params = {"url": url, "timeout": 30}
             if headers:
                 params["headers"] = headers
 
@@ -234,6 +234,8 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
 
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
 MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "5"))
+MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "180000"))
+CHARS_PER_TOKEN = 4  # rough approximation for English text
 
 
 @function_tool
@@ -278,11 +280,13 @@ def get_reasoning_effort() -> str:
     return effort
 
 
-def strip_old_screenshots(data: CallModelData) -> ModelInputData:
-    """Filter that strips old screenshots from conversation history, keeping the most recent N."""
-    messages = list(data.model_data.input)
+def _estimate_tokens(messages: list) -> int:
+    """Rough token estimate: total chars / CHARS_PER_TOKEN."""
+    return len(json.dumps(messages, default=str)) // CHARS_PER_TOKEN
 
-    # Find all image content part locations: (message_idx, part_idx)
+
+def _strip_screenshots(messages: list) -> list:
+    """Replace old screenshots beyond retention limit with placeholders."""
     image_locations = []
     for msg_idx, msg in enumerate(messages):
         content = msg.get("content") if isinstance(msg, dict) else None
@@ -297,17 +301,37 @@ def strip_old_screenshots(data: CallModelData) -> ModelInputData:
                 image_locations.append((msg_idx, part_idx))
 
     if len(image_locations) <= MAX_RETAINED_SCREENSHOTS:
-        return ModelInputData(input=messages, instructions=data.model_data.instructions)
+        return messages
 
-    # Deep copy to avoid mutating original
     result = copy.deepcopy(messages)
-
-    # Replace oldest images (keep the last N)
     to_remove = len(image_locations) - MAX_RETAINED_SCREENSHOTS
     for msg_idx, part_idx in image_locations[:to_remove]:
         result[msg_idx]["content"][part_idx] = {"type": "text", "text": "[screenshot removed]"}
+    return result
 
-    return ModelInputData(input=result, instructions=data.model_data.instructions)
+
+def _trim_context_window(messages: list) -> list:
+    """Drop oldest messages (after the first) until under MAX_CONTEXT_TOKENS."""
+    if len(messages) <= 2 or _estimate_tokens(messages) <= MAX_CONTEXT_TOKENS:
+        return messages
+
+    # Keep first message (initial user prompt) and trim from the front of the rest
+    first = messages[:1]
+    rest = messages[1:]
+    while len(rest) > 1 and _estimate_tokens(first + rest) > MAX_CONTEXT_TOKENS:
+        rest = rest[1:]
+
+    trimmed = first + rest
+    logger.info("Context window trimmed: %d -> %d messages", len(messages), len(trimmed))
+    return trimmed
+
+
+def filter_model_input(data: CallModelData) -> ModelInputData:
+    """Pre-model filter: strip old screenshots and trim context window."""
+    messages = list(data.model_data.input)
+    messages = _strip_screenshots(messages)
+    messages = _trim_context_window(messages)
+    return ModelInputData(input=messages, instructions=data.model_data.instructions)
 
 
 async def main():
@@ -344,7 +368,7 @@ async def main():
 
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            run_config = RunConfig(call_model_input_filter=strip_old_screenshots)
+            run_config = RunConfig(call_model_input_filter=filter_model_input)
             result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
 
             # Iterate streaming events, emitting thinking/reasoning to stderr

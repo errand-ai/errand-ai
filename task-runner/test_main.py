@@ -59,7 +59,8 @@ from main import (
     read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
-    strip_old_screenshots, MAX_RETAINED_SCREENSHOTS,
+    filter_model_input, _strip_screenshots, _trim_context_window,
+    _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
 )
 
 
@@ -583,11 +584,11 @@ def test_truncate_long_string():
 
 
 def _make_call_model_data(messages, instructions="You are a helpful agent."):
-    """Helper to wrap messages in a CallModelData-like object for strip_old_screenshots."""
+    """Helper to wrap messages in a CallModelData-like object for filter_model_input."""
     return _MockCallModelData(messages, instructions)
 
 
-def test_strip_old_screenshots_removes_old():
+def test_filter_model_input_removes_old():
     """Old screenshots beyond retention limit are replaced with placeholder."""
     messages = []
     for i in range(10):
@@ -599,7 +600,7 @@ def test_strip_old_screenshots_removes_old():
             ]
         })
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        output = strip_old_screenshots(_make_call_model_data(messages))
+        output = filter_model_input(_make_call_model_data(messages))
 
     # Count remaining images
     image_count = 0
@@ -615,7 +616,7 @@ def test_strip_old_screenshots_removes_old():
     assert removed_count == 5
 
 
-def test_strip_old_screenshots_retains_recent():
+def test_filter_model_input_retains_recent():
     """Screenshots below retention limit pass through unchanged."""
     messages = [
         {"role": "assistant", "content": [
@@ -623,22 +624,22 @@ def test_strip_old_screenshots_retains_recent():
         ]}
     ]
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        output = strip_old_screenshots(_make_call_model_data(messages))
+        output = filter_model_input(_make_call_model_data(messages))
     assert output.input[0]["content"][0]["type"] == "image_url"
 
 
-def test_strip_old_screenshots_non_image_unaffected():
+def test_filter_model_input_non_image_unaffected():
     """Non-image items pass through without modification."""
     messages = [
         {"role": "user", "content": "Hello"},
         {"role": "assistant", "content": [{"type": "text", "text": "Response"}]},
     ]
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        output = strip_old_screenshots(_make_call_model_data(messages))
+        output = filter_model_input(_make_call_model_data(messages))
     assert output.input == messages
 
 
-def test_strip_old_screenshots_custom_retention():
+def test_filter_model_input_custom_retention():
     """Custom retention limit via MAX_RETAINED_SCREENSHOTS."""
     messages = []
     for i in range(6):
@@ -649,7 +650,7 @@ def test_strip_old_screenshots_custom_retention():
             ]
         })
     with patch("main.MAX_RETAINED_SCREENSHOTS", 3):
-        output = strip_old_screenshots(_make_call_model_data(messages))
+        output = filter_model_input(_make_call_model_data(messages))
 
     image_count = sum(
         1 for msg in output.input for part in msg.get("content", [])
@@ -658,7 +659,7 @@ def test_strip_old_screenshots_custom_retention():
     assert image_count == 3
 
 
-def test_strip_old_screenshots_does_not_mutate_original():
+def test_filter_model_input_does_not_mutate_original():
     """Filter returns a new list, not mutating the original."""
     messages = []
     for i in range(10):
@@ -673,7 +674,7 @@ def test_strip_old_screenshots_does_not_mutate_original():
         if isinstance(part, dict) and part.get("type") == "image_url"
     ])
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        strip_old_screenshots(_make_call_model_data(messages))
+        filter_model_input(_make_call_model_data(messages))
     after_count = len([
         1 for msg in messages for part in msg.get("content", [])
         if isinstance(part, dict) and part.get("type") == "image_url"
@@ -681,10 +682,65 @@ def test_strip_old_screenshots_does_not_mutate_original():
     assert original_count == after_count  # Original unchanged
 
 
-def test_strip_old_screenshots_preserves_instructions():
+def test_filter_model_input_preserves_instructions():
     """Filter preserves instructions from the CallModelData."""
     messages = [{"role": "user", "content": "Hello"}]
     instructions = "You are a task runner agent."
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        output = strip_old_screenshots(_make_call_model_data(messages, instructions))
+        output = filter_model_input(_make_call_model_data(messages, instructions))
     assert output.instructions == instructions
+
+
+# --- Context window trimming ---
+
+
+def test_trim_context_window_no_trimming_needed():
+    """Messages under the token limit are returned unchanged."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+    result = _trim_context_window(messages)
+    assert result == messages
+
+
+def test_trim_context_window_drops_old_messages():
+    """Oldest messages (after first) are dropped when over token limit."""
+    # Create messages that exceed a small token limit
+    messages = [{"role": "user", "content": "initial prompt"}]
+    for i in range(20):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+    with patch("main.MAX_CONTEXT_TOKENS", 5000):
+        result = _trim_context_window(messages)
+    assert len(result) < len(messages)
+    # First message is preserved
+    assert result[0] == messages[0]
+
+
+def test_trim_context_window_preserves_first_message():
+    """The first message (initial user prompt) is always preserved."""
+    first = {"role": "user", "content": "Do the task"}
+    messages = [first] + [{"role": "assistant", "content": "x" * 10000} for _ in range(10)]
+    with patch("main.MAX_CONTEXT_TOKENS", 3000):
+        result = _trim_context_window(messages)
+    assert result[0] == first
+
+
+def test_estimate_tokens():
+    """Token estimation produces reasonable values."""
+    messages = [{"role": "user", "content": "Hello world"}]
+    tokens = _estimate_tokens(messages)
+    assert tokens > 0
+    # JSON serialized length / 4, should be small for this input
+    assert tokens < 100
+
+
+def test_filter_model_input_trims_context():
+    """Full filter pipeline trims context when over limit."""
+    messages = [{"role": "user", "content": "initial"}]
+    for i in range(20):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+    with patch("main.MAX_CONTEXT_TOKENS", 5000), patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages))
+    assert len(output.input) < len(messages)
+    assert output.input[0] == messages[0]
