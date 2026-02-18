@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from events import publish_event
 from llm import generate_title
 from models import Task
 from platforms.slack.blocks import (
@@ -74,7 +75,7 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
             try:
                 execute_at = datetime.fromisoformat(llm_result.execute_at)
             except (ValueError, TypeError):
-                pass
+                pass  # LLM returned unparseable date; fall back to default scheduling
         if not llm_result.success:
             tag_names.append("Needs Info")
     else:
@@ -104,6 +105,30 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
         await add_tag(session, task.id, tag_name)
     await session.commit()
     await session.refresh(task)
+
+    # Notify WebSocket clients
+    all_tags = ["slack"] + tag_names
+    await publish_event("task_created", {
+        "id": str(task.id),
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "position": task.position,
+        "category": task.category,
+        "execute_at": task.execute_at.isoformat() if task.execute_at else None,
+        "repeat_interval": task.repeat_interval,
+        "repeat_until": None,
+        "output": None,
+        "runner_logs": None,
+        "questions": None,
+        "retry_count": 0,
+        "tags": sorted(all_tags),
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        "created_by": task.created_by,
+        "updated_by": task.updated_by,
+    })
+
     response = task_created_blocks(task)
     response["_task_id"] = str(task.id)  # metadata for route (stripped before sending)
     return response
