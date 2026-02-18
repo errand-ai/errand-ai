@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
+from agents.run import CallModelData, ModelInputData
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -277,8 +278,10 @@ def get_reasoning_effort() -> str:
     return effort
 
 
-def strip_old_screenshots(messages: list[dict]) -> list[dict]:
+def strip_old_screenshots(data: CallModelData) -> ModelInputData:
     """Filter that strips old screenshots from conversation history, keeping the most recent N."""
+    messages = list(data.model_data.input)
+
     # Find all image content part locations: (message_idx, part_idx)
     image_locations = []
     for msg_idx, msg in enumerate(messages):
@@ -294,7 +297,7 @@ def strip_old_screenshots(messages: list[dict]) -> list[dict]:
                 image_locations.append((msg_idx, part_idx))
 
     if len(image_locations) <= MAX_RETAINED_SCREENSHOTS:
-        return messages
+        return ModelInputData(input=messages, instructions=data.model_data.instructions)
 
     # Deep copy to avoid mutating original
     result = copy.deepcopy(messages)
@@ -304,7 +307,7 @@ def strip_old_screenshots(messages: list[dict]) -> list[dict]:
     for msg_idx, part_idx in image_locations[:to_remove]:
         result[msg_idx]["content"][part_idx] = {"type": "text", "text": "[screenshot removed]"}
 
-    return result
+    return ModelInputData(input=result, instructions=data.model_data.instructions)
 
 
 async def main():

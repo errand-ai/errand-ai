@@ -21,6 +21,35 @@ _mock_agents.RunHooks = type("RunHooks", (), {})
 _mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
+
+# Mock agents.run with CallModelData and ModelInputData
+_mock_agents_run = MagicMock()
+
+
+class _MockModelData:
+    """Simulates the model_data attribute of CallModelData."""
+    def __init__(self, input_items, instructions=""):
+        self.input = input_items
+        self.instructions = instructions
+
+
+class _MockCallModelData:
+    """Simulates CallModelData passed to call_model_input_filter."""
+    def __init__(self, input_items, instructions=""):
+        self.model_data = _MockModelData(input_items, instructions)
+
+
+class _MockModelInputData:
+    """Simulates ModelInputData returned from call_model_input_filter."""
+    def __init__(self, input, instructions=""):
+        self.input = input
+        self.instructions = instructions
+
+
+_mock_agents_run.CallModelData = _MockCallModelData
+_mock_agents_run.ModelInputData = _MockModelInputData
+sys.modules.setdefault("agents.run", _mock_agents_run)
+
 sys.modules.setdefault("openai", MagicMock())
 sys.modules.setdefault("openai.types", MagicMock())
 sys.modules.setdefault("openai.types.shared", MagicMock())
@@ -553,6 +582,11 @@ def test_truncate_long_string():
 # --- Screenshot filter ---
 
 
+def _make_call_model_data(messages, instructions="You are a helpful agent."):
+    """Helper to wrap messages in a CallModelData-like object for strip_old_screenshots."""
+    return _MockCallModelData(messages, instructions)
+
+
 def test_strip_old_screenshots_removes_old():
     """Old screenshots beyond retention limit are replaced with placeholder."""
     messages = []
@@ -565,12 +599,12 @@ def test_strip_old_screenshots_removes_old():
             ]
         })
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        result = strip_old_screenshots(messages)
+        output = strip_old_screenshots(_make_call_model_data(messages))
 
     # Count remaining images
     image_count = 0
     removed_count = 0
-    for msg in result:
+    for msg in output.input:
         for part in msg.get("content", []):
             if isinstance(part, dict):
                 if part.get("type") == "image_url":
@@ -589,8 +623,8 @@ def test_strip_old_screenshots_retains_recent():
         ]}
     ]
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        result = strip_old_screenshots(messages)
-    assert result[0]["content"][0]["type"] == "image_url"
+        output = strip_old_screenshots(_make_call_model_data(messages))
+    assert output.input[0]["content"][0]["type"] == "image_url"
 
 
 def test_strip_old_screenshots_non_image_unaffected():
@@ -600,8 +634,8 @@ def test_strip_old_screenshots_non_image_unaffected():
         {"role": "assistant", "content": [{"type": "text", "text": "Response"}]},
     ]
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        result = strip_old_screenshots(messages)
-    assert result == messages
+        output = strip_old_screenshots(_make_call_model_data(messages))
+    assert output.input == messages
 
 
 def test_strip_old_screenshots_custom_retention():
@@ -615,10 +649,10 @@ def test_strip_old_screenshots_custom_retention():
             ]
         })
     with patch("main.MAX_RETAINED_SCREENSHOTS", 3):
-        result = strip_old_screenshots(messages)
+        output = strip_old_screenshots(_make_call_model_data(messages))
 
     image_count = sum(
-        1 for msg in result for part in msg.get("content", [])
+        1 for msg in output.input for part in msg.get("content", [])
         if isinstance(part, dict) and part.get("type") == "image_url"
     )
     assert image_count == 3
@@ -639,9 +673,18 @@ def test_strip_old_screenshots_does_not_mutate_original():
         if isinstance(part, dict) and part.get("type") == "image_url"
     ])
     with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
-        strip_old_screenshots(messages)
+        strip_old_screenshots(_make_call_model_data(messages))
     after_count = len([
         1 for msg in messages for part in msg.get("content", [])
         if isinstance(part, dict) and part.get("type") == "image_url"
     ])
     assert original_count == after_count  # Original unchanged
+
+
+def test_strip_old_screenshots_preserves_instructions():
+    """Filter preserves instructions from the CallModelData."""
+    messages = [{"role": "user", "content": "Hello"}]
+    instructions = "You are a task runner agent."
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = strip_old_screenshots(_make_call_model_data(messages, instructions))
+    assert output.instructions == instructions
