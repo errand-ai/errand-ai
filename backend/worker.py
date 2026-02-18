@@ -616,7 +616,10 @@ def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIG
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            resp = httpx.post(url, json=payload, timeout=5)
+            resp = httpx.post(
+                        url, json=payload, timeout=5,
+                        headers={"Accept": "application/json, text/event-stream"},
+                    )
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict) and "result" in data:
