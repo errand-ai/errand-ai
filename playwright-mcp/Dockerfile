@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY package.json .
 
-RUN npm install --global @playwright/mcp@0.0.28
+RUN npm install --omit=dev
 
 EXPOSE 8931
 

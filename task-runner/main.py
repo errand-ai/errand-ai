@@ -277,11 +277,11 @@ def get_reasoning_effort() -> str:
     return effort
 
 
-def strip_old_screenshots(input: list[dict]) -> list[dict]:
+def strip_old_screenshots(messages: list[dict]) -> list[dict]:
     """Filter that strips old screenshots from conversation history, keeping the most recent N."""
     # Find all image content part locations: (message_idx, part_idx)
     image_locations = []
-    for msg_idx, msg in enumerate(input):
+    for msg_idx, msg in enumerate(messages):
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
@@ -294,10 +294,10 @@ def strip_old_screenshots(input: list[dict]) -> list[dict]:
                 image_locations.append((msg_idx, part_idx))
 
     if len(image_locations) <= MAX_RETAINED_SCREENSHOTS:
-        return input
+        return messages
 
     # Deep copy to avoid mutating original
-    result = copy.deepcopy(input)
+    result = copy.deepcopy(messages)
 
     # Replace oldest images (keep the last N)
     to_remove = len(image_locations) - MAX_RETAINED_SCREENSHOTS

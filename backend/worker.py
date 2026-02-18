@@ -603,15 +603,30 @@ def start_playwright_container():
 def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIGHT_STARTUP_TIMEOUT) -> bool:
     """Poll Playwright MCP endpoint until it responds or timeout. Returns True if healthy."""
     url = f"http://localhost:{port}/mcp"
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "id": 1,
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "healthcheck", "version": "1.0"},
+        },
+    }
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            resp = httpx.post(url, json={"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "healthcheck", "version": "1.0"}}}, timeout=5)
-            if resp.status_code in (200, 201, 202, 204):
-                logger.info("Playwright MCP health check passed at %s", url)
-                return True
+            resp = httpx.post(url, json=payload, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict) and "result" in data:
+                    logger.info("Playwright MCP health check passed at %s", url)
+                    return True
+                logger.debug("Playwright MCP health check got unexpected response at %s: %r", url, data)
+            else:
+                logger.debug("Playwright MCP health check got status %s at %s", resp.status_code, url)
         except Exception:
-            pass
+            logger.debug("Playwright MCP health check request failed for %s", url, exc_info=True)
         time.sleep(1)
     logger.error("Playwright MCP health check timed out after %ds at %s", timeout, url)
     return False
@@ -655,253 +670,255 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             cleanup_playwright_container(playwright_container)
             playwright_container = None
 
-    mcp_servers = settings.get("mcp_servers", {})
-    credentials = settings.get("credentials", [])
-    task_processing_model = settings.get("task_processing_model", DEFAULT_TASK_PROCESSING_MODEL)
-    system_prompt = settings.get("system_prompt", "")
-
-    # Build environment variables from credentials
-    env_vars = {}
-    for cred in credentials:
-        if isinstance(cred, dict) and "key" in cred and "value" in cred:
-            env_vars[cred["key"]] = cred["value"]
-
-    # Add task runner env vars
-    openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
-    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-    if openai_base_url:
-        env_vars["OPENAI_BASE_URL"] = openai_base_url
-    if openai_api_key:
-        env_vars["OPENAI_API_KEY"] = openai_api_key
-    env_vars["OPENAI_MODEL"] = task_processing_model
-    env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
-    env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
-    env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
-    task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
-    if task_runner_log_level:
-        env_vars["LOG_LEVEL"] = task_runner_log_level
-    max_turns = os.environ.get("MAX_TURNS", "")
-    if max_turns:
-        env_vars["MAX_TURNS"] = max_turns
-
-    # Ensure image is available (try local first, pull only if not found)
     try:
-        docker_client.images.get(TASK_RUNNER_IMAGE)
-        logger.info("Image %s found locally", TASK_RUNNER_IMAGE)
-    except ImageNotFound:
-        logger.info("Image %s not found locally, pulling...", TASK_RUNNER_IMAGE)
-        docker_client.images.pull(TASK_RUNNER_IMAGE)
+        mcp_servers = settings.get("mcp_servers", {})
+        credentials = settings.get("credentials", [])
+        task_processing_model = settings.get("task_processing_model", DEFAULT_TASK_PROCESSING_MODEL)
+        system_prompt = settings.get("system_prompt", "")
 
-    # Create container (not started)
-    container = docker_client.containers.create(
-        image=TASK_RUNNER_IMAGE,
-        environment=env_vars,
-        network_mode="host",
-        detach=True,
-    )
-    active_container_id = container.id
-    logger.info("Created container %s for task %s", container.short_id, task.id)
+        # Build environment variables from credentials
+        env_vars = {}
+        for cred in credentials:
+            if isinstance(cred, dict) and "key" in cred and "value" in cred:
+                env_vars[cred["key"]] = cred["value"]
 
-    try:
-        # Resolve Hindsight configuration: env var → admin setting → disabled
-        hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
-        hindsight_bank_id = (
-            os.environ.get("HINDSIGHT_BANK_ID", "")
-            or settings.get("hindsight_bank_id", "")
-            or DEFAULT_HINDSIGHT_BANK_ID
+        # Add task runner env vars
+        openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if openai_base_url:
+            env_vars["OPENAI_BASE_URL"] = openai_base_url
+        if openai_api_key:
+            env_vars["OPENAI_API_KEY"] = openai_api_key
+        env_vars["OPENAI_MODEL"] = task_processing_model
+        env_vars["USER_PROMPT_PATH"] = "/workspace/prompt.txt"
+        env_vars["SYSTEM_PROMPT_PATH"] = "/workspace/system_prompt.txt"
+        env_vars["MCP_CONFIGURATION_PATH"] = "/workspace/mcp.json"
+        task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
+        if task_runner_log_level:
+            env_vars["LOG_LEVEL"] = task_runner_log_level
+        max_turns = os.environ.get("MAX_TURNS", "")
+        if max_turns:
+            env_vars["MAX_TURNS"] = max_turns
+
+        # Ensure image is available (try local first, pull only if not found)
+        try:
+            docker_client.images.get(TASK_RUNNER_IMAGE)
+            logger.info("Image %s found locally", TASK_RUNNER_IMAGE)
+        except ImageNotFound:
+            logger.info("Image %s not found locally, pulling...", TASK_RUNNER_IMAGE)
+            docker_client.images.pull(TASK_RUNNER_IMAGE)
+
+        # Create container (not started)
+        container = docker_client.containers.create(
+            image=TASK_RUNNER_IMAGE,
+            environment=env_vars,
+            network_mode="host",
+            detach=True,
         )
+        active_container_id = container.id
+        logger.info("Created container %s for task %s", container.short_id, task.id)
 
-        # Pre-load memories from Hindsight and inject into system prompt
-        if hindsight_url:
-            recall_query = f"{task.title}. {task.description or ''}"
-            recalled = recall_from_hindsight(hindsight_url, hindsight_bank_id, recall_query)
-            if recalled:
+        try:
+            # Resolve Hindsight configuration: env var → admin setting → disabled
+            hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
+            hindsight_bank_id = (
+                os.environ.get("HINDSIGHT_BANK_ID", "")
+                or settings.get("hindsight_bank_id", "")
+                or DEFAULT_HINDSIGHT_BANK_ID
+            )
+
+            # Pre-load memories from Hindsight and inject into system prompt
+            if hindsight_url:
+                recall_query = f"{task.title}. {task.description or ''}"
+                recalled = recall_from_hindsight(hindsight_url, hindsight_bank_id, recall_query)
+                if recalled:
+                    system_prompt += (
+                        "\n\n## Relevant Context from Memory\n\n"
+                        + recalled
+                    )
+
+            # Inject Perplexity MCP server if enabled via environment
+            if os.environ.get("USE_PERPLEXITY") == "true":
+                mcp_servers.setdefault("mcpServers", {})
+                if "perplexity-ask" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
                 system_prompt += (
-                    "\n\n## Relevant Context from Memory\n\n"
-                    + recalled
+                    "\n\n## Web Research\n\n"
+                    "You have access to the `perplexity-ask` MCP tool for web search. "
+                    "Try it first when you need current information online.\n\n"
+                    "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
+                    "fetching web content directly using the `execute_command` tool. "
+                    "Both `curl` and Python's `httpx` library are available:\n\n"
+                    "```\n"
+                    "# Fetch a web page with curl\n"
+                    "execute_command('curl -sL https://example.com')\n"
+                    "\n"
+                    "# Fetch JSON from an API with curl\n"
+                    "execute_command('curl -sL https://api.example.com/data')\n"
+                    "\n"
+                    "# Use Python httpx for more complex requests\n"
+                    "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
+                    "```\n\n"
+                    "Use this approach to retrieve documentation, API responses, or any "
+                    "public web content needed to complete the task."
                 )
 
-        # Inject Perplexity MCP server if enabled via environment
-        if os.environ.get("USE_PERPLEXITY") == "true":
-            mcp_servers.setdefault("mcpServers", {})
-            if "perplexity-ask" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
-            system_prompt += (
-                "\n\n## Web Research\n\n"
-                "You have access to the `perplexity-ask` MCP tool for web search. "
-                "Try it first when you need current information online.\n\n"
-                "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
-                "fetching web content directly using the `execute_command` tool. "
-                "Both `curl` and Python's `httpx` library are available:\n\n"
-                "```\n"
-                "# Fetch a web page with curl\n"
-                "execute_command('curl -sL https://example.com')\n"
-                "\n"
-                "# Fetch JSON from an API with curl\n"
-                "execute_command('curl -sL https://api.example.com/data')\n"
-                "\n"
-                "# Use Python httpx for more complex requests\n"
-                "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
-                "```\n\n"
-                "Use this approach to retrieve documentation, API responses, or any "
-                "public web content needed to complete the task."
-            )
+            # Inject content-manager MCP server for task tools (post_tweet, new_task, etc.)
+            backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
+            mcp_api_key = settings.get("mcp_api_key", "")
+            if backend_mcp_url and mcp_api_key:
+                mcp_servers.setdefault("mcpServers", {})
+                if "content-manager" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["content-manager"] = {
+                        "url": backend_mcp_url,
+                        "headers": {"Authorization": f"Bearer {mcp_api_key}"},
+                    }
 
-        # Inject content-manager MCP server for task tools (post_tweet, new_task, etc.)
-        backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
-        mcp_api_key = settings.get("mcp_api_key", "")
-        if backend_mcp_url and mcp_api_key:
-            mcp_servers.setdefault("mcpServers", {})
-            if "content-manager" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["content-manager"] = {
-                    "url": backend_mcp_url,
-                    "headers": {"Authorization": f"Bearer {mcp_api_key}"},
-                }
+            # Inject Hindsight MCP server and memory instructions
+            if hindsight_url:
+                mcp_servers.setdefault("mcpServers", {})
+                if "hindsight" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["hindsight"] = {
+                        "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
+                    }
+                system_prompt += (
+                    "\n\n## Persistent Memory (Hindsight)\n\n"
+                    "You have access to Hindsight memory tools via the `hindsight` MCP server:\n"
+                    "- **retain**: Store important facts, decisions, patterns, and learnings for future tasks\n"
+                    "- **recall**: Search memories for relevant context about a topic\n"
+                    "- **reflect**: Synthesize reasoning across stored memories\n\n"
+                    "Use `retain` to save key outcomes, decisions, or context at the end of your task. "
+                    "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
+                )
 
-        # Inject Hindsight MCP server and memory instructions
-        if hindsight_url:
-            mcp_servers.setdefault("mcpServers", {})
-            if "hindsight" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["hindsight"] = {
-                    "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
-                }
-            system_prompt += (
-                "\n\n## Persistent Memory (Hindsight)\n\n"
-                "You have access to Hindsight memory tools via the `hindsight` MCP server:\n"
-                "- **retain**: Store important facts, decisions, patterns, and learnings for future tasks\n"
-                "- **recall**: Search memories for relevant context about a topic\n"
-                "- **reflect**: Synthesize reasoning across stored memories\n\n"
-                "Use `retain` to save key outcomes, decisions, or context at the end of your task. "
-                "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
-            )
+            # Inject Playwright MCP server if sidecar is healthy
+            if playwright_healthy:
+                mcp_servers.setdefault("mcpServers", {})
+                if "playwright" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["playwright"] = {
+                        "url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
+                    }
 
-        # Inject Playwright MCP server if sidecar is healthy
-        if playwright_healthy:
-            mcp_servers.setdefault("mcpServers", {})
-            if "playwright" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["playwright"] = {
-                    "url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
-                }
+            # Merge DB skills with git-sourced skills if configured
+            skills = settings.get("skills", [])
+            skills_git_repo = settings.get("skills_git_repo")
+            if skills_git_repo:
+                clone_dir = refresh_git_clone(
+                    skills_git_repo["url"],
+                    skills_git_repo.get("branch"),
+                    settings.get("ssh_private_key") or None,
+                )
+                base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
+                git_skills = parse_skills_from_directory(base_path)
+                logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
+                skills = merge_skills(skills, git_skills)
 
-        # Merge DB skills with git-sourced skills if configured
-        skills = settings.get("skills", [])
-        skills_git_repo = settings.get("skills_git_repo")
-        if skills_git_repo:
-            clone_dir = refresh_git_clone(
-                skills_git_repo["url"],
-                skills_git_repo.get("branch"),
-                settings.get("ssh_private_key") or None,
-            )
-            base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
-            git_skills = parse_skills_from_directory(base_path)
-            logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
-            skills = merge_skills(skills, git_skills)
+            # Inject skill manifest into system prompt if skills are defined
+            if skills:
+                system_prompt += build_skill_manifest(skills)
 
-        # Inject skill manifest into system prompt if skills are defined
-        if skills:
-            system_prompt += build_skill_manifest(skills)
+            # Copy files into the stopped container
+            prompt_text = task.description or task.title
+            files = {
+                "prompt.txt": prompt_text,
+                "system_prompt.txt": system_prompt,
+                "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
+            }
+            put_archive(container, files)
 
-        # Copy files into the stopped container
-        prompt_text = task.description or task.title
-        files = {
-            "prompt.txt": prompt_text,
-            "system_prompt.txt": system_prompt,
-            "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
-        }
-        put_archive(container, files)
+            # Write Agent Skills directories into the container
+            if skills:
+                skills_tar = build_skills_archive(skills)
+                if skills_tar:
+                    container.put_archive("/workspace", io.BytesIO(skills_tar))
+                    logger.info("Injected %d skill(s) into container for task %s", len(skills), task.id)
 
-        # Write Agent Skills directories into the container
-        if skills:
-            skills_tar = build_skills_archive(skills)
-            if skills_tar:
-                container.put_archive("/workspace", io.BytesIO(skills_tar))
-                logger.info("Injected %d skill(s) into container for task %s", len(skills), task.id)
+            # Inject SSH credentials if available
+            ssh_private_key = settings.get("ssh_private_key", "")
+            if ssh_private_key:
+                git_ssh_hosts = settings.get("git_ssh_hosts", [])
+                ssh_config = generate_ssh_config(git_ssh_hosts)
+                put_archive_ssh(container, ssh_private_key, ssh_config)
+                logger.info("Injected SSH credentials for task %s (%d hosts)", task.id, len(git_ssh_hosts))
 
-        # Inject SSH credentials if available
-        ssh_private_key = settings.get("ssh_private_key", "")
-        if ssh_private_key:
-            git_ssh_hosts = settings.get("git_ssh_hosts", [])
-            ssh_config = generate_ssh_config(git_ssh_hosts)
-            put_archive_ssh(container, ssh_private_key, ssh_config)
-            logger.info("Injected SSH credentials for task %s (%d hosts)", task.id, len(git_ssh_hosts))
+            # Start container and stream stderr in real-time
+            container.start()
 
-        # Start container and stream stderr in real-time
-        container.start()
-
-        # Create sync Redis client for publishing log lines to Valkey
-        log_channel = f"task_logs:{task.id}"
-        log_redis: sync_redis.Redis | None = None
-        try:
-            log_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
-        except Exception:
-            logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
-
-        # Stream stderr in real-time, publishing structured events to Valkey.
-        # Docker's streaming API sends data in arbitrary byte chunks that may
-        # not align with newline boundaries, so we buffer and split on newlines.
-        try:
-            buf = ""
-            for chunk in container.logs(stream=True, follow=True, stderr=True, stdout=False):
-                buf += chunk.decode("utf-8", errors="replace")
-                while "\n" in buf:
-                    line, buf = buf.split("\n", 1)
-                    if not line:
-                        continue
-                    if log_redis is not None:
-                        try:
-                            parsed_event = json.loads(line)
-                            if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
-                                msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
-                            else:
-                                msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                        except (json.JSONDecodeError, ValueError):
-                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                        try:
-                            log_redis.publish(log_channel, msg)
-                        except Exception:
-                            logger.warning("Failed to publish log line to Valkey", exc_info=True)
-            # Flush any remaining buffered content
-            if buf.strip() and log_redis is not None:
-                try:
-                    parsed_event = json.loads(buf.strip())
-                    if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
-                        msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
-                    else:
-                        msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
-                except (json.JSONDecodeError, ValueError):
-                    msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
-                try:
-                    log_redis.publish(log_channel, msg)
-                except Exception:
-                    logger.warning("Failed to publish log line to Valkey", exc_info=True)
-        except Exception:
-            logger.warning("Error during stderr streaming for task %s", task.id, exc_info=True)
-
-        # Publish end sentinel
-        if log_redis is not None:
+            # Create sync Redis client for publishing log lines to Valkey
+            log_channel = f"task_logs:{task.id}"
+            log_redis: sync_redis.Redis | None = None
             try:
-                log_redis.publish(log_channel, json.dumps({"event": "task_log_end"}))
+                log_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
             except Exception:
-                logger.warning("Failed to publish task_log_end to Valkey", exc_info=True)
-            finally:
-                log_redis.close()
+                logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
 
-        # Container has exited — get exit code and capture full output for parsing
-        result = container.wait()
-        exit_code = result.get("StatusCode", -1)
+            # Stream stderr in real-time, publishing structured events to Valkey.
+            # Docker's streaming API sends data in arbitrary byte chunks that may
+            # not align with newline boundaries, so we buffer and split on newlines.
+            try:
+                buf = ""
+                for chunk in container.logs(stream=True, follow=True, stderr=True, stdout=False):
+                    buf += chunk.decode("utf-8", errors="replace")
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        if not line:
+                            continue
+                        if log_redis is not None:
+                            try:
+                                parsed_event = json.loads(line)
+                                if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
+                                    msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
+                                else:
+                                    msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                            except (json.JSONDecodeError, ValueError):
+                                msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                            try:
+                                log_redis.publish(log_channel, msg)
+                            except Exception:
+                                logger.warning("Failed to publish log line to Valkey", exc_info=True)
+                # Flush any remaining buffered content
+                if buf.strip() and log_redis is not None:
+                    try:
+                        parsed_event = json.loads(buf.strip())
+                        if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
+                            msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
+                        else:
+                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
+                    except (json.JSONDecodeError, ValueError):
+                        msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
+                    try:
+                        log_redis.publish(log_channel, msg)
+                    except Exception:
+                        logger.warning("Failed to publish log line to Valkey", exc_info=True)
+            except Exception:
+                logger.warning("Error during stderr streaming for task %s", task.id, exc_info=True)
 
-        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-        stdout = truncate_output(stdout)
-        stderr = truncate_output(stderr)
+            # Publish end sentinel
+            if log_redis is not None:
+                try:
+                    log_redis.publish(log_channel, json.dumps({"event": "task_log_end"}))
+                except Exception:
+                    logger.warning("Failed to publish task_log_end to Valkey", exc_info=True)
+                finally:
+                    log_redis.close()
 
-        return exit_code, stdout, stderr
+            # Container has exited — get exit code and capture full output for parsing
+            result = container.wait()
+            exit_code = result.get("StatusCode", -1)
+
+            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            stdout = truncate_output(stdout)
+            stderr = truncate_output(stderr)
+
+            return exit_code, stdout, stderr
+        finally:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
+            active_container_id = None
     finally:
-        try:
-            container.remove(force=True)
-        except Exception:
-            pass
-        active_container_id = None
         cleanup_playwright_container(playwright_container)
 
 
