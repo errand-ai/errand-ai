@@ -14,15 +14,38 @@ from models import Setting, Task
 
 # Import worker functions under test
 from worker import (
-    read_settings, truncate_output, _task_to_dict, put_archive,
+    read_settings, truncate_output, _task_to_dict,
     _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
     TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
-    substitute_env_vars, extract_json, generate_ssh_config, put_archive_ssh,
+    substitute_env_vars, extract_json, generate_ssh_config,
     build_skills_archive, build_skill_manifest,
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
     start_playwright_container, health_check_playwright,
     cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
 )
+from container_runtime import (
+    _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
+    RuntimeHandle,
+)
+
+
+def _make_mock_runtime(
+    exit_code: int = 0,
+    stdout: str = '{"status":"completed","result":"done","questions":[]}',
+    stderr: str = "",
+    log_lines: list[str] | None = None,
+):
+    """Create a mock ContainerRuntime for process_task_in_container tests.
+
+    Returns a MagicMock with prepare/run/result/cleanup methods configured.
+    After running the test, inspect mock_runtime.prepare.call_args.kwargs
+    to check env vars, files, etc. that were passed.
+    """
+    mock_runtime = MagicMock()
+    mock_runtime.prepare.return_value = RuntimeHandle(runtime_data={})
+    mock_runtime.run.return_value = iter(log_lines or [])
+    mock_runtime.result.return_value = (exit_code, stdout, stderr)
+    return mock_runtime
 
 
 # --- Output truncation ---
@@ -733,28 +756,22 @@ def test_process_task_container_env_vars():
         "system_prompt": "Be helpful",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-123"
-    mock_container.short_id = "cont123"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "http://litellm:4000", "OPENAI_API_KEY": "sk-test"}):
             exit_code, stdout, stderr = process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Check container was created with correct env vars
-    create_call = mock_client.containers.create.call_args
-    env = create_call[1]["environment"]
+    env = mock_runtime.prepare.call_args.kwargs["env"]
     assert env["OPENAI_BASE_URL"] == "http://litellm:4000"
     assert env["OPENAI_API_KEY"] == "sk-test"
     assert env["OPENAI_MODEL"] == "gpt-4o"
@@ -775,18 +792,13 @@ def test_process_task_container_passes_log_level_from_settings():
         "task_runner_log_level": "DEBUG",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-123"
-    mock_container.short_id = "cont123"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -795,9 +807,9 @@ def test_process_task_container_passes_log_level_from_settings():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    env = mock_client.containers.create.call_args[1]["environment"]
+    env = mock_runtime.prepare.call_args.kwargs["env"]
     assert env["LOG_LEVEL"] == "DEBUG"
 
 
@@ -812,18 +824,13 @@ def test_process_task_container_log_level_env_fallback():
         "task_runner_log_level": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-123"
-    mock_container.short_id = "cont123"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -833,9 +840,9 @@ def test_process_task_container_log_level_env_fallback():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    env = mock_client.containers.create.call_args[1]["environment"]
+    env = mock_runtime.prepare.call_args.kwargs["env"]
     assert env["LOG_LEVEL"] == "WARNING"
 
 
@@ -850,18 +857,13 @@ def test_process_task_container_omits_log_level_when_unset():
         "task_runner_log_level": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-123"
-    mock_container.short_id = "cont123"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -870,9 +872,9 @@ def test_process_task_container_omits_log_level_when_unset():
         }, clear=True):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    env = mock_client.containers.create.call_args[1]["environment"]
+    env = mock_runtime.prepare.call_args.kwargs["env"]
     assert "LOG_LEVEL" not in env
 
 
@@ -886,18 +888,13 @@ def test_perplexity_injected_when_enabled():
         "system_prompt": "You are a helpful assistant.",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-px1"
-    mock_container.short_id = "contpx1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -908,16 +905,11 @@ def test_perplexity_injected_when_enabled():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # Extract the mcp.json content from put_archive call
-    put_archive_call = mock_container.put_archive.call_args[0]
-    import tarfile, io
-    tar_data = put_archive_call[1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    # Extract the mcp.json content from prepare call
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert "perplexity-ask" in mcp_config["mcpServers"]
     # $PERPLEXITY_URL should be substituted to the actual URL
     assert mcp_config["mcpServers"]["perplexity-ask"]["url"] == "http://cm-perplexity-mcp:8000/sse"
@@ -935,18 +927,13 @@ def test_perplexity_not_injected_when_disabled():
         "system_prompt": original_prompt,
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-px2"
-    mock_container.short_id = "contpx2"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -955,20 +942,15 @@ def test_perplexity_not_injected_when_disabled():
         }, clear=True):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — should NOT have perplexity-ask
-    import tarfile, io
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert "perplexity-ask" not in mcp_config["mcpServers"]
 
     # Extract system_prompt.txt — should be unchanged
-    system_prompt_member = tar.extractfile("system_prompt.txt")
-    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    system_prompt_content = files["system_prompt.txt"]
     assert system_prompt_content == original_prompt
 
 
@@ -982,18 +964,13 @@ def test_perplexity_database_value_takes_precedence():
         "system_prompt": "You are a helpful assistant.",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-px3"
-    mock_container.short_id = "contpx3"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -1004,15 +981,11 @@ def test_perplexity_database_value_takes_precedence():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — database value should be preserved
-    import tarfile, io
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["perplexity-ask"]["url"] == "http://custom-perplexity/mcp"
 
 
@@ -1027,18 +1000,13 @@ def test_perplexity_system_prompt_appended_when_enabled():
         "system_prompt": original_prompt,
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-px4"
-    mock_container.short_id = "contpx4"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -1049,15 +1017,11 @@ def test_perplexity_system_prompt_appended_when_enabled():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # Extract system_prompt.txt — should contain original + Perplexity block
-    import tarfile, io
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    system_prompt_member = tar.extractfile("system_prompt.txt")
-    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    # Extract system_prompt.txt from prepare() call — should contain original + Perplexity block
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
     assert system_prompt_content.startswith(original_prompt)
     assert "perplexity-ask" in system_prompt_content
     assert "web research" in system_prompt_content.lower() or "web search" in system_prompt_content.lower()
@@ -1077,18 +1041,13 @@ def test_skills_directive_appended_when_skills_exist():
         "mcp_api_key": "test-api-key-123",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-sk1"
-    mock_container.short_id = "contsk1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -1097,18 +1056,11 @@ def test_skills_directive_appended_when_skills_exist():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
-
-    import tarfile
-
-    # First put_archive call is workspace files (/workspace)
-    first_call = mock_container.put_archive.call_args_list[0]
-    tar_data = first_call[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
+        worker.container_runtime = original_runtime
 
     # Check system prompt has skill manifest (not old MCP directives)
-    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
     assert "You are a helpful assistant." in system_prompt_content
     assert "## Skills" in system_prompt_content
     assert "| researcher | Web research |" in system_prompt_content
@@ -1117,18 +1069,15 @@ def test_skills_directive_appended_when_skills_exist():
     assert "get_skill" not in system_prompt_content
 
     # Check MCP config does NOT have the errand server auto-injected
-    tar_data.seek(0)
-    tar2 = tarfile.open(fileobj=tar_data)
-    mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
+    mcp_content = json.loads(files["mcp.json"])
     assert "errand" not in mcp_content.get("mcpServers", {})
 
-    # Second put_archive call is skills archive (/workspace)
-    second_call = mock_container.put_archive.call_args_list[1]
-    assert second_call[0][0] == "/workspace"
-    skills_tar_data = second_call[0][1]
-    skills_tar_data.seek(0)
-    skills_tar = tarfile.open(fileobj=skills_tar_data)
-    assert "skills/researcher/SKILL.md" in skills_tar.getnames()
+    # Skills archive should have been passed to prepare()
+    import tarfile
+    skills_tar = mock_runtime.prepare.call_args.kwargs["skills_tar"]
+    assert skills_tar is not None
+    tar = tarfile.open(fileobj=io.BytesIO(skills_tar))
+    assert "skills/researcher/SKILL.md" in tar.getnames()
 
 
 def test_skills_directive_omitted_when_no_skills():
@@ -1142,18 +1091,13 @@ def test_skills_directive_omitted_when_no_skills():
         "skills": [],
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-sk2"
-    mock_container.short_id = "contsk2"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -1162,23 +1106,21 @@ def test_skills_directive_omitted_when_no_skills():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    import tarfile
-    # Only one put_archive call (workspace files), no skills archive
-    assert mock_container.put_archive.call_count == 1
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+    # Check files passed to prepare()
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
     assert system_prompt_content == "You are a helpful assistant."
     assert "## Skills" not in system_prompt_content
 
     # Check MCP config does NOT have the errand server
-    tar_data.seek(0)
-    tar2 = tarfile.open(fileobj=tar_data)
-    mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
+    mcp_content = json.loads(files["mcp.json"])
     assert "errand" not in mcp_content.get("mcpServers", {})
+
+    # No skills archive should have been passed
+    skills_tar = mock_runtime.prepare.call_args.kwargs.get("skills_tar")
+    assert skills_tar is None
 
 
 def test_perplexity_and_skills_combined_system_prompt():
@@ -1195,18 +1137,13 @@ def test_perplexity_and_skills_combined_system_prompt():
         "mcp_api_key": "test-api-key-123",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-combo1"
-    mock_container.short_id = "combo1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -1217,15 +1154,10 @@ def test_perplexity_and_skills_combined_system_prompt():
         }):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    import tarfile
-    first_call = mock_container.put_archive.call_args_list[0]
-    tar_data = first_call[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-
-    system_prompt_content = tar.extractfile("system_prompt.txt").read().decode("utf-8")
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
 
     # Original prompt is at the start
     assert system_prompt_content.startswith("You are a helpful assistant.")
@@ -1253,29 +1185,25 @@ def test_process_task_container_copies_three_files():
         "system_prompt": "System instructions",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-456"
-    mock_container.short_id = "cont456"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b"output"
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, 'output', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # put_archive is called on the container with tar data
-    mock_container.put_archive.assert_called_once()
-    call_args = mock_container.put_archive.call_args[0]
-    assert call_args[0] == "/workspace"
+    # prepare() should have been called with the three required files
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    assert "prompt.txt" in files
+    assert "system_prompt.txt" in files
+    assert "mcp.json" in files
 
 
 # --- Valkey unavailability during log streaming ---
@@ -1291,27 +1219,14 @@ def test_process_task_completes_when_valkey_unavailable():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-789"
-    mock_container.short_id = "cont789"
-    mock_container.wait.return_value = {"StatusCode": 0}
-
-    # container.logs needs to handle both streaming (stream=True) and capture calls
-    def mock_logs(**kwargs):
-        if kwargs.get("stream"):
-            return iter([b"stderr line 1\n", b"stderr line 2\n"])
-        if kwargs.get("stdout") and not kwargs.get("stderr"):
-            return b'{"status":"completed","result":"done","questions":[]}'
-        return b"stderr line 1\nstderr line 2\n"
-
-    mock_container.logs.side_effect = mock_logs
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = _make_mock_runtime(
+        log_lines=["stderr line 1", "stderr line 2"],
+        stderr="stderr line 1\nstderr line 2\n",
+    )
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
@@ -1320,7 +1235,7 @@ def test_process_task_completes_when_valkey_unavailable():
             mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
             exit_code, stdout, stderr = process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     assert exit_code == 0
     assert "completed" in stdout
@@ -1340,30 +1255,15 @@ def test_process_task_publishes_structured_events_to_valkey():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-ev1"
-    mock_container.short_id = "contev1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-
     tool_call_event = json.dumps({"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls"}}})
 
-    def mock_logs(**kwargs):
-        if kwargs.get("stream"):
-            return iter([tool_call_event.encode() + b"\n"])
-        if kwargs.get("stdout") and not kwargs.get("stderr"):
-            return b'{"status":"completed","result":"done","questions":[]}'
-        return tool_call_event.encode() + b"\n"
-
-    mock_container.logs.side_effect = mock_logs
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = _make_mock_runtime(log_lines=[tool_call_event])
 
     mock_redis = MagicMock()
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
@@ -1371,7 +1271,7 @@ def test_process_task_publishes_structured_events_to_valkey():
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Find the task_event publish call (not the task_log_end)
     publish_calls = mock_redis.publish.call_args_list
@@ -1393,28 +1293,13 @@ def test_process_task_publishes_raw_event_for_non_json_stderr():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-ev2"
-    mock_container.short_id = "contev2"
-    mock_container.wait.return_value = {"StatusCode": 0}
-
-    def mock_logs(**kwargs):
-        if kwargs.get("stream"):
-            return iter([b"Traceback (most recent call last):\n"])
-        if kwargs.get("stdout") and not kwargs.get("stderr"):
-            return b'{"status":"completed","result":"done","questions":[]}'
-        return b"Traceback (most recent call last):\n"
-
-    mock_container.logs.side_effect = mock_logs
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = _make_mock_runtime(log_lines=["Traceback (most recent call last):"])
 
     mock_redis = MagicMock()
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
@@ -1422,7 +1307,7 @@ def test_process_task_publishes_raw_event_for_non_json_stderr():
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Find the raw event publish call
     publish_calls = mock_redis.publish.call_args_list
@@ -1435,7 +1320,7 @@ def test_process_task_publishes_raw_event_for_non_json_stderr():
 
 
 def test_process_task_buffers_chunked_stderr_lines():
-    """JSON lines split across Docker chunks are reassembled before parsing."""
+    """JSON lines are published as structured events when complete."""
     task = _make_mock_task(description="Run a job")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -1444,34 +1329,15 @@ def test_process_task_buffers_chunked_stderr_lines():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-ev3"
-    mock_container.short_id = "contev3"
-    mock_container.wait.return_value = {"StatusCode": 0}
-
-    # Simulate a JSON line split across two Docker chunks
+    # With the runtime abstraction, run() yields complete lines (no chunking at this level)
     full_line = json.dumps({"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "cat file.txt"}}})
-    split_point = len(full_line) // 2
-    chunk1 = full_line[:split_point].encode()
-    chunk2 = (full_line[split_point:] + "\n").encode()
-
-    def mock_logs(**kwargs):
-        if kwargs.get("stream"):
-            return iter([chunk1, chunk2])
-        if kwargs.get("stdout") and not kwargs.get("stderr"):
-            return b'{"status":"completed","result":"done","questions":[]}'
-        return full_line.encode() + b"\n"
-
-    mock_container.logs.side_effect = mock_logs
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = _make_mock_runtime(log_lines=[full_line])
 
     mock_redis = MagicMock()
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
@@ -1479,9 +1345,9 @@ def test_process_task_buffers_chunked_stderr_lines():
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # The split JSON should be reassembled into a structured event, not raw
+    # The JSON should be parsed into a structured event
     publish_calls = mock_redis.publish.call_args_list
     event_calls = [c for c in publish_calls if "task_event" in str(c) and "task_log_end" not in str(c)]
     assert len(event_calls) == 1
@@ -1501,28 +1367,13 @@ def test_process_task_publishes_end_sentinel():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-ev3"
-    mock_container.short_id = "contev3"
-    mock_container.wait.return_value = {"StatusCode": 0}
-
-    def mock_logs(**kwargs):
-        if kwargs.get("stream"):
-            return iter([])
-        if kwargs.get("stdout") and not kwargs.get("stderr"):
-            return b'{"status":"completed","result":"done","questions":[]}'
-        return b""
-
-    mock_container.logs.side_effect = mock_logs
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = _make_mock_runtime()
 
     mock_redis = MagicMock()
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
@@ -1530,7 +1381,7 @@ def test_process_task_publishes_end_sentinel():
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # The last publish call should be task_log_end
     last_call = mock_redis.publish.call_args_list[-1]
@@ -2561,18 +2412,13 @@ def test_hindsight_mcp_injected_when_configured():
         "hindsight_bank_id": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-hs1"
-    mock_container.short_id = "conths1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2582,15 +2428,11 @@ def test_hindsight_mcp_injected_when_configured():
         }), patch("worker.recall_from_hindsight", return_value=None):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # Extract mcp.json from put_archive call
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    # Extract mcp.json from prepare call
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert "hindsight" in mcp_config["mcpServers"]
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://hindsight-api:8888/mcp/errand-tasks/"
     # Existing server preserved
@@ -2609,18 +2451,13 @@ def test_hindsight_mcp_skipped_when_already_in_database():
         "hindsight_bank_id": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-hs2"
-    mock_container.short_id = "conths2"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2630,15 +2467,11 @@ def test_hindsight_mcp_skipped_when_already_in_database():
         }), patch("worker.recall_from_hindsight", return_value=None):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — database value should be preserved
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://custom-hindsight/mcp/custom-bank/"
 
 
@@ -2654,18 +2487,13 @@ def test_hindsight_memory_context_in_system_prompt():
         "hindsight_bank_id": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-hs3"
-    mock_container.short_id = "conths3"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2675,15 +2503,11 @@ def test_hindsight_memory_context_in_system_prompt():
         }), patch("worker.recall_from_hindsight", return_value="Last deploy used blue-green strategy."):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
-    # Extract system_prompt.txt
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    system_prompt_member = tar.extractfile("system_prompt.txt")
-    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    # Extract system_prompt.txt from prepare() call
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
 
     assert "## Relevant Context from Memory" in system_prompt_content
     assert "Last deploy used blue-green strategy." in system_prompt_content
@@ -2707,18 +2531,13 @@ def test_hindsight_skipped_when_url_not_configured():
         "hindsight_bank_id": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-hs4"
-    mock_container.short_id = "conths4"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2727,20 +2546,15 @@ def test_hindsight_skipped_when_url_not_configured():
         }, clear=True):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — should NOT have hindsight
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert "hindsight" not in mcp_config.get("mcpServers", {})
 
     # Extract system_prompt.txt — should NOT have Hindsight sections
-    system_prompt_member = tar.extractfile("system_prompt.txt")
-    system_prompt_content = system_prompt_member.read().decode("utf-8")
+    system_prompt_content = files["system_prompt.txt"]
     assert "Relevant Context from Memory" not in system_prompt_content
     assert "Persistent Memory" not in system_prompt_content
 
@@ -2776,18 +2590,13 @@ def test_hindsight_env_var_takes_precedence_over_setting():
         "hindsight_bank_id": "setting-bank",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-prec1"
-    mock_container.short_id = "contprec1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2798,15 +2607,11 @@ def test_hindsight_env_var_takes_precedence_over_setting():
         }), patch("worker.recall_from_hindsight", return_value=None):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — should use env var values, not settings
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://env-hindsight:9999/mcp/env-bank/"
 
 
@@ -2822,18 +2627,13 @@ def test_hindsight_falls_back_to_admin_setting():
         "hindsight_bank_id": "setting-bank",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-fall1"
-    mock_container.short_id = "contfall1"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     try:
         with patch.dict("os.environ", {
@@ -2842,15 +2642,11 @@ def test_hindsight_falls_back_to_admin_setting():
         }, clear=True), patch("worker.recall_from_hindsight", return_value=None):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Extract mcp.json — should use admin setting values
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://setting-hindsight:8888/mcp/setting-bank/"
 
 
@@ -2949,18 +2745,13 @@ def test_process_task_playwright_degraded_mode():
         "system_prompt": "",
     }
 
-    mock_container = MagicMock()
-    mock_container.id = "container-pw-test"
-    mock_container.short_id = "contpwt"
-    mock_container.wait.return_value = {"StatusCode": 0}
-    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
-
-    mock_client = MagicMock()
-    mock_client.containers.create.return_value = mock_container
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
 
     import worker
-    original_client = worker.docker_client
-    worker.docker_client = mock_client
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
 
     mock_pw_container = MagicMock()
 
@@ -2976,7 +2767,7 @@ def test_process_task_playwright_degraded_mode():
         patch("worker.recall_from_hindsight", return_value=None):
             process_task_in_container(task, settings)
     finally:
-        worker.docker_client = original_client
+        worker.container_runtime = original_runtime
 
     # Playwright container started, health-checked, and cleaned up
     mock_start.assert_called_once()
@@ -2988,12 +2779,8 @@ def test_process_task_playwright_degraded_mode():
     mock_cleanup.assert_any_call(None)
 
     # Extract mcp.json — should NOT contain playwright entry
-    import tarfile
-    tar_data = mock_container.put_archive.call_args[0][1]
-    tar_data.seek(0)
-    tar = tarfile.open(fileobj=tar_data)
-    mcp_json_member = tar.extractfile("mcp.json")
-    mcp_config = json.loads(mcp_json_member.read())
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
     assert "playwright" not in mcp_config.get("mcpServers", {})
 
 

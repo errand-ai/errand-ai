@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: worker
     spec:
+      serviceAccountName: {{ include "errand.fullname" . }}-worker
       containers:
         - name: worker
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Chart.AppVersion }}"
@@ -32,8 +33,12 @@ spec:
             - name: VALKEY_URL
               value: "redis://{{ .Release.Name }}-valkey:6379"
             {{- end }}
-            - name: DOCKER_HOST
-              value: "tcp://localhost:2375"
+            - name: CONTAINER_RUNTIME
+              value: "kubernetes"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: TASK_RUNNER_IMAGE
               value: "{{ .Values.taskRunner.image.repository }}:{{ .Values.taskRunner.image.tag | default .Chart.AppVersion }}"
             {{- if .Values.openai.baseUrl }}
@@ -78,17 +83,17 @@ spec:
               value: {{ .Values.hindsight.bankId | quote }}
             {{- end }}
             - name: PLAYWRIGHT_MCP_IMAGE
-              value: "{{ .Values.playwrightMcp.image.repository }}:{{ .Values.playwrightMcp.image.tag }}"
-            - name: PLAYWRIGHT_MEMORY_LIMIT
-              value: {{ .Values.playwrightMcp.memoryLimit | quote }}
+              value: "{{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}"
             - name: PLAYWRIGHT_PORT
-              value: {{ .Values.playwrightMcp.port | quote }}
+              value: {{ .Values.playwright.port | quote }}
             - name: PLAYWRIGHT_STARTUP_TIMEOUT
-              value: {{ .Values.playwrightMcp.startupTimeout | quote }}
-        - name: dind
-          image: {{ .Values.dind.image }}
-          securityContext:
-            privileged: true
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
+              value: {{ .Values.playwright.startupTimeout | quote }}
+        - name: playwright
+          image: "{{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}"
+          imagePullPolicy: {{ .Values.playwright.image.pullPolicy | default "IfNotPresent" }}
+          args: ["--port", "{{ .Values.playwright.port }}", "--host", "0.0.0.0", "--allowed-hosts", "*"]
+          ports:
+            - containerPort: {{ .Values.playwright.port }}
+          resources:
+            limits:
+              memory: {{ .Values.playwright.memoryLimit }}

@@ -67,6 +67,7 @@ function formatJson(obj: unknown): string {
       >{{ event.data.text }}</div>
       <button
         v-if="lineCount(event.data.text as string) > 3"
+        type="button"
         class="mt-1 text-xs text-blue-400 hover:text-blue-300"
         data-testid="toggle-collapse"
         @click="toggleCollapse(event)"
@@ -87,6 +88,7 @@ function formatJson(obj: unknown): string {
       >{{ event.data.text }}</div>
       <button
         v-if="lineCount(event.data.text as string) > 3"
+        type="button"
         class="mt-1 text-xs text-blue-400 hover:text-blue-300"
         data-testid="toggle-collapse"
         @click="toggleCollapse(event)"
@@ -102,6 +104,7 @@ function formatJson(obj: unknown): string {
       data-testid="event-tool-call"
     >
       <button
+        type="button"
         class="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium text-gray-300 hover:bg-gray-700/50"
         data-testid="tool-call-header"
         @click="toggleCollapse(event)"
@@ -132,6 +135,7 @@ function formatJson(obj: unknown): string {
         >{{ event.result.output }}</pre>
         <button
           v-if="lineCount(event.result.output) > 3"
+          type="button"
           class="mt-1 text-xs text-blue-400 hover:text-blue-300"
           data-testid="toggle-result-collapse"
           @click="event.result.collapsed = !event.result.collapsed"

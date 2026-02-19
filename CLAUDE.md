@@ -182,6 +182,22 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Logout requires `id_token_hint` parameter to Keycloak end-session endpoint
 - Token + id_token delivered to frontend via URL fragment from `/auth/callback`
 
+## Worker Container Runtime
+
+The worker uses a pluggable `ContainerRuntime` abstraction (`backend/container_runtime.py`) to run task-runner containers:
+
+- **`CONTAINER_RUNTIME` env var**: `docker` (default) or `kubernetes` — selects the runtime at worker startup
+- **DockerRuntime**: Wraps Docker SDK, used for local dev via docker-compose (DinD sidecar)
+- **KubernetesRuntime**: Creates K8s Jobs + ConfigMaps, used in production
+  - Jobs labelled with `app.kubernetes.io/managed-by: content-manager-worker`
+  - Input files injected via ConfigMap mounted at `/workspace`
+  - Output read from `/output/result.json` (emptyDir volume)
+  - Orphaned Jobs cleaned up on worker startup
+  - Worker needs a ServiceAccount with RBAC for jobs, configmaps, pods, pods/log, pods/exec
+- **Playwright**: In Docker mode, started as a container in DinD; in K8s mode, pre-deployed as a worker pod sidecar
+  - K8s task-runner Jobs connect to Playwright via worker pod IP (`POD_IP` from Downward API)
+- **Local dev**: docker-compose uses `CONTAINER_RUNTIME=docker` (default) — unchanged from before
+
 ## Kubernetes Deployment
 
 - **ArgoCD version**: v3.3.0 (image tag `latest`) — RBAC model follows v3 conventions
@@ -242,7 +258,7 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 
 ## Current State
 
-- Version: `0.42.1` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.47.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
 - Tests: 485 backend (pytest, includes task-runner) + 329 frontend (vitest) — CI `test` job gates both build jobs

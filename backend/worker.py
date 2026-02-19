@@ -14,14 +14,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlparse
 
-import docker
 import httpx
-from docker.errors import DockerException, APIError, ImageNotFound, NotFound
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from container_runtime import ContainerRuntime, DockerRuntime, create_runtime, RuntimeHandle
 from database import async_session, engine
 import redis as sync_redis
 
@@ -82,6 +81,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
+CONTAINER_RUNTIME_TYPE = os.environ.get("CONTAINER_RUNTIME", "docker")
 DOCKER_HOST = os.environ.get("DOCKER_HOST", "")
 TASK_RUNNER_IMAGE = os.environ.get("TASK_RUNNER_IMAGE", "errand-task-runner:latest")
 MAX_OUTPUT_BYTES = int(os.environ.get("MAX_OUTPUT_BYTES", str(1024 * 1024)))  # 1MB default
@@ -92,8 +92,12 @@ PLAYWRIGHT_STARTUP_TIMEOUT = int(os.environ.get("PLAYWRIGHT_STARTUP_TIMEOUT", "3
 
 shutdown_requested = False
 shutdown_event: Optional[asyncio.Event] = None
-docker_client: Optional[docker.DockerClient] = None
-active_container_id: Optional[str] = None
+container_runtime: ContainerRuntime | None = None
+active_handle: RuntimeHandle | None = None
+
+# Keep docker_client for backward compat (Playwright management in Docker mode,
+# SIGTERM cleanup, and test imports). Set during runtime init for Docker mode only.
+docker_client = None
 
 
 def handle_sigterm(*_args):
@@ -103,45 +107,27 @@ def handle_sigterm(*_args):
     if shutdown_event is not None:
         loop = asyncio.get_event_loop()
         loop.call_soon_threadsafe(shutdown_event.set)
-    # Stop and remove any running container
     _cleanup_active_container()
 
 
 def _cleanup_active_container():
-    global active_container_id
-    if docker_client is not None and active_container_id is not None:
+    global active_handle
+    if container_runtime is not None and active_handle is not None:
         try:
-            container = docker_client.containers.get(active_container_id)
-            container.stop(timeout=5)
-            container.remove(force=True)
-            logger.info("Cleaned up container %s on shutdown", active_container_id)
+            container_runtime.cleanup(active_handle)
+            logger.info("Cleaned up active container on shutdown")
         except Exception:
             pass
-        active_container_id = None
+        active_handle = None
 
-
-def init_docker_client() -> docker.DockerClient:
-    """Initialise Docker client with exponential backoff retry waiting for DinD readiness."""
-    delay = 1.0
-    max_delay = 30.0
-    kwargs = {}
-    if DOCKER_HOST:
-        kwargs["base_url"] = DOCKER_HOST
-
-    while True:
-        try:
-            client = docker.DockerClient(**kwargs)
-            client.ping()
-            logger.info("Connected to Docker daemon")
-            return client
-        except DockerException as e:
-            logger.warning("Docker not ready (%.1fs backoff): %s", delay, e)
-            time.sleep(delay)
-            delay = min(delay * 2, max_delay)
 
 
 def pre_pull_images() -> None:
     """Pre-pull required images so the first task starts without download delays."""
+    if docker_client is None:
+        return
+    from docker.errors import ImageNotFound
+
     images = [TASK_RUNNER_IMAGE]
     if PLAYWRIGHT_MCP_IMAGE:
         images.append(PLAYWRIGHT_MCP_IMAGE)
@@ -155,18 +141,6 @@ def pre_pull_images() -> None:
             docker_client.images.pull(image)
             logger.info("Pre-pulled image %s", image)
 
-
-def put_archive(container, files: dict[str, str], dest: str = "/workspace") -> None:
-    """Create a tar archive from a dict of {filename: content} and copy into container."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        for name, content in files.items():
-            data = content.encode("utf-8")
-            info = tarfile.TarInfo(name=name)
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-    buf.seek(0)
-    container.put_archive(dest, buf)
 
 
 def build_skills_archive(skills: list[dict]) -> bytes | None:
@@ -562,38 +536,6 @@ def generate_ssh_config(hosts: list[str]) -> str:
     return "\n\n".join(entries) + "\n" if entries else ""
 
 
-def put_archive_ssh(container, private_key: str, ssh_config: str) -> None:
-    """Copy SSH private key and config into the container's ~/.ssh/ directory."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        # .ssh directory entry — ensures permissions are 700 (SSH requires this)
-        ssh_dir = tarfile.TarInfo(name=".")
-        ssh_dir.type = tarfile.DIRTYPE
-        ssh_dir.mode = 0o700
-        ssh_dir.uid = 65532
-        ssh_dir.gid = 65532
-        tar.addfile(ssh_dir)
-
-        # Private key with permissions 600
-        key_data = private_key.encode("utf-8")
-        key_info = tarfile.TarInfo(name="id_rsa.agent")
-        key_info.size = len(key_data)
-        key_info.mode = 0o600
-        key_info.uid = 65532
-        key_info.gid = 65532
-        tar.addfile(key_info, io.BytesIO(key_data))
-
-        # SSH config with permissions 644
-        config_data = ssh_config.encode("utf-8")
-        config_info = tarfile.TarInfo(name="config")
-        config_info.size = len(config_data)
-        config_info.mode = 0o644
-        config_info.uid = 65532
-        config_info.gid = 65532
-        tar.addfile(config_info, io.BytesIO(config_data))
-    buf.seek(0)
-    container.put_archive("/home/nonroot/.ssh", buf)
-
 
 def start_playwright_container():
     """Start a Playwright MCP sidecar container in DinD. Returns the container."""
@@ -612,12 +554,13 @@ def start_playwright_container():
 
 def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIGHT_STARTUP_TIMEOUT) -> bool:
     """Poll Playwright MCP endpoint until it responds or timeout. Returns True if healthy."""
-    # Playwright runs with network_mode="host" in DinD, so reach it via the DinD host
-    if DOCKER_HOST:
-        dind_host = urlparse(DOCKER_HOST).hostname or "localhost"
+    # In Docker mode, Playwright runs with network_mode="host" in DinD
+    # In K8s mode, Playwright is a sidecar in the same pod, reachable at localhost
+    if CONTAINER_RUNTIME_TYPE == "docker" and DOCKER_HOST:
+        host = urlparse(DOCKER_HOST).hostname or "localhost"
     else:
-        dind_host = "localhost"
-    url = f"http://{dind_host}:{port}/mcp"
+        host = "localhost"
+    url = f"http://{host}:{port}/mcp"
     payload = {
         "jsonrpc": "2.0",
         "method": "initialize",
@@ -657,32 +600,41 @@ def cleanup_playwright_container(container) -> None:
     try:
         container.remove(force=True)
         logger.info("Cleaned up Playwright container %s", container.short_id)
-    except NotFound:
-        logger.warning("Playwright container %s already removed (possibly OOM-killed)", container.short_id)
     except Exception:
         logger.warning("Failed to remove Playwright container", exc_info=True)
 
 
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
-    """Run task in a Docker container via DinD. Returns (exit_code, stdout, stderr)."""
-    global active_container_id
+    """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
+    global active_handle
+
+    runtime = container_runtime
+    is_docker = CONTAINER_RUNTIME_TYPE == "docker"
 
     playwright_container = None
     playwright_healthy = False
 
-    # Start Playwright sidecar if configured
+    # Playwright management differs by runtime:
+    # - Docker: start a Playwright container in DinD, health check, cleanup after
+    # - K8s: Playwright is a pre-deployed sidecar, just health check it
     if PLAYWRIGHT_MCP_IMAGE:
-        try:
-            playwright_container = start_playwright_container()
-            playwright_healthy = health_check_playwright()
-            if not playwright_healthy:
-                logger.error("Playwright MCP health check failed, proceeding without Playwright")
+        if is_docker:
+            try:
+                playwright_container = start_playwright_container()
+                playwright_healthy = health_check_playwright()
+                if not playwright_healthy:
+                    logger.error("Playwright MCP health check failed, proceeding without Playwright")
+                    cleanup_playwright_container(playwright_container)
+                    playwright_container = None
+            except Exception:
+                logger.warning("Failed to start Playwright container", exc_info=True)
                 cleanup_playwright_container(playwright_container)
                 playwright_container = None
-        except Exception:
-            logger.warning("Failed to start Playwright container", exc_info=True)
-            cleanup_playwright_container(playwright_container)
-            playwright_container = None
+        else:
+            # K8s mode: Playwright is a sidecar, just health check
+            playwright_healthy = health_check_playwright()
+            if not playwright_healthy:
+                logger.error("Playwright sidecar health check failed, proceeding without Playwright")
 
     try:
         mcp_servers = settings.get("mcp_servers", {})
@@ -714,150 +666,141 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         if max_turns:
             env_vars["MAX_TURNS"] = max_turns
 
-        # Ensure image is available (try local first, pull only if not found)
-        try:
-            docker_client.images.get(TASK_RUNNER_IMAGE)
-            logger.info("Image %s found locally", TASK_RUNNER_IMAGE)
-        except ImageNotFound:
-            logger.info("Image %s not found locally, pulling...", TASK_RUNNER_IMAGE)
-            docker_client.images.pull(TASK_RUNNER_IMAGE)
+        # Internal key for K8s runtime labels (stripped from actual container env)
+        env_vars["_TASK_ID"] = str(task.id)
 
-        # Create container (not started)
-        container = docker_client.containers.create(
-            image=TASK_RUNNER_IMAGE,
-            environment=env_vars,
-            network_mode="host",
-            detach=True,
+        # Resolve Hindsight configuration: env var → admin setting → disabled
+        hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
+        hindsight_bank_id = (
+            os.environ.get("HINDSIGHT_BANK_ID", "")
+            or settings.get("hindsight_bank_id", "")
+            or DEFAULT_HINDSIGHT_BANK_ID
         )
-        active_container_id = container.id
-        logger.info("Created container %s for task %s", container.short_id, task.id)
 
-        try:
-            # Resolve Hindsight configuration: env var → admin setting → disabled
-            hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
-            hindsight_bank_id = (
-                os.environ.get("HINDSIGHT_BANK_ID", "")
-                or settings.get("hindsight_bank_id", "")
-                or DEFAULT_HINDSIGHT_BANK_ID
+        # Pre-load memories from Hindsight and inject into system prompt
+        if hindsight_url:
+            recall_query = f"{task.title}. {task.description or ''}"
+            recalled = recall_from_hindsight(hindsight_url, hindsight_bank_id, recall_query)
+            if recalled:
+                system_prompt += (
+                    "\n\n## Relevant Context from Memory\n\n"
+                    + recalled
+                )
+
+        # Inject Perplexity MCP server if enabled via environment
+        if os.environ.get("USE_PERPLEXITY") == "true":
+            mcp_servers.setdefault("mcpServers", {})
+            if "perplexity-ask" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
+            system_prompt += (
+                "\n\n## Web Research\n\n"
+                "You have access to the `perplexity-ask` MCP tool for web search. "
+                "Try it first when you need current information online.\n\n"
+                "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
+                "fetching web content directly using the `execute_command` tool. "
+                "Both `curl` and Python's `httpx` library are available:\n\n"
+                "```\n"
+                "# Fetch a web page with curl\n"
+                "execute_command('curl -sL https://example.com')\n"
+                "\n"
+                "# Fetch JSON from an API with curl\n"
+                "execute_command('curl -sL https://api.example.com/data')\n"
+                "\n"
+                "# Use Python httpx for more complex requests\n"
+                "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
+                "```\n\n"
+                "Use this approach to retrieve documentation, API responses, or any "
+                "public web content needed to complete the task."
             )
 
-            # Pre-load memories from Hindsight and inject into system prompt
-            if hindsight_url:
-                recall_query = f"{task.title}. {task.description or ''}"
-                recalled = recall_from_hindsight(hindsight_url, hindsight_bank_id, recall_query)
-                if recalled:
-                    system_prompt += (
-                        "\n\n## Relevant Context from Memory\n\n"
-                        + recalled
-                    )
+        # Inject errand MCP server for task tools (post_tweet, new_task, etc.)
+        backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
+        mcp_api_key = settings.get("mcp_api_key", "")
+        if backend_mcp_url and mcp_api_key:
+            mcp_servers.setdefault("mcpServers", {})
+            if "errand" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["errand"] = {
+                    "url": backend_mcp_url,
+                    "headers": {"Authorization": f"Bearer {mcp_api_key}"},
+                }
 
-            # Inject Perplexity MCP server if enabled via environment
-            if os.environ.get("USE_PERPLEXITY") == "true":
-                mcp_servers.setdefault("mcpServers", {})
-                if "perplexity-ask" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
-                system_prompt += (
-                    "\n\n## Web Research\n\n"
-                    "You have access to the `perplexity-ask` MCP tool for web search. "
-                    "Try it first when you need current information online.\n\n"
-                    "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
-                    "fetching web content directly using the `execute_command` tool. "
-                    "Both `curl` and Python's `httpx` library are available:\n\n"
-                    "```\n"
-                    "# Fetch a web page with curl\n"
-                    "execute_command('curl -sL https://example.com')\n"
-                    "\n"
-                    "# Fetch JSON from an API with curl\n"
-                    "execute_command('curl -sL https://api.example.com/data')\n"
-                    "\n"
-                    "# Use Python httpx for more complex requests\n"
-                    "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
-                    "```\n\n"
-                    "Use this approach to retrieve documentation, API responses, or any "
-                    "public web content needed to complete the task."
-                )
+        # Inject Hindsight MCP server and memory instructions
+        if hindsight_url:
+            mcp_servers.setdefault("mcpServers", {})
+            if "hindsight" not in mcp_servers["mcpServers"]:
+                mcp_servers["mcpServers"]["hindsight"] = {
+                    "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
+                }
+            system_prompt += (
+                "\n\n## Persistent Memory (Hindsight)\n\n"
+                "You have access to Hindsight memory tools via the `hindsight` MCP server:\n"
+                "- **retain**: Store important facts, decisions, patterns, and learnings for future tasks\n"
+                "- **recall**: Search memories for relevant context about a topic\n"
+                "- **reflect**: Synthesize reasoning across stored memories\n\n"
+                "Use `retain` to save key outcomes, decisions, or context at the end of your task. "
+                "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
+            )
 
-            # Inject errand MCP server for task tools (post_tweet, new_task, etc.)
-            backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
-            mcp_api_key = settings.get("mcp_api_key", "")
-            if backend_mcp_url and mcp_api_key:
-                mcp_servers.setdefault("mcpServers", {})
-                if "errand" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["errand"] = {
-                        "url": backend_mcp_url,
-                        "headers": {"Authorization": f"Bearer {mcp_api_key}"},
-                    }
+        # Inject Playwright MCP server if healthy
+        if playwright_healthy:
+            mcp_servers.setdefault("mcpServers", {})
+            if "playwright" not in mcp_servers["mcpServers"]:
+                # Docker: Playwright at localhost (network_mode=host in DinD)
+                # K8s: Playwright at pod IP (cross-pod network for task-runner Jobs)
+                if is_docker:
+                    pw_url = f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
+                else:
+                    pod_ip = os.environ.get("POD_IP", "localhost")
+                    pw_url = f"http://{pod_ip}:{PLAYWRIGHT_PORT}/mcp"
+                mcp_servers["mcpServers"]["playwright"] = {"url": pw_url}
 
-            # Inject Hindsight MCP server and memory instructions
-            if hindsight_url:
-                mcp_servers.setdefault("mcpServers", {})
-                if "hindsight" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["hindsight"] = {
-                        "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
-                    }
-                system_prompt += (
-                    "\n\n## Persistent Memory (Hindsight)\n\n"
-                    "You have access to Hindsight memory tools via the `hindsight` MCP server:\n"
-                    "- **retain**: Store important facts, decisions, patterns, and learnings for future tasks\n"
-                    "- **recall**: Search memories for relevant context about a topic\n"
-                    "- **reflect**: Synthesize reasoning across stored memories\n\n"
-                    "Use `retain` to save key outcomes, decisions, or context at the end of your task. "
-                    "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
-                )
+        # Merge DB skills with git-sourced skills if configured
+        skills = settings.get("skills", [])
+        skills_git_repo = settings.get("skills_git_repo")
+        if skills_git_repo:
+            clone_dir = refresh_git_clone(
+                skills_git_repo["url"],
+                skills_git_repo.get("branch"),
+                settings.get("ssh_private_key") or None,
+            )
+            base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
+            git_skills = parse_skills_from_directory(base_path)
+            logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
+            skills = merge_skills(skills, git_skills)
 
-            # Inject Playwright MCP server if sidecar is healthy
-            if playwright_healthy:
-                mcp_servers.setdefault("mcpServers", {})
-                if "playwright" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["playwright"] = {
-                        "url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
-                    }
+        # Inject skill manifest into system prompt if skills are defined
+        if skills:
+            system_prompt += build_skill_manifest(skills)
 
-            # Merge DB skills with git-sourced skills if configured
-            skills = settings.get("skills", [])
-            skills_git_repo = settings.get("skills_git_repo")
-            if skills_git_repo:
-                clone_dir = refresh_git_clone(
-                    skills_git_repo["url"],
-                    skills_git_repo.get("branch"),
-                    settings.get("ssh_private_key") or None,
-                )
-                base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
-                git_skills = parse_skills_from_directory(base_path)
-                logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
-                skills = merge_skills(skills, git_skills)
+        # Build files dict for the container
+        prompt_text = task.description or task.title
+        files = {
+            "prompt.txt": prompt_text,
+            "system_prompt.txt": system_prompt,
+            "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
+        }
 
-            # Inject skill manifest into system prompt if skills are defined
-            if skills:
-                system_prompt += build_skill_manifest(skills)
+        # Build skills archive
+        skills_tar = build_skills_archive(skills) if skills else None
 
-            # Copy files into the stopped container
-            prompt_text = task.description or task.title
-            files = {
-                "prompt.txt": prompt_text,
-                "system_prompt.txt": system_prompt,
-                "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
-            }
-            put_archive(container, files)
+        # SSH credentials
+        ssh_private_key = settings.get("ssh_private_key", "")
+        ssh_config = generate_ssh_config(settings.get("git_ssh_hosts", [])) if ssh_private_key else None
 
-            # Write Agent Skills directories into the container
-            if skills:
-                skills_tar = build_skills_archive(skills)
-                if skills_tar:
-                    container.put_archive("/workspace", io.BytesIO(skills_tar))
-                    logger.info("Injected %d skill(s) into container for task %s", len(skills), task.id)
+        # Prepare container via runtime
+        handle = runtime.prepare(
+            image=TASK_RUNNER_IMAGE,
+            env=env_vars,
+            files=files,
+            output_dir="/output",
+            skills_tar=skills_tar,
+            ssh_private_key=ssh_private_key or None,
+            ssh_config=ssh_config,
+        )
+        active_handle = handle
+        logger.info("Prepared container for task %s via %s runtime", task.id, CONTAINER_RUNTIME_TYPE)
 
-            # Inject SSH credentials if available
-            ssh_private_key = settings.get("ssh_private_key", "")
-            if ssh_private_key:
-                git_ssh_hosts = settings.get("git_ssh_hosts", [])
-                ssh_config = generate_ssh_config(git_ssh_hosts)
-                put_archive_ssh(container, ssh_private_key, ssh_config)
-                logger.info("Injected SSH credentials for task %s (%d hosts)", task.id, len(git_ssh_hosts))
-
-            # Start container and stream stderr in real-time
-            container.start()
-
+        try:
             # Create sync Redis client for publishing log lines to Valkey
             log_channel = f"task_logs:{task.id}"
             log_redis: sync_redis.Redis | None = None
@@ -866,46 +809,26 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             except Exception:
                 logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
 
-            # Stream stderr in real-time, publishing structured events to Valkey.
-            # Docker's streaming API sends data in arbitrary byte chunks that may
-            # not align with newline boundaries, so we buffer and split on newlines.
+            # Stream logs in real-time, publishing structured events to Valkey
             try:
-                buf = ""
-                for chunk in container.logs(stream=True, follow=True, stderr=True, stdout=False):
-                    buf += chunk.decode("utf-8", errors="replace")
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        if not line:
-                            continue
-                        if log_redis is not None:
-                            try:
-                                parsed_event = json.loads(line)
-                                if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
-                                    msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
-                                else:
-                                    msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                            except (json.JSONDecodeError, ValueError):
+                for line in runtime.run(handle):
+                    if not line:
+                        continue
+                    if log_redis is not None:
+                        try:
+                            parsed_event = json.loads(line)
+                            if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
+                                msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
+                            else:
                                 msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                            try:
-                                log_redis.publish(log_channel, msg)
-                            except Exception:
-                                logger.warning("Failed to publish log line to Valkey", exc_info=True)
-                # Flush any remaining buffered content
-                if buf.strip() and log_redis is not None:
-                    try:
-                        parsed_event = json.loads(buf.strip())
-                        if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
-                            msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
-                        else:
-                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
-                    except (json.JSONDecodeError, ValueError):
-                        msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": buf.strip()}})
-                    try:
-                        log_redis.publish(log_channel, msg)
-                    except Exception:
-                        logger.warning("Failed to publish log line to Valkey", exc_info=True)
+                        except (json.JSONDecodeError, ValueError):
+                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                        try:
+                            log_redis.publish(log_channel, msg)
+                        except Exception:
+                            logger.warning("Failed to publish log line to Valkey", exc_info=True)
             except Exception:
-                logger.warning("Error during stderr streaming for task %s", task.id, exc_info=True)
+                logger.warning("Error during log streaming for task %s", task.id, exc_info=True)
 
             # Publish end sentinel
             if log_redis is not None:
@@ -916,24 +839,19 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 finally:
                     log_redis.close()
 
-            # Container has exited — get exit code and capture full output for parsing
-            result = container.wait()
-            exit_code = result.get("StatusCode", -1)
-
-            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            # Get exit code and captured output
+            exit_code, stdout, stderr = runtime.result(handle)
             stdout = truncate_output(stdout)
             stderr = truncate_output(stderr)
 
             return exit_code, stdout, stderr
         finally:
-            try:
-                container.remove(force=True)
-            except Exception:
-                logger.debug("Failed to remove task-runner container", exc_info=True)
-            active_container_id = None
+            runtime.cleanup(handle)
+            active_handle = None
     finally:
-        cleanup_playwright_container(playwright_container)
+        # In Docker mode, clean up the Playwright container
+        if is_docker:
+            cleanup_playwright_container(playwright_container)
 
 
 async def _schedule_retry(task: Task, output: str | None = None, runner_logs: str | None = None) -> None:
@@ -1050,16 +968,24 @@ async def _reschedule_if_repeating(task: Task) -> None:
 
 
 async def run() -> None:
-    global shutdown_event, docker_client
+    global shutdown_event, container_runtime, docker_client
     shutdown_event = asyncio.Event()
 
     signal.signal(signal.SIGTERM, handle_sigterm)
     await init_valkey()
 
-    # Initialise Docker client (blocking, with retry)
-    logger.info("Connecting to Docker daemon...")
-    docker_client = await asyncio.get_event_loop().run_in_executor(None, init_docker_client)
-    await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
+    # Initialise container runtime
+    logger.info("Initialising %s container runtime...", CONTAINER_RUNTIME_TYPE)
+    try:
+        container_runtime = await asyncio.get_event_loop().run_in_executor(None, create_runtime)
+    except ValueError as e:
+        logger.error("Failed to initialise container runtime: %s", e)
+        return
+
+    # For Docker mode, keep docker_client reference for Playwright management and pre-pull
+    if isinstance(container_runtime, DockerRuntime):
+        docker_client = container_runtime.client
+        await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
 
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 
@@ -1230,10 +1156,6 @@ async def run() -> None:
                     logger.info("Task %s moved to review after %d git retries", task.id, current.retry_count)
                 else:
                     await _schedule_retry(task, output=error_str)
-
-        except (ImageNotFound, APIError) as e:
-            logger.error("Docker error for task %s: %s", task.id, e)
-            await _schedule_retry(task, output=f"Docker error: {e}")
 
         except Exception:
             logger.exception("Task %s failed", task.id)
