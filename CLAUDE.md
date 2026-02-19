@@ -43,11 +43,12 @@ openspec schemas --json                   # List available workflow schemas
 ## Project Structure
 
 ```
+Dockerfile             # Multi-stage: node (frontend build) + python (backend)
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)
 backend/
-  main.py              # FastAPI app (API endpoints)
+  main.py              # FastAPI app (API endpoints + static file serving)
   mcp_server.py        # MCP Streamable HTTP server (tools: new_task, task_status, etc.)
   auth.py              # OIDC config, JWT validation, role extraction
   auth_routes.py       # /auth/login, /auth/callback, /auth/logout
@@ -56,11 +57,9 @@ backend/
   llm.py               # OpenAI SDK client, LLM title generation
   worker.py            # Worker process entrypoint
   alembic/             # Database migrations
-  Dockerfile
 frontend/
   src/                 # Vue 3 app source
   src/stores/auth.ts   # Pinia auth store (token, idToken, roles)
-  Dockerfile
 helm/
   content-manager/     # Helm chart for K8s deployment
 .github/
@@ -105,11 +104,11 @@ CI enforces immutable tags — if you forget to bump, the pipeline will fail on 
 Run the full stack locally with Docker Compose and verify changes **before committing**:
 
 ```bash
-docker compose up --build  # Build and start all services (postgres, migrations, backend, worker, frontend)
+docker compose up --build  # Build and start all services (postgres, migrations, backend, worker)
 docker compose down        # Stop and remove containers
 ```
 
-Local URLs: frontend at `http://localhost:3000`, backend API at `http://localhost:8000`.
+Local URL: `http://localhost:8000` (backend serves both API and frontend static files).
 
 **Every commit must pass local testing.** Do not commit code that hasn't been verified with `docker compose up --build`. The CI pipeline builds images and ArgoCD deploys them — broken commits on a branch waste CI resources and risk bad deployments.
 
@@ -191,10 +190,9 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - **ArgoCD RBAC testing**: `kubectl -n argocd exec deploy/argocd-server -- argocd admin settings rbac can <user> <action> <resource> '<project>/<app>' --namespace argocd`
 - **ArgoCD MCP account**: `mcpserver` local account (apiKey auth), role `readonly-user` (get, sync, restart deployments)
 - **Cluster context**: `devops-consultants` / namespace: `content-manager`
-- **Ingress**: nginx ingress controller (class `nginx`) — routes `/api` and `/auth` to backend, `/` to frontend
+- **Ingress**: nginx ingress controller (class `nginx`) — routes all paths to backend (single service)
 - **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
 - **Database**: CloudNativePG — secret `content-manager-postgres-app`, key `uri`
-- **Frontend in K8s**: nginx serves static files only (no proxy_pass); ingress handles path routing
 - **Proxy headers**: uvicorn runs with `--proxy-headers --forwarded-allow-ips *` so `request.base_url` returns `https://` behind TLS-terminating ingress
 - **ArgoCD values**: Override values at `~/github/argocd/apps/content-manager-rancher-values.yaml`
 - **KEDA**: Disabled for now (CRDs not installed on cluster)
@@ -204,7 +202,8 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Image tags in templates default to `.Chart.AppVersion` when `values.image.tag` is empty
 - CI sets `appVersion` via `helm package --app-version` from the VERSION file
 - PR builds get tags like `0.4.0-pr2`; main builds get `0.4.0`
-- Static assets in `frontend/public/` must have `chmod 644` or nginx returns 403 (Docker copies permissions as-is)
+- Backend serves frontend static files in production (Vite build output in `static/` directory)
+- No separate frontend container — single combined Docker image
 
 ## MCP Server (Backend)
 
@@ -218,7 +217,7 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Header inner div has no max-width — logo left-aligned, user controls right-aligned
 - KanbanBoard wraps TaskForm in `max-w-7xl mx-auto` to keep it constrained
 - Kanban columns use `flex-1` to expand to fill available width
-- Local dev frontend runs on port 3000 (nginx), backend on 8000
+- Local dev: backend serves everything on port 8000 (frontend static files included in Docker build)
 
 ## Python Environment
 

@@ -1,12 +1,3 @@
-frontend:
-  replicaCount: 1
-  image:
-    repository: ghcr.io/devops-consultants/content-manager-frontend
-    tag: ""
-    pullPolicy: IfNotPresent
-  service:
-    port: 80
-
 backend:
   replicaCount: 1
   image:

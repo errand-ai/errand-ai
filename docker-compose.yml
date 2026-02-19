@@ -55,7 +55,9 @@ services:
     command: docker build -t content-manager-task-runner:latest /workspace
 
   migrate:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: alembic upgrade head
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
@@ -64,8 +66,9 @@ services:
         condition: service_healthy
 
   backend:
-    build: ./backend
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -87,11 +90,11 @@ services:
         condition: service_completed_successfully
       valkey:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
 
   worker:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: python worker.py
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
@@ -116,8 +119,6 @@ services:
         condition: service_healthy
       task-runner-build:
         condition: service_completed_successfully
-    volumes:
-      - ./backend:/app
 
   hindsight-init:
     image: ghcr.io/vectorize-io/hindsight:latest
@@ -147,13 +148,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
 
 volumes:
   postgres-data:

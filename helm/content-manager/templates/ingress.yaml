@@ -20,39 +20,11 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "content-manager.fullname" . }}-backend
-                port:
-                  number: {{ .Values.backend.service.port }}
-          - path: /auth
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "content-manager.fullname" . }}-backend
-                port:
-                  number: {{ .Values.backend.service.port }}
-          - path: /mcp
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "content-manager.fullname" . }}-backend
-                port:
-                  number: {{ .Values.backend.service.port }}
-          - path: /slack
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "content-manager.fullname" . }}-backend
-                port:
-                  number: {{ .Values.backend.service.port }}
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ include "content-manager.fullname" . }}-frontend
+                name: {{ include "content-manager.fullname" . }}-backend
                 port:
-                  number: {{ .Values.frontend.service.port }}
+                  number: {{ .Values.backend.service.port }}
 {{- end }}

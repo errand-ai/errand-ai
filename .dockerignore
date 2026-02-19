@@ -1,0 +1,14 @@
+.git
+node_modules
+frontend/node_modules
+frontend/dist
+backend/__pycache__
+backend/.venv
+backend/tests
+openspec
+.claude
+.serena
+.github
+.playwright-mcp
+*.md
+!frontend/README.md

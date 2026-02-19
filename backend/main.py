@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import re
 import secrets
 import uuid
@@ -16,9 +17,11 @@ logger = logging.getLogger(__name__)
 
 import jwt
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -1304,3 +1307,19 @@ async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(de
     finally:
         await pubsub.unsubscribe(log_channel)
         await pubsub.aclose()
+
+
+# --- Static file serving (production only) ---
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+if STATIC_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="static-assets")
+
+    @app.get("/{path:path}")
+    async def spa_fallback(request: Request, path: str):
+        # Try to serve a file from static/ first (favicon.ico, robots.txt, etc.)
+        file_path = STATIC_DIR / path
+        if path and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(STATIC_DIR / "index.html")
