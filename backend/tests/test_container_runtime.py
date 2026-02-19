@@ -296,6 +296,97 @@ class TestKubernetesRuntime:
         env_dict = {e.name: e.value for e in container_spec.env}
         assert env_dict["PLAYWRIGHT_URL"] == "http://10.0.0.5:3000/mcp"
 
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_injects_skills_tar_into_configmap(self, mock_uuid):
+        """prepare() extracts skills tar contents into ConfigMap data."""
+        import io as _io
+        import tarfile as _tarfile
+
+        runtime = self._make_runtime()
+
+        # Build a small tar archive with a skill file
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tar:
+            data = b"skill content"
+            info = _tarfile.TarInfo(name="skills/my-skill/SKILL.md")
+            info.size = len(data)
+            tar.addfile(info, _io.BytesIO(data))
+        skills_bytes = buf.getvalue()
+
+        handle = runtime.prepare(
+            image="task-runner:v1",
+            env={"_TASK_ID": "42"},
+            files={"prompt.txt": "hello"},
+            skills_tar=skills_bytes,
+        )
+
+        # ConfigMap should contain both original file and extracted skill
+        cm_call = runtime.core_v1.create_namespaced_config_map.call_args
+        cm = cm_call[0][1]
+        assert "prompt.txt" in cm.data
+        assert "skills/my-skill/SKILL.md" in cm.data
+        assert cm.data["skills/my-skill/SKILL.md"] == "skill content"
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_creates_ssh_secret(self, mock_uuid):
+        """prepare() creates a K8s Secret for SSH credentials and mounts it."""
+        runtime = self._make_runtime()
+
+        handle = runtime.prepare(
+            image="task-runner:v1",
+            env={"_TASK_ID": "42"},
+            files={"prompt.txt": "hello"},
+            ssh_private_key="-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----",
+            ssh_config="Host github.com\n  IdentityFile ~/.ssh/id_rsa.agent",
+        )
+
+        # Secret created
+        runtime.core_v1.create_namespaced_secret.assert_called_once()
+        secret_call = runtime.core_v1.create_namespaced_secret.call_args
+        secret = secret_call[0][1]
+        assert "id_rsa.agent" in secret.string_data
+        assert "config" in secret.string_data
+        assert secret.metadata.labels["app.kubernetes.io/managed-by"] == "content-manager-worker"
+
+        # Secret name stored in handle for cleanup
+        assert handle.runtime_data["secret_name"] != ""
+
+        # Job has SSH volume mount at /home/nonroot/.ssh
+        job_call = runtime.batch_v1.create_namespaced_job.call_args
+        job = job_call[0][1]
+        container_spec = job.spec.template.spec.containers[0]
+        mount_paths = {vm.mount_path: vm.name for vm in container_spec.volume_mounts}
+        assert "/home/nonroot/.ssh" in mount_paths
+
+        # Volume uses the secret
+        vol_names = {v.name: v for v in job.spec.template.spec.volumes}
+        ssh_vol = vol_names["ssh-credentials"]
+        assert ssh_vol.secret.secret_name == handle.runtime_data["secret_name"]
+        assert ssh_vol.secret.default_mode == 0o600
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_no_ssh_without_credentials(self, mock_uuid):
+        """prepare() does not create a Secret when SSH credentials are not provided."""
+        runtime = self._make_runtime()
+
+        handle = runtime.prepare(
+            image="task-runner:v1",
+            env={"_TASK_ID": "42"},
+            files={},
+        )
+
+        runtime.core_v1.create_namespaced_secret.assert_not_called()
+        assert handle.runtime_data["secret_name"] == ""
+
     def test_run_streams_pod_logs(self):
         """run() waits for the pod, then streams log lines."""
         runtime = self._make_runtime()
@@ -425,6 +516,24 @@ class TestKubernetesRuntime:
             "test-ns",
         )
 
+    def test_cleanup_deletes_secret_when_present(self):
+        """cleanup() deletes the SSH Secret when secret_name is in the handle."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "configmap_name": "task-runner-abc",
+            "secret_name": "task-runner-ssh-abc",
+            "namespace": "test-ns",
+        })
+
+        runtime.cleanup(handle)
+
+        runtime.core_v1.delete_namespaced_secret.assert_called_once_with(
+            "task-runner-ssh-abc",
+            "test-ns",
+        )
+
     def test_cleanup_handles_api_errors(self):
         """cleanup() swallows ApiException from delete calls."""
         from kubernetes.client.rest import ApiException
@@ -477,8 +586,8 @@ class TestCleanupOrphanedJobs:
         runtime.namespace = "test-ns"
         return runtime
 
-    def test_cleans_up_orphaned_jobs_and_configmaps(self):
-        """cleanup_orphaned_jobs deletes all matching Jobs and ConfigMaps."""
+    def test_cleans_up_orphaned_jobs_configmaps_and_secrets(self):
+        """cleanup_orphaned_jobs deletes all matching Jobs, ConfigMaps, and Secrets."""
         runtime = self._make_runtime()
 
         # Mock list responses
@@ -490,6 +599,10 @@ class TestCleanupOrphanedJobs:
         mock_cm.metadata.name = "task-runner-old"
         runtime.core_v1.list_namespaced_config_map.return_value.items = [mock_cm]
 
+        mock_secret = MagicMock()
+        mock_secret.metadata.name = "task-runner-ssh-old"
+        runtime.core_v1.list_namespaced_secret.return_value.items = [mock_secret]
+
         cleanup_orphaned_jobs(runtime)
 
         runtime.batch_v1.delete_namespaced_job.assert_called_once_with(
@@ -499,6 +612,10 @@ class TestCleanupOrphanedJobs:
         )
         runtime.core_v1.delete_namespaced_config_map.assert_called_once_with(
             "task-runner-old",
+            "test-ns",
+        )
+        runtime.core_v1.delete_namespaced_secret.assert_called_once_with(
+            "task-runner-ssh-old",
             "test-ns",
         )
 

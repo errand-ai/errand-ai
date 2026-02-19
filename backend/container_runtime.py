@@ -257,7 +257,22 @@ class KubernetesRuntime(ContainerRuntime):
         configmap_name = f"task-runner-{job_id}"
         job_name = f"task-runner-{job_id}"
 
-        # Create ConfigMap with input files
+        # Merge skills tar contents into files dict (they'll go into the ConfigMap)
+        all_files = dict(files)
+        if skills_tar:
+            try:
+                buf = io.BytesIO(skills_tar)
+                with tarfile.open(fileobj=buf, mode="r") as tar:
+                    for member in tar.getmembers():
+                        if member.isfile():
+                            f = tar.extractfile(member)
+                            if f:
+                                all_files[member.name] = f.read().decode("utf-8", errors="replace")
+                logger.info("Injected %d skill files into ConfigMap", len(all_files) - len(files))
+            except (tarfile.TarError, OSError):
+                logger.warning("Failed to extract skills tar for K8s ConfigMap", exc_info=True)
+
+        # Create ConfigMap with input files (and skills if any)
         configmap = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(
                 name=configmap_name,
@@ -268,10 +283,32 @@ class KubernetesRuntime(ContainerRuntime):
                     "content-manager/task-id": str(task_id),
                 },
             ),
-            data=files,
+            data=all_files,
         )
         self.core_v1.create_namespaced_config_map(self.namespace, configmap)
         logger.info("Created ConfigMap %s", configmap_name)
+
+        # Create Secret for SSH credentials if provided
+        secret_name = ""
+        if ssh_private_key and ssh_config:
+            secret_name = f"task-runner-ssh-{job_id}"
+            secret = client.V1Secret(
+                metadata=client.V1ObjectMeta(
+                    name=secret_name,
+                    namespace=self.namespace,
+                    labels={
+                        "app.kubernetes.io/managed-by": "content-manager-worker",
+                        "app.kubernetes.io/component": "task-runner",
+                        "content-manager/task-id": str(task_id),
+                    },
+                ),
+                string_data={
+                    "id_rsa.agent": ssh_private_key,
+                    "config": ssh_config,
+                },
+            )
+            self.core_v1.create_namespaced_secret(self.namespace, secret)
+            logger.info("Created Secret %s for SSH credentials", secret_name)
 
         # Build env vars list
         env_list = [
@@ -309,6 +346,21 @@ class KubernetesRuntime(ContainerRuntime):
                 empty_dir=client.V1EmptyDirVolumeSource(),
             ),
         ]
+
+        # SSH credentials volume (Secret mounted at ~/.ssh)
+        if secret_name:
+            volume_mounts.append(
+                client.V1VolumeMount(name="ssh-credentials", mount_path="/home/nonroot/.ssh", read_only=True)
+            )
+            volumes.append(
+                client.V1Volume(
+                    name="ssh-credentials",
+                    secret=client.V1SecretVolumeSource(
+                        secret_name=secret_name,
+                        default_mode=0o600,
+                    ),
+                )
+            )
 
         # Build Job spec
         job = client.V1Job(
@@ -354,6 +406,7 @@ class KubernetesRuntime(ContainerRuntime):
         return RuntimeHandle(runtime_data={
             "job_name": job_name,
             "configmap_name": configmap_name,
+            "secret_name": secret_name,
             "namespace": self.namespace,
             "task_id": task_id,
         })
@@ -492,6 +545,14 @@ class KubernetesRuntime(ContainerRuntime):
             except ApiException:
                 logger.debug("Failed to delete ConfigMap %s", configmap_name, exc_info=True)
 
+        secret_name = handle.runtime_data.get("secret_name", "")
+        if secret_name:
+            try:
+                self.core_v1.delete_namespaced_secret(secret_name, namespace)
+                logger.info("Deleted Secret %s", secret_name)
+            except ApiException:
+                logger.debug("Failed to delete Secret %s", secret_name, exc_info=True)
+
 
 def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
     """Clean up orphaned task-runner Jobs and ConfigMaps on worker startup."""
@@ -523,6 +584,18 @@ def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
                 runtime.core_v1.delete_namespaced_config_map(name, runtime.namespace)
             except ApiException:
                 logger.debug("Failed to delete orphaned ConfigMap %s", name, exc_info=True)
+
+        # Clean up orphaned Secrets (SSH credentials)
+        secrets = runtime.core_v1.list_namespaced_secret(
+            runtime.namespace, label_selector=label_selector
+        )
+        for secret in secrets.items:
+            name = secret.metadata.name
+            logger.info("Cleaning up orphaned Secret %s", name)
+            try:
+                runtime.core_v1.delete_namespaced_secret(name, runtime.namespace)
+            except ApiException:
+                logger.debug("Failed to delete orphaned Secret %s", name, exc_info=True)
     except ApiException:
         logger.warning("Failed to list orphaned resources", exc_info=True)
 
