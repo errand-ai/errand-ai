@@ -56,10 +56,11 @@ async def static_client(static_dir, fake_valkey):
 
     @app.get("/static-test/{path:path}")
     async def test_spa(request: Request, path: str):
-        file_path = static_dir / path
-        if path and file_path.is_file():
+        static_root = static_dir.resolve()
+        file_path = (static_dir / path).resolve()
+        if path and file_path.is_relative_to(static_root) and file_path.is_file():
             return FileResponse(file_path)
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(static_root / "index.html")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -119,6 +120,19 @@ async def test_api_tasks_unaffected(static_client):
     """Protected API routes should still work normally."""
     resp = await static_client.get("/api/tasks")
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_path_traversal_blocked(static_client):
+    """Path traversal attempts must not serve files outside the static directory.
+
+    HTTP clients and ASGI normalize ../  out of URLs before routing, so the
+    request never reaches the SPA handler — it resolves to a non-existent
+    route and returns 404.  The is_relative_to() check in the handler is
+    defense-in-depth for any edge cases that bypass URL normalization.
+    """
+    resp = await static_client.get("/static-test/../../../etc/passwd")
+    assert resp.status_code != 200 or "SPA" in resp.text
 
 
 def test_static_dir_not_mounted_when_missing():

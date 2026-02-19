@@ -1314,12 +1314,15 @@ async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(de
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="static-assets")
+    _assets_dir = STATIC_DIR / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="static-assets")
 
     @app.get("/{path:path}")
     async def spa_fallback(request: Request, path: str):
-        # Try to serve a file from static/ first (favicon.ico, robots.txt, etc.)
-        file_path = STATIC_DIR / path
-        if path and file_path.is_file():
+        static_root = STATIC_DIR.resolve()
+        file_path = (STATIC_DIR / path).resolve()
+        # Prevent path traversal outside static directory
+        if path and file_path.is_relative_to(static_root) and file_path.is_file():
             return FileResponse(file_path)
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(static_root / "index.html")
