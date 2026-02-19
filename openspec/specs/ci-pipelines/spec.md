@@ -1,32 +1,25 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Build on push to main
-GitHub Actions SHALL run a workflow on push to the `main` branch that runs all tests, then builds Docker images for frontend and backend, pushes them to the container registry, packages the Helm chart, and pushes it to the chart registry. The build jobs SHALL depend on tests passing.
+GitHub Actions SHALL run a workflow on push to the `main` branch that runs all tests, then builds the Docker image for the combined backend (which includes frontend static assets) and the task runner, pushes them to the container registry, packages the Helm chart, and pushes it to the chart registry. The build jobs SHALL depend on tests passing.
 
 #### Scenario: Main branch build
 - **WHEN** a commit is pushed to `main`
-- **THEN** tests run first, and only if they pass, Docker images are built and pushed with the tag from the `VERSION` file, and the Helm chart is packaged and pushed with the same version
+- **THEN** tests run first, and only if they pass, the backend image (including frontend assets) and task runner image are built and pushed with the tag from the `VERSION` file, and the Helm chart is packaged and pushed with the same version
 
 ### Requirement: Build on pull request
-GitHub Actions SHALL run a workflow on pull request creation and update that runs all tests, then builds Docker images and pushes them with a PR-specific tag. The build jobs SHALL depend on tests passing. The Helm chart SHALL be packaged but not pushed to the chart registry.
+GitHub Actions SHALL run a workflow on pull request creation and update that runs all tests, then builds the backend image (including frontend assets) and task runner image and pushes them with a PR-specific tag. The build jobs SHALL depend on tests passing. The Helm chart SHALL be packaged but not pushed to the chart registry.
 
 #### Scenario: PR build tagging
 - **WHEN** a PR numbered 42 is created and `VERSION` contains `0.1.0`
-- **THEN** tests run first, and only if they pass, Docker images are built and pushed with tag `0.1.0-pr42`
+- **THEN** tests run first, and only if they pass, the backend and task runner images are built and pushed with tag `0.1.0-pr42`
 
 #### Scenario: PR chart packaging
 - **WHEN** a PR build runs
 - **THEN** tests run first, and then the Helm chart is packaged (for validation) but not pushed to the chart registry
 
-### Requirement: Version sourced from VERSION file
-All CI workflows SHALL read the application version from a `VERSION` file at the repository root. This file SHALL contain a single semver string (e.g. `0.1.0`).
-
-#### Scenario: Version file read
-- **WHEN** the CI workflow starts
-- **THEN** it reads the version from `VERSION` and uses it as the base tag for all artifacts
-
 ### Requirement: Immutable version tags
-The CI pipeline on main SHALL verify that the version tag does not already exist in the container registry before pushing. If the tag exists, the build SHALL fail.
+The CI pipeline on main SHALL verify that the version tag does not already exist in the container registry before pushing. If the tag exists, the build SHALL fail. The check SHALL verify the backend and task runner image tags (not a frontend image, which no longer exists).
 
 #### Scenario: Duplicate version detected
 - **WHEN** the `VERSION` file contains `0.1.0` and tag `0.1.0` already exists in the registry
@@ -37,60 +30,44 @@ The CI pipeline on main SHALL verify that the version tag does not already exist
 - **THEN** the CI build succeeds and pushes the tagged artifacts
 
 ### Requirement: Multi-stage Docker builds
-The CI pipeline SHALL use multi-stage Dockerfiles: Node build stage to nginx runtime for frontend, Python build stage to slim runtime for backend/worker.
-
-#### Scenario: Frontend image build
-- **WHEN** the frontend Docker image is built
-- **THEN** the final image contains only nginx and the built static assets, not Node.js or source files
+The CI pipeline SHALL use a multi-stage Dockerfile for the backend image: a Node.js stage to build the frontend assets, a Python build stage to install dependencies, and a slim Python runtime as the final stage. The task runner SHALL continue to use its own Dockerfile.
 
 #### Scenario: Backend image build
 - **WHEN** the backend Docker image is built
-- **THEN** the final image contains only the Python runtime and installed dependencies, not build tools
-
-### Requirement: Helm chart version matches application version
-The Helm chart `version` and `appVersion` in `Chart.yaml` SHALL be set to the value from the `VERSION` file during CI packaging.
-
-#### Scenario: Chart version set
-- **WHEN** `VERSION` contains `0.3.0`
-- **THEN** the packaged Helm chart has `version: 0.3.0` and `appVersion: "0.3.0"`
+- **THEN** the final image contains the Python runtime, installed dependencies, and the frontend static assets in a `static/` directory — but not Node.js, npm, or frontend source files
 
 ### Requirement: CI test job
-The CI workflow SHALL include a `test` job that runs backend and frontend tests. This job SHALL install Python and Node.js, install test dependencies, and execute both test suites. The `build-frontend` and `build-backend` jobs SHALL depend on the `test` job succeeding.
+The CI workflow SHALL include a `test` job that runs backend and frontend tests. This job SHALL install Python and Node.js, install test dependencies, and execute both test suites. The `build-backend` and `build-task-runner` jobs SHALL depend on the `test` job succeeding.
 
 #### Scenario: Tests pass and builds proceed
 - **WHEN** the `test` job completes successfully
-- **THEN** the `build-frontend` and `build-backend` jobs start
+- **THEN** the `build-backend` and `build-task-runner` jobs start
 
 #### Scenario: Tests fail and builds are skipped
 - **WHEN** the `test` job fails
-- **THEN** the `build-frontend` and `build-backend` jobs do not run
+- **THEN** the `build-backend` and `build-task-runner` jobs do not run
 
 #### Scenario: Test job runs both suites
 - **WHEN** the `test` job executes
 - **THEN** it runs `pytest` for backend tests and `npm test` for frontend tests, reporting results for both
 
-### Requirement: Build task runner image
-The CI workflow SHALL include a `build-task-runner` job that builds the task runner Docker image from `task-runner/Dockerfile` and pushes it to the container registry. The job SHALL run in parallel with `build-frontend` and `build-backend`, depending on the `version` and `test` jobs. The image SHALL be tagged with the version from the `VERSION` file (same scheme as frontend and backend images). The image SHALL be pushed to `ghcr.io/<repository>-task-runner`.
-
-#### Scenario: Main branch build
-- **WHEN** a commit is pushed to `main` and tests pass
-- **THEN** the task runner image is built and pushed with the tag from the `VERSION` file (e.g. `0.10.0`)
-
-#### Scenario: PR build
-- **WHEN** a PR is created and tests pass
-- **THEN** the task runner image is built and pushed with a PR-specific tag (e.g. `0.10.0-pr9`)
-
-#### Scenario: Multi-architecture build
-- **WHEN** the task runner image is built
-- **THEN** it is built for both `linux/amd64` and `linux/arm64` platforms
-
-### Requirement: Helm job depends on task runner build
-The `helm` job SHALL depend on `build-task-runner` in addition to `build-frontend` and `build-backend`. The Helm chart SHALL not be packaged until all three images have been successfully built and pushed.
+### Requirement: Helm job depends on image builds
+The `helm` job SHALL depend on `build-backend` and `build-task-runner`. The Helm chart SHALL not be packaged until both images have been successfully built and pushed.
 
 #### Scenario: All builds succeed
-- **WHEN** `build-frontend`, `build-backend`, and `build-task-runner` all succeed
+- **WHEN** `build-backend` and `build-task-runner` both succeed
 - **THEN** the `helm` job runs and packages the chart
 
-#### Scenario: Task runner build fails
-- **WHEN** `build-task-runner` fails
+#### Scenario: Backend build fails
+- **WHEN** `build-backend` fails
 - **THEN** the `helm` job does not run
+
+## REMOVED Requirements
+
+### Requirement: Frontend image build (implicit in "Multi-stage Docker builds" original scenario)
+**Reason**: There is no longer a separate frontend Docker image. The frontend is built as a stage within the backend Dockerfile.
+**Migration**: Remove the `build-frontend` job from the GitHub Actions workflow.
+
+### Requirement: Helm job depends on task runner build
+**Reason**: Replaced by updated "Helm job depends on image builds" requirement which lists both remaining images (backend and task runner) without referencing the removed frontend build.
+**Migration**: Update `helm` job `needs` to reference only `build-backend` and `build-task-runner`.

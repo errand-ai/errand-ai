@@ -1,20 +1,18 @@
-## Purpose
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Helm chart deploys all application components
-The Helm chart SHALL define Kubernetes resources for: frontend Deployment and Service, backend Deployment and Service, worker Deployment, database migration Job (pre-upgrade hook), and Ingress.
+The Helm chart SHALL define Kubernetes resources for: backend Deployment and Service, worker Deployment, database migration Job (pre-upgrade hook), and Ingress. The frontend SHALL NOT have a separate Deployment or Service — it is served by the backend.
 
 #### Scenario: Full deployment
 - **WHEN** `helm install` is run with required values
-- **THEN** all components are created: frontend, backend, worker deployments, services, migration job, and ingress
+- **THEN** all components are created: backend deployment and service, worker deployment, migration job, and ingress — but no frontend deployment or service
 
 ### Requirement: Ingress resource for external access
-The Helm chart SHALL include an Ingress resource with path-based routing on a single FQDN. The default path SHALL route to the frontend Service. Paths prefixed `/api`, `/auth`, and `/slack` SHALL route to the backend Service. The `/slack` path SHALL be ordered before the catch-all `/` path to ensure correct matching. The `/metrics` path SHALL NOT be exposed via the Ingress. The Ingress host and TLS settings SHALL be configurable via values.
+The Helm chart SHALL include an Ingress resource that routes all paths on a single FQDN to the backend Service. The `/` catch-all path SHALL route to the backend Service (which serves both API routes and frontend static files). Paths prefixed `/api`, `/auth`, `/mcp`, and `/slack` SHALL also route to the backend Service. The `/metrics` path SHALL NOT be exposed via the Ingress. The Ingress host and TLS settings SHALL be configurable via values.
 
-#### Scenario: Default path routes to frontend
+#### Scenario: Default path routes to backend
 - **WHEN** a request arrives at the Ingress host with path `/`
-- **THEN** it is routed to the frontend Service
+- **THEN** it is routed to the backend Service which serves the frontend SPA
 
 #### Scenario: API path routes to backend
 - **WHEN** a request arrives with path `/api/tasks`
@@ -32,155 +30,15 @@ The Helm chart SHALL include an Ingress resource with path-based routing on a si
 - **WHEN** a request arrives with path `/metrics/queue`
 - **THEN** the Ingress does not match and the request is not routed (404)
 
-### Requirement: KEDA ScaledObject for worker autoscaling
-The Helm chart SHALL include a KEDA ScaledObject targeting the worker Deployment. It SHALL use an HTTP-based trigger polling the backend's `GET /metrics/queue` endpoint. The worker SHALL scale from 0 to a configurable maximum based on `queue_depth`.
-
-#### Scenario: Workers scale up on pending tasks
-- **WHEN** the backend reports `queue_depth > 0`
-- **THEN** KEDA scales the worker Deployment to at least 1 replica
-
-#### Scenario: Workers scale to zero when idle
-- **WHEN** the backend reports `queue_depth: 0` for the cooldown period
-- **THEN** KEDA scales the worker Deployment to 0 replicas
-
-### Requirement: Backend supports multiple replicas
-The backend Deployment SHALL have a configurable `replicaCount` (default 2) and use a rolling update strategy. The Service SHALL load-balance across all backend pods.
-
-#### Scenario: Multiple backend replicas
-- **WHEN** `replicaCount` is set to 3
-- **THEN** 3 backend pods are created and the Service distributes traffic across them
-
-### Requirement: Database URL provided via Secret
-The Helm chart SHALL reference a Kubernetes Secret for the `DATABASE_URL` environment variable. The Secret MUST be created externally (not managed by the chart).
-
-#### Scenario: Secret reference
-- **WHEN** the chart is deployed with `database.existingSecret` set to `"content-manager-db"`
-- **THEN** all pods (backend, worker, migration job) mount `DATABASE_URL` from that Secret
-
 ### Requirement: Container image references are configurable
-The Helm chart SHALL allow overriding the image repository and tag for frontend, backend/worker, task-runner, and Playwright MCP images via values. The `playwrightMcp.image.repository` and `playwrightMcp.image.tag` SHALL be set directly in values — the tag does NOT default to chart `appVersion` since the Playwright MCP image uses the official Microsoft release cycle (not the application version).
+The Helm chart SHALL allow overriding the image repository and tag for the backend/worker image via values. There SHALL NOT be a separate frontend image configuration.
 
 #### Scenario: Custom image tag
 - **WHEN** `image.tag` is set to `0.2.0`
-- **THEN** all deployments use that image tag
+- **THEN** the backend and worker deployments use that image tag
 
-#### Scenario: Default Playwright MCP image
-- **WHEN** the chart is installed with default values
-- **THEN** the worker container's `PLAYWRIGHT_MCP_IMAGE` env var uses `mcr.microsoft.com/playwright/mcp:latest`
+## REMOVED Requirements
 
-#### Scenario: Custom Playwright MCP image tag
-- **WHEN** `playwrightMcp.image.tag` is set to `v1.2.0` in values
-- **THEN** the worker container's `PLAYWRIGHT_MCP_IMAGE` env var uses `v1.2.0` as the tag
-
-### Requirement: Perplexity values section in Helm chart
-
-The Helm chart `values.yaml` SHALL include a `perplexity` section with the following defaults:
-- `existingSecret`: `""` (empty string — feature disabled by default)
-- `replicaCount`: `1`
-- `image.repository`: `"quay.io/devops_consultants/perplexity-mcp-server"`
-- `image.tag`: `"latest"`
-- `image.pullPolicy`: `"IfNotPresent"`
-- `service.port`: `8080`
-
-#### Scenario: Default values disable Perplexity
-
-- **WHEN** the chart is installed with default values
-- **THEN** no Perplexity resources are rendered
-
-#### Scenario: Setting existingSecret enables Perplexity
-
-- **WHEN** `perplexity.existingSecret` is set to a non-empty value
-- **THEN** the Perplexity Deployment, Service, and worker env vars are all rendered
-
-### Requirement: Keycloak credentials provided via Secret
-The Helm chart SHALL reference a Kubernetes Secret for `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` environment variables on the backend Deployment. The Secret MUST be created externally (not managed by the chart). The `OIDC_DISCOVERY_URL` SHALL be configurable via values. The backend Deployment SHALL also receive `OPENAI_BASE_URL` from values and `OPENAI_API_KEY` from the existing Secret (replacing the previous `LITELLM_BASE_URL` and `LITELLM_API_KEY` environment variable names). The worker Deployment SHALL receive `OPENAI_BASE_URL` and `OPENAI_API_KEY` via the same mechanism as the backend. When `.Values.perplexity.existingSecret` is non-empty, the worker Deployment SHALL additionally receive `USE_PERPLEXITY` set to `"true"` and `PERPLEXITY_URL` set to the in-cluster Perplexity Service URL (`http://<release>-perplexity-mcp:<port>/mcp`).
-
-#### Scenario: Secret reference for OIDC credentials
-- **WHEN** the chart is deployed with `keycloak.existingSecret` set to `"content-manager-keycloak"`
-- **THEN** the backend pods mount `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` from that Secret
-
-#### Scenario: Discovery URL from values
-- **WHEN** `keycloak.discoveryUrl` is set in values
-- **THEN** the backend pods have `OIDC_DISCOVERY_URL` set to that value
-
-#### Scenario: OpenAI environment variables on backend
-- **WHEN** the chart is deployed with `openai.baseUrl` and `openai.existingSecret` configured
-- **THEN** the backend pods have `OPENAI_BASE_URL` and `OPENAI_API_KEY` set from values and the Secret respectively
-
-#### Scenario: OpenAI environment variables on worker
-- **WHEN** the chart is deployed
-- **THEN** the worker pods have `OPENAI_BASE_URL` and `OPENAI_API_KEY` set, matching the backend configuration
-
-#### Scenario: Perplexity env vars on worker when enabled
-- **WHEN** `.Values.perplexity.existingSecret` is set to `"perplexity-api-key"`
-- **THEN** the worker pods have `USE_PERPLEXITY` set to `"true"` and `PERPLEXITY_URL` set to `http://<release>-perplexity-mcp:8080/mcp`
-
-#### Scenario: No Perplexity env vars on worker when disabled
-- **WHEN** `.Values.perplexity.existingSecret` is empty or not set
-- **THEN** the worker pods do not have `USE_PERPLEXITY` or `PERPLEXITY_URL` environment variables
-
-### Requirement: DinD sidecar in worker deployment
-The Helm chart worker Deployment SHALL include a `docker:dind` sidecar container alongside the worker container. The DinD container SHALL run with `privileged: true` in the security context. The DinD container SHALL have `DOCKER_TLS_CERTDIR` set to an empty string to disable TLS. The worker container SHALL have `DOCKER_HOST` set to `tcp://localhost:2375` to communicate with the DinD sidecar via the pod's shared network namespace.
-
-#### Scenario: Worker pod includes DinD sidecar
-- **WHEN** the Helm chart is deployed
-- **THEN** the worker pod contains two containers: `worker` and `dind`
-
-#### Scenario: DinD runs privileged
-- **WHEN** the worker pod starts
-- **THEN** the `dind` container has `privileged: true` in its security context
-
-#### Scenario: Worker connects to DinD
-- **WHEN** the worker container starts
-- **THEN** the `DOCKER_HOST` environment variable is set to `tcp://localhost:2375`
-
-### Requirement: Task runner image configurable in values
-The Helm chart values SHALL include a `taskRunner.image.repository` and `taskRunner.image.tag` configuration. The `tag` SHALL default to the chart's `appVersion` (same as frontend and backend images). The worker container SHALL have a `TASK_RUNNER_IMAGE` environment variable set to the fully-qualified task runner image reference.
-
-#### Scenario: Default task runner image tag
-- **WHEN** `taskRunner.image.tag` is empty in values
-- **THEN** the worker container's `TASK_RUNNER_IMAGE` env var uses the chart's `appVersion` as the tag
-
-#### Scenario: Custom task runner image tag
-- **WHEN** `taskRunner.image.tag` is set to `1.0.0` in values
-- **THEN** the worker container's `TASK_RUNNER_IMAGE` env var uses `1.0.0` as the tag
-
-### Requirement: DinD image configurable in values
-The Helm chart values SHALL include a `dind.image` configuration (default `docker:27-dind`) for the DinD sidecar image.
-
-#### Scenario: Default DinD image
-- **WHEN** `dind.image` is not set in values
-- **THEN** the DinD sidecar uses `docker:27-dind`
-
-#### Scenario: Custom DinD image
-- **WHEN** `dind.image` is set to `docker:26-dind` in values
-- **THEN** the DinD sidecar uses `docker:26-dind`
-
-### Requirement: Playwright MCP values section in Helm chart
-
-The Helm chart `values.yaml` SHALL include a `playwrightMcp` section with the following defaults:
-
-- `image.repository`: `mcr.microsoft.com/playwright/mcp`
-- `image.tag`: `"latest"`
-- `memoryLimit`: `512m`
-- `port`: `8931`
-- `startupTimeout`: `30`
-
-#### Scenario: Default values provide Playwright configuration
-
-- **WHEN** the chart is installed with default values
-- **THEN** the worker deployment receives environment variables for `PLAYWRIGHT_MCP_IMAGE`, `PLAYWRIGHT_MEMORY_LIMIT`, `PLAYWRIGHT_PORT`, and `PLAYWRIGHT_STARTUP_TIMEOUT` with the default values
-
-### Requirement: Worker deployment includes Playwright environment variables
-
-The Helm chart worker Deployment SHALL include environment variables that configure the Playwright MCP sidecar:
-
-- `PLAYWRIGHT_MCP_IMAGE`: Set to `{{ .Values.playwrightMcp.image.repository }}:{{ .Values.playwrightMcp.image.tag }}`
-- `PLAYWRIGHT_MEMORY_LIMIT`: Set to `{{ .Values.playwrightMcp.memoryLimit }}`
-- `PLAYWRIGHT_PORT`: Set to `{{ .Values.playwrightMcp.port }}`
-- `PLAYWRIGHT_STARTUP_TIMEOUT`: Set to `{{ .Values.playwrightMcp.startupTimeout }}`
-
-#### Scenario: Worker receives Playwright configuration
-
-- **WHEN** the Helm chart is deployed
-- **THEN** the worker container has `PLAYWRIGHT_MCP_IMAGE`, `PLAYWRIGHT_MEMORY_LIMIT`, `PLAYWRIGHT_PORT`, and `PLAYWRIGHT_STARTUP_TIMEOUT` environment variables set from values
+### Requirement: Frontend Deployment and Service (implicit in original "deploys all application components")
+**Reason**: The frontend is now served by the backend. The separate frontend Deployment, Service, and ConfigMap are no longer needed.
+**Migration**: Delete `frontend-deployment.yaml`, `frontend-service.yaml`, and `frontend-configmap.yaml` from the Helm templates. Remove `frontend` section from `values.yaml`.
