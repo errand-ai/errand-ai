@@ -1,6 +1,5 @@
 """Unit tests for container_runtime.py — ContainerRuntime ABC, DockerRuntime, KubernetesRuntime."""
-import io
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 

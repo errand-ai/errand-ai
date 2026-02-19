@@ -1,7 +1,7 @@
 backend:
   replicaCount: 1
   image:
-    repository: ghcr.io/devops-consultants/errand-backend
+    repository: ghcr.io/errand-ai/errand-backend
     tag: ""
     pullPolicy: IfNotPresent
   service:
@@ -13,7 +13,7 @@ worker:
 
 taskRunner:
   image:
-    repository: ghcr.io/devops-consultants/errand-task-runner
+    repository: ghcr.io/errand-ai/errand-task-runner
     tag: ""
     pullPolicy: IfNotPresent
 

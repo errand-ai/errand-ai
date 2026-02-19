@@ -5,7 +5,6 @@ Docker (local dev) or Kubernetes Jobs (production).
 """
 
 import io
-import json
 import logging
 import os
 import tarfile
@@ -410,7 +409,6 @@ class KubernetesRuntime(ContainerRuntime):
         from kubernetes.client.rest import ApiException
         from kubernetes.stream import stream as k8s_stream
 
-        job_name = handle.runtime_data["job_name"]
         pod_name = handle.runtime_data.get("pod_name", "")
         namespace = handle.runtime_data["namespace"]
 
