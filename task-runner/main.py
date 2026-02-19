@@ -234,9 +234,9 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
 
 
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
-MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "5"))
-MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "180000"))
-CHARS_PER_TOKEN = 4  # rough approximation for English text
+MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "2"))
+MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "150000"))
+CHARS_PER_TOKEN = 3  # conservative: base64 images tokenize at ~2-3 chars/token
 
 
 @function_tool
@@ -306,14 +306,21 @@ def _strip_screenshots(messages: list) -> list:
 
     result = copy.deepcopy(messages)
     to_remove = len(image_locations) - MAX_RETAINED_SCREENSHOTS
+    removed_bytes = 0
     for msg_idx, part_idx in image_locations[:to_remove]:
+        removed_bytes += len(result[msg_idx]["content"][part_idx].get("image_url", {}).get("url", ""))
         result[msg_idx]["content"][part_idx] = {"type": "text", "text": "[screenshot removed]"}
+    logger.info(
+        "Screenshots stripped: %d total, %d removed (~%d KB base64), %d retained",
+        len(image_locations), to_remove, removed_bytes // 1024, MAX_RETAINED_SCREENSHOTS,
+    )
     return result
 
 
 def _trim_context_window(messages: list) -> list:
     """Drop oldest messages (after the first) until under MAX_CONTEXT_TOKENS."""
-    if len(messages) <= 2 or _estimate_tokens(messages) <= MAX_CONTEXT_TOKENS:
+    estimated_before = _estimate_tokens(messages)
+    if len(messages) <= 2 or estimated_before <= MAX_CONTEXT_TOKENS:
         return messages
 
     # Keep first message (initial user prompt) and trim from the front of the rest
@@ -323,7 +330,11 @@ def _trim_context_window(messages: list) -> list:
         rest = rest[1:]
 
     trimmed = first + rest
-    logger.info("Context window trimmed: %d -> %d messages", len(messages), len(trimmed))
+    estimated_after = _estimate_tokens(trimmed)
+    logger.info(
+        "Context window trimmed: %d -> %d messages, ~%d -> ~%d estimated tokens (limit %d)",
+        len(messages), len(trimmed), estimated_before, estimated_after, MAX_CONTEXT_TOKENS,
+    )
     return trimmed
 
 
