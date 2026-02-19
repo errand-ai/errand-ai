@@ -1,8 +1,20 @@
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: Worker executes tasks in DinD containers
 
-The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle with `network_mode="host"` (so the task runner shares DinD's network namespace). The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, `mcp_servers`, `ssh_private_key`, `git_ssh_hosts`, `hindsight_url`, and `hindsight_bank_id` settings from the database, and query the `skills` and `skill_files` tables for all skills and their attached files, (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, (5) if skills exist, write Agent Skills directories to `/workspace/skills/<name>/` containing `SKILL.md` files and any attached files from the `skill_files` table, (6) if `ssh_private_key` is present in settings, copy SSH credentials into the container: the private key at `/home/nonroot/.ssh/id_rsa.agent` with file permissions 600, and an SSH config file at `/home/nonroot/.ssh/config` with file permissions 644, (7) if Hindsight is configured, recall relevant memories via the Hindsight REST API and inject the results into the system prompt, and inject a `hindsight` MCP server entry into the MCP configuration, (8) start the container, (9) **stream stderr in real-time** by iterating `container.logs(stream=True, follow=True, stderr=True, stdout=False)` and publishing each chunk to the per-task Valkey channel `task_logs:{task_id}` using a synchronous Redis client, followed by a `task_log_end` sentinel when the stream completes, (10) retrieve the container exit code via `container.wait()`, (11) capture full stdout and stderr via `container.logs()`, (12) parse the structured output from stdout using robust JSON extraction (try direct JSON parse, then code fence extraction anywhere in stdout, then first-`{`-to-last-`}` extraction — the first strategy that produces a valid `TaskRunnerOutput` is used; if none succeed, schedule retry), (13) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (14) remove the container, (15) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle with `network_mode="host"` (so the task runner shares DinD's network namespace). The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, `mcp_servers`, `ssh_private_key`, `git_ssh_hosts`, `hindsight_url`, and `hindsight_bank_id` settings from the database, and query the `skills` and `skill_files` tables for all skills and their attached files, **(2a) create and start a Playwright MCP sidecar container in DinD with `network_mode="host"`, Docker-level memory limits, and the command `--port <port> --host 0.0.0.0 --allowed-hosts *`, then health-check it by polling the Streamable HTTP endpoint until it responds (with configurable timeout),** (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, **(4a) inject a `playwright` entry into the MCP server configuration with `{"url": "http://localhost:<port>/mcp"}` before writing `mcp.json` — this injection SHALL NOT overwrite a database-configured `playwright` entry,** (5) if skills exist, write Agent Skills directories to `/workspace/skills/<name>/` containing `SKILL.md` files and any attached files from the `skill_files` table, (6) if `ssh_private_key` is present in settings, copy SSH credentials into the container: the private key at `/home/nonroot/.ssh/id_rsa.agent` with file permissions 600, and an SSH config file at `/home/nonroot/.ssh/config` with file permissions 644, (7) if Hindsight is configured, recall relevant memories via the Hindsight REST API and inject the results into the system prompt, and inject a `hindsight` MCP server entry into the MCP configuration, (8) start the container, (9) **stream stderr in real-time** by iterating `container.logs(stream=True, follow=True, stderr=True, stdout=False)` and publishing each chunk to the per-task Valkey channel `task_logs:{task_id}` using a synchronous Redis client, followed by a `task_log_end` sentinel when the stream completes, (10) retrieve the container exit code via `container.wait()`, (11) capture full stdout and stderr via `container.logs()`, (12) parse the structured output from stdout using robust JSON extraction (try direct JSON parse, then code fence extraction anywhere in stdout, then first-`{`-to-last-`}` extraction — the first strategy that produces a valid `TaskRunnerOutput` is used; if none succeed, schedule retry), (13) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (14) remove the container, **(14a) stop and remove the Playwright MCP sidecar container,** (15) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+
+The Playwright container cleanup (step 14a) SHALL occur in a `finally` block to ensure the sidecar is removed even if the task-runner fails, times out, or the worker encounters an error. If the Playwright container has already been removed (e.g. OOM-killed and auto-removed), the cleanup SHALL log a warning and continue without raising an error.
+
+The worker SHALL pre-pull required Docker images on startup after connecting to the Docker daemon. The images to pre-pull are the task-runner image (`TASK_RUNNER_IMAGE`) and, if configured, the Playwright MCP image (`PLAYWRIGHT_MCP_IMAGE`). For each image, the worker SHALL check if it is already available locally via `images.get()` and only pull if not found. This ensures the first task starts without download delays.
+
+The worker SHALL read Playwright configuration from environment variables:
+- `PLAYWRIGHT_MCP_IMAGE`: The Playwright MCP container image (if not set, Playwright is skipped)
+- `PLAYWRIGHT_MEMORY_LIMIT`: Docker memory limit for the Playwright container (default: `512m`)
+- `PLAYWRIGHT_PORT`: Port the Playwright MCP server listens on (default: `8931`)
+- `PLAYWRIGHT_STARTUP_TIMEOUT`: Seconds to wait for the health check (default: `30`)
+
+The health check SHALL derive the target hostname from the `DOCKER_HOST` environment variable using URL parsing (e.g. `tcp://dind:2375` yields hostname `dind`, `tcp://localhost:2375` yields `localhost`). If `DOCKER_HOST` is not set, the health check SHALL default to `localhost`. The health check SHALL poll `http://{host}:{port}/mcp` until a successful HTTP response is received or the timeout is reached. If the health check times out, the worker SHALL log an error, remove the Playwright container, and proceed with the task-runner without Playwright (degraded mode — the `playwright` MCP entry SHALL NOT be injected into the config).
 
 The synchronous Redis client used for log publishing SHALL be created at the start of `process_task_in_container` using the same `VALKEY_URL` environment variable as the async client. The client SHALL be closed in a `finally` block to ensure cleanup. If the sync Redis connection fails, the worker SHALL log a warning and continue execution without interrupting task processing.
 
@@ -30,6 +42,46 @@ Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the wor
 The worker SHALL store the captured stderr in the task's `runner_logs` field for all execution outcomes: successful completion, needs_input, retry on failure, and retry on parse error. The `runner_logs` field SHALL be written in every UPDATE statement that modifies the task after container execution.
 
 The worker SHALL publish `task_updated` WebSocket events containing all task fields matching the API's `TaskResponse` schema: `id`, `title`, `description`, `status`, `position`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `output`, `runner_logs`, `retry_count`, `tags`, `created_at`, and `updated_at`. The `_task_to_dict()` helper SHALL serialise the complete task object including the `tags` relationship and the `runner_logs` field.
+
+#### Scenario: Images pre-pulled on worker startup
+
+- **WHEN** the worker starts and connects to the Docker daemon
+- **THEN** it pre-pulls the task-runner image and Playwright MCP image (if configured), skipping images already available locally
+
+#### Scenario: Playwright MCP sidecar created for each task
+
+- **WHEN** the worker processes a task
+- **THEN** a Playwright MCP container is created in DinD with `network_mode="host"`, the configured memory limit, and the command `--port <port> --host 0.0.0.0 --allowed-hosts *`
+
+#### Scenario: Playwright health check succeeds
+
+- **WHEN** the Playwright container starts and responds to the health check within the timeout
+- **THEN** the worker injects a `playwright` MCP entry into the task-runner's `mcp.json` and proceeds with task execution
+
+#### Scenario: Playwright health check times out
+
+- **WHEN** the Playwright container does not respond within the configured timeout
+- **THEN** the worker logs an error, removes the Playwright container, and runs the task-runner without the `playwright` MCP entry (degraded mode)
+
+#### Scenario: Health check uses DOCKER_HOST hostname
+
+- **WHEN** the worker has `DOCKER_HOST=tcp://dind:2375`
+- **THEN** the health check polls `http://dind:8931/mcp` (not `localhost`)
+
+#### Scenario: Playwright container OOM-killed during task execution
+
+- **WHEN** the Playwright container exceeds its memory limit and is OOM-killed while the task-runner is running
+- **THEN** the task-runner receives MCP connection errors for Playwright tools, and the worker's cleanup step logs a warning and continues
+
+#### Scenario: Playwright container cleaned up after task completion
+
+- **WHEN** the task-runner container exits (success or failure)
+- **THEN** the worker stops and removes the Playwright container in a `finally` block
+
+#### Scenario: Database-configured playwright entry takes precedence
+
+- **WHEN** the admin has configured a `playwright` key in the MCP servers setting
+- **THEN** the worker does not overwrite it with the auto-injected Playwright MCP URL
 
 #### Scenario: Hindsight memories pre-loaded into system prompt
 
