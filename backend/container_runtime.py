@@ -427,7 +427,7 @@ class KubernetesRuntime(ContainerRuntime):
         stdout = ""
         try:
             resp = k8s_stream(
-                self.core_v1.connect_get_namespaced_pod_exec,
+                self.core_v1.connect_post_namespaced_pod_exec,
                 pod_name,
                 namespace,
                 command=["cat", "/output/result.json"],
