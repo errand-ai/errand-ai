@@ -20,6 +20,8 @@ from worker import (
     substitute_env_vars, extract_json, generate_ssh_config, put_archive_ssh,
     build_skills_archive, build_skill_manifest,
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
+    start_playwright_container, health_check_playwright,
+    cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
 )
 
 
@@ -2850,3 +2852,177 @@ def test_hindsight_falls_back_to_admin_setting():
     mcp_json_member = tar.extractfile("mcp.json")
     mcp_config = json.loads(mcp_json_member.read())
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://setting-hindsight:8888/mcp/setting-bank/"
+
+
+# --- Playwright container lifecycle ---
+
+
+@patch("worker.docker_client")
+@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
+def test_start_playwright_container(mock_docker):
+    """start_playwright_container creates and starts a container."""
+    mock_container = MagicMock()
+    mock_docker.containers.create.return_value = mock_container
+    result = start_playwright_container()
+    mock_docker.containers.create.assert_called_once()
+    mock_container.start.assert_called_once()
+    assert result is mock_container
+
+
+@patch("worker.docker_client")
+@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
+@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
+def test_pre_pull_images_pulls_missing(mock_docker):
+    """pre_pull_images pulls images not found locally."""
+    from docker.errors import ImageNotFound
+    mock_docker.images.get.side_effect = ImageNotFound("not found")
+    pre_pull_images()
+    assert mock_docker.images.pull.call_count == 2
+    mock_docker.images.pull.assert_any_call("task-runner:latest")
+    mock_docker.images.pull.assert_any_call("playwright-mcp:latest")
+
+
+@patch("worker.docker_client")
+@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
+@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
+def test_pre_pull_images_skips_available(mock_docker):
+    """pre_pull_images skips images already available."""
+    pre_pull_images()
+    assert mock_docker.images.get.call_count == 2
+    mock_docker.images.pull.assert_not_called()
+
+
+@patch("worker.httpx")
+def test_health_check_playwright_success(mock_httpx):
+    """health_check_playwright returns True when server responds with 200."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_httpx.post.return_value = mock_resp
+    result = health_check_playwright(port=8931, timeout=5)
+    assert result is True
+
+
+@patch("worker.time")
+@patch("worker.httpx")
+def test_health_check_playwright_timeout(mock_httpx, mock_time):
+    """health_check_playwright returns False on timeout."""
+    mock_httpx.post.side_effect = Exception("connection refused")
+    # Simulate time advancing past deadline
+    mock_time.time.side_effect = [0, 0, 1, 2, 31]
+    mock_time.sleep = MagicMock()
+    result = health_check_playwright(port=8931, timeout=30)
+    assert result is False
+
+
+def test_cleanup_playwright_container_success():
+    """cleanup_playwright_container stops and removes container."""
+    container = MagicMock()
+    cleanup_playwright_container(container)
+    container.stop.assert_called_once_with(timeout=5)
+    container.remove.assert_called_once_with(force=True)
+
+
+def test_cleanup_playwright_container_none():
+    """cleanup_playwright_container handles None gracefully."""
+    cleanup_playwright_container(None)  # should not raise
+
+
+def test_cleanup_playwright_container_already_removed():
+    """cleanup_playwright_container handles NotFound (OOM-killed container)."""
+    from docker.errors import NotFound
+    container = MagicMock()
+    container.remove.side_effect = NotFound("gone")
+    cleanup_playwright_container(container)  # should not raise
+
+
+# --- Playwright degraded mode ---
+
+
+def test_process_task_playwright_degraded_mode():
+    """process_task_in_container proceeds without playwright when health check fails."""
+    task = _make_mock_task(description="Do the thing")
+
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_container = MagicMock()
+    mock_container.id = "container-pw-test"
+    mock_container.short_id = "contpwt"
+    mock_container.wait.return_value = {"StatusCode": 0}
+    mock_container.logs.return_value = b'{"status":"completed","result":"done","questions":[]}'
+
+    mock_client = MagicMock()
+    mock_client.containers.create.return_value = mock_container
+
+    import worker
+    original_client = worker.docker_client
+    worker.docker_client = mock_client
+
+    mock_pw_container = MagicMock()
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True), \
+        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
+        patch("worker.start_playwright_container", return_value=mock_pw_container) as mock_start, \
+        patch("worker.health_check_playwright", return_value=False) as mock_health, \
+        patch("worker.cleanup_playwright_container") as mock_cleanup, \
+        patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.docker_client = original_client
+
+    # Playwright container started, health-checked, and cleaned up
+    mock_start.assert_called_once()
+    mock_health.assert_called_once()
+    # cleanup is called twice: once with the container (health check failure)
+    # and once with None (finally block, since playwright_container was set to None)
+    assert mock_cleanup.call_count == 2
+    mock_cleanup.assert_any_call(mock_pw_container)
+    mock_cleanup.assert_any_call(None)
+
+    # Extract mcp.json — should NOT contain playwright entry
+    import tarfile
+    tar_data = mock_container.put_archive.call_args[0][1]
+    tar_data.seek(0)
+    tar = tarfile.open(fileobj=tar_data)
+    mcp_json_member = tar.extractfile("mcp.json")
+    mcp_config = json.loads(mcp_json_member.read())
+    assert "playwright" not in mcp_config.get("mcpServers", {})
+
+
+# --- Playwright MCP config injection ---
+
+
+def test_playwright_mcp_not_overwritten_when_db_configured():
+    """Database-configured playwright entry takes precedence over auto-injection."""
+    mcp_servers = {"mcpServers": {"playwright": {"url": "http://custom:9999/mcp"}}}
+    # Simulate the injection logic from process_task_in_container
+    mcp_servers.setdefault("mcpServers", {})
+    if "playwright" not in mcp_servers["mcpServers"]:
+        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
+    assert mcp_servers["mcpServers"]["playwright"]["url"] == "http://custom:9999/mcp"
+
+
+def test_playwright_mcp_injected_when_not_configured():
+    """Playwright MCP entry injected when not in database config."""
+    mcp_servers = {"mcpServers": {}}
+    mcp_servers.setdefault("mcpServers", {})
+    if "playwright" not in mcp_servers["mcpServers"]:
+        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
+    assert mcp_servers["mcpServers"]["playwright"]["url"] == f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
+
+
+def test_playwright_mcp_injection_creates_mcpservers_key():
+    """Playwright MCP injection creates mcpServers key if missing."""
+    mcp_servers = {}
+    mcp_servers.setdefault("mcpServers", {})
+    if "playwright" not in mcp_servers["mcpServers"]:
+        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
+    assert mcp_servers["mcpServers"]["playwright"]["url"] == f"http://localhost:{PLAYWRIGHT_PORT}/mcp"

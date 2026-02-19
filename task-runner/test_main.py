@@ -21,6 +21,35 @@ _mock_agents.RunHooks = type("RunHooks", (), {})
 _mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
+
+# Mock agents.run with CallModelData and ModelInputData
+_mock_agents_run = MagicMock()
+
+
+class _MockModelData:
+    """Simulates the model_data attribute of CallModelData."""
+    def __init__(self, input_items, instructions=""):
+        self.input = input_items
+        self.instructions = instructions
+
+
+class _MockCallModelData:
+    """Simulates CallModelData passed to call_model_input_filter."""
+    def __init__(self, input_items, instructions=""):
+        self.model_data = _MockModelData(input_items, instructions)
+
+
+class _MockModelInputData:
+    """Simulates ModelInputData returned from call_model_input_filter."""
+    def __init__(self, input, instructions=""):
+        self.input = input
+        self.instructions = instructions
+
+
+_mock_agents_run.CallModelData = _MockCallModelData
+_mock_agents_run.ModelInputData = _MockModelInputData
+sys.modules.setdefault("agents.run", _mock_agents_run)
+
 sys.modules.setdefault("openai", MagicMock())
 sys.modules.setdefault("openai.types", MagicMock())
 sys.modules.setdefault("openai.types.shared", MagicMock())
@@ -30,6 +59,8 @@ from main import (
     read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
+    filter_model_input, _strip_screenshots, _trim_context_window,
+    _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
 )
 
 
@@ -547,3 +578,169 @@ def test_truncate_long_string():
     result = _truncate(text)
     assert len(result) == TOOL_RESULT_MAX_LENGTH + 3  # 500 + "..."
     assert result.endswith("...")
+
+
+# --- Screenshot filter ---
+
+
+def _make_call_model_data(messages, instructions="You are a helpful agent."):
+    """Helper to wrap messages in a CallModelData-like object for filter_model_input."""
+    return _MockCallModelData(messages, instructions)
+
+
+def test_filter_model_input_removes_old():
+    """Old screenshots beyond retention limit are replaced with placeholder."""
+    messages = []
+    for i in range(10):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": f"Step {i}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,screenshot{i}"}},
+            ]
+        })
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages))
+
+    # Count remaining images
+    image_count = 0
+    removed_count = 0
+    for msg in output.input:
+        for part in msg.get("content", []):
+            if isinstance(part, dict):
+                if part.get("type") == "image_url":
+                    image_count += 1
+                elif part.get("type") == "text" and part.get("text") == "[screenshot removed]":
+                    removed_count += 1
+    assert image_count == 5
+    assert removed_count == 5
+
+
+def test_filter_model_input_retains_recent():
+    """Screenshots below retention limit pass through unchanged."""
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]}
+    ]
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages))
+    assert output.input[0]["content"][0]["type"] == "image_url"
+
+
+def test_filter_model_input_non_image_unaffected():
+    """Non-image items pass through without modification."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Response"}]},
+    ]
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages))
+    assert output.input == messages
+
+
+def test_filter_model_input_custom_retention():
+    """Custom retention limit via MAX_RETAINED_SCREENSHOTS."""
+    messages = []
+    for i in range(6):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,img{i}"}},
+            ]
+        })
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 3):
+        output = filter_model_input(_make_call_model_data(messages))
+
+    image_count = sum(
+        1 for msg in output.input for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+    assert image_count == 3
+
+
+def test_filter_model_input_does_not_mutate_original():
+    """Filter returns a new list, not mutating the original."""
+    messages = []
+    for i in range(10):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,img{i}"}},
+            ]
+        })
+    original_count = len([
+        1 for msg in messages for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ])
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        filter_model_input(_make_call_model_data(messages))
+    after_count = len([
+        1 for msg in messages for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ])
+    assert original_count == after_count  # Original unchanged
+
+
+def test_filter_model_input_preserves_instructions():
+    """Filter preserves instructions from the CallModelData."""
+    messages = [{"role": "user", "content": "Hello"}]
+    instructions = "You are a task runner agent."
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages, instructions))
+    assert output.instructions == instructions
+
+
+# --- Context window trimming ---
+
+
+def test_trim_context_window_no_trimming_needed():
+    """Messages under the token limit are returned unchanged."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+    result = _trim_context_window(messages)
+    assert result == messages
+
+
+def test_trim_context_window_drops_old_messages():
+    """Oldest messages (after first) are dropped when over token limit."""
+    # Create messages that exceed a small token limit
+    messages = [{"role": "user", "content": "initial prompt"}]
+    for i in range(20):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+    with patch("main.MAX_CONTEXT_TOKENS", 5000):
+        result = _trim_context_window(messages)
+    assert len(result) < len(messages)
+    # First message is preserved
+    assert result[0] == messages[0]
+
+
+def test_trim_context_window_preserves_first_message():
+    """The first message (initial user prompt) is always preserved."""
+    first = {"role": "user", "content": "Do the task"}
+    messages = [first] + [{"role": "assistant", "content": "x" * 10000} for _ in range(10)]
+    with patch("main.MAX_CONTEXT_TOKENS", 3000):
+        result = _trim_context_window(messages)
+    assert result[0] == first
+
+
+def test_estimate_tokens():
+    """Token estimation produces reasonable values."""
+    messages = [{"role": "user", "content": "Hello world"}]
+    tokens = _estimate_tokens(messages)
+    assert tokens > 0
+    # JSON serialized length / 4, should be small for this input
+    assert tokens < 100
+
+
+def test_filter_model_input_trims_context():
+    """Full filter pipeline trims context when over limit."""
+    messages = [{"role": "user", "content": "initial"}]
+    for i in range(20):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+    with patch("main.MAX_CONTEXT_TOKENS", 5000), patch("main.MAX_RETAINED_SCREENSHOTS", 5):
+        output = filter_model_input(_make_call_model_data(messages))
+    assert len(output.input) < len(messages)
+    assert output.input[0] == messages[0]

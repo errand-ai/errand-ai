@@ -98,6 +98,7 @@ services:
       VALKEY_URL: redis://valkey:6379
       DOCKER_HOST: tcp://dind:2375
       TASK_RUNNER_IMAGE: content-manager-task-runner:latest
+      PLAYWRIGHT_MCP_IMAGE: mcr.microsoft.com/playwright/mcp:latest
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       USE_PERPLEXITY: "true"

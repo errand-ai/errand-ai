@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Worker executes tasks in DinD containers
 
@@ -90,40 +90,5 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 
 #### Scenario: Hindsight MCP server injected into configuration
 
-- **WHEN** the worker processes a task with `HINDSIGHT_URL=http://hindsight-api:8888` and bank ID `content-manager-tasks`
-- **THEN** the MCP configuration includes `{"hindsight": {"url": "http://hindsight-api:8888/mcp/content-manager-tasks/"}}`
-
-#### Scenario: Hindsight recall failure does not block task
-
-- **WHEN** the worker attempts to recall from Hindsight and the API returns an error or times out
-- **THEN** the worker logs a warning and proceeds with task execution without memory context
-
-#### Scenario: Hindsight not configured
-
-- **WHEN** `HINDSIGHT_URL` is not set and `hindsight_url` admin setting does not exist
-- **THEN** the worker skips Hindsight recall and MCP injection entirely
-
-#### Scenario: Stderr streamed in real-time during execution
-
-- **WHEN** the worker processes a task with id `abc-123` and the container emits stderr lines during execution
-- **THEN** each stderr chunk is published to Valkey channel `task_logs:abc-123` as `{"event": "task_log", "line": "<chunk>"}` as it arrives, before the container exits
-
-#### Scenario: End sentinel published after streaming
-
-- **WHEN** the worker finishes streaming stderr for a task (container has exited)
-- **THEN** the worker publishes `{"event": "task_log_end"}` to the per-task Valkey channel
-
-#### Scenario: Sync Redis client created and cleaned up per task
-
-- **WHEN** the worker calls `process_task_in_container`
-- **THEN** a synchronous `redis.Redis` client is created from `VALKEY_URL` at the start and closed in a `finally` block
-
-#### Scenario: Sync Redis failure does not interrupt task
-
-- **WHEN** the worker is streaming stderr and the sync Redis publish fails
-- **THEN** the worker logs a warning and continues processing the task normally
-
-#### Scenario: Full logs still captured after streaming
-
-- **WHEN** the worker finishes streaming stderr and the container has exited
-- **THEN** the worker captures full stdout and stderr via `container.logs()` for JSON parsing and `runner_logs` storage, exactly as before
+- **WHEN** the worker processes a task with Hindsight configured
+- **THEN** a `hindsight` entry is added to the MCP server configuration with the correct URL

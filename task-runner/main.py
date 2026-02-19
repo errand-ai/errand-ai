@@ -1,6 +1,7 @@
 """Task runner agent — reads environment variables and files, runs a ReAct agent, outputs structured JSON."""
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -13,8 +14,9 @@ from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from agents import Agent, ItemHelpers, ModelSettings, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
+from agents.run import CallModelData, ModelInputData
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -212,7 +214,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
             headers = {}
 
         try:
-            params = {"url": url}
+            params = {"url": url, "timeout": 300, "sse_read_timeout": 600}
             if headers:
                 params["headers"] = headers
 
@@ -220,6 +222,7 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
                 name=name,
                 params=params,
                 cache_tools_list=True,
+                client_session_timeout_seconds=300,
             )
             connected = await stack.enter_async_context(server)
             servers.append(connected)
@@ -231,6 +234,9 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
 
 
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
+MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "2"))
+MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "150000"))
+CHARS_PER_TOKEN = 3  # conservative: base64 images tokenize at ~2-3 chars/token
 
 
 @function_tool
@@ -275,6 +281,71 @@ def get_reasoning_effort() -> str:
     return effort
 
 
+def _estimate_tokens(messages: list) -> int:
+    """Rough token estimate: total chars / CHARS_PER_TOKEN."""
+    return len(json.dumps(messages, default=str)) // CHARS_PER_TOKEN
+
+
+def _strip_screenshots(messages: list) -> list:
+    """Replace old screenshots beyond retention limit with placeholders."""
+    image_locations = []
+    for msg_idx, msg in enumerate(messages):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part_idx, part in enumerate(content):
+            if (isinstance(part, dict)
+                and part.get("type") == "image_url"
+                and isinstance(part.get("image_url"), dict)
+                and isinstance(part["image_url"].get("url"), str)
+                and part["image_url"]["url"].startswith("data:image/")):
+                image_locations.append((msg_idx, part_idx))
+
+    if len(image_locations) <= MAX_RETAINED_SCREENSHOTS:
+        return messages
+
+    result = copy.deepcopy(messages)
+    to_remove = len(image_locations) - MAX_RETAINED_SCREENSHOTS
+    removed_bytes = 0
+    for msg_idx, part_idx in image_locations[:to_remove]:
+        removed_bytes += len(result[msg_idx]["content"][part_idx].get("image_url", {}).get("url", ""))
+        result[msg_idx]["content"][part_idx] = {"type": "text", "text": "[screenshot removed]"}
+    logger.info(
+        "Screenshots stripped: %d total, %d removed (~%d KB base64), %d retained",
+        len(image_locations), to_remove, removed_bytes // 1024, MAX_RETAINED_SCREENSHOTS,
+    )
+    return result
+
+
+def _trim_context_window(messages: list) -> list:
+    """Drop oldest messages (after the first) until under MAX_CONTEXT_TOKENS."""
+    estimated_before = _estimate_tokens(messages)
+    if len(messages) <= 2 or estimated_before <= MAX_CONTEXT_TOKENS:
+        return messages
+
+    # Keep first message (initial user prompt) and trim from the front of the rest
+    first = messages[:1]
+    rest = messages[1:]
+    while len(rest) > 1 and _estimate_tokens(first + rest) > MAX_CONTEXT_TOKENS:
+        rest = rest[1:]
+
+    trimmed = first + rest
+    estimated_after = _estimate_tokens(trimmed)
+    logger.info(
+        "Context window trimmed: %d -> %d messages, ~%d -> ~%d estimated tokens (limit %d)",
+        len(messages), len(trimmed), estimated_before, estimated_after, MAX_CONTEXT_TOKENS,
+    )
+    return trimmed
+
+
+def filter_model_input(data: CallModelData) -> ModelInputData:
+    """Pre-model filter: strip old screenshots and trim context window."""
+    messages = list(data.model_data.input)
+    messages = _strip_screenshots(messages)
+    messages = _trim_context_window(messages)
+    return ModelInputData(input=messages, instructions=data.model_data.instructions)
+
+
 async def main():
     # 1. Read and validate environment variables
     env = read_env_vars()
@@ -309,7 +380,8 @@ async def main():
 
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter())
+            run_config = RunConfig(call_model_input_filter=filter_model_input)
+            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
 
             # Iterate streaming events, emitting thinking/reasoning to stderr
             async for event in result.stream_events():
