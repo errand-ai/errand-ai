@@ -21,7 +21,7 @@ from worker import (
     build_skills_archive, build_skill_manifest,
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
     start_playwright_container, health_check_playwright,
-    cleanup_playwright_container, PLAYWRIGHT_PORT,
+    cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
 )
 
 
@@ -2859,12 +2859,11 @@ def test_hindsight_falls_back_to_admin_setting():
 
 @patch("worker.docker_client")
 @patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
-def test_start_playwright_container_local_image(mock_docker):
-    """start_playwright_container uses locally available image."""
+def test_start_playwright_container(mock_docker):
+    """start_playwright_container creates and starts a container."""
     mock_container = MagicMock()
     mock_docker.containers.create.return_value = mock_container
     result = start_playwright_container()
-    mock_docker.images.get.assert_called_once_with("playwright-mcp:latest")
     mock_docker.containers.create.assert_called_once()
     mock_container.start.assert_called_once()
     assert result is mock_container
@@ -2872,15 +2871,25 @@ def test_start_playwright_container_local_image(mock_docker):
 
 @patch("worker.docker_client")
 @patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
-def test_start_playwright_container_pulls_missing_image(mock_docker):
-    """start_playwright_container pulls image when not found locally."""
+@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
+def test_pre_pull_images_pulls_missing(mock_docker):
+    """pre_pull_images pulls images not found locally."""
     from docker.errors import ImageNotFound
     mock_docker.images.get.side_effect = ImageNotFound("not found")
-    mock_container = MagicMock()
-    mock_docker.containers.create.return_value = mock_container
-    result = start_playwright_container()
-    mock_docker.images.pull.assert_called_once_with("playwright-mcp:latest")
-    assert result is mock_container
+    pre_pull_images()
+    assert mock_docker.images.pull.call_count == 2
+    mock_docker.images.pull.assert_any_call("task-runner:latest")
+    mock_docker.images.pull.assert_any_call("playwright-mcp:latest")
+
+
+@patch("worker.docker_client")
+@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
+@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
+def test_pre_pull_images_skips_available(mock_docker):
+    """pre_pull_images skips images already available."""
+    pre_pull_images()
+    assert mock_docker.images.get.call_count == 2
+    mock_docker.images.pull.assert_not_called()
 
 
 @patch("worker.httpx")
