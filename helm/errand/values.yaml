@@ -22,7 +22,7 @@ playwright:
     repository: mcr.microsoft.com/playwright/mcp
     tag: "latest"
     pullPolicy: IfNotPresent
-  memoryLimit: "512m"
+  memoryLimit: "512Mi"
   port: 8931
   startupTimeout: 30
 
