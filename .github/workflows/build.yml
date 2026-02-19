@@ -83,7 +83,7 @@ jobs:
   build-backend:
     needs: [version, test]
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
