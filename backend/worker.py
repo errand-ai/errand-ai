@@ -980,7 +980,7 @@ async def run() -> None:
         container_runtime = await asyncio.get_event_loop().run_in_executor(None, create_runtime)
     except ValueError as e:
         logger.error("Failed to initialise container runtime: %s", e)
-        return
+        raise SystemExit(1)
 
     # For Docker mode, keep docker_client reference for Playwright management and pre-pull
     if isinstance(container_runtime, DockerRuntime):

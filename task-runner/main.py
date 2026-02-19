@@ -129,7 +129,7 @@ OUTPUT_INSTRUCTIONS = """
 When you have completed the task, respond with ONLY a JSON object (no markdown, no extra text):
 {"status": "completed", "result": "<your detailed result>", "questions": []}
 
-IMPORTANT: The "result" field is the ONLY output the user will see. You MUST include the full content you produced (text, song lyrics, code, analysis, etc.) directly in the "result" field. Do NOT just describe what you did — include the actual content. Use markdown formatting for readability.
+IMPORTANT: The "result" field is the ONLY output the user will see. You MUST include the full content you produced (text, code, analysis, creative writing, etc.) directly in the "result" field. Do NOT just describe what you did — include the actual content. Use markdown formatting for readability.
 
 If you need more information, respond with:
 {"status": "needs_input", "result": "<what you've done so far>", "questions": ["<question 1>", "<question 2>"]}
@@ -353,7 +353,7 @@ def write_output_file(output: str, output_dir: str = "/output") -> None:
     if not os.path.isdir(output_dir):
         return
     try:
-        with open(os.path.join(output_dir, "result.json"), "w") as f:
+        with open(os.path.join(output_dir, "result.json"), "w", encoding="utf-8") as f:
             f.write(output)
         logger.info("Wrote output to %s/result.json", output_dir)
     except OSError:

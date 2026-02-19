@@ -360,7 +360,7 @@ class KubernetesRuntime(ContainerRuntime):
 
     def _wait_for_pod(self, job_name: str) -> str:
         """Wait for the Job's pod to be running/succeeded/failed. Returns pod name."""
-        from kubernetes import client, watch
+        # Note: uses self.core_v1 (already initialised) — no local imports needed
 
         label_selector = f"job-name={job_name}"
         deadline = time.time() + K8S_POD_START_TIMEOUT
@@ -423,7 +423,14 @@ class KubernetesRuntime(ContainerRuntime):
         except ApiException:
             logger.warning("Failed to read pod status for %s", pod_name, exc_info=True)
 
-        # Read /output/result.json from the completed pod via exec
+        # Get full logs (combined stdout+stderr from the pod)
+        full_logs = ""
+        try:
+            full_logs = self.core_v1.read_namespaced_pod_log(pod_name, namespace)
+        except ApiException:
+            logger.warning("Failed to read logs from pod %s", pod_name, exc_info=True)
+
+        # Try to read /output/result.json via exec (preferred — clean structured output)
         stdout = ""
         try:
             resp = k8s_stream(
@@ -441,14 +448,24 @@ class KubernetesRuntime(ContainerRuntime):
         except ApiException:
             logger.warning("Failed to read /output/result.json from pod %s", pod_name, exc_info=True)
 
-        # Get full logs as stderr
-        stderr = ""
-        try:
-            stderr = self.core_v1.read_namespaced_pod_log(pod_name, namespace)
-        except ApiException:
-            logger.warning("Failed to read logs from pod %s", pod_name, exc_info=True)
+        # Fallback: if exec failed, extract the JSON from pod logs.
+        # The task-runner prints the JSON as the last stdout line; in K8s logs
+        # stdout and stderr are merged but the JSON is recognisable by structure.
+        if not stdout and full_logs:
+            for line in reversed(full_logs.splitlines()):
+                stripped = line.strip()
+                if stripped.startswith("{") and stripped.endswith("}"):
+                    try:
+                        import json
+                        obj = json.loads(stripped)
+                        if "status" in obj and "result" in obj:
+                            stdout = stripped
+                            logger.info("Extracted structured output from pod logs (exec fallback)")
+                            break
+                    except (json.JSONDecodeError, KeyError):
+                        continue
 
-        return exit_code, stdout, stderr
+        return exit_code, stdout, full_logs
 
     def cleanup(self, handle: RuntimeHandle) -> None:
         from kubernetes.client.rest import ApiException

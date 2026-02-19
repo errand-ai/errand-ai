@@ -347,6 +347,41 @@ class TestKubernetesRuntime:
         assert stdout == '{"status":"completed","result":"done"}'
         assert stderr == "full log output"
 
+    def test_result_falls_back_to_log_extraction(self):
+        """result() extracts structured JSON from pod logs when exec fails."""
+        from kubernetes.client.rest import ApiException
+
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "pod_name": "pod-abc",
+            "namespace": "test-ns",
+        })
+
+        mock_pod = MagicMock()
+        cs = MagicMock()
+        cs.name = "task-runner"
+        cs.state.terminated.exit_code = 0
+        mock_pod.status.container_statuses = [cs]
+        runtime.core_v1.read_namespaced_pod.return_value = mock_pod
+
+        # Logs contain mixed stderr logging + stdout JSON (last line)
+        combined_logs = (
+            "2026-01-01 INFO Starting agent\n"
+            "2026-01-01 INFO Processing task\n"
+            '{"status":"completed","result":"the answer is 42","questions":[]}'
+        )
+        runtime.core_v1.read_namespaced_pod_log.return_value = combined_logs
+
+        # Exec fails (simulating RBAC 403)
+        with patch("kubernetes.stream.stream", side_effect=ApiException(status=403)):
+            exit_code, stdout, stderr = runtime.result(handle)
+
+        assert exit_code == 0
+        assert '"status":"completed"' in stdout
+        assert '"result":"the answer is 42"' in stdout
+        assert stderr == combined_logs
+
     def test_result_handles_api_errors_gracefully(self):
         """result() returns defaults when K8s API calls fail."""
         from kubernetes.client.rest import ApiException
