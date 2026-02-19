@@ -59,7 +59,7 @@ def generate_ssh_keypair() -> tuple[str, str]:
         encoding=serialization.Encoding.OpenSSH,
         format=serialization.PublicFormat.OpenSSH,
     ).decode("utf-8")
-    return private_pem, f"{public_openssh} content-manager"
+    return private_pem, f"{public_openssh} errand"
 
 
 @asynccontextmanager
@@ -179,6 +179,7 @@ async def get_current_user(
             detail="No roles assigned. Contact your administrator for access.",
         )
 
+    claims["_roles"] = roles
     return claims
 
 
@@ -456,7 +457,7 @@ async def list_archived_tasks(
     session: AsyncSession = Depends(get_session),
     claims: dict = Depends(get_current_user),
 ):
-    roles = claims.get("resource_access", {}).get("content-manager", {}).get("roles", [])
+    roles = claims.get("_roles", [])
     if "admin" in roles:
         status_filter = Task.status.in_(["deleted", "archived"])
     else:

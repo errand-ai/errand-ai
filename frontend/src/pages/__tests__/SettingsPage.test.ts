@@ -44,7 +44,7 @@ function fakeJwt(payload: Record<string, unknown>): string {
 
 const adminToken = fakeJwt({
   name: 'Admin',
-  resource_access: { 'content-manager': { roles: ['admin'] } },
+  resource_access: { 'errand': { roles: ['admin'] } },
 })
 
 function mockSettingsAndSkills(
@@ -1154,7 +1154,7 @@ describe('SettingsPage', () => {
       const { wrapper } = await mountSettings('/settings/security')
 
       expect(wrapper.text()).toContain('Example MCP Configuration')
-      expect(wrapper.text()).toContain('content-manager')
+      expect(wrapper.text()).toContain('errand')
       expect(wrapper.text()).toContain('/mcp')
       expect(wrapper.text()).toContain('Bearer ' + '*'.repeat(32))
       expect(wrapper.text()).not.toContain('Bearer test-api-key')
@@ -1178,15 +1178,15 @@ describe('SettingsPage', () => {
       expect(writeTextMock).toHaveBeenCalled()
       const copiedText = writeTextMock.mock.calls[0][0]
       const parsed = JSON.parse(copiedText)
-      expect(parsed.mcpServers['content-manager'].url).toContain('/mcp')
-      expect(parsed.mcpServers['content-manager'].headers.Authorization).toBe('Bearer cfg-key')
+      expect(parsed.mcpServers['errand'].url).toContain('/mcp')
+      expect(parsed.mcpServers['errand'].headers.Authorization).toBe('Bearer cfg-key')
       expect(copyConfigBtn.text()).toBe('Copied!')
     })
 
     // --- Git SSH Key ---
 
     it('shows SSH public key when key exists', async () => {
-      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' })
+      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA errand' })
       vi.stubGlobal('fetch', fetchMock)
 
       const { wrapper } = await mountSettings('/settings/security')
@@ -1194,7 +1194,7 @@ describe('SettingsPage', () => {
       expect(wrapper.text()).toContain('Git SSH Key')
       const keyEl = wrapper.find('[data-testid="ssh-public-key"]')
       expect(keyEl.exists()).toBe(true)
-      expect(keyEl.text()).toBe('ssh-ed25519 AAAA content-manager')
+      expect(keyEl.text()).toBe('ssh-ed25519 AAAA errand')
     })
 
     it('shows no-key message when SSH key is absent', async () => {
@@ -1209,7 +1209,7 @@ describe('SettingsPage', () => {
       const writeTextMock = vi.fn().mockResolvedValue(undefined)
       Object.assign(navigator, { clipboard: { writeText: writeTextMock } })
 
-      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 COPY content-manager' })
+      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 COPY errand' })
       vi.stubGlobal('fetch', fetchMock)
 
       const { wrapper } = await mountSettings('/settings/security')
@@ -1218,15 +1218,15 @@ describe('SettingsPage', () => {
       await copyBtn.trigger('click')
       await flushPromises()
 
-      expect(writeTextMock).toHaveBeenCalledWith('ssh-ed25519 COPY content-manager')
+      expect(writeTextMock).toHaveBeenCalledWith('ssh-ed25519 COPY errand')
       expect(copyBtn.text()).toBe('Copied!')
     })
 
     it('regenerates SSH key on confirm via dialog', async () => {
       fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
         if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        if (url === '/api/settings/regenerate-ssh-key') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 NEW content-manager' }) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 OLD content-manager' }) })
+        if (url === '/api/settings/regenerate-ssh-key') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 NEW errand' }) })
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ssh_public_key: 'ssh-ed25519 OLD errand' }) })
       })
       vi.stubGlobal('fetch', fetchMock)
 
@@ -1247,7 +1247,7 @@ describe('SettingsPage', () => {
       expect(postCall).toBeTruthy()
 
       const keyEl = wrapper.find('[data-testid="ssh-public-key"]')
-      expect(keyEl.text()).toBe('ssh-ed25519 NEW content-manager')
+      expect(keyEl.text()).toBe('ssh-ed25519 NEW errand')
       expect(toastMock.success).toHaveBeenCalledWith('SSH key regenerated.')
 
       wrapper.unmount()
@@ -1255,7 +1255,7 @@ describe('SettingsPage', () => {
 
     it('displays default SSH hosts from settings', async () => {
       fetchMock = mockSettingsAndSkills({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        ssh_public_key: 'ssh-ed25519 AAAA errand',
         git_ssh_hosts: ['github.com', 'bitbucket.org'],
       })
       vi.stubGlobal('fetch', fetchMock)
@@ -1268,7 +1268,7 @@ describe('SettingsPage', () => {
 
     it('adds a new SSH host', async () => {
       fetchMock = mockSettingsAndSkills({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        ssh_public_key: 'ssh-ed25519 AAAA errand',
         git_ssh_hosts: ['github.com'],
       })
       vi.stubGlobal('fetch', fetchMock)
@@ -1286,7 +1286,7 @@ describe('SettingsPage', () => {
 
     it('removes an SSH host', async () => {
       fetchMock = mockSettingsAndSkills({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        ssh_public_key: 'ssh-ed25519 AAAA errand',
         git_ssh_hosts: ['github.com', 'bitbucket.org'],
       })
       vi.stubGlobal('fetch', fetchMock)
@@ -1303,7 +1303,7 @@ describe('SettingsPage', () => {
 
     it('prevents adding a duplicate SSH host', async () => {
       fetchMock = mockSettingsAndSkills({
-        ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+        ssh_public_key: 'ssh-ed25519 AAAA errand',
         git_ssh_hosts: ['github.com'],
       })
       vi.stubGlobal('fetch', fetchMock)
@@ -1322,7 +1322,7 @@ describe('SettingsPage', () => {
       fetchMock = vi.fn().mockImplementation((url: string) => {
         if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({
-          ssh_public_key: 'ssh-ed25519 AAAA content-manager',
+          ssh_public_key: 'ssh-ed25519 AAAA errand',
           git_ssh_hosts: ['github.com', 'bitbucket.org'],
         }) })
       })
@@ -1342,7 +1342,7 @@ describe('SettingsPage', () => {
     })
 
     it('shows deploy key help text', async () => {
-      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA content-manager' })
+      fetchMock = mockSettingsAndSkills({ ssh_public_key: 'ssh-ed25519 AAAA errand' })
       vi.stubGlobal('fetch', fetchMock)
 
       const { wrapper } = await mountSettings('/settings/security')

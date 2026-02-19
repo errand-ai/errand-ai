@@ -1,7 +1,7 @@
 backend:
   replicaCount: 1
   image:
-    repository: ghcr.io/devops-consultants/content-manager-backend
+    repository: ghcr.io/devops-consultants/errand-backend
     tag: ""
     pullPolicy: IfNotPresent
   service:
@@ -13,7 +13,7 @@ worker:
 
 taskRunner:
   image:
-    repository: ghcr.io/devops-consultants/content-manager-task-runner
+    repository: ghcr.io/devops-consultants/errand-task-runner
     tag: ""
     pullPolicy: IfNotPresent
 
@@ -46,7 +46,7 @@ keycloak:
   secretKeyClientId: OIDC_CLIENT_ID
   secretKeyClientSecret: OIDC_CLIENT_SECRET
   discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
-  rolesClaim: resource_access.content-manager.roles
+  rolesClaim: resource_access.errand.roles
 
 openai:
   baseUrl: ""
@@ -78,7 +78,7 @@ twitter:
 
 hindsight:
   url: ""
-  bankId: "content-manager-tasks"
+  bankId: "errand-tasks"
 
 perplexity:
   existingSecret: ""

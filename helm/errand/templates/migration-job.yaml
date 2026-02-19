@@ -1,9 +1,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "content-manager.fullname" . }}-migrate
+  name: {{ include "errand.fullname" . }}-migrate
   labels:
-    {{- include "content-manager.labels" . | nindent 4 }}
+    {{- include "errand.labels" . | nindent 4 }}
   annotations:
     "helm.sh/hook": pre-upgrade,pre-install
     "helm.sh/hook-weight": "-1"

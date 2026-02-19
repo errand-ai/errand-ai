@@ -41,7 +41,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          for IMAGE in "ghcr.io/${{ github.repository }}-backend" "ghcr.io/${{ github.repository }}-task-runner"; do
+          for IMAGE in "ghcr.io/${{ github.repository_owner }}/errand-backend" "ghcr.io/${{ github.repository_owner }}/errand-task-runner"; do
             if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
               echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
               exit 1
@@ -110,7 +110,7 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}-backend:${{ needs.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/errand-backend:${{ needs.version.outputs.tag }}
 
   build-task-runner:
     needs: [version, test]
@@ -141,7 +141,7 @@ jobs:
           context: ./task-runner
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}-task-runner:${{ needs.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/errand-task-runner:${{ needs.version.outputs.tag }}
 
   helm:
     needs: [version, build-backend, build-task-runner]
@@ -166,8 +166,8 @@ jobs:
         run: |
           TAG="${{ needs.version.outputs.tag }}"
           helm repo add valkey https://valkey.io/valkey-helm/
-          helm dependency build helm/content-manager
-          helm package helm/content-manager \
+          helm dependency build helm/errand
+          helm package helm/errand \
             --version "${TAG}" \
             --app-version "${TAG}"
-          helm push "content-manager-${TAG}.tgz" "oci://${{ env.REGISTRY }}/${{ github.repository }}/charts"
+          helm push "errand-${TAG}.tgz" "oci://${{ env.REGISTRY }}/${{ github.repository }}/charts"

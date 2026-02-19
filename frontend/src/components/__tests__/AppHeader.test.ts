@@ -62,7 +62,7 @@ describe('App header — user dropdown', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin User',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
 
     const router = makeRouter()
@@ -83,7 +83,7 @@ describe('App header — user dropdown', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Regular User',
-      resource_access: { 'content-manager': { roles: ['user'] } },
+      resource_access: { 'errand': { roles: ['user'] } },
     }))
 
     const router = makeRouter()
@@ -109,7 +109,7 @@ describe('App header — user dropdown', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin User',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
 
     const router = makeRouter()

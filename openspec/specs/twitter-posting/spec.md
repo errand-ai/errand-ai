@@ -4,7 +4,7 @@
 The backend MCP server SHALL expose a `post_tweet` tool that accepts a `message` parameter (string, 1-280 characters) and posts it as a tweet via the Twitter/X API v2. The tool SHALL delegate to `TwitterPlatform.post()` from the platform registry instead of calling the Tweepy API directly. The tool SHALL return the posted tweet's URL on success or an error message on failure. The tool SHALL require valid MCP API key authentication.
 
 #### Scenario: Post a valid tweet
-- **WHEN** the agent calls `post_tweet` with message "Hello from content-manager!"
+- **WHEN** the agent calls `post_tweet` with message "Hello from errand!"
 - **THEN** the tool delegates to `TwitterPlatform.post()` and returns the tweet URL
 
 #### Scenario: Message too long

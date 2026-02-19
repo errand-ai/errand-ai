@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "content-manager.fullname" . }}
+  name: {{ include "errand.fullname" . }}
   labels:
-    {{- include "content-manager.labels" . | nindent 4 }}
+    {{- include "errand.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -24,7 +24,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "content-manager.fullname" . }}-backend
+                name: {{ include "errand.fullname" . }}-backend
                 port:
                   number: {{ .Values.backend.service.port }}
 {{- end }}

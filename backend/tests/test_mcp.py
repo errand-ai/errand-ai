@@ -18,7 +18,7 @@ FAKE_ADMIN_CLAIMS = {
     "preferred_username": "adminuser",
     "email": "admin@example.com",
     "resource_access": {
-        "content-manager": {"roles": ["user", "admin"]},
+        "errand": {"roles": ["user", "admin"]},
     },
 }
 

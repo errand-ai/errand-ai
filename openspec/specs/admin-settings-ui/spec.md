@@ -342,7 +342,7 @@ The "MCP API Key" section SHALL display a pre-formatted example JSON configurati
 ```json
 {
   "mcpServers": {
-    "content-manager": {
+    "errand": {
       "url": "https://<host>/mcp",
       "headers": {
         "Authorization": "Bearer <api-key>"
@@ -356,8 +356,8 @@ A "Copy" button SHALL copy the entire configuration block to the clipboard.
 
 #### Scenario: Example config with current host
 
-- **WHEN** the Settings page loads at `https://content-manager.example.com/settings`
-- **THEN** the example config block shows `"url": "https://content-manager.example.com/mcp"`
+- **WHEN** the Settings page loads at `https://errand.example.com/settings`
+- **THEN** the example config block shows `"url": "https://errand.example.com/mcp"`
 
 #### Scenario: Example config includes API key
 

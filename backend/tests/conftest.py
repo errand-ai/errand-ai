@@ -16,10 +16,11 @@ FAKE_USER_CLAIMS = {
     "preferred_username": "testuser",
     "email": "test@example.com",
     "resource_access": {
-        "content-manager": {
+        "errand": {
             "roles": ["user", "editor"],
         }
     },
+    "_roles": ["user", "editor"],
 }
 
 FAKE_ADMIN_CLAIMS = {
@@ -27,10 +28,11 @@ FAKE_ADMIN_CLAIMS = {
     "preferred_username": "adminuser",
     "email": "admin@example.com",
     "resource_access": {
-        "content-manager": {
+        "errand": {
             "roles": ["user", "admin"],
         }
     },
+    "_roles": ["user", "admin"],
 }
 
 FAKE_VIEWER_CLAIMS = {
@@ -38,10 +40,11 @@ FAKE_VIEWER_CLAIMS = {
     "preferred_username": "vieweruser",
     "email": "viewer@example.com",
     "resource_access": {
-        "content-manager": {
+        "errand": {
             "roles": ["viewer"],
         }
     },
+    "_roles": ["viewer"],
 }
 
 # SQLite-compatible DDL (replaces now() with CURRENT_TIMESTAMP, JSONB with TEXT)

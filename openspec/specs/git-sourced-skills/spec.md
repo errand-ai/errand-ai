@@ -20,7 +20,7 @@ The system SHALL support a `skills_git_repo` setting stored in the settings tabl
 - **THEN** the worker skips git skill loading
 
 ### Requirement: Worker clones and refreshes git skills repo before each task
-Before assembling skills for a task, the worker SHALL check whether a `skills_git_repo` setting is configured. If so, the worker SHALL ensure a local clone exists in a temporary directory derived from the repo URL (e.g. `/tmp/content-manager-skills-<hash>/`). If no clone exists, the worker SHALL run `git clone`. If a clone already exists, the worker SHALL run `git pull --ff-only` to fetch updates. Each worker process SHALL maintain its own independent clone. The worker SHALL use the SSH private key from the `ssh_private_key` setting for authentication by writing it to a temp file and setting `GIT_SSH_COMMAND="ssh -i <keyfile> -o StrictHostKeyChecking=accept-new"`.
+Before assembling skills for a task, the worker SHALL check whether a `skills_git_repo` setting is configured. If so, the worker SHALL ensure a local clone exists in a temporary directory derived from the repo URL (e.g. `/tmp/errand-skills-<hash>/`). If no clone exists, the worker SHALL run `git clone`. If a clone already exists, the worker SHALL run `git pull --ff-only` to fetch updates. Each worker process SHALL maintain its own independent clone. The worker SHALL use the SSH private key from the `ssh_private_key` setting for authentication by writing it to a temp file and setting `GIT_SSH_COMMAND="ssh -i <keyfile> -o StrictHostKeyChecking=accept-new"`.
 
 #### Scenario: First task clones the repository
 - **WHEN** the worker processes its first task and `skills_git_repo` is configured and no local clone exists

@@ -75,7 +75,7 @@ function mountAsViewer(tasks: TaskData[]) {
   const auth = useAuthStore()
   auth.setToken(fakeJwt({
     sub: 'viewer-1',
-    resource_access: { 'content-manager': { roles: ['viewer'] } },
+    resource_access: { 'errand': { roles: ['viewer'] } },
   }))
 
   const wrapper = mount(KanbanBoard, { global: { plugins: [pinia] } })
@@ -91,7 +91,7 @@ function mountAsEditor(tasks: TaskData[]) {
   const auth = useAuthStore()
   auth.setToken(fakeJwt({
     sub: 'editor-1',
-    resource_access: { 'content-manager': { roles: ['editor'] } },
+    resource_access: { 'errand': { roles: ['editor'] } },
   }))
 
   const wrapper = mount(KanbanBoard, { global: { plugins: [pinia] } })

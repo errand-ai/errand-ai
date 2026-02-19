@@ -2,7 +2,7 @@
 
 ### Requirement: SSH keypair generation on first backend start
 
-The backend SHALL generate an Ed25519 SSH keypair during the lifespan startup if no `ssh_private_key` setting exists in the database. The keypair SHALL be generated using the `cryptography` library. The private key SHALL be stored in the `settings` table with key `ssh_private_key` in PEM format (OpenSSH format). The public key SHALL be stored with key `ssh_public_key` in OpenSSH format (e.g. `ssh-ed25519 AAAA... content-manager`). The key comment SHALL be `content-manager`.
+The backend SHALL generate an Ed25519 SSH keypair during the lifespan startup if no `ssh_private_key` setting exists in the database. The keypair SHALL be generated using the `cryptography` library. The private key SHALL be stored in the `settings` table with key `ssh_private_key` in PEM format (OpenSSH format). The public key SHALL be stored with key `ssh_public_key` in OpenSSH format (e.g. `ssh-ed25519 AAAA... errand`). The key comment SHALL be `errand`.
 
 #### Scenario: First start generates keypair
 
