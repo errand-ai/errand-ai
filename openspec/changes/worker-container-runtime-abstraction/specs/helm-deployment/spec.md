@@ -22,7 +22,7 @@ The worker Deployment SHALL include a Playwright MCP sidecar container alongside
 - **THEN** the worker container has `POD_IP` set to the pod's cluster IP via `fieldRef: status.podIP`
 
 ### Requirement: Worker ServiceAccount and RBAC
-The Helm chart SHALL include a ServiceAccount, Role, and RoleBinding for the worker. The Role SHALL grant permissions to create, get, list, watch, and delete `jobs.batch`; create, get, and delete `configmaps`; get and list `pods`; and get `pods/log` — all within the release namespace.
+The Helm chart SHALL include a ServiceAccount, Role, and RoleBinding for the worker. The Role SHALL grant permissions to create, get, list, watch, and delete `jobs.batch`; create, get, list, and delete `configmaps`; get and list `pods`; get `pods/log`; and create `pods/exec` — all within the release namespace. The `pods/exec` permission is needed by `KubernetesRuntime.result()` to read `/output/result.json` from completed task-runner pods.
 
 #### Scenario: ServiceAccount created
 - **WHEN** the Helm chart is deployed

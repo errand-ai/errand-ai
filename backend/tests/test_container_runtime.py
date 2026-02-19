@@ -1,5 +1,5 @@
 """Unit tests for container_runtime.py — ContainerRuntime ABC, DockerRuntime, KubernetesRuntime."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from container_runtime import (
     RuntimeHandle,
     cleanup_orphaned_jobs,
     create_runtime,
+    _read_namespace,
     K8S_JOB_TTL_SECONDS,
     _put_archive,
 )
@@ -553,3 +554,76 @@ class TestPutArchive:
 
         call_args = container.put_archive.call_args
         assert call_args[0][0] == "/custom/path"
+
+
+# ---------------------------------------------------------------------------
+# _read_namespace helper
+# ---------------------------------------------------------------------------
+
+
+class TestReadNamespace:
+    """Tests for the _read_namespace helper function."""
+
+    @patch.dict("os.environ", {"TASK_RUNNER_NAMESPACE": "my-ns"})
+    def test_returns_env_var_when_set(self):
+        """_read_namespace returns TASK_RUNNER_NAMESPACE env var when set."""
+        assert _read_namespace() == "my-ns"
+
+    @patch.dict("os.environ", {}, clear=False)
+    def test_reads_service_account_file(self):
+        """_read_namespace reads namespace from service account mount."""
+        # Ensure env var is absent
+        import os
+        os.environ.pop("TASK_RUNNER_NAMESPACE", None)
+
+        m = mock_open(read_data="production\n")
+        with patch("builtins.open", m):
+            result = _read_namespace()
+
+        assert result == "production"
+        m.assert_called_once_with("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+
+    @patch.dict("os.environ", {}, clear=False)
+    def test_returns_default_when_both_absent(self):
+        """_read_namespace returns 'default' when env var and file are absent."""
+        import os
+        os.environ.pop("TASK_RUNNER_NAMESPACE", None)
+
+        with patch("builtins.open", side_effect=OSError("not found")):
+            result = _read_namespace()
+
+        assert result == "default"
+
+
+# ---------------------------------------------------------------------------
+# create_runtime factory — env var default
+# ---------------------------------------------------------------------------
+
+
+class TestCreateRuntimeEnvDefault:
+    """Tests for create_runtime defaulting via CONTAINER_RUNTIME env var."""
+
+    @patch("docker.DockerClient")
+    @patch.dict("os.environ", {}, clear=False)
+    def test_defaults_to_docker_when_env_absent(self, mock_docker_client_cls):
+        """create_runtime() with no args and no env var defaults to DockerRuntime."""
+        import os
+        os.environ.pop("CONTAINER_RUNTIME", None)
+
+        mock_client = MagicMock()
+        mock_docker_client_cls.return_value = mock_client
+
+        result = create_runtime()
+
+        assert isinstance(result, DockerRuntime)
+        mock_client.ping.assert_called_once()
+
+    @patch("container_runtime.cleanup_orphaned_jobs")
+    @patch("container_runtime.KubernetesRuntime.__init__", return_value=None)
+    @patch.dict("os.environ", {"CONTAINER_RUNTIME": "kubernetes"})
+    def test_reads_env_var_for_kubernetes(self, mock_init, mock_cleanup):
+        """create_runtime() with no args reads CONTAINER_RUNTIME env var."""
+        result = create_runtime()
+
+        assert isinstance(result, KubernetesRuntime)
+        mock_cleanup.assert_called_once()

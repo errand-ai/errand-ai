@@ -37,7 +37,7 @@ When using KubernetesRuntime, the worker SHALL check for orphaned task-runner Jo
 - **THEN** the worker deletes the orphaned Job and its associated ConfigMap
 
 ### Requirement: Worker ServiceAccount with RBAC
-The worker SHALL use a Kubernetes ServiceAccount with a Role binding that grants: `create`, `get`, `list`, `watch`, `delete` on `jobs.batch`; `create`, `get`, `delete` on `configmaps`; `get`, `list` on `pods`; and `get` on `pods/log`. All permissions SHALL be scoped to the worker's namespace.
+The worker SHALL use a Kubernetes ServiceAccount with a Role binding that grants: `create`, `get`, `list`, `watch`, `delete` on `jobs.batch`; `create`, `get`, `list`, `delete` on `configmaps`; `get`, `list` on `pods`; `get` on `pods/log`; and `create` on `pods/exec`. The `pods/exec` permission is required to read `/output/result.json` from completed task-runner pods. All permissions SHALL be scoped to the worker's namespace.
 
 #### Scenario: Worker can create and delete Jobs
 - **WHEN** the worker's ServiceAccount is bound to the required Role
@@ -46,3 +46,7 @@ The worker SHALL use a Kubernetes ServiceAccount with a Role binding that grants
 #### Scenario: Worker can stream pod logs
 - **WHEN** a task-runner pod is running
 - **THEN** the worker can read its logs via `pods/log` API
+
+#### Scenario: Worker can exec into pods to read output
+- **WHEN** a task-runner pod has completed
+- **THEN** the worker can exec into the pod via `pods/exec` to read `/output/result.json`

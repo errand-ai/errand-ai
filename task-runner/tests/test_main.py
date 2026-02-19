@@ -37,3 +37,26 @@ def test_file_output_handles_write_failure(tmp_path):
         write_output_file(output, output_dir=str(read_only_dir))
     finally:
         os.chmod(str(read_only_dir), 0o755)
+
+
+def test_file_output_error_scenario(tmp_path):
+    """Error output (no structured result) still writes to result.json."""
+    # When the agent fails, stdout may be empty and exit code is 1.
+    # write_output_file should still write whatever output is provided.
+    error_output = ""
+    write_output_file(error_output, output_dir=str(tmp_path))
+    result_file = tmp_path / "result.json"
+    # Empty string is valid — file should exist with empty content
+    assert result_file.exists()
+    assert result_file.read_text() == ""
+
+
+def test_file_output_with_error_json(tmp_path):
+    """Error JSON from a failed agent run is written correctly."""
+    error_output = json.dumps({"status": "error", "result": "Agent failed: API timeout", "questions": []})
+    write_output_file(error_output, output_dir=str(tmp_path))
+    result_file = tmp_path / "result.json"
+    assert result_file.exists()
+    data = json.loads(result_file.read_text())
+    assert data["status"] == "error"
+    assert "API timeout" in data["result"]

@@ -2813,3 +2813,141 @@ def test_playwright_mcp_injection_creates_mcpservers_key():
     if "playwright" not in mcp_servers["mcpServers"]:
         mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
     assert mcp_servers["mcpServers"]["playwright"]["url"] == f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
+
+
+# --- K8s runtime mode for process_task_in_container ---
+
+
+def test_process_task_k8s_mode_no_playwright_container_start():
+    """In K8s mode, Playwright sidecar is used — no Docker container is started or cleaned up."""
+    task = _make_mock_task(description="Do the thing")
+
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }), \
+        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
+        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
+        patch("worker.health_check_playwright", return_value=True) as mock_health, \
+        patch("worker.start_playwright_container") as mock_start, \
+        patch("worker.cleanup_playwright_container") as mock_cleanup, \
+        patch("worker.recall_from_hindsight", return_value=None):
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    # K8s: sidecar is pre-deployed — NO Docker container start
+    mock_start.assert_not_called()
+    # K8s: health check still runs against sidecar
+    mock_health.assert_called_once()
+    # K8s: no cleanup of Docker container (sidecar is managed by K8s)
+    mock_cleanup.assert_not_called()
+    # Task should complete
+    assert exit_code == 0
+    # Runtime was used correctly
+    mock_runtime.prepare.assert_called_once()
+    mock_runtime.run.assert_called_once()
+    mock_runtime.result.assert_called_once()
+
+
+def test_process_task_k8s_mode_playwright_uses_pod_ip():
+    """In K8s mode, Playwright URL uses POD_IP env var, not localhost."""
+    task = _make_mock_task(description="Do the thing")
+
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "POD_IP": "10.0.0.42",
+        }), \
+        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
+        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
+        patch("worker.PLAYWRIGHT_PORT", "8931"), \
+        patch("worker.health_check_playwright", return_value=True), \
+        patch("worker.start_playwright_container"), \
+        patch("worker.cleanup_playwright_container"), \
+        patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    # Extract mcp.json and verify Playwright URL uses POD_IP
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    pw_url = mcp_config["mcpServers"]["playwright"]["url"]
+    assert pw_url == "http://10.0.0.42:8931/mcp"
+    assert "localhost" not in pw_url
+
+
+def test_process_task_k8s_mode_playwright_sidecar_unhealthy():
+    """In K8s mode, unhealthy Playwright sidecar means no playwright in mcp.json."""
+    task = _make_mock_task(description="Do the thing")
+
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }), \
+        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
+        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
+        patch("worker.health_check_playwright", return_value=False), \
+        patch("worker.start_playwright_container") as mock_start, \
+        patch("worker.cleanup_playwright_container") as mock_cleanup, \
+        patch("worker.recall_from_hindsight", return_value=None):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    # No Docker container start or cleanup in K8s mode
+    mock_start.assert_not_called()
+    mock_cleanup.assert_not_called()
+    # mcp.json should NOT contain playwright
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "playwright" not in mcp_config.get("mcpServers", {})
