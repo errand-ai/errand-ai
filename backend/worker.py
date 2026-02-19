@@ -12,6 +12,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 import docker
 import httpx
@@ -137,6 +138,22 @@ def init_docker_client() -> docker.DockerClient:
             logger.warning("Docker not ready (%.1fs backoff): %s", delay, e)
             time.sleep(delay)
             delay = min(delay * 2, max_delay)
+
+
+def pre_pull_images() -> None:
+    """Pre-pull required images so the first task starts without download delays."""
+    images = [TASK_RUNNER_IMAGE]
+    if PLAYWRIGHT_MCP_IMAGE:
+        images.append(PLAYWRIGHT_MCP_IMAGE)
+
+    for image in images:
+        try:
+            docker_client.images.get(image)
+            logger.info("Image %s already available", image)
+        except ImageNotFound:
+            logger.info("Pre-pulling image %s...", image)
+            docker_client.images.pull(image)
+            logger.info("Pre-pulled image %s", image)
 
 
 def put_archive(container, files: dict[str, str], dest: str = "/workspace") -> None:
@@ -580,16 +597,9 @@ def put_archive_ssh(container, private_key: str, ssh_config: str) -> None:
 
 def start_playwright_container():
     """Start a Playwright MCP sidecar container in DinD. Returns the container."""
-    # Ensure image is available
-    try:
-        docker_client.images.get(PLAYWRIGHT_MCP_IMAGE)
-        logger.info("Playwright image %s found locally", PLAYWRIGHT_MCP_IMAGE)
-    except ImageNotFound:
-        logger.info("Playwright image %s not found locally, pulling...", PLAYWRIGHT_MCP_IMAGE)
-        docker_client.images.pull(PLAYWRIGHT_MCP_IMAGE)
-
     container = docker_client.containers.create(
         image=PLAYWRIGHT_MCP_IMAGE,
+        command=["--port", str(PLAYWRIGHT_PORT), "--host", "0.0.0.0", "--allowed-hosts", "*"],
         network_mode="host",
         mem_limit=PLAYWRIGHT_MEMORY_LIMIT,
         memswap_limit=PLAYWRIGHT_MEMORY_LIMIT,
@@ -602,7 +612,12 @@ def start_playwright_container():
 
 def health_check_playwright(port: int = PLAYWRIGHT_PORT, timeout: int = PLAYWRIGHT_STARTUP_TIMEOUT) -> bool:
     """Poll Playwright MCP endpoint until it responds or timeout. Returns True if healthy."""
-    url = f"http://localhost:{port}/mcp"
+    # Playwright runs with network_mode="host" in DinD, so reach it via the DinD host
+    if DOCKER_HOST:
+        dind_host = urlparse(DOCKER_HOST).hostname or "localhost"
+    else:
+        dind_host = "localhost"
+    url = f"http://{dind_host}:{port}/mcp"
     payload = {
         "jsonrpc": "2.0",
         "method": "initialize",
@@ -1044,6 +1059,7 @@ async def run() -> None:
     # Initialise Docker client (blocking, with retry)
     logger.info("Connecting to Docker daemon...")
     docker_client = await asyncio.get_event_loop().run_in_executor(None, init_docker_client)
+    await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
 
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 

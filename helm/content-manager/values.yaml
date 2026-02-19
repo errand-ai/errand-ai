@@ -28,8 +28,8 @@ taskRunner:
 
 playwrightMcp:
   image:
-    repository: ghcr.io/devops-consultants/content-manager-playwright-mcp
-    tag: ""
+    repository: mcr.microsoft.com/playwright/mcp
+    tag: "latest"
     pullPolicy: IfNotPresent
   memoryLimit: "512m"
   port: 8931

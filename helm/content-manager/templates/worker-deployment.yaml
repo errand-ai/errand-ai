@@ -78,7 +78,7 @@ spec:
               value: {{ .Values.hindsight.bankId | quote }}
             {{- end }}
             - name: PLAYWRIGHT_MCP_IMAGE
-              value: "{{ .Values.playwrightMcp.image.repository }}:{{ .Values.playwrightMcp.image.tag | default .Chart.AppVersion }}"
+              value: "{{ .Values.playwrightMcp.image.repository }}:{{ .Values.playwrightMcp.image.tag }}"
             - name: PLAYWRIGHT_MEMORY_LIMIT
               value: {{ .Values.playwrightMcp.memoryLimit | quote }}
             - name: PLAYWRIGHT_PORT
