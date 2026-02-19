@@ -110,7 +110,7 @@ The task runner SHALL parse the MCP configuration JSON file to discover and conn
 
 #### Scenario: Connect to Hindsight MCP server
 
-- **WHEN** the MCP configuration includes `{"mcpServers": {"hindsight": {"url": "http://hindsight-api:8888/mcp/content-manager-tasks/"}}}`
+- **WHEN** the MCP configuration includes `{"mcpServers": {"hindsight": {"url": "http://hindsight-api:8888/mcp/errand-tasks/"}}}`
 - **THEN** the task runner connects to the Hindsight MCP endpoint and makes `retain`, `recall`, and `reflect` tools available to the agent
 
 #### Scenario: Empty MCP configuration

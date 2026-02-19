@@ -82,14 +82,14 @@ The frontend SHALL provide a logout action that redirects the browser to `/auth/
 - **THEN** the browser navigates to `/auth/logout`
 
 ### Requirement: Roles extracted from JWT claims
-The auth store SHALL expose a `roles` computed property that extracts the roles array from the access token's JWT payload at the claim path `resource_access.content-manager.roles`. If the token is null or the claim path does not resolve to an array, `roles` SHALL return an empty array.
+The auth store SHALL expose a `roles` computed property that extracts the roles array from the access token's JWT payload at the claim path `resource_access.errand.roles`. If the token is null or the claim path does not resolve to an array, `roles` SHALL return an empty array.
 
 #### Scenario: Token with roles
-- **WHEN** the access token contains `resource_access.content-manager.roles: ["user", "admin"]`
+- **WHEN** the access token contains `resource_access.errand.roles: ["user", "admin"]`
 - **THEN** `roles` returns `["user", "admin"]`
 
 #### Scenario: Token with no roles claim
-- **WHEN** the access token does not contain the `resource_access.content-manager` claim
+- **WHEN** the access token does not contain the `resource_access.errand` claim
 - **THEN** `roles` returns `[]`
 
 #### Scenario: No token

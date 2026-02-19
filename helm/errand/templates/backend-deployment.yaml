@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "content-manager.fullname" . }}-backend
+  name: {{ include "errand.fullname" . }}-backend
   labels:
-    {{- include "content-manager.labels" . | nindent 4 }}
+    {{- include "errand.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicaCount }}

@@ -90,8 +90,8 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 
 #### Scenario: Hindsight MCP server injected into configuration
 
-- **WHEN** the worker processes a task with `HINDSIGHT_URL=http://hindsight-api:8888` and bank ID `content-manager-tasks`
-- **THEN** the MCP configuration includes `{"hindsight": {"url": "http://hindsight-api:8888/mcp/content-manager-tasks/"}}`
+- **WHEN** the worker processes a task with `HINDSIGHT_URL=http://hindsight-api:8888` and bank ID `errand-tasks`
+- **THEN** the MCP configuration includes `{"hindsight": {"url": "http://hindsight-api:8888/mcp/errand-tasks/"}}`
 
 #### Scenario: Hindsight recall failure does not block task
 

@@ -38,7 +38,7 @@ class ApiKeyVerifier(TokenVerifier):
 
 
 mcp = FastMCP(
-    "Content Manager",
+    "Errand",
     token_verifier=ApiKeyVerifier(),
     auth=AuthSettings(
         issuer_url=AnyHttpUrl("https://localhost"),

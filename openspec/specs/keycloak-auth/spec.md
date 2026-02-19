@@ -45,7 +45,7 @@ The backend SHALL expose `GET /auth/logout` which redirects the browser to Keycl
 - **THEN** the backend responds with HTTP 302 redirecting to Keycloak's end-session endpoint
 
 ### Requirement: JWT validation middleware on /api/* routes
-The backend SHALL validate the `Authorization: Bearer <token>` header on all requests matching `/api/*` except `/api/health`. Validation SHALL verify the token signature using Keycloak's JWKS public keys, the issuer, the audience (client_id), and the expiration. After signature validation, the middleware SHALL extract the roles claim (at the dot-path configured by `OIDC_ROLES_CLAIM`, defaulting to `realm_access.roles`). If the roles claim is missing or contains no roles, the backend SHALL return HTTP 403.
+The backend SHALL validate the `Authorization: Bearer <token>` header on all requests matching `/api/*` except `/api/health`. Validation SHALL verify the token signature using Keycloak's JWKS public keys, the issuer, the audience (client_id), and the expiration. After signature validation, the middleware SHALL extract the roles claim (at the dot-path configured by `OIDC_ROLES_CLAIM`, defaulting to `resource_access.errand.roles`). If the roles claim is missing or contains no roles, the backend SHALL return HTTP 403.
 
 #### Scenario: Valid token with roles
 - **WHEN** a request to `/api/tasks` includes a valid Bearer token containing at least one role
@@ -83,7 +83,7 @@ The backend SHALL cache JWKS public keys in memory. If a token's `kid` does not 
 - **THEN** the backend returns HTTP 401
 
 ### Requirement: OIDC configuration via environment variables
-The backend SHALL read `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` from environment variables. All three are required — if any is missing, the backend SHALL fail to start. The backend SHALL also read `OIDC_ROLES_CLAIM` (optional, defaulting to `realm_access.roles`) to configure the dot-path used to extract roles from the JWT.
+The backend SHALL read `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` from environment variables. All three are required — if any is missing, the backend SHALL fail to start. The backend SHALL also read `OIDC_ROLES_CLAIM` (optional, defaulting to `resource_access.errand.roles`) to configure the dot-path used to extract roles from the JWT.
 
 #### Scenario: All required variables set
 - **WHEN** all three required OIDC environment variables are set

@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 DOCKER_HOST = os.environ.get("DOCKER_HOST", "")
-TASK_RUNNER_IMAGE = os.environ.get("TASK_RUNNER_IMAGE", "content-manager-task-runner:latest")
+TASK_RUNNER_IMAGE = os.environ.get("TASK_RUNNER_IMAGE", "errand-task-runner:latest")
 MAX_OUTPUT_BYTES = int(os.environ.get("MAX_OUTPUT_BYTES", str(1024 * 1024)))  # 1MB default
 PLAYWRIGHT_MCP_IMAGE = os.environ.get("PLAYWRIGHT_MCP_IMAGE", "")
 PLAYWRIGHT_MEMORY_LIMIT = os.environ.get("PLAYWRIGHT_MEMORY_LIMIT", "512m")
@@ -230,7 +230,7 @@ MAX_GIT_RETRIES = 5
 def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | None) -> str:
     """Clone or pull the git skills repository. Returns the clone directory path."""
     url_hash = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
-    clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+    clone_dir = f"/tmp/errand-skills-{url_hash}"
 
     env = os.environ.copy()
     if ssh_private_key:
@@ -528,7 +528,7 @@ def substitute_env_vars(obj, environ=None):
     return obj
 
 
-DEFAULT_HINDSIGHT_BANK_ID = "content-manager-tasks"
+DEFAULT_HINDSIGHT_BANK_ID = "errand-tasks"
 
 
 def recall_from_hindsight(hindsight_url: str, bank_id: str, query: str, max_tokens: int = 2048) -> str | None:
@@ -777,13 +777,13 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                     "public web content needed to complete the task."
                 )
 
-            # Inject content-manager MCP server for task tools (post_tweet, new_task, etc.)
+            # Inject errand MCP server for task tools (post_tweet, new_task, etc.)
             backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
             mcp_api_key = settings.get("mcp_api_key", "")
             if backend_mcp_url and mcp_api_key:
                 mcp_servers.setdefault("mcpServers", {})
-                if "content-manager" not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"]["content-manager"] = {
+                if "errand" not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"]["errand"] = {
                         "url": backend_mcp_url,
                         "headers": {"Authorization": f"Bearer {mcp_api_key}"},
                     }

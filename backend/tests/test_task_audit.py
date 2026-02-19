@@ -20,7 +20,7 @@ FAKE_USER_CLAIMS = {
     "preferred_username": "testuser",
     "email": "test@example.com",
     "resource_access": {
-        "content-manager": {
+        "errand": {
             "roles": ["user", "editor"],
         }
     },

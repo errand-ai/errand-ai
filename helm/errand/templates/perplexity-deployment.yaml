@@ -2,9 +2,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "content-manager.fullname" . }}-perplexity-mcp
+  name: {{ include "errand.fullname" . }}-perplexity-mcp
   labels:
-    {{- include "content-manager.labels" . | nindent 4 }}
+    {{- include "errand.labels" . | nindent 4 }}
     app.kubernetes.io/component: perplexity-mcp
 spec:
   replicas: {{ .Values.perplexity.replicaCount }}

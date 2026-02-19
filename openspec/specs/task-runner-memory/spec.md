@@ -2,7 +2,7 @@
 
 ### Requirement: Hindsight memory bank configuration
 
-The system SHALL support configuring a Hindsight memory service via two admin settings: `hindsight_url` (the base URL of the Hindsight API, e.g. `http://hindsight-api.hindsight.svc.cluster.local:8888`) and `hindsight_bank_id` (the memory bank identifier, defaulting to `content-manager-tasks`). These settings SHALL be stored in the existing settings table and manageable via the `PUT /api/settings` endpoint.
+The system SHALL support configuring a Hindsight memory service via two admin settings: `hindsight_url` (the base URL of the Hindsight API, e.g. `http://hindsight-api.hindsight.svc.cluster.local:8888`) and `hindsight_bank_id` (the memory bank identifier, defaulting to `errand-tasks`). These settings SHALL be stored in the existing settings table and manageable via the `PUT /api/settings` endpoint.
 
 #### Scenario: Settings stored and retrieved
 
@@ -12,7 +12,7 @@ The system SHALL support configuring a Hindsight memory service via two admin se
 #### Scenario: Default bank ID
 
 - **WHEN** the `hindsight_bank_id` setting does not exist in the database
-- **THEN** the worker SHALL use `content-manager-tasks` as the default bank ID
+- **THEN** the worker SHALL use `errand-tasks` as the default bank ID
 
 #### Scenario: Hindsight disabled when URL not configured
 
@@ -45,12 +45,12 @@ The worker SHALL call the Hindsight REST API to recall memories relevant to the 
 
 ### Requirement: Worker injects Hindsight MCP server for task runner
 
-The worker SHALL inject a `hindsight` entry into the task runner's MCP server configuration when Hindsight is configured. The MCP server URL SHALL follow the single-bank pattern: `{hindsight_url}/mcp/{bank_id}/`. The injection SHALL follow the same pattern as existing MCP server injections (Perplexity, content-manager backend): inject only if not already present in the database-configured MCP servers.
+The worker SHALL inject a `hindsight` entry into the task runner's MCP server configuration when Hindsight is configured. The MCP server URL SHALL follow the single-bank pattern: `{hindsight_url}/mcp/{bank_id}/`. The injection SHALL follow the same pattern as existing MCP server injections (Perplexity, errand backend): inject only if not already present in the database-configured MCP servers.
 
 #### Scenario: Hindsight MCP server injected
 
-- **WHEN** the worker processes a task with `HINDSIGHT_URL` set to `http://hindsight-api:8888` and bank ID `content-manager-tasks`
-- **THEN** the MCP configuration includes `{"hindsight": {"url": "http://hindsight-api:8888/mcp/content-manager-tasks/"}}`
+- **WHEN** the worker processes a task with `HINDSIGHT_URL` set to `http://hindsight-api:8888` and bank ID `errand-tasks`
+- **THEN** the MCP configuration includes `{"hindsight": {"url": "http://hindsight-api:8888/mcp/errand-tasks/"}}`
 
 #### Scenario: Database MCP config takes precedence
 
@@ -64,7 +64,7 @@ The worker SHALL inject a `hindsight` entry into the task runner's MCP server co
 
 ### Requirement: Hindsight URL from environment or settings
 
-The worker SHALL resolve the Hindsight URL from the `HINDSIGHT_URL` environment variable first, falling back to the `hindsight_url` admin setting. Similarly, the bank ID SHALL come from `HINDSIGHT_BANK_ID` environment variable first, falling back to the `hindsight_bank_id` admin setting, with a final default of `content-manager-tasks`.
+The worker SHALL resolve the Hindsight URL from the `HINDSIGHT_URL` environment variable first, falling back to the `hindsight_url` admin setting. Similarly, the bank ID SHALL come from `HINDSIGHT_BANK_ID` environment variable first, falling back to the `hindsight_bank_id` admin setting, with a final default of `errand-tasks`.
 
 #### Scenario: Environment variable takes precedence
 

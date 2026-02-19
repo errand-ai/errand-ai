@@ -18,7 +18,7 @@ describe('auth store — roles and isAdmin', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
     expect(store.roles).toEqual(['user', 'admin'])
   })
@@ -29,7 +29,7 @@ describe('auth store — roles and isAdmin', () => {
     expect(store.roles).toEqual([])
   })
 
-  it('returns empty roles when token has no content-manager client', () => {
+  it('returns empty roles when token has no errand client', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
@@ -47,7 +47,7 @@ describe('auth store — roles and isAdmin', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
     expect(store.isAdmin).toBe(true)
   })
@@ -56,7 +56,7 @@ describe('auth store — roles and isAdmin', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['user'] } },
+      resource_access: { 'errand': { roles: ['user'] } },
     }))
     expect(store.isAdmin).toBe(false)
   })

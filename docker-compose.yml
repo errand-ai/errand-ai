@@ -52,7 +52,7 @@ services:
         condition: service_healthy
     volumes:
       - ./task-runner:/workspace
-    command: docker build -t content-manager-task-runner:latest /workspace
+    command: docker build -t errand-task-runner:latest /workspace
 
   migrate:
     build:
@@ -100,7 +100,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
       VALKEY_URL: redis://valkey:6379
       DOCKER_HOST: tcp://dind:2375
-      TASK_RUNNER_IMAGE: content-manager-task-runner:latest
+      TASK_RUNNER_IMAGE: errand-task-runner:latest
       PLAYWRIGHT_MCP_IMAGE: mcr.microsoft.com/playwright/mcp:latest
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

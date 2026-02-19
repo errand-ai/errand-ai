@@ -65,7 +65,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'User',
-      resource_access: { 'content-manager': { roles: ['user'] } },
+      resource_access: { 'errand': { roles: ['user'] } },
     }))
 
     const router = makeRouter()
@@ -86,7 +86,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
 
     const router = makeRouter()
@@ -104,7 +104,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'User',
-      resource_access: { 'content-manager': { roles: ['user'] } },
+      resource_access: { 'errand': { roles: ['user'] } },
     }))
 
     const router = makeRouter()
@@ -122,7 +122,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'User',
-      resource_access: { 'content-manager': { roles: ['user'] } },
+      resource_access: { 'errand': { roles: ['user'] } },
     }))
 
     const router = makeRouter()
@@ -140,7 +140,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
 
     const router = makeRouter()
@@ -159,7 +159,7 @@ describe('App navigation', () => {
     const auth = useAuthStore()
     auth.setToken(fakeJwt({
       name: 'Admin',
-      resource_access: { 'content-manager': { roles: ['user', 'admin'] } },
+      resource_access: { 'errand': { roles: ['user', 'admin'] } },
     }))
 
     const router = makeRouter()

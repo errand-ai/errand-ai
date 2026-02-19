@@ -1,4 +1,4 @@
-# Content Manager
+# Errand
 
 A Kanban-style task management application with AI-powered task execution, platform integrations, and a structured content workflow.
 
@@ -70,7 +70,7 @@ Create a `.env` file with the required configuration:
 ```bash
 # Authentication (required)
 OIDC_DISCOVERY_URL=https://your-keycloak/realms/your-realm/.well-known/openid-configuration
-OIDC_CLIENT_ID=content-manager
+OIDC_CLIENT_ID=errand
 OIDC_CLIENT_SECRET=your-secret
 
 # Credential encryption (required for platform integrations)
@@ -96,9 +96,9 @@ Store the generated key in your `.env` file or Kubernetes secret. The same key m
 For Kubernetes deployment, create a secret and reference it via `credentialEncryption.existingSecret` in your Helm values:
 
 ```bash
-kubectl create secret generic content-manager-credential-key \
+kubectl create secret generic errand-credential-key \
   --from-literal=encryption-key="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
-  -n content-manager
+  -n errand
 ```
 
 ## Platform Integrations
@@ -120,7 +120,7 @@ Twitter/X integration enables posting content from tasks.
 4. Navigate to **Keys and tokens** and generate:
    - **API Key and Secret** (under Consumer Keys)
    - **Access Token and Secret** (under Authentication Tokens — generate with Read and Write permissions)
-5. In the Content Manager UI, go to **Settings > Platforms > Twitter** and enter the four credentials
+5. In the Errand UI, go to **Settings > Platforms > Twitter** and enter the four credentials
 
 ### Slack
 
@@ -157,7 +157,7 @@ Slack integration enables managing tasks from Slack via slash commands and @ment
 
 #### Configuring credentials
 
-In the Content Manager UI, go to **Settings > Platforms > Slack** and enter:
+In the Errand UI, go to **Settings > Platforms > Slack** and enter:
 
 - **Bot Token**: starts with `xoxb-` (from OAuth & Permissions > Bot User OAuth Token)
 - **Signing Secret**: from Basic Information > App Credentials

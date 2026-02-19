@@ -24,7 +24,7 @@ class OIDCConfig:
         discovery_url = os.environ.get("OIDC_DISCOVERY_URL")
         client_id = os.environ.get("OIDC_CLIENT_ID")
         client_secret = os.environ.get("OIDC_CLIENT_SECRET")
-        roles_claim = os.environ.get("OIDC_ROLES_CLAIM", "resource_access.content-manager.roles")
+        roles_claim = os.environ.get("OIDC_ROLES_CLAIM", "resource_access.errand.roles")
 
         missing = []
         if not discovery_url:

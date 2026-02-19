@@ -36,7 +36,7 @@ class FakeOIDC:
         if token == "valid-token":
             return {
                 "sub": "test-user",
-                "resource_access": {"content-manager": {"roles": ["user"]}},
+                "resource_access": {"errand": {"roles": ["user"]}},
             }
         if token == "expired-token":
             import jwt
@@ -44,7 +44,7 @@ class FakeOIDC:
         raise __import__("jwt").InvalidTokenError("Bad token")
 
     def extract_roles(self, claims: dict) -> list:
-        return claims.get("resource_access", {}).get("content-manager", {}).get("roles", [])
+        return claims.get("resource_access", {}).get("errand", {}).get("roles", [])
 
 
 @pytest.fixture()
@@ -67,7 +67,7 @@ def ws_app():
             yield session
 
     async def override_get_current_user():
-        return {"sub": "test-user", "resource_access": {"content-manager": {"roles": ["user"]}}}
+        return {"sub": "test-user", "resource_access": {"errand": {"roles": ["user"]}}}
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_get_current_user
@@ -217,7 +217,7 @@ def ws_logs_app():
             yield session
 
     async def override_get_current_user():
-        return {"sub": "test-user", "resource_access": {"content-manager": {"roles": ["user"]}}}
+        return {"sub": "test-user", "resource_access": {"errand": {"roles": ["user"]}}}
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_get_current_user

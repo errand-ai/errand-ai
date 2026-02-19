@@ -17,7 +17,7 @@ describe('auth store — isEditor and isViewer', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['editor'] } },
+      resource_access: { 'errand': { roles: ['editor'] } },
     }))
     expect(store.isEditor).toBe(true)
     expect(store.isViewer).toBe(false)
@@ -27,7 +27,7 @@ describe('auth store — isEditor and isViewer', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['admin'] } },
+      resource_access: { 'errand': { roles: ['admin'] } },
     }))
     expect(store.isEditor).toBe(true)
     expect(store.isViewer).toBe(false)
@@ -37,7 +37,7 @@ describe('auth store — isEditor and isViewer', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['editor', 'admin'] } },
+      resource_access: { 'errand': { roles: ['editor', 'admin'] } },
     }))
     expect(store.isEditor).toBe(true)
     expect(store.isViewer).toBe(false)
@@ -47,7 +47,7 @@ describe('auth store — isEditor and isViewer', () => {
     const store = useAuthStore()
     store.setToken(fakeJwt({
       sub: 'user-1',
-      resource_access: { 'content-manager': { roles: ['viewer'] } },
+      resource_access: { 'errand': { roles: ['viewer'] } },
     }))
     expect(store.isEditor).toBe(false)
     expect(store.isViewer).toBe(true)

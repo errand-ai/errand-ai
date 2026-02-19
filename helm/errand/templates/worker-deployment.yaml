@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "content-manager.fullname" . }}-worker
+  name: {{ include "errand.fullname" . }}-worker
   labels:
-    {{- include "content-manager.labels" . | nindent 4 }}
+    {{- include "errand.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
 spec:
   replicas: {{ .Values.worker.replicaCount }}
@@ -58,7 +58,7 @@ spec:
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
             - name: BACKEND_MCP_URL
-              value: "http://{{ include "content-manager.fullname" . }}-backend:{{ .Values.backend.service.port }}/mcp"
+              value: "http://{{ include "errand.fullname" . }}-backend:{{ .Values.backend.service.port }}/mcp"
             {{- if .Values.worker.maxTurns }}
             - name: MAX_TURNS
               value: {{ .Values.worker.maxTurns | quote }}
@@ -67,7 +67,7 @@ spec:
             - name: USE_PERPLEXITY
               value: "true"
             - name: PERPLEXITY_URL
-              value: "http://{{ include "content-manager.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
+              value: "http://{{ include "errand.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
             {{- end }}
             {{- if .Values.hindsight.url }}
             - name: HINDSIGHT_URL

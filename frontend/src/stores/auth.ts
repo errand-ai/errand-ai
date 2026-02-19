@@ -24,7 +24,8 @@ export const useAuthStore = defineStore('auth', () => {
     if (!token.value) return []
     try {
       const payload = JSON.parse(atob(token.value.split('.')[1]))
-      const clientRoles = payload?.resource_access?.['content-manager']?.roles
+      const clientId = payload?.azp ?? 'errand'
+      const clientRoles = payload?.resource_access?.[clientId]?.roles
       return Array.isArray(clientRoles) ? clientRoles : []
     } catch {
       return []

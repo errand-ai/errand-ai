@@ -33,7 +33,7 @@ function mcpExampleConfig(): string {
   const host = window.location.origin
   return JSON.stringify({
     mcpServers: {
-      'content-manager': {
+      'errand': {
         url: `${host}/mcp`,
         headers: {
           Authorization: `Bearer ${props.mcpApiKey || '<api-key>'}`
@@ -47,7 +47,7 @@ function mcpMaskedConfig(): string {
   const host = window.location.origin
   return JSON.stringify({
     mcpServers: {
-      'content-manager': {
+      'errand': {
         url: `${host}/mcp`,
         headers: {
           Authorization: `Bearer ${'*'.repeat(32)}`

@@ -1,5 +1,5 @@
 apiVersion: v2
-name: content-manager
+name: errand
 description: Kanban-style task processing application
 type: application
 version: 0.1.0

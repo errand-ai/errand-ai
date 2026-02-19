@@ -31,7 +31,7 @@ The scheduler SHALL publish a `task_updated` WebSocket event via the existing `p
 - **THEN** a `task_updated` event is published to Valkey containing the full task data including id, title, description, status, position, category, execute_at, repeat_interval, repeat_until, output, retry_count, tags, created_at, and updated_at
 
 ### Requirement: Valkey distributed lock ensures single scheduler instance
-The scheduler SHALL acquire a Valkey distributed lock before checking for due tasks. The lock SHALL use the `SET key value NX EX ttl` pattern with key `content-manager:scheduler-lock`, a TTL of 30 seconds, and the pod hostname as the lock value. If lock acquisition fails (another replica holds the lock), the scheduler SHALL skip the cycle and sleep until the next interval. The lock SHALL be refreshed every cycle while held.
+The scheduler SHALL acquire a Valkey distributed lock before checking for due tasks. The lock SHALL use the `SET key value NX EX ttl` pattern with key `errand:scheduler-lock`, a TTL of 30 seconds, and the pod hostname as the lock value. If lock acquisition fails (another replica holds the lock), the scheduler SHALL skip the cycle and sleep until the next interval. The lock SHALL be refreshed every cycle while held.
 
 #### Scenario: First replica acquires the lock and runs scheduler
 - **WHEN** a single backend replica starts and no lock exists in Valkey

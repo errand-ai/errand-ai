@@ -1116,11 +1116,11 @@ def test_skills_directive_appended_when_skills_exist():
     assert "list_skills" not in system_prompt_content
     assert "get_skill" not in system_prompt_content
 
-    # Check MCP config does NOT have the content-manager server auto-injected
+    # Check MCP config does NOT have the errand server auto-injected
     tar_data.seek(0)
     tar2 = tarfile.open(fileobj=tar_data)
     mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
-    assert "content-manager" not in mcp_content.get("mcpServers", {})
+    assert "errand" not in mcp_content.get("mcpServers", {})
 
     # Second put_archive call is skills archive (/workspace)
     second_call = mock_container.put_archive.call_args_list[1]
@@ -1174,11 +1174,11 @@ def test_skills_directive_omitted_when_no_skills():
     assert system_prompt_content == "You are a helpful assistant."
     assert "## Skills" not in system_prompt_content
 
-    # Check MCP config does NOT have the content-manager server
+    # Check MCP config does NOT have the errand server
     tar_data.seek(0)
     tar2 = tarfile.open(fileobj=tar_data)
     mcp_content = json.loads(tar2.extractfile("mcp.json").read().decode("utf-8"))
-    assert "content-manager" not in mcp_content.get("mcpServers", {})
+    assert "errand" not in mcp_content.get("mcpServers", {})
 
 
 def test_perplexity_and_skills_combined_system_prompt():
@@ -2079,7 +2079,7 @@ class TestRefreshGitClone:
         monkeypatch.setattr("worker.hashlib", __import__("hashlib"))
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         # Ensure clone dir doesn't exist
         import shutil
@@ -2110,7 +2110,7 @@ class TestRefreshGitClone:
         """Second call pulls instead of cloning."""
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         # Simulate existing clone
         os.makedirs(os.path.join(clone_dir, ".git"), exist_ok=True)
@@ -2135,7 +2135,7 @@ class TestRefreshGitClone:
         """SSH key is written to temp file and used in GIT_SSH_COMMAND."""
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2160,7 +2160,7 @@ class TestRefreshGitClone:
         """Branch is passed to git clone when specified."""
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2185,7 +2185,7 @@ class TestRefreshGitClone:
         """Git failure raises GitSkillsError."""
         repo_url = "git@github.com:org/nonexistent.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2202,7 +2202,7 @@ class TestRefreshGitClone:
         """Public repo without SSH key does not set GIT_SSH_COMMAND."""
         repo_url = "https://github.com/org/public-skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2226,7 +2226,7 @@ class TestRefreshGitClone:
         """Transient network error raises GitSkillsError with the network message."""
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2243,7 +2243,7 @@ class TestRefreshGitClone:
         """Authentication error raises GitSkillsError with the auth message."""
         repo_url = "git@github.com:org/private-skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
-        clone_dir = f"/tmp/content-manager-skills-{url_hash}"
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
 
         import shutil
         if os.path.exists(clone_dir):
@@ -2592,7 +2592,7 @@ def test_hindsight_mcp_injected_when_configured():
     mcp_json_member = tar.extractfile("mcp.json")
     mcp_config = json.loads(mcp_json_member.read())
     assert "hindsight" in mcp_config["mcpServers"]
-    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://hindsight-api:8888/mcp/content-manager-tasks/"
+    assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://hindsight-api:8888/mcp/errand-tasks/"
     # Existing server preserved
     assert "other" in mcp_config["mcpServers"]
 

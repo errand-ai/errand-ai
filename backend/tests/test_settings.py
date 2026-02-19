@@ -91,7 +91,7 @@ def test_generate_ssh_keypair():
     private_pem, public_openssh = generate_ssh_keypair()
     assert private_pem.startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
     assert public_openssh.startswith("ssh-ed25519 ")
-    assert public_openssh.endswith(" content-manager")
+    assert public_openssh.endswith(" errand")
 
 
 def test_generate_ssh_keypair_unique():
