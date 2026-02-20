@@ -390,7 +390,7 @@ async def test_task_output_not_found(db_session):
     assert "not found" in result.lower()
 
 
-# --- post_tweet MCP tool ---
+# --- task_logs MCP tool ---
 
 
 async def test_task_logs_with_logs(db_session):
