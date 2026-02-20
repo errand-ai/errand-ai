@@ -341,10 +341,10 @@ class KubernetesRuntime(ContainerRuntime):
 
         # Init container: copy workspace files from ConfigMap and extract
         # skills tar (if present) into the writable emptyDir workspace.
-        # ConfigMap mounts include symlinks (..data etc.) — use `find` to
-        # copy only regular files, excluding the binary skills.tar.
+        # K8s ConfigMap volumes mount entries as symlinks (prompt.txt -> ..data/prompt.txt),
+        # so use `find -L` to follow them. Exclude dotfiles (..data, timestamp dirs).
         init_cmd = (
-            "find /config -maxdepth 1 -type f ! -name 'skills.tar' "
+            "find -L /config -maxdepth 1 -type f ! -name 'skills.tar' ! -name '.*' "
             "-exec cp {} /workspace/ \\;"
         )
         if skills_tar:
