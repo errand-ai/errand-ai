@@ -1,6 +1,7 @@
 import logging
 import secrets
 import uuid as uuid_mod
+from datetime import datetime
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -148,6 +149,97 @@ async def task_output(task_id: str) -> str:
 
         return f"Task is still in progress (status: {task.status})"
 
+
+
+@mcp.tool()
+async def task_logs(task_id: str) -> str:
+    """Get the runner execution logs of a task by UUID."""
+    async with async_session() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid_mod.UUID(task_id)))
+        task = result.scalar_one_or_none()
+
+        if task is None:
+            return f"Error: Task {task_id} not found."
+
+        if not task.runner_logs:
+            return "(no logs available)"
+
+        return task.runner_logs
+
+
+@mcp.tool()
+async def schedule_task(
+    description: str,
+    execute_at: str,
+    repeat_interval: str | None = None,
+    repeat_until: str | None = None,
+) -> str:
+    """Create a scheduled or repeating task. Returns the task UUID."""
+    try:
+        parsed_execute_at = datetime.fromisoformat(execute_at)
+    except ValueError:
+        return f"Error: Invalid execute_at datetime format: '{execute_at}'. Use ISO 8601 format (e.g. '2026-03-01T09:00:00Z')."
+
+    parsed_repeat_until = None
+    if repeat_until is not None:
+        try:
+            parsed_repeat_until = datetime.fromisoformat(repeat_until)
+        except ValueError:
+            return f"Error: Invalid repeat_until datetime format: '{repeat_until}'. Use ISO 8601 format (e.g. '2026-06-01T00:00:00Z')."
+
+    async with async_session() as session:
+        words = description.strip().split()
+
+        if len(words) > 5:
+            llm_result = await generate_title(description, session)
+            title = llm_result.title
+        else:
+            title = description.strip()
+
+        category = "repeating" if repeat_interval else "scheduled"
+        status = "scheduled"
+
+        result = await session.execute(
+            select(func.max(Task.position)).where(Task.status == status)
+        )
+        max_pos = result.scalar()
+        position = (max_pos or 0) + 1
+
+        task = Task(
+            title=title,
+            description=description,
+            category=category,
+            status=status,
+            position=position,
+            execute_at=parsed_execute_at,
+            repeat_interval=repeat_interval,
+            repeat_until=parsed_repeat_until,
+            created_by="mcp",
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task, ["tags"])
+
+        task_data = {
+            "id": str(task.id),
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "position": task.position,
+            "category": task.category,
+            "execute_at": task.execute_at.isoformat() if task.execute_at else None,
+            "repeat_interval": task.repeat_interval,
+            "repeat_until": task.repeat_until.isoformat() if task.repeat_until else None,
+            "output": None,
+            "runner_logs": None,
+            "retry_count": 0,
+            "tags": [],
+            "created_at": task.created_at.isoformat(),
+            "updated_at": task.updated_at.isoformat(),
+        }
+        await publish_event("task_created", task_data)
+
+        return str(task.id)
 
 
 @mcp.tool()

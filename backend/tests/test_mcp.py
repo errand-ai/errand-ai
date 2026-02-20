@@ -263,12 +263,12 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_four_tools():
-    """The MCP server exposes exactly four tools."""
+async def test_mcp_server_has_six_tools():
+    """The MCP server exposes exactly six tools."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
-    assert tool_names == {"new_task", "task_status", "task_output", "post_tweet"}
+    assert tool_names == {"new_task", "task_status", "task_output", "task_logs", "schedule_task", "post_tweet"}
 
 
 # --- 5.4: MCP tools (tested as direct function calls) ---
@@ -388,6 +388,191 @@ async def test_task_output_not_found(db_session):
     from mcp_server import task_output
     result = await task_output("00000000-0000-0000-0000-000000000000")
     assert "not found" in result.lower()
+
+
+# --- task_logs MCP tool ---
+
+
+async def test_task_logs_with_logs(db_session):
+    """task_logs returns runner_logs content when present."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(
+            title="Logged task",
+            status="completed",
+            category="immediate",
+            runner_logs="Step 1: started\nStep 2: finished",
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_logs
+    result = await task_logs(task_id)
+    assert result == "Step 1: started\nStep 2: finished"
+
+
+async def test_task_logs_no_logs(db_session):
+    """task_logs returns '(no logs available)' when runner_logs is null."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(title="No logs", status="completed", category="immediate")
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_logs
+    result = await task_logs(task_id)
+    assert result == "(no logs available)"
+
+
+async def test_task_logs_not_found(db_session):
+    """task_logs returns error for non-existent task."""
+    from mcp_server import task_logs
+    result = await task_logs("00000000-0000-0000-0000-000000000000")
+    assert "Error" in result
+    assert "not found" in result.lower()
+
+
+# --- schedule_task MCP tool ---
+
+
+async def test_schedule_task_basic(db_session):
+    """schedule_task creates a scheduled task with correct fields."""
+    _, session_factory = db_session
+
+    from mcp_server import schedule_task
+    task_uuid = await schedule_task(
+        description="Send report",
+        execute_at="2026-03-01T09:00:00Z",
+    )
+
+    assert len(task_uuid) == 36
+
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.status == "scheduled"
+        assert task.category == "scheduled"
+        assert task.title == "Send report"
+        assert task.repeat_interval is None
+        assert task.repeat_until is None
+        assert task.created_by == "mcp"
+
+
+async def test_schedule_task_repeating(db_session):
+    """schedule_task with repeat_interval sets category to 'repeating'."""
+    _, session_factory = db_session
+
+    from mcp_server import schedule_task
+    task_uuid = await schedule_task(
+        description="Check health",
+        execute_at="2026-03-01T09:00:00Z",
+        repeat_interval="1h",
+    )
+
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.category == "repeating"
+        assert task.repeat_interval == "1h"
+        assert task.repeat_until is None
+
+
+async def test_schedule_task_repeating_with_end(db_session):
+    """schedule_task with repeat_interval and repeat_until sets both."""
+    _, session_factory = db_session
+
+    from mcp_server import schedule_task
+    task_uuid = await schedule_task(
+        description="Standup",
+        execute_at="2026-03-01T09:00:00Z",
+        repeat_interval="1d",
+        repeat_until="2026-06-01T00:00:00Z",
+    )
+
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.category == "repeating"
+        assert task.repeat_interval == "1d"
+        assert task.repeat_until is not None
+
+
+async def test_schedule_task_invalid_execute_at(db_session):
+    """schedule_task returns error for invalid execute_at format."""
+    from mcp_server import schedule_task
+    result = await schedule_task(
+        description="Bad time",
+        execute_at="next tuesday",
+    )
+    assert "Error" in result
+    assert "execute_at" in result
+
+
+async def test_schedule_task_invalid_repeat_until(db_session):
+    """schedule_task returns error for invalid repeat_until format."""
+    from mcp_server import schedule_task
+    result = await schedule_task(
+        description="Bad end",
+        execute_at="2026-03-01T09:00:00Z",
+        repeat_interval="1d",
+        repeat_until="forever",
+    )
+    assert "Error" in result
+    assert "repeat_until" in result
+
+
+async def test_schedule_task_short_description_no_llm(db_session):
+    """Short descriptions (<= 5 words) use description as title, no LLM."""
+    from mcp_server import schedule_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        task_uuid = await schedule_task(
+            description="Check logs",
+            execute_at="2026-03-01T09:00:00Z",
+        )
+        mock_gen.assert_not_called()
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Check logs"
+
+
+async def test_schedule_task_long_description_uses_llm(db_session):
+    """Long descriptions (> 5 words) use generate_title() for the title."""
+    from mcp_server import schedule_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        mock_result = type("LLMResult", (), {
+            "title": "Weekly Report",
+            "success": True,
+            "category": "scheduled",
+            "execute_at": None,
+            "repeat_interval": None,
+            "repeat_until": None,
+        })()
+        mock_gen.return_value = mock_result
+
+        task_uuid = await schedule_task(
+            description="Send the weekly status report to the team every Monday morning",
+            execute_at="2026-03-01T09:00:00Z",
+        )
+        mock_gen.assert_called_once()
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Weekly Report"
+        # Category should be "scheduled" (from parameters), not LLM's "scheduled"
+        assert task.category == "scheduled"
 
 
 # --- post_tweet MCP tool ---
