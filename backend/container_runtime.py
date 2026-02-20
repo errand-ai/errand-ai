@@ -1,7 +1,8 @@
 """Container runtime abstraction for the worker.
 
 Provides a pluggable interface for running task-runner containers via
-Docker (local dev) or Kubernetes Jobs (production).
+Docker (local dev), Kubernetes Jobs (production), or the macOS desktop
+app bridge API (Apple Containerization).
 """
 
 import base64
@@ -14,6 +15,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -643,6 +646,97 @@ def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
         logger.warning("Failed to list orphaned resources", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# AppleContainerRuntime
+# ---------------------------------------------------------------------------
+
+
+class AppleContainerRuntime(ContainerRuntime):
+    """Runs task-runner containers via the macOS desktop app bridge API."""
+
+    def __init__(self, bridge_url: str, bridge_token: str) -> None:
+        self.bridge_url = bridge_url.rstrip("/")
+        self.bridge_token = bridge_token
+        self._session = requests.Session()
+        self._session.headers["Authorization"] = f"Bearer {bridge_token}"
+
+    def prepare(
+        self,
+        image: str,
+        env: dict[str, str],
+        files: dict[str, str],
+        output_dir: str | None = None,
+        skills_tar: bytes | None = None,
+        ssh_private_key: str | None = None,
+        ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
+    ) -> RuntimeHandle:
+        payload: dict[str, Any] = {
+            "image": image,
+            "env": env,
+            "files": files,
+        }
+        if skills_tar:
+            payload["skills_tar_b64"] = base64.b64encode(skills_tar).decode("ascii")
+        if ssh_private_key:
+            payload["ssh_private_key"] = ssh_private_key
+        if ssh_config:
+            payload["ssh_config"] = ssh_config
+        if ssh_hosts:
+            payload["ssh_hosts"] = ssh_hosts
+
+        resp = self._session.post(f"{self.bridge_url}/containers", json=payload)
+        resp.raise_for_status()
+        container_id = resp.json()["id"]
+        logger.info("Created container %s via bridge API", container_id)
+
+        return RuntimeHandle(runtime_data={"container_id": container_id})
+
+    def run(self, handle: RuntimeHandle) -> Iterator[str]:
+        container_id = handle.runtime_data["container_id"]
+        resp = self._session.get(
+            f"{self.bridge_url}/containers/{container_id}/logs",
+            stream=True,
+        )
+        resp.raise_for_status()
+
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if raw_line and raw_line.startswith("data:"):
+                line = raw_line[len("data:"):].strip()
+                if line:
+                    yield line
+
+    def result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
+        container_id = handle.runtime_data["container_id"]
+
+        status_resp = self._session.get(
+            f"{self.bridge_url}/containers/{container_id}/status",
+        )
+        status_resp.raise_for_status()
+        exit_code = status_resp.json().get("exitCode", -1)
+        if exit_code is None:
+            exit_code = -1
+
+        output_resp = self._session.get(
+            f"{self.bridge_url}/containers/{container_id}/output",
+        )
+        output_resp.raise_for_status()
+        stdout = output_resp.json().get("output", "")
+
+        return exit_code, stdout, ""
+
+    def cleanup(self, handle: RuntimeHandle) -> None:
+        container_id = handle.runtime_data.get("container_id")
+        if container_id:
+            try:
+                self._session.delete(
+                    f"{self.bridge_url}/containers/{container_id}",
+                )
+                logger.info("Removed container %s via bridge API", container_id)
+            except Exception:
+                logger.debug("Failed to remove container via bridge API", exc_info=True)
+
+
 def create_runtime(runtime_type: str | None = None) -> ContainerRuntime:
     """Factory function to create the appropriate runtime based on CONTAINER_RUNTIME env var."""
     runtime_type = runtime_type or os.environ.get("CONTAINER_RUNTIME", "docker")
@@ -674,5 +768,12 @@ def create_runtime(runtime_type: str | None = None) -> ContainerRuntime:
         cleanup_orphaned_jobs(runtime)
         return runtime
 
+    elif runtime_type == "apple":
+        bridge_url = os.environ.get("CONTAINER_BRIDGE_URL", "http://localhost:9876")
+        bridge_token = os.environ.get("CONTAINER_BRIDGE_TOKEN", "")
+        if not bridge_token:
+            raise ValueError("CONTAINER_BRIDGE_TOKEN must be set when using apple runtime")
+        return AppleContainerRuntime(bridge_url, bridge_token)
+
     else:
-        raise ValueError(f"Unknown CONTAINER_RUNTIME: {runtime_type!r} (expected 'docker' or 'kubernetes')")
+        raise ValueError(f"Unknown CONTAINER_RUNTIME: {runtime_type!r} (expected 'docker', 'kubernetes', or 'apple')")
