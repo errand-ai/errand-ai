@@ -357,18 +357,23 @@ class TestKubernetesRuntime:
         # Secret name stored in handle for cleanup
         assert handle.runtime_data["secret_name"] != ""
 
-        # Job has SSH volume mount at /home/nonroot/.ssh
+        # Job has SSH volume mount at /etc/ssh-credentials (not ~/.ssh — K8s directory perms)
         job_call = runtime.batch_v1.create_namespaced_job.call_args
         job = job_call[0][1]
         container_spec = job.spec.template.spec.containers[0]
         mount_paths = {vm.mount_path: vm.name for vm in container_spec.volume_mounts}
-        assert "/home/nonroot/.ssh" in mount_paths
+        assert "/etc/ssh-credentials" in mount_paths
 
-        # Volume uses the secret
+        # Volume uses the secret with restrictive file mode
         vol_names = {v.name: v for v in job.spec.template.spec.volumes}
         ssh_vol = vol_names["ssh-credentials"]
         assert ssh_vol.secret.secret_name == handle.runtime_data["secret_name"]
         assert ssh_vol.secret.default_mode == 0o600
+
+        # GIT_SSH_COMMAND env var points to the mounted key
+        env_dict = {e.name: e.value for e in container_spec.env}
+        assert "GIT_SSH_COMMAND" in env_dict
+        assert "/etc/ssh-credentials/id_rsa.agent" in env_dict["GIT_SSH_COMMAND"]
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")

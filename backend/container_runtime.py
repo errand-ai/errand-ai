@@ -347,10 +347,13 @@ class KubernetesRuntime(ContainerRuntime):
             ),
         ]
 
-        # SSH credentials volume (Secret mounted at ~/.ssh)
+        # SSH credentials volume — mounted at /etc/ssh-credentials (not ~/.ssh)
+        # because K8s Secret volume mounts set permissive directory permissions
+        # that SSH rejects. We use GIT_SSH_COMMAND env var instead.
         if secret_name:
+            ssh_mount_path = "/etc/ssh-credentials"
             volume_mounts.append(
-                client.V1VolumeMount(name="ssh-credentials", mount_path="/home/nonroot/.ssh", read_only=True)
+                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path, read_only=True)
             )
             volumes.append(
                 client.V1Volume(
@@ -359,6 +362,12 @@ class KubernetesRuntime(ContainerRuntime):
                         secret_name=secret_name,
                         default_mode=0o600,
                     ),
+                )
+            )
+            env_list.append(
+                client.V1EnvVar(
+                    name="GIT_SSH_COMMAND",
+                    value=f"ssh -i {ssh_mount_path}/id_rsa.agent -o StrictHostKeyChecking=accept-new",
                 )
             )
 
