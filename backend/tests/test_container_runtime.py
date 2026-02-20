@@ -327,7 +327,8 @@ class TestKubernetesRuntime:
         cm_call = runtime.core_v1.create_namespaced_config_map.call_args
         cm = cm_call[0][1]
         assert cm.data == {"prompt.txt": "hello"}
-        assert cm.binary_data["skills.tar"] == skills_bytes
+        import base64 as _b64
+        assert _b64.b64decode(cm.binary_data["skills.tar"]) == skills_bytes
 
         # Workspace volume is emptyDir (not ConfigMap)
         job_call = runtime.batch_v1.create_namespaced_job.call_args

@@ -4,6 +4,7 @@ Provides a pluggable interface for running task-runner containers via
 Docker (local dev) or Kubernetes Jobs (production).
 """
 
+import base64
 import io
 import logging
 import os
@@ -269,7 +270,7 @@ class KubernetesRuntime(ContainerRuntime):
                 },
             ),
             data=files,
-            binary_data={"skills.tar": skills_tar} if skills_tar else None,
+            binary_data={"skills.tar": base64.b64encode(skills_tar).decode("ascii")} if skills_tar else None,
         )
         self.core_v1.create_namespaced_config_map(self.namespace, configmap)
         logger.info("Created ConfigMap %s", configmap_name)
