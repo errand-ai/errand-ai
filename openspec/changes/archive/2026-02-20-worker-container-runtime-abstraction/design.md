@@ -55,6 +55,8 @@ ContainerRuntime:
 
 **Choice**: The task-runner writes its structured JSON output to both stdout AND `/output/result.json`. Runtimes that can separate stdout/stderr (Docker) continue reading stdout. Runtimes that can't (K8s) read the file instead.
 
+**K8s result reading**: `KubernetesRuntime.result()` reads `/output/result.json` from the completed pod via `kubectl exec` (`pods/exec` API). The pod's emptyDir volume persists until the pod is deleted, so exec works even after the container exits. If the exec fails (e.g. container already removed), the runtime falls back to extracting the last valid JSON object from the pod logs — this handles edge cases where the pod is cleaned up before the file can be read.
+
 **Why**: The K8s pod log API merges stdout and stderr. Rather than adding in-band markers or changing the task-runner's output contract, writing to a file is a minimal, universal solution. The `/output` directory is created by the runtime (emptyDir in K8s, or just a directory in Docker).
 
 ### Decision 4: K8s file injection via ConfigMaps
@@ -75,9 +77,9 @@ ContainerRuntime:
 
 ### Decision 6: K8s log streaming via pod log API
 
-**Choice**: The KubernetesRuntime streams logs using the Kubernetes Python client's `read_namespaced_pod_log(follow=True)`. The combined stdout+stderr stream is published to Valkey line-by-line (same as today). Since the real-time stream is for UI display, mixing stdout and stderr is acceptable.
+**Choice**: The KubernetesRuntime streams logs using the Kubernetes Python client's `read_namespaced_pod_log(follow=True)`. The K8s pod log API returns combined stdout+stderr. Since the real-time stream is for UI display, mixing stdout and stderr is acceptable. In Docker mode, `DockerRuntime.run()` streams stderr only (`stdout=False, stderr=True`) — this is correct because the task-runner's stdout is reserved for the final JSON output and should not appear in the live log stream.
 
-The final structured output is read from `/output/result.json` (not from the log stream), so the mixing doesn't affect result parsing.
+The final structured output is read from `/output/result.json` (not from the log stream), so the mixing in K8s mode doesn't affect result parsing.
 
 **Why**: Pod log follow is the standard K8s mechanism for real-time log access. It's reliable and well-supported by the Python client.
 
@@ -85,13 +87,15 @@ The final structured output is read from `/output/result.json` (not from the log
 
 **Choice**: When `CONTAINER_RUNTIME=kubernetes`, the worker needs a ServiceAccount with RBAC permissions:
 - `jobs.batch`: create, get, list, watch, delete
-- `configmaps`: create, get, delete
+- `configmaps`: create, get, list, delete (list needed for orphaned resource cleanup on startup)
+- `secrets`: create, get, list, delete (SSH credentials are injected as K8s Secrets rather than ConfigMap entries to avoid exposing private keys in ConfigMap data)
 - `pods`: get, list (for log streaming and pod IP discovery)
 - `pods/log`: get (for log streaming)
+- `pods/exec`: create, get (for reading `/output/result.json` from completed task-runner pods)
 
 All scoped to the worker's namespace.
 
-**Why**: Least-privilege access. The worker only needs to manage Jobs and ConfigMaps in its own namespace.
+**Why**: Least-privilege access. The worker only needs to manage Jobs, ConfigMaps, Secrets, and pod interactions in its own namespace.
 
 ## Risks / Trade-offs
 

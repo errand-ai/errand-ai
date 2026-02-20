@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: Helm chart deploys all application components
 The Helm chart SHALL define Kubernetes resources for: backend Deployment and Service, worker Deployment, database migration Job (pre-upgrade hook), and Ingress. The frontend SHALL NOT have a separate Deployment or Service — it is served by the backend.
@@ -37,8 +37,34 @@ The Helm chart SHALL allow overriding the image repository and tag for the backe
 - **WHEN** `image.tag` is set to `0.2.0`
 - **THEN** the backend and worker deployments use that image tag
 
-## REMOVED Requirements
+### Requirement: Worker deployment with Playwright sidecar
+The Helm chart worker Deployment SHALL NOT include a DinD sidecar container. The worker container SHALL have `CONTAINER_RUNTIME` set to `kubernetes`. The worker container SHALL have `DOCKER_HOST` removed from its environment. The worker container SHALL NOT require `privileged: true` in its security context.
 
-### Requirement: Frontend Deployment and Service (implicit in original "deploys all application components")
-**Reason**: The frontend is now served by the backend. The separate frontend Deployment, Service, and ConfigMap are no longer needed.
-**Migration**: Delete `frontend-deployment.yaml`, `frontend-service.yaml`, and `frontend-configmap.yaml` from the Helm templates. Remove `frontend` section from `values.yaml`.
+The worker Deployment SHALL include a Playwright MCP sidecar container alongside the worker container. The Playwright sidecar SHALL use the image from `.Values.playwright.image` with the command `--port <port> --host 0.0.0.0 --allowed-hosts *`. The Playwright sidecar SHALL have a memory limit from `.Values.playwright.memoryLimit`. The worker container SHALL have `POD_IP` set via the Downward API (`status.podIP`).
+
+#### Scenario: Worker pod has no DinD sidecar
+- **WHEN** the Helm chart is deployed
+- **THEN** the worker pod contains two containers: `worker` and `playwright` (no `dind`)
+
+#### Scenario: Worker pod is not privileged
+- **WHEN** the worker pod starts
+- **THEN** no container in the pod has `privileged: true` in its security context
+
+#### Scenario: Worker has CONTAINER_RUNTIME set
+- **WHEN** the worker container starts
+- **THEN** the `CONTAINER_RUNTIME` environment variable is set to `kubernetes`
+
+#### Scenario: Worker has POD_IP from Downward API
+- **WHEN** the worker pod starts
+- **THEN** the worker container has `POD_IP` set to the pod's cluster IP via `fieldRef: status.podIP`
+
+### Requirement: Worker ServiceAccount and RBAC
+The Helm chart SHALL include a ServiceAccount, Role, and RoleBinding for the worker. The Role SHALL grant permissions to create, get, list, watch, and delete `jobs.batch`; create, get, list, and delete `configmaps`; get and list `pods`; get `pods/log`; and create `pods/exec` — all within the release namespace. The `pods/exec` permission is needed by `KubernetesRuntime.result()` to read `/output/result.json` from completed task-runner pods.
+
+#### Scenario: ServiceAccount created
+- **WHEN** the Helm chart is deployed
+- **THEN** a ServiceAccount named `<release>-worker` exists in the namespace
+
+#### Scenario: Role grants required permissions
+- **WHEN** the Role is inspected
+- **THEN** it includes rules for jobs, configmaps, pods, and pods/log with the specified verbs
