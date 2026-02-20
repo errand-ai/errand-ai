@@ -427,7 +427,7 @@ class TestKubernetesRuntime:
         assert handle.runtime_data["pod_name"] == "pod-abc"
 
     def test_result_reads_exit_code_and_output(self):
-        """result() reads exit code from pod status and output from /output/result.json."""
+        """result() reads exit code from pod status and extracts output from logs."""
         runtime = self._make_runtime()
 
         handle = RuntimeHandle(runtime_data={
@@ -444,21 +444,20 @@ class TestKubernetesRuntime:
         mock_pod.status.container_statuses = [cs]
         runtime.core_v1.read_namespaced_pod.return_value = mock_pod
 
-        # Mock exec to read /output/result.json
-        with patch("kubernetes.stream.stream", return_value='{"status":"completed","result":"done"}'):
-            # Mock full logs as stderr
-            runtime.core_v1.read_namespaced_pod_log.return_value = "full log output"
+        # Pod logs contain structured JSON output as last line
+        runtime.core_v1.read_namespaced_pod_log.return_value = (
+            "some debug output\n"
+            '{"status":"completed","result":"done"}'
+        )
 
-            exit_code, stdout, stderr = runtime.result(handle)
+        exit_code, stdout, stderr = runtime.result(handle)
 
         assert exit_code == 0
         assert stdout == '{"status":"completed","result":"done"}'
-        assert stderr == "full log output"
+        assert "some debug output" in stderr
 
-    def test_result_falls_back_to_log_extraction(self):
-        """result() extracts structured JSON from pod logs when exec fails."""
-        from kubernetes.client.rest import ApiException
-
+    def test_result_extracts_json_from_mixed_logs(self):
+        """result() extracts structured JSON from pod logs with mixed content."""
         runtime = self._make_runtime()
         handle = RuntimeHandle(runtime_data={
             "job_name": "task-runner-abc",
@@ -481,9 +480,7 @@ class TestKubernetesRuntime:
         )
         runtime.core_v1.read_namespaced_pod_log.return_value = combined_logs
 
-        # Exec fails (simulating RBAC 403)
-        with patch("kubernetes.stream.stream", side_effect=ApiException(status=403)):
-            exit_code, stdout, stderr = runtime.result(handle)
+        exit_code, stdout, stderr = runtime.result(handle)
 
         assert exit_code == 0
         assert '"status":"completed"' in stdout
@@ -502,10 +499,9 @@ class TestKubernetesRuntime:
         })
 
         runtime.core_v1.read_namespaced_pod.side_effect = ApiException(status=404)
+        runtime.core_v1.read_namespaced_pod_log.side_effect = ApiException(status=404)
 
-        with patch("kubernetes.stream.stream", side_effect=ApiException(status=404)):
-            runtime.core_v1.read_namespaced_pod_log.side_effect = ApiException(status=404)
-            exit_code, stdout, stderr = runtime.result(handle)
+        exit_code, stdout, stderr = runtime.result(handle)
 
         assert exit_code == -1
         assert stdout == ""

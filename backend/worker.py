@@ -873,11 +873,9 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 finally:
                     log_redis.close()
 
-            # Get exit code and captured output
-            exit_code, stdout, stderr = runtime.result(handle)
-
-            # Check for callback result from Valkey (overrides runtime stdout)
+            # Prefer callback result from Valkey; fall back to runtime stdout
             callback_result = _read_callback_result(str(task.id))
+            exit_code, stdout, stderr = runtime.result(handle)
             if callback_result is not None:
                 stdout = callback_result
 

@@ -484,7 +484,6 @@ class KubernetesRuntime(ContainerRuntime):
 
     def result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
         from kubernetes.client.rest import ApiException
-        from kubernetes.stream import stream as k8s_stream
 
         pod_name = handle.runtime_data.get("pod_name", "")
         namespace = handle.runtime_data["namespace"]
@@ -507,28 +506,11 @@ class KubernetesRuntime(ContainerRuntime):
         except ApiException:
             logger.warning("Failed to read logs from pod %s", pod_name, exc_info=True)
 
-        # Try to read /output/result.json via exec (preferred — clean structured output)
-        stdout = ""
-        try:
-            resp = k8s_stream(
-                self.core_v1.connect_get_namespaced_pod_exec,
-                pod_name,
-                namespace,
-                command=["cat", "/output/result.json"],
-                container="task-runner",
-                stderr=False,
-                stdin=False,
-                stdout=True,
-                tty=False,
-            )
-            stdout = resp if isinstance(resp, str) else resp.decode("utf-8", errors="replace")
-        except ApiException:
-            logger.warning("Failed to read /output/result.json from pod %s", pod_name, exc_info=True)
-
-        # Fallback: if exec failed, extract the JSON from pod logs.
+        # Extract structured output from pod logs.
         # The task-runner prints the JSON as the last stdout line; in K8s logs
         # stdout and stderr are merged but the JSON is recognisable by structure.
-        if not stdout and full_logs:
+        stdout = ""
+        if full_logs:
             for line in reversed(full_logs.splitlines()):
                 stripped = line.strip()
                 if stripped.startswith("{") and stripped.endswith("}"):
@@ -537,7 +519,7 @@ class KubernetesRuntime(ContainerRuntime):
                         obj = json.loads(stripped)
                         if "status" in obj and "result" in obj:
                             stdout = stripped
-                            logger.info("Extracted structured output from pod logs (exec fallback)")
+                            logger.info("Extracted structured output from pod logs")
                             break
                     except (json.JSONDecodeError, KeyError):
                         continue
