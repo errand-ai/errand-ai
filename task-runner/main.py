@@ -10,6 +10,7 @@ import subprocess
 import sys
 from contextlib import AsyncExitStack
 
+import httpx
 from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
@@ -360,6 +361,30 @@ def write_output_file(output: str, output_dir: str = "/output") -> None:
         logger.warning("Failed to write output to %s/result.json", output_dir, exc_info=True)
 
 
+def post_result_callback(output: str) -> None:
+    """POST output to the callback URL if configured. Never raises."""
+    callback_url = os.environ.get("RESULT_CALLBACK_URL", "")
+    callback_token = os.environ.get("RESULT_CALLBACK_TOKEN", "")
+    if not callback_url or not callback_token:
+        return
+    try:
+        resp = httpx.post(
+            callback_url,
+            content=output,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {callback_token}",
+            },
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            logger.info("Callback POST succeeded to %s", callback_url)
+        else:
+            logger.warning("Callback POST returned %d from %s", resp.status_code, callback_url)
+    except Exception:
+        logger.warning("Callback POST failed to %s", callback_url, exc_info=True)
+
+
 async def main():
     # 1. Read and validate environment variables
     env = read_env_vars()
@@ -450,6 +475,9 @@ async def main():
 
             # Output to stdout
             print(output)
+
+            # Push result to backend via callback if configured
+            post_result_callback(output)
 
             # Write output to /output/result.json if the directory exists
             write_output_file(output)

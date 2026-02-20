@@ -22,6 +22,7 @@ from worker import (
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
     start_playwright_container, health_check_playwright,
     cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
+    _read_callback_result,
 )
 from container_runtime import (
     _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
@@ -2951,3 +2952,281 @@ def test_process_task_k8s_mode_playwright_sidecar_unhealthy():
     files = mock_runtime.prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "playwright" not in mcp_config.get("mcpServers", {})
+
+
+# --- Callback token generation ---
+
+
+def test_callback_token_stored_in_valkey():
+    """Worker generates callback token and stores it in Valkey with correct key and TTL."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    mock_redis = MagicMock()
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    # Token was stored with correct key pattern and 30-min TTL
+    set_calls = [c for c in mock_redis.set.call_args_list if "task_result_token:" in str(c)]
+    assert len(set_calls) == 1
+    args, kwargs = set_calls[0]
+    assert args[0] == f"task_result_token:{task.id}"
+    assert len(args[1]) == 64  # token_hex(32) = 64 chars
+    assert kwargs.get("ex") == 1800
+
+
+def test_callback_url_derived_from_backend_mcp_url():
+    """Callback URL is derived by stripping /mcp and appending internal endpoint."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    mock_redis = MagicMock()
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    env = mock_runtime.prepare.call_args.kwargs["env"]
+    assert env["RESULT_CALLBACK_URL"] == f"http://errand-backend:8000/api/internal/task-result/{task.id}"
+    assert "RESULT_CALLBACK_TOKEN" in env
+    assert len(env["RESULT_CALLBACK_TOKEN"]) == 64
+
+
+def test_callback_env_vars_passed_to_container():
+    """Both RESULT_CALLBACK_URL and RESULT_CALLBACK_TOKEN are in container env vars."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    mock_redis = MagicMock()
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.return_value = mock_redis
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    env = mock_runtime.prepare.call_args.kwargs["env"]
+    assert "RESULT_CALLBACK_URL" in env
+    assert "RESULT_CALLBACK_TOKEN" in env
+
+
+def test_callback_env_vars_skipped_on_valkey_failure():
+    """When Valkey is unavailable, callback env vars are not set."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            # All Redis operations fail
+            mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    env = mock_runtime.prepare.call_args.kwargs["env"]
+    assert "RESULT_CALLBACK_URL" not in env
+    assert "RESULT_CALLBACK_TOKEN" not in env
+
+
+# --- Callback result reading ---
+
+
+def test_callback_result_overrides_runtime_stdout():
+    """When callback result exists in Valkey, it overrides runtime.result() stdout."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+    callback_output = '{"status":"completed","result":"callback result","questions":[]}'
+    runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
+
+    mock_runtime = _make_mock_runtime(stdout=runtime_output)
+    mock_redis = MagicMock()
+    # First call: token storage (returns mock), Second call: log streaming, Third call: result reading
+    mock_result_redis = MagicMock()
+    mock_result_redis.get.return_value = callback_output
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            # Return different mocks for each Redis.from_url call:
+            # 1st: callback token storage, 2nd: log streaming, 3rd: result reading
+            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    assert stdout == callback_output
+
+
+def test_missing_callback_falls_back_to_runtime_stdout():
+    """When no callback result in Valkey, runtime.result() stdout is used."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+    runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
+
+    mock_runtime = _make_mock_runtime(stdout=runtime_output)
+    mock_redis = MagicMock()
+    mock_result_redis = MagicMock()
+    mock_result_redis.get.return_value = None  # No callback result
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    assert stdout == runtime_output
+
+
+def test_callback_result_valkey_keys_deleted():
+    """Both task_result and task_result_token keys are deleted after reading."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    mock_redis = MagicMock()
+    mock_result_redis = MagicMock()
+    mock_result_redis.get.return_value = '{"status":"completed","result":"done","questions":[]}'
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    mock_result_redis.delete.assert_called_once_with(
+        f"task_result:{task.id}", f"task_result_token:{task.id}"
+    )
+
+
+def test_callback_result_valkey_error_swallowed():
+    """Valkey errors during callback result reading are swallowed gracefully."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+    runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
+
+    mock_runtime = _make_mock_runtime(stdout=runtime_output)
+    mock_redis = MagicMock()
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
+            "BACKEND_MCP_URL": "http://errand-backend:8000/mcp",
+        }), patch("worker.sync_redis") as mock_sync_redis:
+            # Token storage + log streaming succeed, result reading fails
+            mock_sync_redis.Redis.from_url.side_effect = [
+                mock_redis, mock_redis, ConnectionError("Valkey down"),
+            ]
+            exit_code, stdout, stderr = process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    # Falls back to runtime stdout
+    assert stdout == runtime_output

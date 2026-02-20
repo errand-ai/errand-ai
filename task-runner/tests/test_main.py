@@ -1,7 +1,8 @@
 import json
 import os
+from unittest.mock import patch, MagicMock
 
-from main import write_output_file
+from main import write_output_file, post_result_callback
 
 
 def test_file_output_written_when_dir_exists(tmp_path):
@@ -60,3 +61,66 @@ def test_file_output_with_error_json(tmp_path):
     data = json.loads(result_file.read_text())
     assert data["status"] == "error"
     assert "API timeout" in data["result"]
+
+
+# --- Callback POST tests ---
+
+
+CALLBACK_URL = "http://errand-backend:8000/api/internal/task-result/test-123"
+CALLBACK_TOKEN = "abc123"
+OUTPUT = '{"status":"completed","result":"done","questions":[]}'
+
+
+def test_callback_post_success():
+    """Successful POST logs success."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch.dict(os.environ, {
+        "RESULT_CALLBACK_URL": CALLBACK_URL,
+        "RESULT_CALLBACK_TOKEN": CALLBACK_TOKEN,
+    }), patch("main.httpx.post", return_value=mock_resp) as mock_post:
+        post_result_callback(OUTPUT)
+
+    mock_post.assert_called_once_with(
+        CALLBACK_URL,
+        content=OUTPUT,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {CALLBACK_TOKEN}",
+        },
+        timeout=10.0,
+    )
+
+
+def test_callback_post_failure_logs_warning():
+    """Failed POST logs warning and doesn't raise."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+
+    with patch.dict(os.environ, {
+        "RESULT_CALLBACK_URL": CALLBACK_URL,
+        "RESULT_CALLBACK_TOKEN": CALLBACK_TOKEN,
+    }), patch("main.httpx.post", return_value=mock_resp):
+        # Should not raise
+        post_result_callback(OUTPUT)
+
+
+def test_callback_post_missing_env_vars_no_op():
+    """Missing env vars cause silent no-op."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("RESULT_CALLBACK_URL", None)
+        os.environ.pop("RESULT_CALLBACK_TOKEN", None)
+        with patch("main.httpx.post") as mock_post:
+            post_result_callback(OUTPUT)
+            mock_post.assert_not_called()
+
+
+def test_callback_post_timeout_handled():
+    """Timeout is handled gracefully (no raise)."""
+    with patch.dict(os.environ, {
+        "RESULT_CALLBACK_URL": CALLBACK_URL,
+        "RESULT_CALLBACK_TOKEN": CALLBACK_TOKEN,
+    }), patch("main.httpx.post", side_effect=Exception("connection timed out")):
+        # Should not raise
+        post_result_callback(OUTPUT)

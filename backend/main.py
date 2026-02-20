@@ -1168,6 +1168,41 @@ async def queue_metrics(session: AsyncSession = Depends(get_session)):
     return {"queue_depth": result.scalar()}
 
 
+
+@app.post("/api/internal/task-result/{task_id}")
+async def receive_task_result(task_id: str, request: Request):
+    """Accept task-runner output via one-time Valkey token auth."""
+    valkey = get_valkey()
+    if valkey is None:
+        raise HTTPException(status_code=503, detail="Valkey unavailable")
+
+    # Read Bearer token from Authorization header
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    provided_token = auth_header[7:]
+
+    # Validate against Valkey-stored token
+    token_key = f"task_result_token:{task_id}"
+    try:
+        expected_token = await valkey.get(token_key)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Valkey unavailable")
+
+    if expected_token is None or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Token is valid — delete it (one-time use) and store the result
+    try:
+        await valkey.delete(token_key)
+        body = await request.body()
+        await valkey.set(f"task_result:{task_id}", body.decode("utf-8"), ex=600)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Valkey unavailable")
+
+    return {"ok": True}
+
+
 @app.get("/api/health")
 async def health(session: AsyncSession = Depends(get_session)):
     try:

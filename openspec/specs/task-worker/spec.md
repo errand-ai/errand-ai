@@ -1,12 +1,14 @@
 ## Requirements
 
-### Requirement: Worker executes tasks in DinD containers
+### Requirement: Worker executes tasks via ContainerRuntime
 
-The worker SHALL execute each task by creating a container inside the DinD sidecar using the create->copy->start lifecycle with `network_mode="host"` (so the task runner shares DinD's network namespace). The worker SHALL: (1) pull the task runner image, (2) retrieve the `task_processing_model`, `system_prompt`, `mcp_servers`, `ssh_private_key`, `git_ssh_hosts`, `hindsight_url`, and `hindsight_bank_id` settings from the database, and query the `skills` and `skill_files` tables for all skills and their attached files, **(2a) create and start a Playwright MCP sidecar container in DinD with `network_mode="host"`, Docker-level memory limits, and the command `--port <port> --host 0.0.0.0 --allowed-hosts *`, then health-check it by polling the Streamable HTTP endpoint until it responds (with configurable timeout),** (3) create the container from the task runner image with environment variables `OPENAI_BASE_URL`, `OPENAI_API_KEY` (from the worker's own environment), `OPENAI_MODEL` (from the `task_processing_model` setting, defaulting to `claude-sonnet-4-5-20250929`), `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, and `MCP_CONFIGURATION_PATH=/workspace/mcp.json`, (4) copy input files (`/workspace/prompt.txt` containing the task description, `/workspace/system_prompt.txt` containing the system prompt from settings, `/workspace/mcp.json` containing the MCP server configuration from settings **after environment variable substitution**) into the stopped container via `put_archive()`, **(4a) inject a `playwright` entry into the MCP server configuration with `{"url": "http://localhost:<port>/mcp"}` before writing `mcp.json` — this injection SHALL NOT overwrite a database-configured `playwright` entry,** (5) if skills exist, write Agent Skills directories to `/workspace/skills/<name>/` containing `SKILL.md` files and any attached files from the `skill_files` table, (6) if `ssh_private_key` is present in settings, copy SSH credentials into the container: the private key at `/home/nonroot/.ssh/id_rsa.agent` with file permissions 600, and an SSH config file at `/home/nonroot/.ssh/config` with file permissions 644, (7) if Hindsight is configured, recall relevant memories via the Hindsight REST API and inject the results into the system prompt, and inject a `hindsight` MCP server entry into the MCP configuration, (8) start the container, (9) **stream stderr in real-time** by iterating `container.logs(stream=True, follow=True, stderr=True, stdout=False)` and publishing each chunk to the per-task Valkey channel `task_logs:{task_id}` using a synchronous Redis client, followed by a `task_log_end` sentinel when the stream completes, (10) retrieve the container exit code via `container.wait()`, (11) capture full stdout and stderr via `container.logs()`, (12) parse the structured output from stdout using robust JSON extraction (try direct JSON parse, then code fence extraction anywhere in stdout, then first-`{`-to-last-`}` extraction — the first strategy that produces a valid `TaskRunnerOutput` is used; if none succeed, schedule retry), (13) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (14) remove the container, **(14a) stop and remove the Playwright MCP sidecar container,** (15) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
+The worker SHALL execute each task by delegating container operations to the configured `ContainerRuntime` implementation (see `container-runtime` spec). The worker SHALL: (1) retrieve the `task_processing_model`, `system_prompt`, `mcp_servers`, `ssh_private_key`, `git_ssh_hosts`, `hindsight_url`, and `hindsight_bank_id` settings from the database, and query the `skills` and `skill_files` tables for all skills and their attached files, (2) if Playwright is configured, start the Playwright sidecar via the runtime-appropriate mechanism (Docker: create container in DinD with `network_mode="host"`; K8s: Playwright is a pre-deployed sidecar on the worker pod — the worker health-checks it but does not start it), (3) build the environment variables (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `USER_PROMPT_PATH=/workspace/prompt.txt`, `SYSTEM_PROMPT_PATH=/workspace/system_prompt.txt`, `MCP_CONFIGURATION_PATH=/workspace/mcp.json`) and input files, (4) inject a `playwright` entry into the MCP server configuration — this injection SHALL NOT overwrite a database-configured `playwright` entry, (5) if skills exist, write Agent Skills directories to `/workspace/skills/<name>/` containing `SKILL.md` files and any attached files from the `skill_files` table, (6) if `ssh_private_key` is present in settings, inject SSH credentials (the private key and an SSH config file), (7) if Hindsight is configured, recall relevant memories via the Hindsight REST API and inject the results into the system prompt, and inject a `hindsight` MCP server entry into the MCP configuration, (8) call `runtime.prepare(image, env, files, output_dir)` to create the container/Job with injected files, (9) call `runtime.run(handle)` and publish each yielded log line to the Valkey channel `task_logs:{task_id}` using a synchronous Redis client, followed by a `task_log_end` sentinel when the stream completes, (10) call `runtime.result(handle)` to get `(exit_code, stdout, stderr)`, (11) parse the structured output from stdout using robust JSON extraction (try direct JSON parse, then code fence extraction anywhere in stdout, then first-`{`-to-last-`}` extraction — the first strategy that produces a valid `TaskRunnerOutput` is used; if none succeed, schedule retry), (12) store the structured result in the task's `output` field and stderr in the task's `runner_logs` field, (13) call `runtime.cleanup(handle)`, (14) if the task completed successfully and has `category = 'repeating'`, attempt to reschedule by creating a cloned task (see `repeating-task-rescheduling` spec).
 
-The Playwright container cleanup (step 14a) SHALL occur in a `finally` block to ensure the sidecar is removed even if the task-runner fails, times out, or the worker encounters an error. If the Playwright container has already been removed (e.g. OOM-killed and auto-removed), the cleanup SHALL log a warning and continue without raising an error.
+The Playwright container cleanup in Docker mode SHALL occur in a `finally` block to ensure the sidecar is removed even if the task-runner fails, times out, or the worker encounters an error. If the Playwright container has already been removed (e.g. OOM-killed and auto-removed), the cleanup SHALL log a warning and continue without raising an error. In K8s mode, Playwright is managed by the pod spec and does not need explicit cleanup by the worker.
 
-The worker SHALL pre-pull required Docker images on startup after connecting to the Docker daemon. The images to pre-pull are the task-runner image (`TASK_RUNNER_IMAGE`) and, if configured, the Playwright MCP image (`PLAYWRIGHT_MCP_IMAGE`). For each image, the worker SHALL check if it is already available locally via `images.get()` and only pull if not found. This ensures the first task starts without download delays.
+The worker SHALL pre-pull required Docker images on startup only when using `DockerRuntime`. The images to pre-pull are the task-runner image (`TASK_RUNNER_IMAGE`) and, if configured, the Playwright MCP image (`PLAYWRIGHT_MCP_IMAGE`). For each image, the worker SHALL check if it is already available locally via `images.get()` and only pull if not found. When using `KubernetesRuntime`, the K8s node's container runtime handles image pulling and no pre-pull occurs.
+
+All other behaviour (settings retrieval, system prompt construction, MCP configuration injection, Perplexity injection, Hindsight recall, skills injection, SSH credential injection, env var substitution, log publishing to Valkey, output parsing, retry logic, repeating task rescheduling, WebSocket event publishing) SHALL remain unchanged.
 
 The worker SHALL read Playwright configuration from environment variables:
 - `PLAYWRIGHT_MCP_IMAGE`: The Playwright MCP container image (if not set, Playwright is skipped)
@@ -43,15 +45,35 @@ The worker SHALL store the captured stderr in the task's `runner_logs` field for
 
 The worker SHALL publish `task_updated` WebSocket events containing all task fields matching the API's `TaskResponse` schema: `id`, `title`, `description`, `status`, `position`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `output`, `runner_logs`, `retry_count`, `tags`, `created_at`, and `updated_at`. The `_task_to_dict()` helper SHALL serialise the complete task object including the `tags` relationship and the `runner_logs` field.
 
-#### Scenario: Images pre-pulled on worker startup
+#### Scenario: Docker runtime processes task (unchanged behaviour)
 
-- **WHEN** the worker starts and connects to the Docker daemon
-- **THEN** it pre-pulls the task-runner image and Playwright MCP image (if configured), skipping images already available locally
+- **WHEN** `CONTAINER_RUNTIME` is `docker` (or unset) and the worker processes a task
+- **THEN** the worker creates a Docker container in DinD, streams stderr to Valkey, captures stdout for parsing, and cleans up the container — identical to current behaviour
 
-#### Scenario: Playwright MCP sidecar created for each task
+#### Scenario: Kubernetes runtime processes task
 
-- **WHEN** the worker processes a task
+- **WHEN** `CONTAINER_RUNTIME` is `kubernetes` and the worker processes a task
+- **THEN** the worker creates a K8s Job with a ConfigMap for input files, streams pod logs to Valkey, reads structured output from `/output/result.json`, and cleans up the Job and ConfigMap
+
+#### Scenario: Images pre-pulled only in Docker mode
+
+- **WHEN** the worker starts with `CONTAINER_RUNTIME=docker`
+- **THEN** it pre-pulls the task-runner and Playwright images via Docker SDK, skipping images already available locally
+
+#### Scenario: No image pre-pull in K8s mode
+
+- **WHEN** the worker starts with `CONTAINER_RUNTIME=kubernetes`
+- **THEN** no image pre-pull occurs (K8s handles image pulling)
+
+#### Scenario: Playwright MCP sidecar created for each task (Docker mode)
+
+- **WHEN** the worker processes a task in Docker mode
 - **THEN** a Playwright MCP container is created in DinD with `network_mode="host"`, the configured memory limit, and the command `--port <port> --host 0.0.0.0 --allowed-hosts *`
+
+#### Scenario: Playwright health check uses pod IP in K8s mode
+
+- **WHEN** the worker uses `KubernetesRuntime` and Playwright is configured as a sidecar
+- **THEN** the worker health-checks Playwright at `http://localhost:<port>/mcp` (same pod) and passes `http://<pod-ip>:<port>/mcp` to the task-runner Job
 
 #### Scenario: Playwright health check succeeds
 
@@ -61,21 +83,16 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 #### Scenario: Playwright health check times out
 
 - **WHEN** the Playwright container does not respond within the configured timeout
-- **THEN** the worker logs an error, removes the Playwright container, and runs the task-runner without the `playwright` MCP entry (degraded mode)
-
-#### Scenario: Health check uses DOCKER_HOST hostname
-
-- **WHEN** the worker has `DOCKER_HOST=tcp://dind:2375`
-- **THEN** the health check polls `http://dind:8931/mcp` (not `localhost`)
+- **THEN** the worker logs an error, removes the Playwright container (Docker mode), and runs the task-runner without the `playwright` MCP entry (degraded mode)
 
 #### Scenario: Playwright container OOM-killed during task execution
 
 - **WHEN** the Playwright container exceeds its memory limit and is OOM-killed while the task-runner is running
 - **THEN** the task-runner receives MCP connection errors for Playwright tools, and the worker's cleanup step logs a warning and continues
 
-#### Scenario: Playwright container cleaned up after task completion
+#### Scenario: Playwright container cleaned up after task completion (Docker mode)
 
-- **WHEN** the task-runner container exits (success or failure)
+- **WHEN** the task-runner container exits (success or failure) in Docker mode
 - **THEN** the worker stops and removes the Playwright container in a `finally` block
 
 #### Scenario: Database-configured playwright entry takes precedence

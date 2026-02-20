@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import os
+import secrets
 import signal
 import subprocess
 import tarfile
@@ -604,6 +605,19 @@ def cleanup_playwright_container(container) -> None:
         logger.warning("Failed to remove Playwright container", exc_info=True)
 
 
+
+def _read_callback_result(task_id: str) -> str | None:
+    """Read and delete callback result from Valkey. Returns result string or None."""
+    try:
+        r = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
+        result = r.get(f"task_result:{task_id}")
+        r.delete(f"task_result:{task_id}", f"task_result_token:{task_id}")
+        r.close()
+        return result
+    except Exception:
+        return None
+
+
 def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
@@ -787,6 +801,18 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         ssh_private_key = settings.get("ssh_private_key", "")
         ssh_config = generate_ssh_config(settings.get("git_ssh_hosts", [])) if ssh_private_key else None
 
+        # Generate one-time callback token for result push
+        try:
+            cb_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
+            callback_token = secrets.token_hex(32)
+            cb_redis.set(f"task_result_token:{task.id}", callback_token, ex=1800)
+            cb_redis.close()
+            callback_url = backend_mcp_url.removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
+            env_vars["RESULT_CALLBACK_URL"] = callback_url
+            env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
+        except Exception:
+            logger.warning("Failed to store callback token in Valkey, skipping callback env vars", exc_info=True)
+
         # Prepare container via runtime
         handle = runtime.prepare(
             image=TASK_RUNNER_IMAGE,
@@ -810,10 +836,18 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                 logger.warning("Failed to create sync Redis client for log streaming", exc_info=True)
 
             # Stream logs in real-time, publishing structured events to Valkey
+            last_token_refresh = time.monotonic()
             try:
                 for line in runtime.run(handle):
                     if not line:
                         continue
+                    # Refresh callback token TTL every 15 minutes
+                    if log_redis is not None and time.monotonic() - last_token_refresh >= 900:
+                        try:
+                            log_redis.expire(f"task_result_token:{task.id}", 1800)
+                            last_token_refresh = time.monotonic()
+                        except Exception:
+                            pass
                     if log_redis is not None:
                         try:
                             parsed_event = json.loads(line)
@@ -841,6 +875,12 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
 
             # Get exit code and captured output
             exit_code, stdout, stderr = runtime.result(handle)
+
+            # Check for callback result from Valkey (overrides runtime stdout)
+            callback_result = _read_callback_result(str(task.id))
+            if callback_result is not None:
+                stdout = callback_result
+
             stdout = truncate_output(stdout)
             stderr = truncate_output(stderr)
 
