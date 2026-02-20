@@ -12,7 +12,7 @@ The backend SHALL mount an MCP Streamable HTTP server at the `/mcp` path using t
 #### Scenario: MCP endpoint listed in tool discovery
 
 - **WHEN** a client sends a `tools/list` request to `/mcp`
-- **THEN** the response includes the tools: `new_task`, `task_status`, `task_output`, `post_tweet`
+- **THEN** the response includes the tools: `new_task`, `task_status`, `task_output`, `task_logs`, `schedule_task`, `post_tweet`
 
 The `post_tweet` tool SHALL delegate to the platform registry's `TwitterPlatform.post()` method instead of calling the Tweepy API directly. The tool's interface (parameters, return format) SHALL remain unchanged.
 
