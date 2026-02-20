@@ -507,11 +507,46 @@ class TestKubernetesRuntime:
         runtime.core_v1.read_namespaced_pod.side_effect = ApiException(status=404)
         runtime.core_v1.read_namespaced_pod_log.side_effect = ApiException(status=404)
 
-        exit_code, stdout, stderr = runtime.result(handle)
+        with patch("time.sleep"):
+            exit_code, stdout, stderr = runtime.result(handle)
 
         assert exit_code == -1
         assert stdout == ""
         assert stderr == ""
+
+    def test_result_retries_exit_code_detection(self):
+        """result() retries when container terminated state is not yet available."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "pod_name": "pod-abc",
+            "namespace": "test-ns",
+        })
+
+        # First call: container not yet terminated (state.terminated is None)
+        mock_pod_pending = MagicMock()
+        cs_pending = MagicMock()
+        cs_pending.name = "task-runner"
+        cs_pending.state.terminated = None
+        mock_pod_pending.status.container_statuses = [cs_pending]
+
+        # Second call: container terminated with exit code 0
+        mock_pod_done = MagicMock()
+        cs_done = MagicMock()
+        cs_done.name = "task-runner"
+        cs_done.state.terminated.exit_code = 0
+        mock_pod_done.status.container_statuses = [cs_done]
+
+        runtime.core_v1.read_namespaced_pod.side_effect = [mock_pod_pending, mock_pod_done]
+        runtime.core_v1.read_namespaced_pod_log.return_value = (
+            '{"status":"completed","result":"ok"}'
+        )
+
+        with patch("time.sleep"):
+            exit_code, stdout, stderr = runtime.result(handle)
+
+        assert exit_code == 0
+        assert runtime.core_v1.read_namespaced_pod.call_count == 2
 
     def test_cleanup_deletes_job_and_configmap(self):
         """cleanup() deletes both the Job and ConfigMap."""

@@ -503,16 +503,28 @@ class KubernetesRuntime(ContainerRuntime):
         pod_name = handle.runtime_data.get("pod_name", "")
         namespace = handle.runtime_data["namespace"]
 
-        # Get exit code from pod status
+        # Get exit code from pod status.
+        # After run() finishes (log stream ends), the K8s API may take a moment
+        # to report the container as terminated. Retry briefly to avoid returning
+        # exit_code=-1 when the container actually exited with 0.
         exit_code = -1
-        try:
-            pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
-            for cs in (pod.status.container_statuses or []):
-                if cs.name == "task-runner" and cs.state and cs.state.terminated:
-                    exit_code = cs.state.terminated.exit_code
-                    break
-        except ApiException:
-            logger.warning("Failed to read pod status for %s", pod_name, exc_info=True)
+        for attempt in range(5):
+            try:
+                pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
+                for cs in (pod.status.container_statuses or []):
+                    if cs.name == "task-runner" and cs.state and cs.state.terminated:
+                        exit_code = cs.state.terminated.exit_code
+                        break
+            except ApiException:
+                logger.warning("Failed to read pod status for %s", pod_name, exc_info=True)
+
+            if exit_code != -1:
+                break
+            if attempt < 4:
+                time.sleep(1)
+
+        if exit_code == -1:
+            logger.warning("Could not determine exit code for pod %s after retries", pod_name)
 
         # Get full logs (combined stdout+stderr from the pod)
         full_logs = ""

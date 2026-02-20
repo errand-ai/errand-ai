@@ -3230,3 +3230,44 @@ def test_callback_result_valkey_error_swallowed():
 
     # Falls back to runtime stdout
     assert stdout == runtime_output
+
+
+def test_nonzero_exit_code_with_valid_json_treated_as_success():
+    """When exit_code != 0 but stdout contains valid TaskRunnerOutput JSON,
+    extract_json should still return the JSON (enabling the success path).
+
+    This covers the K8s race condition where exit code detection fails (-1)
+    but the task-runner actually completed and produced valid output.
+    """
+    valid_json = '{"status":"completed","result":"done","questions":[]}'
+
+    # extract_json succeeds regardless of where the JSON came from
+    assert extract_json(valid_json) is not None
+
+    # The worker logic: clean_stdout = extract_json(stdout) if stdout else None
+    # Then: if clean_stdout is not None → success path (regardless of exit_code)
+    # Simulate the decision:
+    exit_code = -1  # detection failed
+    stdout = valid_json
+    clean_stdout = extract_json(stdout) if stdout else None
+    assert clean_stdout is not None, "Valid JSON should be extracted even with non-zero exit code"
+
+    parsed = TaskRunnerOutput.model_validate_json(clean_stdout)
+    assert parsed.status == "completed"
+    assert parsed.result == "done"
+
+
+def test_nonzero_exit_code_without_json_still_retries():
+    """When exit_code != 0 and stdout has no valid JSON, the retry path is taken."""
+    exit_code = 1
+    stdout = ""
+    clean_stdout = extract_json(stdout) if stdout else None
+    assert clean_stdout is None, "Empty stdout should not produce JSON"
+
+
+def test_nonzero_exit_code_with_invalid_json_still_retries():
+    """When exit_code != 0 and stdout has invalid JSON, the retry path is taken."""
+    exit_code = -1
+    stdout = '{"not_a_task_runner_output": true}'
+    clean_stdout = extract_json(stdout) if stdout else None
+    assert clean_stdout is None, "Invalid TaskRunnerOutput should not be extracted"

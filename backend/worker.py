@@ -1058,14 +1058,18 @@ async def run() -> None:
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout
 
-            if exit_code == 0:
-                # Extract structured JSON from stdout (handles preamble text, code fences, etc.)
-                clean_stdout = extract_json(stdout)
-                if clean_stdout is None:
-                    logger.warning("Task %s: failed to extract structured output from stdout", task.id)
-                    await _schedule_retry(task, output=full_output, runner_logs=stderr)
-                    continue
+            # Try to extract structured JSON from stdout regardless of exit code.
+            # The task-runner may have completed successfully even if exit code
+            # detection failed (e.g. K8s API race returning -1).
+            clean_stdout = extract_json(stdout) if stdout else None
 
+            if exit_code != 0 and clean_stdout is not None:
+                logger.info(
+                    "Task %s: exit_code=%d but found valid structured output, treating as success",
+                    task.id, exit_code,
+                )
+
+            if clean_stdout is not None:
                 try:
                     parsed = TaskRunnerOutput.model_validate_json(clean_stdout)
                 except (ValidationError, ValueError) as e:
@@ -1139,7 +1143,10 @@ async def run() -> None:
                 if target_status == "completed":
                     await _reschedule_if_repeating(updated_task)
             else:
-                logger.warning("Task %s container exited with code %d", task.id, exit_code)
+                if exit_code != 0:
+                    logger.warning("Task %s container exited with code %d", task.id, exit_code)
+                else:
+                    logger.warning("Task %s: failed to extract structured output from stdout", task.id)
                 await _schedule_retry(task, output=full_output, runner_logs=stderr)
 
         except GitSkillsError as e:
