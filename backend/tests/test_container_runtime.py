@@ -397,6 +397,45 @@ class TestKubernetesRuntime:
         __str__=MagicMock(return_value="abcd1234-5678")
     ))
     @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_ssh_with_hosts_prepopulates_known_hosts(self, mock_uuid):
+        """prepare() runs ssh-keyscan for configured hosts and points GIT_SSH_COMMAND at known_hosts."""
+        runtime = self._make_runtime()
+
+        handle = runtime.prepare(
+            image="task-runner:v1",
+            env={"_TASK_ID": "42"},
+            files={"prompt.txt": "hello"},
+            ssh_private_key="-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----",
+            ssh_config="Host github.com\n  IdentityFile ~/.ssh/id_rsa.agent",
+            ssh_hosts=["github.com", "gitlab.com"],
+        )
+
+        # Init container command includes ssh-keyscan
+        job_call = runtime.batch_v1.create_namespaced_job.call_args
+        job = job_call[0][1]
+        init_container = job.spec.template.spec.init_containers[0]
+        init_cmd = init_container.command[2]
+        assert "ssh-keyscan github.com gitlab.com" in init_cmd
+        assert "known_hosts" in init_cmd
+
+        # Main container mounts ssh-credentials as writable (no read_only)
+        container_spec = job.spec.template.spec.containers[0]
+        for vm in container_spec.volume_mounts:
+            if vm.mount_path == "/home/nonroot/.ssh":
+                assert vm.read_only is None or vm.read_only is False
+                break
+        else:
+            raise AssertionError("/home/nonroot/.ssh volume mount not found")
+
+        # GIT_SSH_COMMAND references known_hosts file
+        env_dict = {e.name: e.value for e in container_spec.env}
+        assert "UserKnownHostsFile" in env_dict["GIT_SSH_COMMAND"]
+        assert "/home/nonroot/.ssh/known_hosts" in env_dict["GIT_SSH_COMMAND"]
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
     def test_prepare_no_ssh_without_credentials(self, mock_uuid):
         """prepare() does not create a Secret when SSH credentials are not provided."""
         runtime = self._make_runtime()

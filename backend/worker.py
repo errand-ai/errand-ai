@@ -814,6 +814,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             logger.warning("Failed to store callback token in Valkey, skipping callback env vars", exc_info=True)
 
         # Prepare container via runtime
+        git_ssh_hosts = settings.get("git_ssh_hosts", []) if ssh_private_key else []
         handle = runtime.prepare(
             image=TASK_RUNNER_IMAGE,
             env=env_vars,
@@ -822,6 +823,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             skills_tar=skills_tar,
             ssh_private_key=ssh_private_key or None,
             ssh_config=ssh_config,
+            ssh_hosts=git_ssh_hosts or None,
         )
         active_handle = handle
         logger.info("Prepared container for task %s via %s runtime", task.id, CONTAINER_RUNTIME_TYPE)

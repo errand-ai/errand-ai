@@ -37,6 +37,7 @@ class ContainerRuntime(ABC):
         skills_tar: bytes | None = None,
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
     ) -> RuntimeHandle:
         """Create a container/Job and inject input files without starting execution.
 
@@ -48,6 +49,7 @@ class ContainerRuntime(ABC):
             skills_tar: Optional tar archive of skills to inject at /workspace.
             ssh_private_key: Optional SSH private key to inject.
             ssh_config: Optional SSH config to inject.
+            ssh_hosts: Optional list of SSH hosts to pre-populate known_hosts.
 
         Returns:
             A RuntimeHandle to pass to run(), result(), and cleanup().
@@ -137,6 +139,7 @@ class DockerRuntime(ContainerRuntime):
         skills_tar: bytes | None = None,
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
     ) -> RuntimeHandle:
         from docker.errors import ImageNotFound
 
@@ -249,6 +252,7 @@ class KubernetesRuntime(ContainerRuntime):
         skills_tar: bytes | None = None,
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
     ) -> RuntimeHandle:
         from kubernetes import client
 
@@ -381,14 +385,20 @@ class KubernetesRuntime(ContainerRuntime):
                 f" && cp /ssh-secret/config {ssh_mount_path}/config"
                 f" && chmod 600 {ssh_mount_path}/id_rsa.agent"
             )
+            # Pre-populate known_hosts via ssh-keyscan so git clone doesn't
+            # need to write to it (and if it does, the mount is writable).
+            if ssh_hosts:
+                hosts_str = " ".join(ssh_hosts)
+                init_cmd += f" && ssh-keyscan {hosts_str} > {ssh_mount_path}/known_hosts 2>/dev/null"
             volume_mounts.append(
-                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path, read_only=True)
+                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path)
             )
+            ssh_cmd = f"ssh -i {ssh_mount_path}/id_rsa.agent"
+            if ssh_hosts:
+                ssh_cmd += f" -o UserKnownHostsFile={ssh_mount_path}/known_hosts"
+            ssh_cmd += " -o StrictHostKeyChecking=accept-new"
             env_list.append(
-                client.V1EnvVar(
-                    name="GIT_SSH_COMMAND",
-                    value=f"ssh -i {ssh_mount_path}/id_rsa.agent -o StrictHostKeyChecking=accept-new",
-                )
+                client.V1EnvVar(name="GIT_SSH_COMMAND", value=ssh_cmd)
             )
 
         init_containers = [
