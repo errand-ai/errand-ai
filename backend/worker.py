@@ -849,7 +849,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
                             log_redis.expire(f"task_result_token:{task.id}", 1800)
                             last_token_refresh = time.monotonic()
                         except Exception:
-                            pass
+                            logger.warning("Failed to refresh callback token TTL for task %s", task.id, exc_info=True)
                     if log_redis is not None:
                         try:
                             parsed_event = json.loads(line)

@@ -316,7 +316,7 @@ class TestKubernetesRuntime:
             tar.addfile(info, _io.BytesIO(data))
         skills_bytes = buf.getvalue()
 
-        handle = runtime.prepare(
+        runtime.prepare(
             image="task-runner:v1",
             env={"_TASK_ID": "42"},
             files={"prompt.txt": "hello"},
