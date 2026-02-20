@@ -50,17 +50,22 @@ The task runner SHALL append output format instructions (`OUTPUT_INSTRUCTIONS`) 
 
 ### Requirement: Task runner outputs structured JSON to stdout
 
-The task runner application SHALL output the agent's structured response as a single JSON line to stdout. The task runner SHALL parse `result.final_output` using a multi-strategy extraction approach: (1) parse the full stripped text as JSON directly, (2) locate a markdown code fence block and extract its contents, (3) find the first `{` and last `}` in the text and extract that substring. The first strategy that produces a valid `TaskRunnerOutput` object SHALL be used. If all strategies fail, the task runner SHALL wrap the raw output as a fallback `TaskRunnerOutput`. The worker SHALL also use `extract_json()` to handle any preamble text or code fences in the stdout. All structured events (agent reasoning, tool calls, errors) SHALL be written to stderr. The application SHALL exit with code 0 on successful completion and exit with code 1 on unrecoverable errors.
+The task runner application SHALL output the agent's structured response as a single JSON line to stdout. Additionally, the task runner SHALL write the same structured JSON to `/output/result.json` if the `/output` directory exists. If the `/output` directory does not exist, the file write SHALL be skipped (backward compatibility with runtimes that don't mount an output volume). The stdout output and file content SHALL be identical. The task runner SHALL parse `result.final_output` using a multi-strategy extraction approach: (1) parse the full stripped text as JSON directly, (2) locate a markdown code fence block and extract its contents, (3) find the first `{` and last `}` in the text and extract that substring. The first strategy that produces a valid `TaskRunnerOutput` object SHALL be used. If all strategies fail, the task runner SHALL wrap the raw output as a fallback `TaskRunnerOutput`. The worker SHALL also use `extract_json()` to handle any preamble text or code fences in the stdout. All structured events (agent reasoning, tool calls, errors) SHALL be written to stderr. The application SHALL exit with code 0 on successful completion and exit with code 1 on unrecoverable errors.
 
-#### Scenario: Successful execution output
+#### Scenario: Successful execution output to stdout and file
 
-- **WHEN** the agent completes processing via streaming
-- **THEN** stdout contains exactly one line of valid JSON matching the `TaskRunnerOutput` schema, and the exit code is 0
+- **WHEN** the agent completes processing and `/output` directory exists
+- **THEN** stdout contains exactly one line of valid JSON matching the `TaskRunnerOutput` schema, `/output/result.json` contains the same JSON, and the exit code is 0
+
+#### Scenario: Successful execution without output directory
+
+- **WHEN** the agent completes processing and `/output` directory does not exist
+- **THEN** stdout contains the JSON output, no file is written, and the exit code is 0
 
 #### Scenario: Agent error output
 
 - **WHEN** the agent encounters an unrecoverable error (e.g. API authentication failure)
-- **THEN** stderr contains an `error` event with the failure details, stdout is empty, and the exit code is 1
+- **THEN** stderr contains an `error` event with the failure details, stdout is empty, no result.json is written, and the exit code is 1
 
 #### Scenario: Structured output parsing fallback
 

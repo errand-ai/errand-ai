@@ -17,17 +17,14 @@ taskRunner:
     tag: ""
     pullPolicy: IfNotPresent
 
-playwrightMcp:
+playwright:
   image:
     repository: mcr.microsoft.com/playwright/mcp
     tag: "latest"
     pullPolicy: IfNotPresent
-  memoryLimit: "512m"
+  memoryLimit: "512Mi"
   port: 8931
   startupTimeout: 30
-
-dind:
-  image: docker:27-dind
 
 database:
   existingSecret: content-manager-db
