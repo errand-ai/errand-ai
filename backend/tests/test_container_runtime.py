@@ -226,7 +226,7 @@ class TestKubernetesRuntime:
             files={"prompt.txt": "do stuff"},
         )
 
-        # ConfigMap created
+        # ConfigMap created with flattened keys
         runtime.core_v1.create_namespaced_config_map.assert_called_once()
         cm_call = runtime.core_v1.create_namespaced_config_map.call_args
         assert cm_call[0][0] == "test-ns"
@@ -300,14 +300,14 @@ class TestKubernetesRuntime:
         __str__=MagicMock(return_value="abcd1234-5678")
     ))
     @patch.dict("os.environ", {}, clear=False)
-    def test_prepare_injects_skills_tar_into_configmap(self, mock_uuid):
-        """prepare() extracts skills tar contents into ConfigMap data."""
+    def test_prepare_stores_skills_tar_as_binary_data(self, mock_uuid):
+        """prepare() stores skills tar as binaryData in ConfigMap and adds init container."""
         import io as _io
         import tarfile as _tarfile
 
         runtime = self._make_runtime()
 
-        # Build a small tar archive with a skill file
+        # Build a small tar archive with a skill file (directory hierarchy)
         buf = _io.BytesIO()
         with _tarfile.open(fileobj=buf, mode="w") as tar:
             data = b"skill content"
@@ -323,12 +323,23 @@ class TestKubernetesRuntime:
             skills_tar=skills_bytes,
         )
 
-        # ConfigMap should contain both original file and extracted skill
+        # ConfigMap stores workspace files in data, skills tar in binary_data
         cm_call = runtime.core_v1.create_namespaced_config_map.call_args
         cm = cm_call[0][1]
-        assert "prompt.txt" in cm.data
-        assert "skills/my-skill/SKILL.md" in cm.data
-        assert cm.data["skills/my-skill/SKILL.md"] == "skill content"
+        assert cm.data == {"prompt.txt": "hello"}
+        assert cm.binary_data["skills.tar"] == skills_bytes
+
+        # Workspace volume is emptyDir (not ConfigMap)
+        job_call = runtime.batch_v1.create_namespaced_job.call_args
+        job = job_call[0][1]
+        workspace_vol = [v for v in job.spec.template.spec.volumes if v.name == "workspace"][0]
+        assert workspace_vol.empty_dir is not None
+
+        # Init container extracts skills tar into workspace
+        init_containers = job.spec.template.spec.init_containers
+        assert len(init_containers) == 1
+        assert init_containers[0].name == "setup-workspace"
+        assert "tar xf /config/skills.tar" in init_containers[0].command[2]
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")

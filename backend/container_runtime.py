@@ -257,22 +257,7 @@ class KubernetesRuntime(ContainerRuntime):
         configmap_name = f"task-runner-{job_id}"
         job_name = f"task-runner-{job_id}"
 
-        # Merge skills tar contents into files dict (they'll go into the ConfigMap)
-        all_files = dict(files)
-        if skills_tar:
-            try:
-                buf = io.BytesIO(skills_tar)
-                with tarfile.open(fileobj=buf, mode="r") as tar:
-                    for member in tar.getmembers():
-                        if member.isfile():
-                            f = tar.extractfile(member)
-                            if f:
-                                all_files[member.name] = f.read().decode("utf-8", errors="replace")
-                logger.info("Injected %d skill files into ConfigMap", len(all_files) - len(files))
-            except (tarfile.TarError, OSError):
-                logger.warning("Failed to extract skills tar for K8s ConfigMap", exc_info=True)
-
-        # Create ConfigMap with input files (and skills if any)
+        # Create ConfigMap with workspace text files; skills tar goes in binaryData.
         configmap = client.V1ConfigMap(
             metadata=client.V1ObjectMeta(
                 name=configmap_name,
@@ -283,7 +268,8 @@ class KubernetesRuntime(ContainerRuntime):
                     "content-manager/task-id": str(task_id),
                 },
             ),
-            data=all_files,
+            data=files,
+            binary_data={"skills.tar": skills_tar} if skills_tar else None,
         )
         self.core_v1.create_namespaced_config_map(self.namespace, configmap)
         logger.info("Created ConfigMap %s", configmap_name)
@@ -329,21 +315,48 @@ class KubernetesRuntime(ContainerRuntime):
                 )
             )
 
-        # Volume mounts
+        # Volume mounts for main container
         volume_mounts = [
             client.V1VolumeMount(name="workspace", mount_path="/workspace"),
             client.V1VolumeMount(name="output", mount_path="/output"),
         ]
 
-        # Volumes
+        # Volumes: workspace is emptyDir (populated by init container),
+        # config is the read-only ConfigMap.
         volumes = [
             client.V1Volume(
                 name="workspace",
+                empty_dir=client.V1EmptyDirVolumeSource(),
+            ),
+            client.V1Volume(
+                name="config",
                 config_map=client.V1ConfigMapVolumeSource(name=configmap_name),
             ),
             client.V1Volume(
                 name="output",
                 empty_dir=client.V1EmptyDirVolumeSource(),
+            ),
+        ]
+
+        # Init container: copy workspace files from ConfigMap and extract
+        # skills tar (if present) into the writable emptyDir workspace.
+        # ConfigMap mounts include symlinks (..data etc.) — use `find` to
+        # copy only regular files, excluding the binary skills.tar.
+        init_cmd = (
+            "find /config -maxdepth 1 -type f ! -name 'skills.tar' "
+            "-exec cp {} /workspace/ \\;"
+        )
+        if skills_tar:
+            init_cmd += " && tar xf /config/skills.tar -C /workspace/"
+        init_containers = [
+            client.V1Container(
+                name="setup-workspace",
+                image=image,
+                command=["sh", "-c", init_cmd],
+                volume_mounts=[
+                    client.V1VolumeMount(name="config", mount_path="/config", read_only=True),
+                    client.V1VolumeMount(name="workspace", mount_path="/workspace"),
+                ],
             ),
         ]
 
@@ -395,6 +408,7 @@ class KubernetesRuntime(ContainerRuntime):
                     ),
                     spec=client.V1PodSpec(
                         restart_policy="Never",
+                        init_containers=init_containers,
                         containers=[
                             client.V1Container(
                                 name="task-runner",
