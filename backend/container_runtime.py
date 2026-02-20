@@ -349,34 +349,40 @@ class KubernetesRuntime(ContainerRuntime):
         )
         if skills_tar:
             init_cmd += " && tar xf /config/skills.tar -C /workspace/"
-        init_containers = [
-            client.V1Container(
-                name="setup-workspace",
-                image=image,
-                command=["sh", "-c", init_cmd],
-                volume_mounts=[
-                    client.V1VolumeMount(name="config", mount_path="/config", read_only=True),
-                    client.V1VolumeMount(name="workspace", mount_path="/workspace"),
-                ],
-            ),
+
+        init_volume_mounts = [
+            client.V1VolumeMount(name="config", mount_path="/config", read_only=True),
+            client.V1VolumeMount(name="workspace", mount_path="/workspace"),
         ]
 
-        # SSH credentials volume — mounted at /etc/ssh-credentials (not ~/.ssh)
-        # because K8s Secret volume mounts set permissive directory permissions
-        # that SSH rejects. We use GIT_SSH_COMMAND env var instead.
+        # SSH credentials: K8s Secret volumes are always owned by root, but the
+        # task-runner runs as nonroot (UID 65532). Mount the Secret into the init
+        # container and copy with correct ownership to a shared emptyDir.
+        ssh_mount_path = "/home/nonroot/.ssh"
         if secret_name:
-            ssh_mount_path = "/etc/ssh-credentials"
-            volume_mounts.append(
-                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path, read_only=True)
+            volumes.append(
+                client.V1Volume(
+                    name="ssh-secret",
+                    secret=client.V1SecretVolumeSource(secret_name=secret_name),
+                )
             )
             volumes.append(
                 client.V1Volume(
                     name="ssh-credentials",
-                    secret=client.V1SecretVolumeSource(
-                        secret_name=secret_name,
-                        default_mode=0o600,
-                    ),
+                    empty_dir=client.V1EmptyDirVolumeSource(),
                 )
+            )
+            init_volume_mounts.extend([
+                client.V1VolumeMount(name="ssh-secret", mount_path="/ssh-secret", read_only=True),
+                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path),
+            ])
+            init_cmd += (
+                f" && cp /ssh-secret/id_rsa.agent {ssh_mount_path}/id_rsa.agent"
+                f" && cp /ssh-secret/config {ssh_mount_path}/config"
+                f" && chmod 600 {ssh_mount_path}/id_rsa.agent"
+            )
+            volume_mounts.append(
+                client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path, read_only=True)
             )
             env_list.append(
                 client.V1EnvVar(
@@ -384,6 +390,15 @@ class KubernetesRuntime(ContainerRuntime):
                     value=f"ssh -i {ssh_mount_path}/id_rsa.agent -o StrictHostKeyChecking=accept-new",
                 )
             )
+
+        init_containers = [
+            client.V1Container(
+                name="setup-workspace",
+                image=image,
+                command=["sh", "-c", init_cmd],
+                volume_mounts=init_volume_mounts,
+            ),
+        ]
 
         # Build Job spec
         job = client.V1Job(
