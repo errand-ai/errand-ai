@@ -1,9 +1,10 @@
-"""Unit tests for container_runtime.py — ContainerRuntime ABC, DockerRuntime, KubernetesRuntime."""
+"""Unit tests for container_runtime.py — ContainerRuntime ABC, DockerRuntime, KubernetesRuntime, AppleContainerRuntime."""
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
 from container_runtime import (
+    AppleContainerRuntime,
     ContainerRuntime,
     DockerRuntime,
     KubernetesRuntime,
@@ -740,6 +741,184 @@ class TestCleanupOrphanedJobs:
 
 
 # ---------------------------------------------------------------------------
+# AppleContainerRuntime
+# ---------------------------------------------------------------------------
+
+
+class TestAppleContainerRuntime:
+    """Tests for AppleContainerRuntime with mocked bridge API."""
+
+    def _make_runtime(self):
+        """Create an AppleContainerRuntime with a mocked requests.Session."""
+        with patch("container_runtime.requests") as mock_requests:
+            mock_session = MagicMock()
+            mock_requests.Session.return_value = mock_session
+            runtime = AppleContainerRuntime("http://localhost:9876", "test-token")
+        return runtime, mock_session
+
+    def test_prepare_sends_post_to_bridge(self):
+        """prepare() POSTs to /containers with correct payload."""
+        runtime, session = self._make_runtime()
+        session.post.return_value.json.return_value = {"id": "ctr-123"}
+        session.post.return_value.raise_for_status = MagicMock()
+
+        handle = runtime.prepare(
+            image="task-runner:latest",
+            env={"FOO": "bar"},
+            files={"input.json": '{"key": "value"}'},
+        )
+
+        session.post.assert_called_once_with(
+            "http://localhost:9876/containers",
+            json={
+                "image": "task-runner:latest",
+                "env": {"FOO": "bar"},
+                "files": {"input.json": '{"key": "value"}'},
+            },
+        )
+        assert isinstance(handle, RuntimeHandle)
+        assert handle.runtime_data["container_id"] == "ctr-123"
+
+    def test_prepare_includes_skills_tar(self):
+        """prepare() base64-encodes skills_tar and includes it in the payload."""
+        import base64
+
+        runtime, session = self._make_runtime()
+        session.post.return_value.json.return_value = {"id": "ctr-456"}
+        session.post.return_value.raise_for_status = MagicMock()
+
+        skills_data = b"fake-tar-data"
+        runtime.prepare(
+            image="img:latest",
+            env={},
+            files={"f.txt": "content"},
+            skills_tar=skills_data,
+        )
+
+        call_kwargs = session.post.call_args[1]
+        payload = call_kwargs["json"]
+        assert payload["skills_tar_b64"] == base64.b64encode(skills_data).decode("ascii")
+
+    def test_prepare_includes_ssh_credentials(self):
+        """prepare() includes SSH key, config, and hosts in the payload."""
+        runtime, session = self._make_runtime()
+        session.post.return_value.json.return_value = {"id": "ctr-789"}
+        session.post.return_value.raise_for_status = MagicMock()
+
+        runtime.prepare(
+            image="img:latest",
+            env={},
+            files={"f.txt": "content"},
+            ssh_private_key="-----BEGIN RSA-----\nfake\n-----END RSA-----",
+            ssh_config="Host *\n  StrictHostKeyChecking no",
+            ssh_hosts=["github.com"],
+        )
+
+        call_kwargs = session.post.call_args[1]
+        payload = call_kwargs["json"]
+        assert payload["ssh_private_key"] == "-----BEGIN RSA-----\nfake\n-----END RSA-----"
+        assert payload["ssh_config"] == "Host *\n  StrictHostKeyChecking no"
+        assert payload["ssh_hosts"] == ["github.com"]
+
+    def test_run_streams_sse_logs(self):
+        """run() parses SSE data: lines and yields log lines."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"container_id": "ctr-123"})
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.iter_lines.return_value = iter([
+            "data: log line 1",
+            "data: log line 2",
+            "",
+            "data: log line 3",
+        ])
+        session.get.return_value = mock_resp
+
+        lines = list(runtime.run(handle))
+
+        session.get.assert_called_once_with(
+            "http://localhost:9876/containers/ctr-123/logs",
+            stream=True,
+        )
+        assert lines == ["log line 1", "log line 2", "log line 3"]
+
+    def test_result_returns_exit_code_and_output(self):
+        """result() fetches status and output from bridge API."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"container_id": "ctr-123"})
+
+        status_resp = MagicMock()
+        status_resp.json.return_value = {"id": "ctr-123", "status": "exited", "exitCode": 0}
+        status_resp.raise_for_status = MagicMock()
+
+        output_resp = MagicMock()
+        output_resp.json.return_value = {"output": '{"status":"completed","result":"done"}'}
+        output_resp.raise_for_status = MagicMock()
+
+        session.get.side_effect = [status_resp, output_resp]
+
+        exit_code, stdout, stderr = runtime.result(handle)
+
+        assert exit_code == 0
+        assert stdout == '{"status":"completed","result":"done"}'
+        assert stderr == ""
+
+        # Verify both endpoints were called
+        calls = session.get.call_args_list
+        assert calls[0][0][0] == "http://localhost:9876/containers/ctr-123/status"
+        assert calls[1][0][0] == "http://localhost:9876/containers/ctr-123/output"
+
+    def test_result_handles_null_exit_code(self):
+        """result() returns -1 when exitCode is null (container still running)."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"container_id": "ctr-123"})
+
+        status_resp = MagicMock()
+        status_resp.json.return_value = {"id": "ctr-123", "status": "running", "exitCode": None}
+        status_resp.raise_for_status = MagicMock()
+
+        output_resp = MagicMock()
+        output_resp.json.return_value = {"output": ""}
+        output_resp.raise_for_status = MagicMock()
+
+        session.get.side_effect = [status_resp, output_resp]
+
+        exit_code, stdout, stderr = runtime.result(handle)
+
+        assert exit_code == -1
+
+    def test_cleanup_sends_delete(self):
+        """cleanup() sends DELETE /containers/{id} to bridge API."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"container_id": "ctr-123"})
+
+        runtime.cleanup(handle)
+
+        session.delete.assert_called_once_with(
+            "http://localhost:9876/containers/ctr-123",
+        )
+
+    def test_cleanup_handles_missing_container_id(self):
+        """cleanup() does not raise when container_id is missing."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={})
+
+        runtime.cleanup(handle)
+
+        session.delete.assert_not_called()
+
+    def test_cleanup_swallows_exception(self):
+        """cleanup() swallows exceptions from the DELETE request."""
+        runtime, session = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"container_id": "ctr-123"})
+        session.delete.side_effect = Exception("connection refused")
+
+        # Should not raise
+        runtime.cleanup(handle)
+
+
+# ---------------------------------------------------------------------------
 # create_runtime factory
 # ---------------------------------------------------------------------------
 
@@ -766,6 +945,37 @@ class TestCreateRuntime:
 
         assert isinstance(result, KubernetesRuntime)
         mock_cleanup.assert_called_once()
+
+    @patch("container_runtime.requests")
+    @patch.dict("os.environ", {"CONTAINER_BRIDGE_TOKEN": "secret-token"})
+    def test_create_runtime_apple(self, mock_requests):
+        """create_runtime('apple') returns an AppleContainerRuntime."""
+        result = create_runtime("apple")
+
+        assert isinstance(result, AppleContainerRuntime)
+        assert result.bridge_url == "http://localhost:9876"
+        assert result.bridge_token == "secret-token"
+
+    @patch("container_runtime.requests")
+    @patch.dict("os.environ", {
+        "CONTAINER_BRIDGE_URL": "http://custom:1234",
+        "CONTAINER_BRIDGE_TOKEN": "my-token",
+    })
+    def test_create_runtime_apple_custom_url(self, mock_requests):
+        """create_runtime('apple') respects CONTAINER_BRIDGE_URL env var."""
+        result = create_runtime("apple")
+
+        assert isinstance(result, AppleContainerRuntime)
+        assert result.bridge_url == "http://custom:1234"
+
+    @patch.dict("os.environ", {}, clear=False)
+    def test_create_runtime_apple_missing_token_raises(self):
+        """create_runtime('apple') raises ValueError when CONTAINER_BRIDGE_TOKEN is not set."""
+        import os
+        os.environ.pop("CONTAINER_BRIDGE_TOKEN", None)
+
+        with pytest.raises(ValueError, match="CONTAINER_BRIDGE_TOKEN must be set"):
+            create_runtime("apple")
 
     def test_create_runtime_invalid_raises(self):
         """create_runtime raises ValueError for unknown runtime types."""

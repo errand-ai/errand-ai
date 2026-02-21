@@ -8,7 +8,7 @@ The worker SHALL define a `ContainerRuntime` abstract base class with methods: `
 - **THEN** it must implement `prepare`, `run`, `result`, and `cleanup` methods
 
 ### Requirement: Runtime selection via environment variable
-The worker SHALL select the container runtime implementation based on the `CONTAINER_RUNTIME` environment variable. The value `docker` (or unset) SHALL select `DockerRuntime`. The value `kubernetes` SHALL select `KubernetesRuntime`. The runtime SHALL be instantiated once at worker startup. An unrecognised value SHALL cause the worker to exit with an error.
+The worker SHALL select the container runtime implementation based on the `CONTAINER_RUNTIME` environment variable. The value `docker` (or unset) SHALL select `DockerRuntime`. The value `kubernetes` SHALL select `KubernetesRuntime`. The value `apple` SHALL select `AppleContainerRuntime`. The runtime SHALL be instantiated once at worker startup. An unrecognised value SHALL cause the worker to exit with an error.
 
 #### Scenario: Default runtime is Docker
 - **WHEN** `CONTAINER_RUNTIME` is not set
@@ -17,6 +17,10 @@ The worker SHALL select the container runtime implementation based on the `CONTA
 #### Scenario: Kubernetes runtime selected
 - **WHEN** `CONTAINER_RUNTIME` is set to `kubernetes`
 - **THEN** the worker uses `KubernetesRuntime`
+
+#### Scenario: Apple runtime selected
+- **WHEN** `CONTAINER_RUNTIME` is set to `apple`
+- **THEN** the worker uses `AppleContainerRuntime`
 
 #### Scenario: Invalid runtime value
 - **WHEN** `CONTAINER_RUNTIME` is set to `invalid`
@@ -59,3 +63,22 @@ The `KubernetesRuntime` SHALL implement the `ContainerRuntime` interface using t
 #### Scenario: Job has TTL for orphan protection
 - **WHEN** a K8s Job is created
 - **THEN** the Job spec includes `ttlSecondsAfterFinished` so completed Jobs are automatically cleaned up if the worker crashes before cleanup
+
+### Requirement: AppleContainerRuntime implementation
+The worker SHALL include an `AppleContainerRuntime` implementation of the `ContainerRuntime` interface. This runtime SHALL communicate with the macOS app's bridge API to create, monitor, and clean up task-runner containers. The runtime SHALL be selected when `CONTAINER_RUNTIME` is set to `apple`.
+
+#### Scenario: Apple runtime creates container via bridge API
+- **WHEN** `AppleContainerRuntime.prepare()` is called with an image, env vars, and files
+- **THEN** the runtime sends `POST /containers` to the bridge API with the container specification
+
+#### Scenario: Apple runtime streams logs via bridge API
+- **WHEN** `AppleContainerRuntime.run()` is called
+- **THEN** the runtime opens an SSE connection to `GET /containers/{id}/logs` and yields log lines
+
+#### Scenario: Apple runtime reads output via bridge API
+- **WHEN** `AppleContainerRuntime.result()` is called after the container exits
+- **THEN** the runtime reads the exit code from `GET /containers/{id}/status` and the structured output from `GET /containers/{id}/output`
+
+#### Scenario: Apple runtime cleans up via bridge API
+- **WHEN** `AppleContainerRuntime.cleanup()` is called
+- **THEN** the runtime sends `DELETE /containers/{id}` to remove the container
