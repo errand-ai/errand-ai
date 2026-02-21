@@ -62,8 +62,22 @@ def generate_ssh_keypair() -> tuple[str, str]:
     return private_pem, f"{public_openssh} errand"
 
 
+def _run_migrations():
+    """Run Alembic migrations synchronously (called from a thread)."""
+    from alembic.config import Config as AlembicConfig
+    from alembic import command as alembic_command
+    alembic_cfg = AlembicConfig(str(Path(__file__).resolve().parent / "alembic.ini"))
+    alembic_command.upgrade(alembic_cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run database migrations before anything else
+    if os.environ.get("AUTO_MIGRATE", "").lower() in ("1", "true", "yes"):
+        logger.info("AUTO_MIGRATE enabled — running Alembic migrations")
+        await asyncio.to_thread(_run_migrations)
+        logger.info("Migrations complete")
+
     auth_module.oidc = OIDCConfig.from_env()
     if auth_module.oidc is not None:
         await auth_module.oidc.discover()
