@@ -9,8 +9,14 @@ import auth as auth_module
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _require_oidc():
+    if auth_module.oidc is None:
+        raise HTTPException(status_code=503, detail="OIDC authentication is not configured")
+
+
 @router.get("/login")
 async def login(request: Request):
+    _require_oidc()
     base_url = str(request.base_url).rstrip("/")
     params = {
         "client_id": auth_module.oidc.client_id,
@@ -25,6 +31,7 @@ async def login(request: Request):
 
 @router.get("/callback")
 async def callback(request: Request, code: str = "", error: str = "", error_description: str = ""):
+    _require_oidc()
     if error:
         raise HTTPException(status_code=401, detail=error_description or error)
 
@@ -67,6 +74,7 @@ async def callback(request: Request, code: str = "", error: str = "", error_desc
 
 @router.post("/refresh")
 async def refresh(request: Request):
+    _require_oidc()
     try:
         body = await request.json()
     except Exception:
@@ -105,6 +113,7 @@ async def refresh(request: Request):
 
 @router.get("/logout")
 async def logout(request: Request, id_token_hint: str = ""):
+    _require_oidc()
     base_url = str(request.base_url).rstrip("/")
     params = {
         "post_logout_redirect_uri": f"{base_url}/",

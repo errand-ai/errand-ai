@@ -20,23 +20,15 @@ class OIDCConfig:
     _jwks_client: PyJWKClient | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "OIDCConfig":
+    def from_env(cls) -> "OIDCConfig | None":
+        """Returns OIDCConfig if OIDC env vars are set, None otherwise."""
         discovery_url = os.environ.get("OIDC_DISCOVERY_URL")
         client_id = os.environ.get("OIDC_CLIENT_ID")
         client_secret = os.environ.get("OIDC_CLIENT_SECRET")
         roles_claim = os.environ.get("OIDC_ROLES_CLAIM", "resource_access.errand.roles")
 
-        missing = []
-        if not discovery_url:
-            missing.append("OIDC_DISCOVERY_URL")
-        if not client_id:
-            missing.append("OIDC_CLIENT_ID")
-        if not client_secret:
-            missing.append("OIDC_CLIENT_SECRET")
-        if missing:
-            raise RuntimeError(
-                f"Missing required OIDC environment variables: {', '.join(missing)}"
-            )
+        if not discovery_url or not client_id or not client_secret:
+            return None
 
         return cls(
             discovery_url=discovery_url,

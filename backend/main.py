@@ -65,7 +65,10 @@ def generate_ssh_keypair() -> tuple[str, str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     auth_module.oidc = OIDCConfig.from_env()
-    await auth_module.oidc.discover()
+    if auth_module.oidc is not None:
+        await auth_module.oidc.discover()
+    else:
+        logger.warning("OIDC not configured — authentication is disabled")
     await init_valkey()
     init_llm_client()
 
@@ -161,9 +164,14 @@ app.mount("/mcp", create_mcp_app())
 # --- Auth dependency ---
 
 
+_ANONYMOUS_CLAIMS = {"sub": "anonymous", "email": "anonymous@local", "_roles": ["admin"]}
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    if auth_module.oidc is None:
+        return _ANONYMOUS_CLAIMS
     token = credentials.credentials
     try:
         claims = auth_module.oidc.decode_token(token)
@@ -186,6 +194,8 @@ async def get_current_user(
 async def require_editor(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    if auth_module.oidc is None:
+        return _ANONYMOUS_CLAIMS
     token = credentials.credentials
     try:
         claims = auth_module.oidc.decode_token(token)
@@ -204,6 +214,8 @@ async def require_editor(
 async def require_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    if auth_module.oidc is None:
+        return _ANONYMOUS_CLAIMS
     token = credentials.credentials
     try:
         claims = auth_module.oidc.decode_token(token)
@@ -1220,19 +1232,20 @@ PONG_TIMEOUT = 10
 
 @app.websocket("/api/ws/tasks")
 async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
-    # Authenticate via query parameter
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-    try:
-        claims = auth_module.oidc.decode_token(token)
-        roles = auth_module.oidc.extract_roles(claims)
-        if not roles:
-            await websocket.close(code=4001, reason="No roles")
+    # Authenticate via query parameter (skip when OIDC is not configured)
+    if auth_module.oidc is not None:
+        if not token:
+            await websocket.close(code=4001, reason="Missing token")
             return
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+        try:
+            claims = auth_module.oidc.decode_token(token)
+            roles = auth_module.oidc.extract_roles(claims)
+            if not roles:
+                await websocket.close(code=4001, reason="No roles")
+                return
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+            await websocket.close(code=4001, reason="Invalid token")
+            return
 
     await websocket.accept()
 
@@ -1278,19 +1291,20 @@ async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
 
 @app.websocket("/api/ws/tasks/{task_id}/logs")
 async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(default=None)):
-    # Authenticate via query parameter (same pattern as ws_tasks)
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-    try:
-        claims = auth_module.oidc.decode_token(token)
-        roles = auth_module.oidc.extract_roles(claims)
-        if not roles:
-            await websocket.close(code=4001, reason="No roles")
+    # Authenticate via query parameter (skip when OIDC is not configured)
+    if auth_module.oidc is not None:
+        if not token:
+            await websocket.close(code=4001, reason="Missing token")
             return
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+        try:
+            claims = auth_module.oidc.decode_token(token)
+            roles = auth_module.oidc.extract_roles(claims)
+            if not roles:
+                await websocket.close(code=4001, reason="No roles")
+                return
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+            await websocket.close(code=4001, reason="Invalid token")
+            return
 
     # Check task exists and status
     try:
