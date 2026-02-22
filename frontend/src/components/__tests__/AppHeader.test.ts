@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
@@ -56,6 +56,15 @@ function makeRouter() {
 describe('App header — user dropdown', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // Mock auth status endpoint so boot sequence completes
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ mode: 'local' }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('shows dropdown trigger for admin users', async () => {
@@ -72,6 +81,7 @@ describe('App header — user dropdown', () => {
     const wrapper = mount(App, {
       global: { plugins: [router] },
     })
+    await flushPromises()
 
     // Admin should see their name as a clickable button with a chevron
     const trigger = wrapper.find('.dropdown-trigger button')
@@ -93,6 +103,7 @@ describe('App header — user dropdown', () => {
     const wrapper = mount(App, {
       global: { plugins: [router] },
     })
+    await flushPromises()
 
     const trigger = wrapper.find('.dropdown-trigger button')
     expect(trigger.exists()).toBe(true)
@@ -119,6 +130,7 @@ describe('App header — user dropdown', () => {
     const wrapper = mount(App, {
       global: { plugins: [router] },
     })
+    await flushPromises()
 
     const trigger = wrapper.find('.dropdown-trigger button')
     await trigger.trigger('click')

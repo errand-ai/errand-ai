@@ -24,6 +24,7 @@ const gitSshHosts = ref<string[]>([])
 const skillsGitRepo = ref<{ url?: string; branch?: string; path?: string } | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
+const settingsMetadata = ref<Record<string, { value: any; source: string; sensitive: boolean; readonly: boolean }>>({})
 
 async function settingsFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -45,6 +46,15 @@ async function saveSettings(data: Record<string, unknown>): Promise<void> {
   if (!res.ok) throw new Error(`Failed to save settings (HTTP ${res.status})`)
 }
 
+function extractValue(data: Record<string, any>, key: string, fallback: any = ''): any {
+  const entry = data[key]
+  if (entry && typeof entry === 'object' && 'value' in entry) {
+    return entry.value ?? fallback
+  }
+  // Backwards compat: plain value format
+  return entry ?? fallback
+}
+
 async function loadSettings() {
   loading.value = true
   error.value = null
@@ -59,18 +69,27 @@ async function loadSettings() {
       return
     }
     const data = await res.json()
-    systemPrompt.value = data.system_prompt ?? ''
-    mcpServersText.value = data.mcp_servers ? JSON.stringify(data.mcp_servers, null, 2) : ''
-    mcpApiKey.value = data.mcp_api_key ?? null
-    sshPublicKey.value = data.ssh_public_key ?? null
-    gitSshHosts.value = Array.isArray(data.git_ssh_hosts) ? data.git_ssh_hosts : ['github.com', 'bitbucket.org']
-    llmModel.value = data.llm_model ?? DEFAULT_MODEL
-    taskProcessingModel.value = data.task_processing_model ?? DEFAULT_TASK_PROCESSING_MODEL
-    transcriptionModel.value = data.transcription_model ?? ''
-    taskRunnerLogLevel.value = data.task_runner_log_level || 'INFO'
-    timezoneValue.value = data.timezone ?? 'UTC'
-    archiveAfterDays.value = data.archive_after_days ?? 3
-    skillsGitRepo.value = data.skills_git_repo ?? null
+
+    // Store metadata if present
+    const isMetadataFormat = data.system_prompt && typeof data.system_prompt === 'object' && 'value' in data.system_prompt
+    if (isMetadataFormat) {
+      settingsMetadata.value = data
+    }
+
+    systemPrompt.value = extractValue(data, 'system_prompt', '')
+    const mcpRaw = extractValue(data, 'mcp_servers', null)
+    mcpServersText.value = mcpRaw ? JSON.stringify(mcpRaw, null, 2) : ''
+    mcpApiKey.value = extractValue(data, 'mcp_api_key', null)
+    sshPublicKey.value = extractValue(data, 'ssh_public_key', null)
+    const hosts = extractValue(data, 'git_ssh_hosts', null)
+    gitSshHosts.value = Array.isArray(hosts) ? hosts : ['github.com', 'bitbucket.org']
+    llmModel.value = extractValue(data, 'llm_model', DEFAULT_MODEL)
+    taskProcessingModel.value = extractValue(data, 'task_processing_model', DEFAULT_TASK_PROCESSING_MODEL)
+    transcriptionModel.value = extractValue(data, 'transcription_model', '')
+    taskRunnerLogLevel.value = extractValue(data, 'task_runner_log_level', 'INFO') || 'INFO'
+    timezoneValue.value = extractValue(data, 'timezone', 'UTC')
+    archiveAfterDays.value = extractValue(data, 'archive_after_days', 3)
+    skillsGitRepo.value = extractValue(data, 'skills_git_repo', null)
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
   } finally {
@@ -91,6 +110,7 @@ provide('settings-state', {
   sshPublicKey,
   gitSshHosts,
   skillsGitRepo,
+  settingsMetadata,
   saveSettings,
 })
 
@@ -147,6 +167,13 @@ onMounted(() => {
             :class="route.path === '/settings/integrations' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
           >
             Integrations
+          </router-link>
+          <router-link
+            to="/settings/users"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/users' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            User Management
           </router-link>
         </div>
       </nav>

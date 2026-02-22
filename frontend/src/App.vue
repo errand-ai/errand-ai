@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import AccessDenied from './components/AccessDenied.vue'
 import { Toaster } from 'vue-sonner'
@@ -8,30 +8,59 @@ import 'vue-sonner/style.css'
 
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 const dropdownOpen = ref(false)
+const booting = ref(true)
 
-onMounted(() => {
-  // Extract token from URL fragment after OIDC callback
+onMounted(async () => {
+  // 1. Check for OIDC callback tokens in URL fragment
   const hash = window.location.hash
   if (hash) {
     const params = new URLSearchParams(hash.substring(1))
-    const token = params.get('access_token')
-    if (token) {
-      auth.setToken(token, params.get('id_token') ?? undefined, params.get('refresh_token') ?? undefined)
+    const accessToken = params.get('access_token')
+    if (accessToken) {
+      auth.setToken(accessToken, params.get('id_token') ?? undefined, params.get('refresh_token') ?? undefined)
       history.replaceState(null, '', window.location.pathname)
-      return
     }
   }
 
-  // No token — redirect to login
-  if (!auth.isAuthenticated) {
-    window.location.href = '/auth/login'
+  // 2. Fetch auth status
+  try {
+    const resp = await fetch('/api/auth/status')
+    const data = await resp.json()
+    auth.setAuthMode(data.mode)
+
+    switch (data.mode) {
+      case 'setup':
+        router.push('/setup')
+        break
+      case 'local':
+        if (!auth.isAuthenticated) {
+          router.push('/login')
+        }
+        break
+      case 'sso':
+        if (!auth.isAuthenticated) {
+          window.location.href = data.login_url || '/auth/login'
+        }
+        break
+    }
+  } catch {
+    // Fallback — can't determine auth mode
+    console.error('Failed to fetch auth status')
+  } finally {
+    booting.value = false
   }
 })
 
 function logout() {
-  const params = auth.idToken ? `?id_token_hint=${encodeURIComponent(auth.idToken)}` : ''
-  window.location.href = `/auth/logout${params}`
+  if (auth.authMode === 'sso') {
+    const params = auth.idToken ? `?id_token_hint=${encodeURIComponent(auth.idToken)}` : ''
+    window.location.href = `/auth/logout${params}`
+  } else {
+    auth.clearToken()
+    router.push('/login')
+  }
 }
 
 function toggleDropdown() {
@@ -55,7 +84,12 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 
 <template>
   <Toaster position="top-right" />
-  <div class="min-h-screen bg-gray-100" v-if="auth.isAuthenticated">
+
+  <!-- Unauthenticated routes render their own full-page layout -->
+  <router-view v-if="route.name === 'login' || route.name === 'setup'" />
+
+  <!-- Authenticated app layout -->
+  <div v-else-if="!booting && auth.isAuthenticated" class="min-h-screen bg-gray-100">
     <header class="bg-white shadow">
       <div class="flex items-center justify-between px-4 py-4">
         <div class="flex items-center gap-6">
