@@ -46,7 +46,7 @@ The app SHALL discover each container's IP address after creation and pass conne
 
 #### Scenario: Worker receives backend URL
 - **WHEN** the worker container starts
-- **THEN** it receives `BACKEND_MCP_URL=http://<backend-ip>:8000/mcp`
+- **THEN** it receives `ERRAND_MCP_URL=http://<backend-ip>:8000/mcp`
 
 ### Requirement: Persistent storage via volume mounts
 Container data SHALL be persisted via bind mounts from `~/Library/Application Support/ContentManager/data/`. PostgreSQL data SHALL be mounted at the container's data directory. Valkey data SHALL be mounted for RDB/AOF persistence. Data SHALL survive container restarts and app updates.

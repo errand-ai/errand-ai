@@ -10,7 +10,7 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM python:3.12 AS build
 ARG TARGETPLATFORM
 WORKDIR /app
-COPY backend/requirements.txt .
+COPY errand/requirements.txt .
 RUN <<EOF
   set -e
   case "$TARGETPLATFORM" in
@@ -31,10 +31,10 @@ EOF
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY backend/requirements.txt .
+COPY errand/requirements.txt .
 COPY --from=build /wheels /tmp/wheels
 RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt && rm -rf /tmp/wheels
-COPY backend/ .
+COPY errand/ .
 COPY --from=frontend-build /frontend/dist ./static/
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

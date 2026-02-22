@@ -66,7 +66,7 @@ def test_file_output_with_error_json(tmp_path):
 # --- Callback POST tests ---
 
 
-CALLBACK_URL = "http://errand-backend:8000/api/internal/task-result/test-123"
+CALLBACK_URL = "http://errand:8000/api/internal/task-result/test-123"
 CALLBACK_TOKEN = "abc123"
 OUTPUT = '{"status":"completed","result":"done","questions":[]}'
 

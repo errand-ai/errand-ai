@@ -1,10 +1,10 @@
 ## Requirements
 
 ### Requirement: Backend test infrastructure
-The backend SHALL have a pytest test suite using `pytest-asyncio` and `httpx.AsyncClient`. Tests SHALL run against an in-memory SQLite database via `aiosqlite`, with FastAPI dependency overrides for database sessions and authentication. The test database SHALL be created fresh for each test function.
+The application SHALL have a pytest test suite using `pytest-asyncio` and `httpx.AsyncClient`. Tests SHALL run against an in-memory SQLite database via `aiosqlite`, with FastAPI dependency overrides for database sessions and authentication. The test database SHALL be created fresh for each test function.
 
 #### Scenario: Test suite runs without external services
-- **WHEN** a developer runs `pytest` in the backend directory
+- **WHEN** a developer runs `pytest` in the errand directory
 - **THEN** all tests execute without requiring PostgreSQL, Keycloak, or any external service
 
 #### Scenario: Test isolation
@@ -101,7 +101,7 @@ The test suite SHALL verify the `GET /metrics/queue` endpoint behavior.
 The test suite SHALL verify the `GET /api/health` endpoint behavior.
 
 #### Scenario: Healthy service
-- **WHEN** the backend is running and the database is reachable
+- **WHEN** the application is running and the database is reachable
 - **THEN** `GET /api/health` returns HTTP 200 with `{"status": "ok"}`
 
 ### Requirement: Test authentication gating
@@ -116,8 +116,8 @@ The test suite SHALL verify that `/api/*` endpoints reject unauthenticated reque
 - **THEN** the endpoint returns HTTP 401 or HTTP 403
 
 ### Requirement: Backend test script
-The backend SHALL have a test script runnable via `pytest` from the `backend/` directory. Dev dependencies (`pytest`, `pytest-asyncio`, `httpx`, `aiosqlite`) SHALL be listed in a separate requirements file.
+The application SHALL have a test script runnable via `pytest` from the `errand/` directory. Dev dependencies (`pytest`, `pytest-asyncio`, `httpx`, `aiosqlite`) SHALL be listed in a separate requirements file.
 
-#### Scenario: Run backend tests
-- **WHEN** a developer runs `pip install -r requirements-test.txt && pytest` in the backend directory
-- **THEN** all backend tests execute and report results
+#### Scenario: Run application tests
+- **WHEN** a developer runs `pip install -r requirements-test.txt && pytest` in the `errand/` directory
+- **THEN** all application tests execute and report results

@@ -8,7 +8,7 @@ The Playwright container cleanup in Docker mode SHALL occur in a `finally` block
 
 The worker SHALL pre-pull required Docker images on startup only when using `DockerRuntime`. The images to pre-pull are the task-runner image (`TASK_RUNNER_IMAGE`) and, if configured, the Playwright MCP image (`PLAYWRIGHT_MCP_IMAGE`). For each image, the worker SHALL check if it is already available locally via `images.get()` and only pull if not found. When using `KubernetesRuntime`, the K8s node's container runtime handles image pulling and no pre-pull occurs.
 
-The worker SHALL generate a one-time callback token using `secrets.token_hex(32)` and store it in Valkey at key `task_result_token:{task_id}` with a TTL of 30 minutes. The worker SHALL derive the callback URL by stripping the `/mcp` suffix from the existing `BACKEND_MCP_URL` environment variable and appending `/api/internal/task-result/{task_id}`. The worker SHALL pass `RESULT_CALLBACK_URL` and `RESULT_CALLBACK_TOKEN` as environment variables to the task-runner container alongside the existing env vars. If Valkey is unavailable when storing the token, the worker SHALL log a warning and omit both callback env vars (graceful degradation — the task-runner will skip the callback POST).
+The worker SHALL generate a one-time callback token using `secrets.token_hex(32)` and store it in Valkey at key `task_result_token:{task_id}` with a TTL of 30 minutes. The worker SHALL derive the callback URL by stripping the `/mcp` suffix from the existing `ERRAND_MCP_URL` environment variable and appending `/api/internal/task-result/{task_id}`. The worker SHALL pass `RESULT_CALLBACK_URL` and `RESULT_CALLBACK_TOKEN` as environment variables to the task-runner container alongside the existing env vars. If Valkey is unavailable when storing the token, the worker SHALL log a warning and omit both callback env vars (graceful degradation — the task-runner will skip the callback POST).
 
 During the log-streaming loop, the worker SHALL refresh the token TTL by calling `EXPIRE` on the `task_result_token:{task_id}` key every 15 minutes, resetting the TTL to 30 minutes. This ensures long-running tasks retain a valid callback token for the duration of execution.
 
@@ -56,10 +56,10 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 - **WHEN** the worker prepares a task-runner container and Valkey is available
 - **THEN** the worker generates a 64-character hex token, stores it at `task_result_token:{task_id}` with 30-min TTL, and passes `RESULT_CALLBACK_URL` and `RESULT_CALLBACK_TOKEN` to the container
 
-#### Scenario: Callback URL derived from BACKEND_MCP_URL
+#### Scenario: Callback URL derived from ERRAND_MCP_URL
 
-- **WHEN** `BACKEND_MCP_URL` is `http://errand-backend:8000/mcp` and the task ID is `abc-123`
-- **THEN** `RESULT_CALLBACK_URL` is `http://errand-backend:8000/api/internal/task-result/abc-123`
+- **WHEN** `ERRAND_MCP_URL` is `http://errand:8000/mcp` and the task ID is `abc-123`
+- **THEN** `RESULT_CALLBACK_URL` is `http://errand:8000/api/internal/task-result/abc-123`
 
 #### Scenario: Token TTL refreshed during long-running tasks
 

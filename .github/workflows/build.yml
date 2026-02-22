@@ -41,7 +41,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          for IMAGE in "ghcr.io/${{ github.repository_owner }}/errand-backend" "ghcr.io/${{ github.repository_owner }}/errand-task-runner"; do
+          for IMAGE in "ghcr.io/${{ github.repository_owner }}/errand" "ghcr.io/${{ github.repository_owner }}/errand-task-runner"; do
             if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
               echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
               exit 1
@@ -58,8 +58,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run backend tests
-        working-directory: backend
+      - name: Run application tests
+        working-directory: errand
         env:
           DATABASE_URL: "sqlite+aiosqlite://"
           PYTHONPATH: "."
@@ -80,7 +80,7 @@ jobs:
           npm ci
           npm test
 
-  build-backend:
+  build-errand:
     needs: [version, test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -103,14 +103,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push backend image
+      - name: Build and push errand image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/errand-backend:${{ needs.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/errand:${{ needs.version.outputs.tag }}
 
   build-task-runner:
     needs: [version, test]
@@ -144,7 +144,7 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/errand-task-runner:${{ needs.version.outputs.tag }}
 
   helm:
-    needs: [version, build-backend, build-task-runner]
+    needs: [version, build-errand, build-task-runner]
     runs-on: ubuntu-latest
     permissions:
       contents: read

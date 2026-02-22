@@ -65,7 +65,7 @@ services:
       postgres:
         condition: service_healthy
 
-  backend:
+  errand:
     build:
       context: .
       dockerfile: Dockerfile
@@ -107,7 +107,7 @@ services:
       USE_PERPLEXITY: "true"
       PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
-      BACKEND_MCP_URL: http://backend:8000/mcp
+      ERRAND_MCP_URL: http://errand:8000/mcp
       HINDSIGHT_URL: http://hindsight:8888
       MAX_TURNS: "200"
     depends_on:

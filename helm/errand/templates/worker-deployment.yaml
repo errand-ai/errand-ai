@@ -20,8 +20,8 @@ spec:
       serviceAccountName: {{ include "errand.fullname" . }}-worker
       containers:
         - name: worker
-          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           command: ["python", "worker.py"]
           env:
             - name: DATABASE_URL
@@ -62,8 +62,8 @@ spec:
                   name: {{ .Values.credentialEncryption.existingSecret }}
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
-            - name: BACKEND_MCP_URL
-              value: "http://{{ include "errand.fullname" . }}-backend:{{ .Values.backend.service.port }}/mcp"
+            - name: ERRAND_MCP_URL
+              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}/mcp"
             {{- if .Values.worker.maxTurns }}
             - name: MAX_TURNS
               value: {{ .Values.worker.maxTurns | quote }}

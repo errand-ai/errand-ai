@@ -728,13 +728,13 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             )
 
         # Inject errand MCP server for task tools (post_tweet, new_task, etc.)
-        backend_mcp_url = os.environ.get("BACKEND_MCP_URL", "")
+        errand_mcp_url = os.environ.get("ERRAND_MCP_URL", "")
         mcp_api_key = settings.get("mcp_api_key", "")
-        if backend_mcp_url and mcp_api_key:
+        if errand_mcp_url and mcp_api_key:
             mcp_servers.setdefault("mcpServers", {})
             if "errand" not in mcp_servers["mcpServers"]:
                 mcp_servers["mcpServers"]["errand"] = {
-                    "url": backend_mcp_url,
+                    "url": errand_mcp_url,
                     "headers": {"Authorization": f"Bearer {mcp_api_key}"},
                 }
 
@@ -807,7 +807,7 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
             callback_token = secrets.token_hex(32)
             cb_redis.set(f"task_result_token:{task.id}", callback_token, ex=1800)
             cb_redis.close()
-            callback_url = backend_mcp_url.removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
+            callback_url = errand_mcp_url.removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
             env_vars["RESULT_CALLBACK_URL"] = callback_url
             env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
         except Exception:

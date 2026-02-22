@@ -38,7 +38,7 @@ Files in the root of the `static/` directory (e.g., `favicon.ico`, `robots.txt`)
 - **THEN** the backend serves `static/index.html` (SPA fallback)
 
 ### Requirement: Combined Docker image
-The application SHALL be built as a single Docker image using a multi-stage Dockerfile. The first stage SHALL use Node.js to build the frontend (`npm ci && npm run build`). The final stage SHALL use Python and copy the frontend build output into a `static/` directory alongside the backend code. The build context SHALL be the repository root.
+The application SHALL be built as a single Docker image using a multi-stage Dockerfile. The first stage SHALL use Node.js to build the frontend (`npm ci && npm run build`). The final stage SHALL use Python and copy the frontend build output into a `static/` directory alongside the application code. The build context SHALL be the repository root. The Dockerfile SHALL copy application source from `errand/` and requirements from `errand/requirements.txt`.
 
 #### Scenario: Image contains frontend assets
 - **WHEN** the Docker image is built
@@ -50,4 +50,4 @@ The application SHALL be built as a single Docker image using a multi-stage Dock
 
 #### Scenario: Build context is repo root
 - **WHEN** the Docker image is built
-- **THEN** both `frontend/` and `backend/` directories are accessible in the build context
+- **THEN** both `frontend/` and `errand/` directories are accessible in the build context
