@@ -217,7 +217,7 @@ async def test_mcp_api_key_in_settings_response(admin_mcp_client: AsyncClient, d
 
     resp = await admin_mcp_client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json()["mcp_api_key"] == "test-key-123"
+    assert resp.json()["mcp_api_key"]["value"] == "test-key-123"
 
 
 # --- 5.3: MCP endpoint auth (via TokenVerifier) ---

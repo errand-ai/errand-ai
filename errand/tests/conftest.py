@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS skill_files (
 )
 """
 
+_LOCAL_USERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS local_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin' NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
@@ -135,6 +145,7 @@ async def _create_tables(engine):
         await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
         await conn.execute(text(_SKILLS_TABLE_SQL))
         await conn.execute(text(_SKILL_FILES_TABLE_SQL))
+        await conn.execute(text(_LOCAL_USERS_TABLE_SQL))
 
 
 @pytest.fixture()

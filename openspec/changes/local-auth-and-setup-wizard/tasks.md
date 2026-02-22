@@ -1,57 +1,57 @@
 ## 1. Database & Models
 
-- [ ] 1.1 Add `LocalUser` model to `models.py` with columns: id, username, password_hash, role, created_at
-- [ ] 1.2 Create Alembic migration for `local_users` table
-- [ ] 1.3 Add `bcrypt` and `passlib` to `requirements.txt`
+- [x] 1.1 Add `LocalUser` model to `models.py` with columns: id, username, password_hash, role, created_at
+- [x] 1.2 Create Alembic migration for `local_users` table
+- [x] 1.3 Add `bcrypt` and `passlib` to `requirements.txt`
 
 ## 2. Settings Registry
 
-- [ ] 2.1 Create `settings_registry.py` module with the settings definition dict mapping each known setting to env var name, sensitive flag, and default value
-- [ ] 2.2 Add `resolve_settings()` function that merges env vars, DB values, and defaults into the metadata-enriched format (`{key: {value, source, sensitive, readonly}}`)
-- [ ] 2.3 Add `mask_sensitive_value()` helper (first 4 chars + `****` for env-sourced sensitive values)
-- [ ] 2.4 Refactor `GET /api/settings` to use the settings registry and return the new response format
-- [ ] 2.5 Refactor `PUT /api/settings` to silently ignore readonly (env-sourced) keys
-- [ ] 2.6 Exclude `ssh_private_key` and `jwt_signing_secret` from the settings API response
-- [ ] 2.7 Register OIDC settings in the registry: `oidc_discovery_url`, `oidc_client_id`, `oidc_client_secret`, `oidc_roles_claim`
-- [ ] 2.8 Register LLM settings in the registry: `openai_base_url`, `openai_api_key`
+- [x] 2.1 Create `settings_registry.py` module with the settings definition dict mapping each known setting to env var name, sensitive flag, and default value
+- [x] 2.2 Add `resolve_settings()` function that merges env vars, DB values, and defaults into the metadata-enriched format (`{key: {value, source, sensitive, readonly}}`)
+- [x] 2.3 Add `mask_sensitive_value()` helper (first 4 chars + `****` for env-sourced sensitive values)
+- [x] 2.4 Refactor `GET /api/settings` to use the settings registry and return the new response format
+- [x] 2.5 Refactor `PUT /api/settings` to silently ignore readonly (env-sourced) keys
+- [x] 2.6 Exclude `ssh_private_key` and `jwt_signing_secret` from the settings API response
+- [x] 2.7 Register OIDC settings in the registry: `oidc_discovery_url`, `oidc_client_id`, `oidc_client_secret`, `oidc_roles_claim`
+- [x] 2.8 Register LLM settings in the registry: `openai_base_url`, `openai_api_key`
 
 ## 3. Local Auth Backend
 
-- [ ] 3.1 Add JWT signing secret auto-generation on startup (64-char hex string stored as `jwt_signing_secret` setting)
-- [ ] 3.2 Implement `POST /auth/local/login` — validate credentials, return JWT with `sub`, `email`, `_roles`, `iss: "errand-local"`, 24h expiry
-- [ ] 3.3 Implement `GET /auth/local/logout` — return redirect to `/`
-- [ ] 3.4 Implement `POST /auth/local/change-password` — validate current password, update hash
-- [ ] 3.5 Implement `ADMIN_USERNAME`/`ADMIN_PASSWORD` env var auto-provisioning in `lifespan()`
+- [x] 3.1 Add JWT signing secret auto-generation on startup (64-char hex string stored as `jwt_signing_secret` setting)
+- [x] 3.2 Implement `POST /auth/local/login` — validate credentials, return JWT with `sub`, `email`, `_roles`, `iss: "errand-local"`, 24h expiry
+- [x] 3.3 Implement `GET /auth/local/logout` — return redirect to `/`
+- [x] 3.4 Implement `POST /auth/local/change-password` — validate current password, update hash
+- [x] 3.5 Implement `ADMIN_USERNAME`/`ADMIN_PASSWORD` env var auto-provisioning in `lifespan()`
 
 ## 4. Auth Mode Detection
 
-- [ ] 4.1 Implement `GET /api/auth/status` endpoint (unauthenticated) returning `{mode, login_url?}`
-- [ ] 4.2 Auth mode resolution logic: OIDC env → OIDC DB → local user exists → setup mode
-- [ ] 4.3 Ensure `/api/auth/status` queries live state on each request (no caching)
+- [x] 4.1 Implement `GET /api/auth/status` endpoint (unauthenticated) returning `{mode, login_url?}`
+- [x] 4.2 Auth mode resolution logic: OIDC env → OIDC DB → local user exists → setup mode
+- [x] 4.3 Ensure `/api/auth/status` queries live state on each request (no caching)
 
 ## 5. JWT Validation Refactor
 
-- [ ] 5.1 Refactor `get_current_user` to support both OIDC tokens (JWKS) and local tokens (HMAC) based on `iss` claim
-- [ ] 5.2 Remove `_ANONYMOUS_CLAIMS` fallback — unauthenticated requests get 401
+- [x] 5.1 Refactor `get_current_user` to support both OIDC tokens (JWKS) and local tokens (HMAC) based on `iss` claim
+- [x] 5.2 Remove `_ANONYMOUS_CLAIMS` fallback — unauthenticated requests get 401
 
 ## 6. OIDC Config from DB
 
-- [ ] 6.1 Refactor `OIDCConfig.from_env()` to also check DB settings when env vars are missing
-- [ ] 6.2 Make OIDC discovery failure non-fatal at startup (log error, fall back to local auth)
-- [ ] 6.3 Implement hot-reload endpoint: when OIDC settings are saved via `PUT /api/settings`, perform discovery and atomically swap the module-level `oidc` variable
-- [ ] 6.4 If hot-reload discovery fails, return error to client and preserve existing auth mode
+- [x] 6.1 Refactor `OIDCConfig.from_env()` to also check DB settings when env vars are missing
+- [x] 6.2 Make OIDC discovery failure non-fatal at startup (log error, fall back to local auth)
+- [x] 6.3 Implement hot-reload endpoint: when OIDC settings are saved via `PUT /api/settings`, perform discovery and atomically swap the module-level `oidc` variable
+- [x] 6.4 If hot-reload discovery fails, return error to client and preserve existing auth mode
 
 ## 7. LLM Config from DB
 
-- [ ] 7.1 Refactor `get_llm_client()` to use settings registry resolution (env var → DB → unconfigured)
-- [ ] 7.2 Refactor `GET /api/llm/models` to use settings registry resolution for LLM client init
-- [ ] 7.3 Return HTTP 503 from `/api/llm/models` when LLM provider is not configured via either source
-- [ ] 7.4 Ensure worker reads LLM config from DB at task processing time (uses same resolution)
+- [x] 7.1 Refactor `get_llm_client()` to use settings registry resolution (env var → DB → unconfigured)
+- [x] 7.2 Refactor `GET /api/llm/models` to use settings registry resolution for LLM client init
+- [x] 7.3 Return HTTP 503 from `/api/llm/models` when LLM provider is not configured via either source
+- [x] 7.4 Ensure worker reads LLM config from DB at task processing time (uses same resolution)
 
 ## 8. Setup Wizard Backend
 
-- [ ] 8.1 Implement `POST /api/setup/create-user` — unauthenticated, guarded by zero-users check, returns JWT
-- [ ] 8.2 Return 403 from create-user if any local user already exists
+- [x] 8.1 Implement `POST /api/setup/create-user` — unauthenticated, guarded by zero-users check, returns JWT
+- [x] 8.2 Return 403 from create-user if any local user already exists
 
 ## 9. Frontend Settings Page Update
 
@@ -94,21 +94,21 @@
 
 ## 14. Docker Compose
 
-- [ ] 14.1 Add `ADMIN_USERNAME` and `ADMIN_PASSWORD` env vars to the errand service in `docker-compose.yml`
+- [x] 14.1 Add `ADMIN_USERNAME` and `ADMIN_PASSWORD` env vars to the errand service in `docker-compose.yml`
 
 ## 15. Backend Tests
 
-- [ ] 15.1 Test settings registry resolution (env → DB → default) and sensitive value masking
-- [ ] 15.2 Test `GET /api/settings` returns metadata-enriched format
-- [ ] 15.3 Test `PUT /api/settings` ignores readonly keys
-- [ ] 15.4 Test `POST /auth/local/login` — success, invalid password, unknown user
-- [ ] 15.5 Test `POST /auth/local/change-password` — success, wrong current password
-- [ ] 15.6 Test `GET /api/auth/status` — setup mode, local mode, SSO mode
-- [ ] 15.7 Test `POST /api/setup/create-user` — success, 403 when user exists
-- [ ] 15.8 Test `get_current_user` validates both OIDC and local JWTs
-- [ ] 15.9 Test `ADMIN_USERNAME`/`ADMIN_PASSWORD` auto-provisioning
-- [ ] 15.10 Test LLM client resolution from DB settings
-- [ ] 15.11 Test OIDC hot-reload on settings save
+- [x] 15.1 Test settings registry resolution (env → DB → default) and sensitive value masking
+- [x] 15.2 Test `GET /api/settings` returns metadata-enriched format
+- [x] 15.3 Test `PUT /api/settings` ignores readonly keys
+- [x] 15.4 Test `POST /auth/local/login` — success, invalid password, unknown user
+- [x] 15.5 Test `POST /auth/local/change-password` — success, wrong current password
+- [x] 15.6 Test `GET /api/auth/status` — setup mode, local mode, SSO mode
+- [x] 15.7 Test `POST /api/setup/create-user` — success, 403 when user exists
+- [x] 15.8 Test `get_current_user` validates both OIDC and local JWTs
+- [x] 15.9 Test `ADMIN_USERNAME`/`ADMIN_PASSWORD` auto-provisioning
+- [x] 15.10 Test LLM client resolution from DB settings
+- [x] 15.11 Test OIDC hot-reload on settings save
 
 ## 16. Frontend Tests
 

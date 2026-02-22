@@ -20,22 +20,38 @@ class OIDCConfig:
     _jwks_client: PyJWKClient | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "OIDCConfig | None":
-        """Returns OIDCConfig if OIDC env vars are set, None otherwise."""
+    def from_env(cls, db_settings: dict | None = None) -> "OIDCConfig | None":
+        """Returns OIDCConfig from env vars or DB settings, None otherwise."""
+        # Try env vars first
         discovery_url = os.environ.get("OIDC_DISCOVERY_URL")
         client_id = os.environ.get("OIDC_CLIENT_ID")
         client_secret = os.environ.get("OIDC_CLIENT_SECRET")
         roles_claim = os.environ.get("OIDC_ROLES_CLAIM", "resource_access.errand.roles")
 
-        if not discovery_url or not client_id or not client_secret:
-            return None
+        if discovery_url and client_id and client_secret:
+            return cls(
+                discovery_url=discovery_url,
+                client_id=client_id,
+                client_secret=client_secret,
+                roles_claim=roles_claim,
+            )
 
-        return cls(
-            discovery_url=discovery_url,
-            client_id=client_id,
-            client_secret=client_secret,
-            roles_claim=roles_claim,
-        )
+        # Fall back to DB settings
+        if db_settings:
+            discovery_url = db_settings.get("oidc_discovery_url")
+            client_id = db_settings.get("oidc_client_id")
+            client_secret = db_settings.get("oidc_client_secret")
+            roles_claim = db_settings.get("oidc_roles_claim", "resource_access.errand.roles")
+            if discovery_url and client_id and client_secret:
+                # Unwrap JSONB string values
+                return cls(
+                    discovery_url=str(discovery_url),
+                    client_id=str(client_id),
+                    client_secret=str(client_secret),
+                    roles_claim=str(roles_claim),
+                )
+
+        return None
 
     async def discover(self) -> None:
         async with httpx.AsyncClient() as client:

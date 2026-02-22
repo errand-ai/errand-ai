@@ -298,7 +298,8 @@ async def test_llm_models_admin_access(admin_client: AsyncClient):
     models_response.data = [model2, model1]
     mock_client.models.list = AsyncMock(return_value=models_response)
 
-    with patch.object(llm_module, "_client", mock_client):
+    import main as main_module
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await admin_client.get("/api/llm/models")
 
     assert resp.status_code == 200
@@ -314,7 +315,8 @@ async def test_llm_models_non_admin_403(client: AsyncClient):
 
 async def test_llm_models_not_configured_503(admin_client: AsyncClient):
     """Returns 503 when LLM client is not configured."""
-    with patch.object(llm_module, "_client", None):
+    import main as main_module
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
         resp = await admin_client.get("/api/llm/models")
 
     assert resp.status_code == 503
@@ -326,7 +328,8 @@ async def test_llm_models_provider_error_502(admin_client: AsyncClient):
     mock_client = AsyncMock()
     mock_client.models.list = AsyncMock(side_effect=Exception("Connection refused"))
 
-    with patch.object(llm_module, "_client", mock_client):
+    import main as main_module
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await admin_client.get("/api/llm/models")
 
     assert resp.status_code == 502

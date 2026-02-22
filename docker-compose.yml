@@ -85,6 +85,8 @@ services:
       TWITTER_API_SECRET: ${TWITTER_API_SECRET:-}
       TWITTER_ACCESS_TOKEN: ${TWITTER_ACCESS_TOKEN:-}
       TWITTER_ACCESS_SECRET: ${TWITTER_ACCESS_SECRET:-}
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: changeme
     depends_on:
       migrate:
         condition: service_completed_successfully
