@@ -711,7 +711,7 @@ async def transcribe_status(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         return {"enabled": False}
     result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))

@@ -193,7 +193,7 @@ async def test_local_logout():
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
         resp = await client.get("/auth/local/logout")
 
-    assert resp.status_code == 307
+    assert resp.status_code == 302
     assert resp.headers["location"] == "/"
 
     app.dependency_overrides.clear()
@@ -228,14 +228,14 @@ async def test_change_password_success():
         )
         token = login_resp.json()["access_token"]
 
-        # Change password
+        # Change password (token in Authorization header, not body)
         resp = await client.post(
             "/auth/local/change-password",
             json={
-                "token": token,
                 "current_password": "testpassword",
                 "new_password": "newpassword123",
             },
+            headers={"Authorization": f"Bearer {token}"},
         )
 
     assert resp.status_code == 200
@@ -285,10 +285,10 @@ async def test_change_password_wrong_current():
         resp = await client.post(
             "/auth/local/change-password",
             json={
-                "token": token,
                 "current_password": "wrongpassword",
                 "new_password": "newpassword123",
             },
+            headers={"Authorization": f"Bearer {token}"},
         )
 
     assert resp.status_code == 401

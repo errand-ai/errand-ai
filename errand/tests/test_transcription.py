@@ -52,7 +52,7 @@ async def test_transcribe_audio_success(db_session: AsyncSession):
     fake_file.content_type = "audio/webm"
     fake_file.read = AsyncMock(return_value=b"fake audio data")
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         result = await transcribe_audio(fake_file, db_session)
 
     assert result == "Hello world"
@@ -66,14 +66,14 @@ async def test_transcribe_audio_no_model_raises(db_session: AsyncSession):
     """transcribe_audio raises TranscriptionNotConfiguredError when no transcription_model setting."""
     mock_client = AsyncMock()
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         with pytest.raises(TranscriptionNotConfiguredError):
             await transcribe_audio(io.BytesIO(b"data"), db_session)
 
 
 async def test_transcribe_audio_no_client_raises(db_session: AsyncSession):
     """transcribe_audio raises LLMClientNotConfiguredError when client is None."""
-    with patch.object(llm_module, "_client", None):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
         with pytest.raises(LLMClientNotConfiguredError):
             await transcribe_audio(io.BytesIO(b"data"), db_session)
 
@@ -159,8 +159,9 @@ async def test_transcribe_status_enabled(admin_client: AsyncClient):
     # Set the transcription_model setting
     await admin_client.put("/api/settings", json={"transcription_model": "whisper-large-v3"})
 
+    import main as main_module
     mock_client = AsyncMock()
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await admin_client.get("/api/transcribe/status")
 
     assert resp.status_code == 200
@@ -169,8 +170,9 @@ async def test_transcribe_status_enabled(admin_client: AsyncClient):
 
 async def test_transcribe_status_disabled_no_model(client: AsyncClient):
     """GET /api/transcribe/status returns enabled=false when no model setting."""
+    import main as main_module
     mock_client = AsyncMock()
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.get("/api/transcribe/status")
 
     assert resp.status_code == 200
@@ -179,7 +181,8 @@ async def test_transcribe_status_disabled_no_model(client: AsyncClient):
 
 async def test_transcribe_status_disabled_no_client(client: AsyncClient):
     """GET /api/transcribe/status returns enabled=false when LLM client not configured."""
-    with patch.object(llm_module, "_client", None):
+    import main as main_module
+    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
         resp = await client.get("/api/transcribe/status")
 
     assert resp.status_code == 200

@@ -149,7 +149,7 @@ async def generate_title(description: str, session: AsyncSession, now: datetime 
     if now is None:
         now = datetime.now(timezone.utc)
 
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         return LLMResult(title=_fallback_title(description), success=False)
 
@@ -211,7 +211,7 @@ async def transcribe_audio(file, session: AsyncSession) -> str:
     Raises TranscriptionNotConfiguredError if no transcription_model setting exists.
     Raises LLMClientNotConfiguredError if the LLM client is not available.
     """
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         raise LLMClientNotConfiguredError("LLM client is not configured")
 

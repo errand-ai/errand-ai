@@ -123,7 +123,7 @@ async def test_create_task_long_input_calls_llm(client: AsyncClient):
         return_value=_mock_json_response("Fix Auth Bug", "immediate")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -145,7 +145,7 @@ async def test_create_task_scheduled_categorisation(client: AsyncClient):
         return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-10T17:00:00Z")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "Send the quarterly financial report to the board at 5pm today"},
@@ -171,7 +171,7 @@ async def test_create_task_repeating_categorisation(client: AsyncClient):
         )
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "Run the daily sales report every morning at 9am until the end of Q1 2026"},
@@ -189,7 +189,7 @@ async def test_create_task_short_input_no_llm(client: AsyncClient):
     """Short input (<=5 words) uses input as title directly, no LLM call."""
     mock_client = AsyncMock()
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post("/api/tasks", json={"input": "Fix login"})
 
     assert resp.status_code == 201
@@ -209,7 +209,7 @@ async def test_create_task_llm_returns_invalid_json(client: AsyncClient):
         return_value=_mock_llm_response("Just a plain title response")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -228,7 +228,7 @@ async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("LLM timeout"))
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -243,7 +243,7 @@ async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
 
 async def test_create_task_llm_not_configured_uses_fallback(client: AsyncClient):
     """When LLM client is None, fallback title is used."""
-    with patch.object(llm_module, "_client", None):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "This is a longer description that should trigger title generation"},
@@ -273,7 +273,7 @@ async def test_create_task_six_words_triggers_llm(client: AsyncClient):
         return_value=_mock_json_response("Generated Title")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks", json={"input": "one two three four five six"}
         )
@@ -369,7 +369,7 @@ async def test_generate_title_includes_now_in_system_prompt(db_session: AsyncSes
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -392,7 +392,7 @@ async def test_generate_title_includes_timezone_in_system_prompt(db_session: Asy
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -411,7 +411,7 @@ async def test_generate_title_defaults_to_utc_timezone(db_session: AsyncSession)
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -429,7 +429,7 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
         return_value=_mock_json_response("Fix Auth Bug", "immediate")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},

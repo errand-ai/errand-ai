@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from passlib.hash import bcrypt
 from sqlalchemy import select
@@ -39,6 +39,29 @@ def _mint_local_jwt(username: str, role: str, secret: str) -> str:
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
+async def _require_local_user(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Extract and validate a local JWT from the Authorization header."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+    token_str = auth_header[7:]
+
+    secret = await _get_jwt_secret(session)
+    try:
+        claims = jwt.decode(
+            token_str, secret, algorithms=["HS256"], issuer="errand-local"
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return claims
+
+
 @router.post("/login")
 async def local_login(body: dict, session: AsyncSession = Depends(get_session)):
     username = body.get("username", "").strip()
@@ -61,17 +84,15 @@ async def local_login(body: dict, session: AsyncSession = Depends(get_session)):
 
 @router.get("/logout")
 async def local_logout():
-    return RedirectResponse(url="/")
+    return RedirectResponse(url="/", status_code=302)
 
 
 @router.post("/change-password")
 async def change_password(
     body: dict,
+    claims: dict = Depends(_require_local_user),
     session: AsyncSession = Depends(get_session),
 ):
-    # This endpoint requires a valid token — we validate manually here
-    # since we need the username from the token
-    token_str = body.get("token", "")
     current_password = body.get("current_password", "")
     new_password = body.get("new_password", "")
 
@@ -79,15 +100,6 @@ async def change_password(
         raise HTTPException(
             status_code=422, detail="Current password and new password required"
         )
-
-    secret = await _get_jwt_secret(session)
-
-    try:
-        claims = jwt.decode(
-            token_str, secret, algorithms=["HS256"], issuer="errand-local"
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
 
     username = claims.get("sub", "")
     result = await session.execute(
