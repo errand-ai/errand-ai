@@ -1,7 +1,7 @@
-backend:
+server:
   replicaCount: 1
   image:
-    repository: ghcr.io/errand-ai/errand-backend
+    repository: ghcr.io/errand-ai/errand
     tag: ""
     pullPolicy: IfNotPresent
   service:

@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Build on push to main
 GitHub Actions SHALL run a workflow on push to the `main` branch that runs all tests, then builds the Docker image for the combined application (which includes frontend static assets) and the task runner, pushes them to the container registry, packages the Helm chart, and pushes it to the chart registry. The build jobs SHALL depend on tests passing.
@@ -6,17 +6,6 @@ GitHub Actions SHALL run a workflow on push to the `main` branch that runs all t
 #### Scenario: Main branch build
 - **WHEN** a commit is pushed to `main`
 - **THEN** tests run first, and only if they pass, the application image (including frontend assets) and task runner image are built and pushed with the tag from the `VERSION` file, and the Helm chart is packaged and pushed with the same version
-
-### Requirement: Build on pull request
-GitHub Actions SHALL run a workflow on pull request creation and update that runs all tests, then builds the application image (including frontend assets) and task runner image and pushes them with a PR-specific tag. The build jobs SHALL depend on tests passing. The Helm chart SHALL be packaged but not pushed to the chart registry.
-
-#### Scenario: PR build tagging
-- **WHEN** a PR numbered 42 is created and `VERSION` contains `0.1.0`
-- **THEN** tests run first, and only if they pass, the application and task runner images are built and pushed with tag `0.1.0-pr42`
-
-#### Scenario: PR chart packaging
-- **WHEN** a PR build runs
-- **THEN** tests run first, and then the Helm chart is packaged (for validation) but not pushed to the chart registry
 
 ### Requirement: Immutable version tags
 The CI pipeline on main SHALL verify that the version tag does not already exist in the container registry before pushing. If the tag exists, the build SHALL fail. The check SHALL verify the `errand` and `errand-task-runner` image tags.
@@ -61,3 +50,9 @@ The `helm` job SHALL depend on `build-errand` and `build-task-runner`. The Helm 
 #### Scenario: Application build fails
 - **WHEN** `build-errand` fails
 - **THEN** the `helm` job does not run
+
+## RENAMED Requirements
+
+### Requirement: Build on pull request
+- **FROM:** references to "backend image" and "backend and task runner images"
+- **TO:** references to "application image" and "application and task runner images"

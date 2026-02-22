@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Helm chart deploys all application components
 The Helm chart SHALL define Kubernetes resources for: server Deployment and Service, worker Deployment, database migration Job (pre-upgrade hook), and Ingress. The frontend SHALL NOT have a separate Deployment or Service — it is served by the server. The Helm values key for the main application SHALL be `server:` (not `backend:`). Template files SHALL be named `server-deployment.yaml` and `server-service.yaml`.
@@ -61,14 +61,3 @@ The worker Deployment SHALL include a Playwright MCP sidecar container alongside
 #### Scenario: Worker has ERRAND_MCP_URL set
 - **WHEN** the worker container starts
 - **THEN** the `ERRAND_MCP_URL` environment variable points to the server service MCP endpoint
-
-### Requirement: Worker ServiceAccount and RBAC
-The Helm chart SHALL include a ServiceAccount, Role, and RoleBinding for the worker. The Role SHALL grant permissions to create, get, list, watch, and delete `jobs.batch`; create, get, list, and delete `configmaps`; get and list `pods`; get `pods/log`; and create `pods/exec` — all within the release namespace. The `pods/exec` permission is needed by `KubernetesRuntime.result()` to read `/output/result.json` from completed task-runner pods.
-
-#### Scenario: ServiceAccount created
-- **WHEN** the Helm chart is deployed
-- **THEN** a ServiceAccount named `<release>-worker` exists in the namespace
-
-#### Scenario: Role grants required permissions
-- **WHEN** the Role is inspected
-- **THEN** it includes rules for jobs, configmaps, pods, and pods/log with the specified verbs

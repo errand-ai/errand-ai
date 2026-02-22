@@ -43,11 +43,11 @@ openspec schemas --json                   # List available workflow schemas
 ## Project Structure
 
 ```
-Dockerfile             # Multi-stage: node (frontend build) + python (backend)
+Dockerfile             # Multi-stage: node (frontend build) + python (errand)
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)
-backend/
+errand/
   main.py              # FastAPI app (API endpoints + static file serving)
   mcp_server.py        # MCP Streamable HTTP server (tools: new_task, task_status, etc.)
   auth.py              # OIDC config, JWT validation, role extraction
@@ -70,7 +70,7 @@ helm/
 
 - **Frontend**: Vue 3 + Vite + Tailwind CSS (with Pinia for state management)
 - **Backend**: Python FastAPI + SQLAlchemy + Alembic
-- **Worker**: Python (shared codebase with backend, separate entrypoint)
+- **Worker**: Python (shared codebase with errand, separate entrypoint)
 - **Database**: PostgreSQL (external, app manages migrations via Alembic)
 - **Deployment**: Helm chart on Kubernetes, KEDA for worker autoscaling, ArgoCD
 - **CI/CD**: GitHub Actions, immutable versioning from `VERSION` file
@@ -104,11 +104,11 @@ CI enforces immutable tags — if you forget to bump, the pipeline will fail on 
 Run the full stack locally with Docker Compose and verify changes **before committing**:
 
 ```bash
-docker compose up --build  # Build and start all services (postgres, migrations, backend, worker)
+docker compose up --build  # Build and start all services (postgres, migrations, errand, worker)
 docker compose down        # Stop and remove containers
 ```
 
-Local URL: `http://localhost:8000` (backend serves both API and frontend static files).
+Local URL: `http://localhost:8000` (errand serves both API and frontend static files).
 
 **Every commit must pass local testing.** Do not commit code that hasn't been verified with `docker compose up --build`. The CI pipeline builds images and ArgoCD deploys them — broken commits on a branch waste CI resources and risk bad deployments.
 
@@ -184,7 +184,7 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 ## Worker Container Runtime
 
-The worker uses a pluggable `ContainerRuntime` abstraction (`backend/container_runtime.py`) to run task-runner containers:
+The worker uses a pluggable `ContainerRuntime` abstraction (`errand/container_runtime.py`) to run task-runner containers:
 
 - **`CONTAINER_RUNTIME` env var**: `docker` (default) or `kubernetes` — selects the runtime at worker startup
 - **DockerRuntime**: Wraps Docker SDK, used for local dev via docker-compose (DinD sidecar)
@@ -206,7 +206,7 @@ The worker uses a pluggable `ContainerRuntime` abstraction (`backend/container_r
 - **ArgoCD RBAC testing**: `kubectl -n argocd exec deploy/argocd-server -- argocd admin settings rbac can <user> <action> <resource> '<project>/<app>' --namespace argocd`
 - **ArgoCD MCP account**: `mcpserver` local account (apiKey auth), role `readonly-user` (get, sync, restart deployments)
 - **Cluster context**: `devops-consultants` / namespace: `content-manager`
-- **Ingress**: nginx ingress controller (class `nginx`) — routes all paths to backend (single service)
+- **Ingress**: nginx ingress controller (class `nginx`) — routes all paths to server (single service)
 - **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
 - **Database**: CloudNativePG — secret `content-manager-postgres-app`, key `uri`
 - **Proxy headers**: uvicorn runs with `--proxy-headers --forwarded-allow-ips *` so `request.base_url` returns `https://` behind TLS-terminating ingress
@@ -218,7 +218,7 @@ The worker uses a pluggable `ContainerRuntime` abstraction (`backend/container_r
 - Image tags in templates default to `.Chart.AppVersion` when `values.image.tag` is empty
 - CI sets `appVersion` via `helm package --app-version` from the VERSION file
 - PR builds get tags like `0.4.0-pr2`; main builds get `0.4.0`
-- Backend serves frontend static files in production (Vite build output in `static/` directory)
+- Server serves frontend static files in production (Vite build output in `static/` directory)
 - No separate frontend container — single combined Docker image
 
 ## MCP Server (Backend)
@@ -233,27 +233,27 @@ The worker uses a pluggable `ContainerRuntime` abstraction (`backend/container_r
 - Header inner div has no max-width — logo left-aligned, user controls right-aligned
 - KanbanBoard wraps TaskForm in `max-w-7xl mx-auto` to keep it constrained
 - Kanban columns use `flex-1` to expand to fill available width
-- Local dev: backend serves everything on port 8000 (frontend static files included in Docker build)
+- Local dev: errand serves everything on port 8000 (frontend static files included in Docker build)
 
 ## Python Environment
 
-The macOS system Python is 3.9.6 (`/usr/bin/python3`) — too old for this project (requires 3.12+). Always use the backend venv:
+The macOS system Python is 3.9.6 (`/usr/bin/python3`) — too old for this project (requires 3.12+). Always use the errand venv:
 
 ```bash
-# Backend tests (from repo root)
-DATABASE_URL="sqlite+aiosqlite:///:memory:" backend/.venv/bin/python -m pytest backend/tests/ -v
+# Errand tests (from repo root)
+DATABASE_URL="sqlite+aiosqlite:///:memory:" errand/.venv/bin/python -m pytest errand/tests/ -v
 
 # Running any Python script
-backend/.venv/bin/python <script.py>
+errand/.venv/bin/python <script.py>
 ```
 
-Never use bare `python3` or `python` — they resolve to the system 3.9 which lacks required language features (e.g. `X | Y` union types, `match` statements). The backend venv at `backend/.venv/` has Python 3.12 with all project dependencies installed.
+Never use bare `python3` or `python` — they resolve to the system 3.9 which lacks required language features (e.g. `X | Y` union types, `match` statements). The errand venv at `errand/.venv/` has Python 3.12 with all project dependencies installed.
 
 Homebrew provides newer Python versions at `/opt/homebrew/bin/python3.{12,13,14}`. To recreate the venv with a specific version:
 
 ```bash
-/opt/homebrew/bin/python3.12 -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements.txt
+/opt/homebrew/bin/python3.12 -m venv errand/.venv
+errand/.venv/bin/pip install -r errand/requirements.txt
 ```
 
 ## Current State
@@ -261,5 +261,5 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 - Version: `0.47.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 485 backend (pytest, includes task-runner) + 329 frontend (vitest) — CI `test` job gates both build jobs
+- Tests: 485 errand (pytest, includes task-runner) + 329 frontend (vitest) — CI `test` job gates both build jobs
 - 51 component specs in `openspec/specs/`

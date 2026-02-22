@@ -24,7 +24,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "errand.fullname" . }}-backend
+                name: {{ include "errand.fullname" . }}
                 port:
-                  number: {{ .Values.backend.service.port }}
+                  number: {{ .Values.server.service.port }}
 {{- end }}
