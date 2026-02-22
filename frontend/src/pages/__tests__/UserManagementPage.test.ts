@@ -168,7 +168,7 @@ describe('UserManagementPage', () => {
   })
 
   it('calls change-password API on form submit', async () => {
-    fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
       if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
       if (url === '/auth/local/change-password') {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
