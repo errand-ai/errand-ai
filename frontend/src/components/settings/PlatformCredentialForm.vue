@@ -13,6 +13,9 @@ const emit = defineEmits<{
 
 const fields = ref<Record<string, string>>({})
 
+// Find the mode selector field (type === 'select' with options) if any
+const modeField = computed(() => props.schema.find(f => f.type === 'select' && f.options?.length))
+
 watch(() => props.schema, (schema) => {
   if (!schema) return
   const init: Record<string, string> = {}
@@ -24,15 +27,20 @@ watch(() => props.schema, (schema) => {
 
 const visibleFields = computed(() => {
   return props.schema.filter(field => {
+    // Hide the mode selector from the regular field list — it's rendered as a toggle
+    if (field.type === 'select' && field.options?.length) return false
     if (!field.auth_mode) return true
-    const modeField = props.schema.find(f => f.key === 'auth_mode')
-    if (!modeField) return true
-    return fields.value['auth_mode'] === field.auth_mode
+    if (!modeField.value) return true
+    return fields.value[modeField.value.key] === field.auth_mode
   })
 })
 
 function onSubmit() {
   const creds: Record<string, string> = {}
+  // Include the mode field value
+  if (modeField.value) {
+    creds[modeField.value.key] = fields.value[modeField.value.key]
+  }
   for (const field of visibleFields.value) {
     creds[field.key] = fields.value[field.key]
   }
@@ -42,29 +50,39 @@ function onSubmit() {
 
 <template>
   <form @submit.prevent="onSubmit" class="space-y-3" data-testid="credential-form">
+    <!-- Mode toggle (rendered as pill buttons instead of a dropdown) -->
+    <div v-if="modeField" class="mb-1">
+      <label class="block text-sm font-medium text-gray-700 mb-2">{{ modeField.label }}</label>
+      <div
+        class="inline-flex rounded-md border border-gray-300 overflow-hidden"
+        :data-testid="`cred-input-${modeField.key}`"
+      >
+        <button
+          v-for="opt in modeField.options"
+          :key="opt.value"
+          type="button"
+          @click="fields[modeField.key] = opt.value"
+          class="px-4 py-1.5 text-sm font-medium transition-colors"
+          :class="fields[modeField.key] === opt.value
+            ? 'bg-blue-600 text-white'
+            : 'bg-white text-gray-600 hover:bg-gray-50'"
+          :data-testid="`cred-toggle-${opt.value}`"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Regular fields (filtered by active mode) -->
     <div v-for="field in visibleFields" :key="field.key">
       <label :for="`cred-${field.key}`" class="block text-sm font-medium text-gray-700 mb-1">
         {{ field.label }}
         <span v-if="field.required" class="text-red-500">*</span>
       </label>
 
-      <!-- Select dropdown -->
-      <select
-        v-if="field.type === 'select'"
-        :id="`cred-${field.key}`"
-        v-model="fields[field.key]"
-        :required="field.required"
-        class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-        :data-testid="`cred-input-${field.key}`"
-      >
-        <option v-for="opt in field.options" :key="opt.value" :value="opt.value">
-          {{ opt.label }}
-        </option>
-      </select>
-
       <!-- Textarea -->
       <textarea
-        v-else-if="field.type === 'textarea'"
+        v-if="field.type === 'textarea'"
         :id="`cred-${field.key}`"
         v-model="fields[field.key]"
         :required="field.required"

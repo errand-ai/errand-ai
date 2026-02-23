@@ -34,17 +34,36 @@ describe('PlatformCredentialForm', () => {
     expect(wrapper.find('[data-testid="cred-input-api_secret"]').attributes('type')).toBe('password')
   })
 
-  it('renders select dropdown for select type fields', () => {
+  it('does not render a toggle for schemas without a select field', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: simpleSchema, saving: false },
+    })
+
+    expect(wrapper.find('[data-testid="cred-input-auth_mode"]').exists()).toBe(false)
+  })
+
+  it('renders toggle buttons for select type fields', () => {
     const wrapper = mount(PlatformCredentialForm, {
       props: { schema: githubSchema, saving: false },
     })
 
-    const select = wrapper.find('[data-testid="cred-input-auth_mode"]')
-    expect(select.element.tagName).toBe('SELECT')
-    const options = select.findAll('option')
-    expect(options).toHaveLength(2)
-    expect(options[0].text()).toBe('Personal Access Token')
-    expect(options[1].text()).toBe('GitHub App')
+    const toggle = wrapper.find('[data-testid="cred-input-auth_mode"]')
+    expect(toggle.exists()).toBe(true)
+    const buttons = toggle.findAll('button')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0].text()).toBe('Personal Access Token')
+    expect(buttons[1].text()).toBe('GitHub App')
+  })
+
+  it('highlights the active toggle option', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: githubSchema, saving: false },
+    })
+
+    const patButton = wrapper.find('[data-testid="cred-toggle-pat"]')
+    const appButton = wrapper.find('[data-testid="cred-toggle-app"]')
+    expect(patButton.classes()).toContain('bg-blue-600')
+    expect(appButton.classes()).not.toContain('bg-blue-600')
   })
 
   it('shows PAT fields when auth_mode is pat (default)', () => {
@@ -60,13 +79,12 @@ describe('PlatformCredentialForm', () => {
     expect(wrapper.find('[data-testid="cred-input-installation_id"]').exists()).toBe(false)
   })
 
-  it('shows App fields when auth_mode is switched to app', async () => {
+  it('shows App fields when toggle is clicked to app', async () => {
     const wrapper = mount(PlatformCredentialForm, {
       props: { schema: githubSchema, saving: false },
     })
 
-    const select = wrapper.find('[data-testid="cred-input-auth_mode"]')
-    await select.setValue('app')
+    await wrapper.find('[data-testid="cred-toggle-app"]').trigger('click')
 
     // App fields visible
     expect(wrapper.find('[data-testid="cred-input-app_id"]').exists()).toBe(true)
@@ -76,12 +94,25 @@ describe('PlatformCredentialForm', () => {
     expect(wrapper.find('[data-testid="cred-input-personal_access_token"]').exists()).toBe(false)
   })
 
+  it('switches highlight when toggling between modes', async () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: githubSchema, saving: false },
+    })
+
+    await wrapper.find('[data-testid="cred-toggle-app"]').trigger('click')
+
+    const patButton = wrapper.find('[data-testid="cred-toggle-pat"]')
+    const appButton = wrapper.find('[data-testid="cred-toggle-app"]')
+    expect(appButton.classes()).toContain('bg-blue-600')
+    expect(patButton.classes()).not.toContain('bg-blue-600')
+  })
+
   it('renders textarea for textarea type fields', async () => {
     const wrapper = mount(PlatformCredentialForm, {
       props: { schema: githubSchema, saving: false },
     })
 
-    await wrapper.find('[data-testid="cred-input-auth_mode"]').setValue('app')
+    await wrapper.find('[data-testid="cred-toggle-app"]').trigger('click')
 
     const textarea = wrapper.find('[data-testid="cred-input-private_key"]')
     expect(textarea.element.tagName).toBe('TEXTAREA')
@@ -92,13 +123,13 @@ describe('PlatformCredentialForm', () => {
       props: { schema: githubSchema, saving: false },
     })
 
-    await wrapper.find('[data-testid="cred-input-auth_mode"]').setValue('app')
+    await wrapper.find('[data-testid="cred-toggle-app"]').trigger('click')
 
     expect(wrapper.find('[data-testid="cred-input-app_id"]').attributes('type')).toBe('text')
     expect(wrapper.find('[data-testid="cred-input-installation_id"]').attributes('type')).toBe('text')
   })
 
-  it('only submits visible fields', async () => {
+  it('only submits visible fields plus mode', async () => {
     const wrapper = mount(PlatformCredentialForm, {
       props: { schema: githubSchema, saving: false },
     })
@@ -125,7 +156,7 @@ describe('PlatformCredentialForm', () => {
       props: { schema: githubSchema, saving: false },
     })
 
-    await wrapper.find('[data-testid="cred-input-auth_mode"]').setValue('app')
+    await wrapper.find('[data-testid="cred-toggle-app"]').trigger('click')
     await wrapper.find('[data-testid="cred-input-app_id"]').setValue('12345')
     await wrapper.find('[data-testid="cred-input-private_key"]').setValue('-----BEGIN RSA PRIVATE KEY-----')
     await wrapper.find('[data-testid="cred-input-installation_id"]').setValue('67890')
