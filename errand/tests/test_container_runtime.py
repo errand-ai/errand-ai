@@ -680,13 +680,15 @@ class TestCleanupOrphanedJobs:
         runtime.namespace = "test-ns"
         return runtime
 
-    def test_cleans_up_orphaned_jobs_configmaps_and_secrets(self):
+    @patch("container_runtime._recover_orphaned_task")
+    def test_cleans_up_orphaned_jobs_configmaps_and_secrets(self, mock_recover):
         """cleanup_orphaned_jobs deletes all matching Jobs, ConfigMaps, and Secrets."""
         runtime = self._make_runtime()
 
         # Mock list responses
         mock_job = MagicMock()
         mock_job.metadata.name = "task-runner-old"
+        mock_job.metadata.labels = {"content-manager/task-id": "abc-123"}
         runtime.batch_v1.list_namespaced_job.return_value.items = [mock_job]
 
         mock_cm = MagicMock()
@@ -699,6 +701,7 @@ class TestCleanupOrphanedJobs:
 
         cleanup_orphaned_jobs(runtime)
 
+        mock_recover.assert_called_once_with("abc-123")
         runtime.batch_v1.delete_namespaced_job.assert_called_once_with(
             "task-runner-old",
             "test-ns",
@@ -723,7 +726,8 @@ class TestCleanupOrphanedJobs:
         # Should not raise
         cleanup_orphaned_jobs(runtime)
 
-    def test_handles_delete_api_error(self):
+    @patch("container_runtime._recover_orphaned_task")
+    def test_handles_delete_api_error(self, mock_recover):
         """cleanup_orphaned_jobs continues when individual delete fails."""
         from kubernetes.client.rest import ApiException
 
@@ -731,13 +735,53 @@ class TestCleanupOrphanedJobs:
 
         mock_job = MagicMock()
         mock_job.metadata.name = "task-runner-fail"
+        mock_job.metadata.labels = {"content-manager/task-id": "task-1"}
         runtime.batch_v1.list_namespaced_job.return_value.items = [mock_job]
         runtime.batch_v1.delete_namespaced_job.side_effect = ApiException(status=404)
 
         runtime.core_v1.list_namespaced_config_map.return_value.items = []
+        runtime.core_v1.list_namespaced_secret.return_value.items = []
 
         # Should not raise
         cleanup_orphaned_jobs(runtime)
+
+    @patch("container_runtime._recover_orphaned_task")
+    def test_recovery_failure_does_not_block_cleanup(self, mock_recover):
+        """If task recovery fails, the Job is still deleted."""
+        runtime = self._make_runtime()
+        mock_recover.side_effect = Exception("DB error")
+
+        mock_job = MagicMock()
+        mock_job.metadata.name = "task-runner-broken"
+        mock_job.metadata.labels = {"content-manager/task-id": "task-broken"}
+        runtime.batch_v1.list_namespaced_job.return_value.items = [mock_job]
+
+        runtime.core_v1.list_namespaced_config_map.return_value.items = []
+        runtime.core_v1.list_namespaced_secret.return_value.items = []
+
+        # Should not raise — recovery failure is caught
+        cleanup_orphaned_jobs(runtime)
+
+        # Job should still be deleted despite recovery failure
+        runtime.batch_v1.delete_namespaced_job.assert_called_once()
+
+    @patch("container_runtime._recover_orphaned_task")
+    def test_job_without_task_id_label_still_deleted(self, mock_recover):
+        """Jobs without the task-id label are deleted without attempting recovery."""
+        runtime = self._make_runtime()
+
+        mock_job = MagicMock()
+        mock_job.metadata.name = "task-runner-nolabel"
+        mock_job.metadata.labels = {}
+        runtime.batch_v1.list_namespaced_job.return_value.items = [mock_job]
+
+        runtime.core_v1.list_namespaced_config_map.return_value.items = []
+        runtime.core_v1.list_namespaced_secret.return_value.items = []
+
+        cleanup_orphaned_jobs(runtime)
+
+        mock_recover.assert_not_called()
+        runtime.batch_v1.delete_namespaced_job.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,9 @@ class Task(Base):
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")

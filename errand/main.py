@@ -45,6 +45,7 @@ from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from scheduler import run_scheduler, release_lock
+from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
 
 security = HTTPBearer()
 
@@ -177,15 +178,21 @@ async def lifespan(app: FastAPI):
                 logger.info("Auto-provisioned local admin user '%s'", admin_username)
 
     scheduler_task = asyncio.create_task(run_scheduler())
+    zombie_cleanup_task = asyncio.create_task(run_zombie_cleanup())
     slack_updater_task = asyncio.create_task(
         run_status_updater(get_valkey, async_session, _load_creds)
     )
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
+    zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
     try:
         await scheduler_task
+    except asyncio.CancelledError:
+        pass  # Expected after explicit cancel()
+    try:
+        await zombie_cleanup_task
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     try:
@@ -193,6 +200,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     await release_lock()
+    await release_zombie_lock()
     await close_valkey()
     await engine.dispose()
 
@@ -355,6 +363,7 @@ class TaskResponse(BaseModel):
     runner_logs: Optional[str] = None
     questions: Optional[list[str]] = None
     retry_count: int = 0
+    heartbeat_at: Optional[datetime] = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -379,6 +388,7 @@ class TaskResponse(BaseModel):
             runner_logs=task.runner_logs,
             questions=task.questions,
             retry_count=task.retry_count,
+            heartbeat_at=task.heartbeat_at,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
