@@ -43,8 +43,8 @@ async def test_verify_pat_success():
     mock_response.status_code = 200
 
     with patch("platforms.github.httpx.AsyncClient") as MockClient:
-        MockClient.return_value.__aenter__ = lambda self: _async_return(self)
-        MockClient.return_value.__aexit__ = lambda *args: _async_return(None)
+        MockClient.return_value.__aenter__ = _async_return
+        MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_return_fn(mock_response)
 
         result = await github.verify_credentials({
@@ -62,8 +62,8 @@ async def test_verify_pat_unauthorized():
     mock_response.status_code = 401
 
     with patch("platforms.github.httpx.AsyncClient") as MockClient:
-        MockClient.return_value.__aenter__ = lambda self: _async_return(self)
-        MockClient.return_value.__aexit__ = lambda *args: _async_return(None)
+        MockClient.return_value.__aenter__ = _async_return
+        MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_return_fn(mock_response)
 
         result = await github.verify_credentials({
@@ -79,8 +79,8 @@ async def test_verify_pat_network_error():
     github = GitHubPlatform()
 
     with patch("platforms.github.httpx.AsyncClient") as MockClient:
-        MockClient.return_value.__aenter__ = lambda self: _async_return(self)
-        MockClient.return_value.__aexit__ = lambda *args: _async_return(None)
+        MockClient.return_value.__aenter__ = _async_return
+        MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_raise_fn(Exception("connection refused"))
 
         result = await github.verify_credentials({

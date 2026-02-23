@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, mask_sensitive_value, resolve_settings
+from settings_registry import EXCLUDED_KEYS, mask_sensitive_value, resolve_settings
 from tests.conftest import _create_tables
 
 

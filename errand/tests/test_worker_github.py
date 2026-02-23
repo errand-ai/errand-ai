@@ -1,8 +1,6 @@
 """Tests for GitHub token injection in the worker."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from worker import process_task_in_container
 
 
@@ -73,7 +71,7 @@ def _run_with_gh_credential(cred_row, cred_data, settings=None):
         with patch.dict("os.environ", {"OPENAI_BASE_URL": "http://litellm:4000", "OPENAI_API_KEY": "sk-test"}), \
              patch("worker.async_session", return_value=mock_session), \
              patch("worker.decrypt_credentials" if hasattr(worker, "decrypt_credentials") else "platforms.credentials.decrypt", return_value=cred_data):
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
+            process_task_in_container(task, settings)
     finally:
         worker.container_runtime = original_runtime
 

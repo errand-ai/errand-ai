@@ -34,7 +34,7 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client, get_llm_client_with_db, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
+from llm import init_llm_client, get_llm_client_with_db, generate_title, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from local_auth import router as local_auth_router
 from models import LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, task_tags
 from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
