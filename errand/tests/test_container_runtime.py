@@ -785,6 +785,164 @@ class TestCleanupOrphanedJobs:
 
 
 # ---------------------------------------------------------------------------
+# _recover_orphaned_task (DB integration tests)
+# ---------------------------------------------------------------------------
+
+import uuid
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+import events as events_module
+from container_runtime import _recover_orphaned_task
+
+_TASKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'review' NOT NULL,
+    category TEXT DEFAULT 'immediate',
+    execute_at DATETIME,
+    repeat_interval TEXT,
+    repeat_until DATETIME,
+    position INTEGER DEFAULT 0 NOT NULL,
+    output TEXT,
+    runner_logs TEXT,
+    questions TEXT,
+    retry_count INTEGER DEFAULT 0 NOT NULL,
+    heartbeat_at DATETIME,
+    created_by TEXT,
+    updated_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+)
+"""
+
+_TASK_TAGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, tag_id)
+)
+"""
+
+
+def _fmt_dt(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _insert_task(sf, **overrides) -> str:
+    defaults = {
+        "id": uuid.uuid4().hex,
+        "title": "Test task",
+        "status": "running",
+        "category": "immediate",
+        "position": 0,
+        "retry_count": 0,
+        "created_at": _fmt_dt(datetime.now(timezone.utc)),
+        "updated_at": _fmt_dt(datetime.now(timezone.utc)),
+    }
+    defaults.update(overrides)
+    for key in ("heartbeat_at", "updated_at", "created_at", "execute_at"):
+        if key in defaults and isinstance(defaults[key], datetime):
+            defaults[key] = _fmt_dt(defaults[key])
+    cols = ", ".join(defaults.keys())
+    placeholders = ", ".join(f":{k}" for k in defaults.keys())
+    async with sf() as session:
+        await session.execute(text(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})"), defaults)
+        await session.commit()
+    return defaults["id"]
+
+
+async def _get_task(sf, task_id):
+    async with sf() as session:
+        result = await session.execute(text("SELECT * FROM tasks WHERE id = :id"), {"id": task_id})
+        return result.mappings().first()
+
+
+import asyncio as _asyncio
+
+
+import tempfile as _tempfile
+import os as _os
+
+
+def _setup_recover_db():
+    """Create file-based SQLite DB and return (session_factory, engine, db_path).
+
+    Uses a temp file so asyncio.run() in _recover_orphaned_task (which opens a
+    new connection) sees the same data.
+    """
+    fd, db_path = _tempfile.mkstemp(suffix=".db")
+    _os.close(fd)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
+
+    async def _init():
+        async with engine.begin() as conn:
+            await conn.execute(text(_TASKS_TABLE_SQL))
+            await conn.execute(text(_TAGS_TABLE_SQL))
+            await conn.execute(text(_TASK_TAGS_TABLE_SQL))
+
+    _asyncio.run(_init())
+    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False), engine, db_path
+
+
+class TestRecoverOrphanedTask:
+    """Tests for _recover_orphaned_task DB logic (sync — function uses asyncio.run)."""
+
+    def test_non_running_task_not_modified(self):
+        """A task not in running status is left unchanged by orphan recovery."""
+        sf, engine, db_path = _setup_recover_db()
+        task_id = _asyncio.run(_insert_task(sf, status="completed"))
+
+        with patch("database.async_session", sf), \
+             patch("events.publish_event", new_callable=AsyncMock) as mock_pub:
+            _recover_orphaned_task(task_id)
+
+        task = _asyncio.run(_get_task(sf, task_id))
+        assert task["status"] == "completed"
+        mock_pub.assert_not_called()
+        _asyncio.run(engine.dispose())
+        _os.unlink(db_path)
+
+    def test_missing_task_does_not_raise(self):
+        """Recovery for a task ID not in the DB logs a warning and returns."""
+        sf, engine, db_path = _setup_recover_db()
+
+        with patch("database.async_session", sf):
+            _recover_orphaned_task(str(uuid.uuid4()))
+
+        _asyncio.run(engine.dispose())
+        _os.unlink(db_path)
+
+    def test_exhausted_retries_moved_to_review(self):
+        """A running task with retry_count >= 5 is moved to review."""
+        sf, engine, db_path = _setup_recover_db()
+        task_id = _asyncio.run(_insert_task(sf, status="running", retry_count=5))
+
+        with patch("database.async_session", sf), \
+             patch("events.publish_event", new_callable=AsyncMock):
+            _recover_orphaned_task(task_id)
+
+        task = _asyncio.run(_get_task(sf, task_id))
+        assert task["status"] == "review"
+        assert "startup cleanup" in task["output"].lower()
+        assert task["heartbeat_at"] is None
+        _asyncio.run(engine.dispose())
+        _os.unlink(db_path)
+
+
+# ---------------------------------------------------------------------------
 # AppleContainerRuntime
 # ---------------------------------------------------------------------------
 

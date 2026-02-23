@@ -681,6 +681,7 @@ def _recover_orphaned_task(task_id: str) -> None:
     to perform the async DB operation.
     """
     import asyncio
+    import uuid as _uuid
     from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import select, func
@@ -696,7 +697,7 @@ def _recover_orphaned_task(task_id: str) -> None:
     async def _do_recover():
         async with async_session() as session:
             result = await session.execute(
-                select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+                select(Task).options(selectinload(Task.tags)).where(Task.id == _uuid.UUID(task_id))
             )
             task = result.scalar_one_or_none()
 
