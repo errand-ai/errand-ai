@@ -67,16 +67,21 @@ class GitHubPlatform(Platform):
 
     async def _verify_pat(self, credentials: dict) -> bool:
         token = credentials.get("personal_access_token", "")
+        if not token:
+            logger.warning("GitHub PAT verification: no token provided")
+            return False
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{GITHUB_API_BASE}/user",
                     headers={
-                        "Authorization": f"Bearer {token}",
+                        "Authorization": f"token {token}",
                         "Accept": "application/vnd.github+json",
                     },
                     timeout=10,
                 )
+            if response.status_code != 200:
+                logger.warning("GitHub PAT verification failed: HTTP %s", response.status_code)
             return response.status_code == 200
         except Exception:
             logger.exception("GitHub PAT verification failed")
