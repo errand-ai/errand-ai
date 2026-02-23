@@ -618,7 +618,7 @@ def _read_callback_result(task_id: str) -> str | None:
         return None
 
 
-def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
+def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
 
@@ -684,38 +684,25 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         env_vars["_TASK_ID"] = str(task.id)
 
         # Inject GitHub token if integration is connected
-        try:
-            from models import PlatformCredential
-            from platforms.credentials import decrypt as decrypt_credentials
-
-            async def _load_gh_credential():
-                async with async_session() as cred_session:
-                    result = await cred_session.execute(
-                        select(PlatformCredential).where(
-                            PlatformCredential.platform_id == "github",
-                            PlatformCredential.status == "connected",
-                        )
-                    )
-                    return result.scalar_one_or_none()
-
-            gh_cred = asyncio.run(_load_gh_credential())
-            if gh_cred:
-                gh_data = decrypt_credentials(gh_cred.encrypted_data)
-                auth_mode = gh_data.get("auth_mode", "pat")
+        # github_credentials is loaded in the async caller (run_worker) to
+        # avoid cross-event-loop issues with asyncio.run() inside run_in_executor.
+        if github_credentials:
+            try:
+                auth_mode = github_credentials.get("auth_mode", "pat")
                 if auth_mode == "pat":
-                    pat = gh_data.get("personal_access_token", "")
+                    pat = github_credentials.get("personal_access_token", "")
                     if pat:
                         env_vars["GH_TOKEN"] = pat
                 elif auth_mode == "app":
                     from platforms.github import mint_installation_token
                     token = mint_installation_token(
-                        app_id=gh_data["app_id"],
-                        private_key=gh_data["private_key"],
-                        installation_id=gh_data["installation_id"],
+                        app_id=github_credentials["app_id"],
+                        private_key=github_credentials["private_key"],
+                        installation_id=github_credentials["installation_id"],
                     )
                     env_vars["GH_TOKEN"] = token
-        except Exception:
-            logger.warning("Failed to load GitHub credentials, skipping GH_TOKEN injection", exc_info=True)
+            except Exception:
+                logger.warning("Failed to inject GitHub token, skipping GH_TOKEN", exc_info=True)
 
         # Resolve Hindsight configuration: env var → admin setting → disabled
         hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
@@ -1079,6 +1066,23 @@ async def run() -> None:
             # Read settings for this task
             settings = await read_settings(session)
 
+            # Load GitHub credentials while we have a session
+            github_credentials = None
+            try:
+                from models import PlatformCredential
+                from platforms.credentials import decrypt as decrypt_credentials
+                result = await session.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform_id == "github",
+                        PlatformCredential.status == "connected",
+                    )
+                )
+                gh_cred = result.scalar_one_or_none()
+                if gh_cred:
+                    github_credentials = decrypt_credentials(gh_cred.encrypted_data)
+            except Exception:
+                logger.warning("Failed to load GitHub credentials", exc_info=True)
+
             # Set status to running
             task.status = "running"
             task.updated_by = "system"
@@ -1089,7 +1093,7 @@ async def run() -> None:
         # Process outside the dequeue transaction
         try:
             exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, settings
+                None, process_task_in_container, task, settings, github_credentials
             )
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout
