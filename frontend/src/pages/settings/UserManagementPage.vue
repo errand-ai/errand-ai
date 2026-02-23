@@ -13,6 +13,7 @@ const clientSecret = ref('')
 const rolesClaim = ref('')
 const oidcLoading = ref(false)
 const oidcError = ref('')
+const oidcSuccess = ref('')
 const testingOidc = ref(false)
 const removingOidc = ref(false)
 
@@ -61,6 +62,7 @@ onMounted(() => {
 
 async function testOidcConnection() {
   oidcError.value = ''
+  oidcSuccess.value = ''
   testingOidc.value = true
   try {
     const resp = await fetch(discoveryUrl.value)
@@ -73,6 +75,7 @@ async function testOidcConnection() {
       oidcError.value = 'Invalid OIDC discovery document — missing authorization_endpoint.'
       return
     }
+    oidcSuccess.value = 'OIDC discovery URL is valid'
     toast.success('OIDC discovery URL is valid.')
   } catch {
     oidcError.value = 'Failed to reach discovery URL. Check the URL and try again.'
@@ -245,6 +248,7 @@ async function changePassword() {
         </div>
 
         <div v-if="oidcError" class="text-sm text-red-600" data-testid="oidc-error">{{ oidcError }}</div>
+        <div v-if="oidcSuccess" class="text-sm text-green-600" data-testid="oidc-success">{{ oidcSuccess }}</div>
 
         <div class="flex gap-3">
           <button
@@ -254,7 +258,7 @@ async function changePassword() {
             data-testid="oidc-test"
             class="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
-            {{ testingOidc ? 'Testing...' : 'Test Connection' }}
+            {{ testingOidc ? 'Testing...' : oidcSuccess ? 'Connection Verified \u2713' : 'Test Connection' }}
           </button>
           <button
             type="button"

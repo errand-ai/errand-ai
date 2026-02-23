@@ -683,6 +683,40 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
         # Internal key for K8s runtime labels (stripped from actual container env)
         env_vars["_TASK_ID"] = str(task.id)
 
+        # Inject GitHub token if integration is connected
+        try:
+            from models import PlatformCredential
+            from platforms.credentials import decrypt as decrypt_credentials
+
+            async def _load_gh_credential():
+                async with async_session() as cred_session:
+                    result = await cred_session.execute(
+                        select(PlatformCredential).where(
+                            PlatformCredential.platform_id == "github",
+                            PlatformCredential.status == "connected",
+                        )
+                    )
+                    return result.scalar_one_or_none()
+
+            gh_cred = asyncio.run(_load_gh_credential())
+            if gh_cred:
+                gh_data = decrypt_credentials(gh_cred.encrypted_data)
+                auth_mode = gh_data.get("auth_mode", "pat")
+                if auth_mode == "pat":
+                    pat = gh_data.get("personal_access_token", "")
+                    if pat:
+                        env_vars["GH_TOKEN"] = pat
+                elif auth_mode == "app":
+                    from platforms.github import mint_installation_token
+                    token = mint_installation_token(
+                        app_id=gh_data["app_id"],
+                        private_key=gh_data["private_key"],
+                        installation_id=gh_data["installation_id"],
+                    )
+                    env_vars["GH_TOKEN"] = token
+        except Exception:
+            logger.warning("Failed to load GitHub credentials, skipping GH_TOKEN injection", exc_info=True)
+
         # Resolve Hindsight configuration: env var → admin setting → disabled
         hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
         hindsight_bank_id = (

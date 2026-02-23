@@ -152,6 +152,100 @@ describe('SetupWizard', () => {
     expect(wrapper.find('[data-testid="setup-api-key"]').exists()).toBe(true)
   })
 
+  it('shows inline success message after successful test connection', async () => {
+    const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === '/api/setup/create-user') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ access_token: token }),
+        })
+      }
+      if (url === '/api/settings' && opts?.method === 'PUT') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (url === '/api/llm/models') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(['model-a', 'model-b']),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    }))
+
+    const { wrapper } = await mountSetup()
+
+    // Complete step 1
+    await wrapper.find('[data-testid="setup-username"]').setValue('admin')
+    await wrapper.find('[data-testid="setup-password"]').setValue('password123')
+    await wrapper.find('[data-testid="setup-confirm-password"]').setValue('password123')
+    await wrapper.find('[data-testid="setup-step1"]').find('form').trigger('submit')
+    await flushPromises()
+
+    // Fill in LLM provider fields
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://api.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test-key')
+
+    // Click Test Connection
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+
+    // Verify inline success message
+    expect(wrapper.find('[data-testid="setup-step2-success"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setup-step2-success"]').text()).toBe('Connection successful')
+
+    // Verify button text changed
+    expect(wrapper.find('[data-testid="setup-test-connection"]').text()).toContain('Connection Verified')
+  })
+
+  it('clears success state when provider URL changes', async () => {
+    const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === '/api/setup/create-user') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ access_token: token }),
+        })
+      }
+      if (url === '/api/settings' && opts?.method === 'PUT') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      }
+      if (url === '/api/llm/models') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(['model-a', 'model-b']),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    }))
+
+    const { wrapper } = await mountSetup()
+
+    // Complete step 1
+    await wrapper.find('[data-testid="setup-username"]').setValue('admin')
+    await wrapper.find('[data-testid="setup-password"]').setValue('password123')
+    await wrapper.find('[data-testid="setup-confirm-password"]').setValue('password123')
+    await wrapper.find('[data-testid="setup-step1"]').find('form').trigger('submit')
+    await flushPromises()
+
+    // Fill in LLM provider fields and test connection
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://api.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test-key')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+
+    // Verify success state exists
+    expect(wrapper.find('[data-testid="setup-step2-success"]').exists()).toBe(true)
+
+    // Change provider URL
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://other.example.com/v1')
+    await flushPromises()
+
+    // Verify success state cleared
+    expect(wrapper.find('[data-testid="setup-step2-success"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="setup-test-connection"]').text()).not.toContain('Connection Verified')
+  })
+
   it('handles create-user API error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,

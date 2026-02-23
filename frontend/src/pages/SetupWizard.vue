@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { toast } from 'vue-sonner'
@@ -24,6 +24,7 @@ const step2Error = ref('')
 const step2Loading = ref(false)
 const testingConnection = ref(false)
 const connectionTested = ref(false)
+const step2Success = ref('')
 const providerUrlReadonly = ref(false)
 const apiKeyReadonly = ref(false)
 
@@ -37,6 +38,11 @@ const step3Error = ref('')
 const passwordMismatch = computed(() =>
   confirmPassword.value !== '' && adminPassword.value !== confirmPassword.value
 )
+
+watch([providerUrl, apiKey], () => {
+  connectionTested.value = false
+  step2Success.value = ''
+})
 
 async function createAdmin() {
   step1Error.value = ''
@@ -95,6 +101,7 @@ async function loadLlmMetadata() {
 
 async function testConnection() {
   step2Error.value = ''
+  step2Success.value = ''
   testingConnection.value = true
   try {
     // Save settings first
@@ -124,6 +131,7 @@ async function testConnection() {
     const data = await resp.json()
     models.value = data
     connectionTested.value = true
+    step2Success.value = 'Connection successful'
     toast.success('Connection successful!')
   } catch {
     step2Error.value = 'Connection failed. Check your URL and API key.'
@@ -303,6 +311,7 @@ async function completeSetup() {
             </div>
           </div>
           <div v-if="step2Error" class="text-sm text-red-600" data-testid="setup-step2-error">{{ step2Error }}</div>
+          <div v-if="step2Success" class="text-sm text-green-600" data-testid="setup-step2-success">{{ step2Success }}</div>
           <div class="flex gap-3">
             <button
               type="button"
@@ -311,7 +320,7 @@ async function completeSetup() {
               data-testid="setup-test-connection"
               class="flex-1 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
             >
-              {{ testingConnection ? 'Testing...' : 'Test Connection' }}
+              {{ testingConnection ? 'Testing...' : connectionTested ? 'Connection Verified \u2713' : 'Test Connection' }}
             </button>
             <button
               type="button"
