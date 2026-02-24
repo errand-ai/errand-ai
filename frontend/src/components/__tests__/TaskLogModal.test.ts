@@ -757,6 +757,21 @@ describe('TaskLogModal', () => {
 
   // --- Static mode (runnerLogs prop) ---
 
+  it('treats empty-string runnerLogs as static mode (no WebSocket)', async () => {
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Empty Logs', runnerLogs: '' },
+    })
+    await flushPromises()
+
+    // Should be static mode — no WebSocket created
+    expect(MockWebSocket.instances).toHaveLength(0)
+    // Should show static header
+    expect(wrapper.text()).toContain('Task Logs: Empty Logs')
+    expect(wrapper.text()).not.toContain('Waiting for logs...')
+
+    wrapper.unmount()
+  })
+
   it('renders parsed events from runnerLogs prop without WebSocket', async () => {
     const logs = [
       JSON.stringify({ type: 'thinking', data: { text: 'Analyzing...' } }),

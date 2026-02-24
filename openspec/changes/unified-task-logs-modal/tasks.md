@@ -2,7 +2,7 @@
 
 - [x] 1.1 Change `TaskLogModal` props: make `taskId` optional, add optional `runnerLogs: string` prop
 - [x] 1.2 Move `parseRunnerLogs` function from `TaskEditModal` into `TaskLogModal` (same JSONL parsing logic with tool_result append and collapse defaults)
-- [x] 1.3 Add static-mode logic in `onMounted`: if `runnerLogs` is provided, parse into `events` and set `finished = true`; otherwise connect WebSocket as before
+- [x] 1.3 Add static-mode logic in `onMounted`: if `runnerLogs` is provided, parse into `events`; otherwise connect WebSocket as before
 - [x] 1.4 Update header text: show "Task Logs: {title}" when in static mode, keep "Live Logs: {title}" for WebSocket mode
 - [x] 1.5 Hide "Waiting for logs..." message in static mode (events are immediately available)
 - [x] 1.6 Hide "Task finished" indicator in static mode (task is already complete)
@@ -10,7 +10,7 @@
 ## 2. TaskCard: Unify logs button visibility
 
 - [x] 2.1 Update `showLogButton` computed: return `true` when `running` OR when `(review|completed|scheduled) && runner_logs` is truthy
-- [x] 2.2 Remove `showOutputButton` computed and the "View output" eye-icon button (the `TaskOutputModal` eye icon for `task.output` is unchanged — verify it is separate from the runner-logs eye icon being removed)
+- [x] 2.2 Keep `showOutputButton` computed and the "View output" eye-icon button for `task.output` unchanged; only unify runner-logs viewing by routing runner logs through the unified `TaskLogModal`
 
 ## 3. KanbanBoard: Route logs to unified modal
 

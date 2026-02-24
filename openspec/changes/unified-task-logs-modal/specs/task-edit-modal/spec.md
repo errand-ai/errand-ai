@@ -82,7 +82,7 @@ When the edit modal opens for a task with `status = "running"` or `status = "com
 #### Scenario: Status selector shows all valid statuses
 
 - **WHEN** the edit modal is open
-- **THEN** the status field SHALL present six statuses as selectable options: New, Scheduled, Pending, Running, Review, Completed
+- **THEN** the status field SHALL present five statuses as selectable options: Scheduled, Pending, Running, Review, Completed
 
 #### Scenario: Category selector shows all valid categories
 

@@ -32,7 +32,7 @@ const relativeTime = computed(() => {
 const showLogButton = computed(() => {
   const col = props.columnStatus
   return col === 'running'
-    || ((col === 'review' || col === 'completed' || col === 'scheduled') && !!props.task.runner_logs)
+    || ((col === 'review' || col === 'completed' || col === 'scheduled') && props.task.runner_logs != null)
 })
 
 const showOutputButton = computed(() => {

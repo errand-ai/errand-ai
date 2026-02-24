@@ -20,7 +20,7 @@ const finished = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
 const logContainerRef = ref<HTMLElement | null>(null)
 
-const isStaticMode = computed(() => !!props.runnerLogs)
+const isStaticMode = computed(() => props.runnerLogs !== undefined && props.runnerLogs !== null)
 const headerText = computed(() =>
   isStaticMode.value ? `Task Logs: ${props.title}` : `Live Logs: ${props.title}`
 )
@@ -81,7 +81,7 @@ function parseRunnerLogs(text: string): TaskEvent[] {
       if (eventType === 'tool_call') {
         collapsed = true
       } else if (eventType === 'thinking' || eventType === 'reasoning') {
-        const text = eventData.text as string
+        const text = typeof eventData.text === 'string' ? eventData.text : ''
         collapsed = lineCount(text) > 3
       }
 
@@ -125,7 +125,7 @@ function connect() {
         if (eventType === 'tool_call') {
           collapsed = true
         } else if (eventType === 'thinking' || eventType === 'reasoning') {
-          const text = eventData.text as string
+          const text = typeof eventData.text === 'string' ? eventData.text : ''
           collapsed = lineCount(text) > 3
         }
 
