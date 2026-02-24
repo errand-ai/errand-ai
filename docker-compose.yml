@@ -37,11 +37,16 @@ services:
       retries: 10
 
   perplexity-mcp:
-    image: quay.io/devops_consultants/perplexity-mcp-server:latest
+    build:
+      context: ./perplexity-mcp
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
-      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
+      BACKEND_URL: http://errand:8000
+    depends_on:
+      errand:
+        condition: service_started
 
   task-runner-build:
     image: docker:27
@@ -106,7 +111,6 @@ services:
       PLAYWRIGHT_MCP_IMAGE: mcr.microsoft.com/playwright/mcp:latest
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      USE_PERPLEXITY: "true"
       PERPLEXITY_URL: http://perplexity-mcp:8080/mcp
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       ERRAND_MCP_URL: http://errand:8000/mcp

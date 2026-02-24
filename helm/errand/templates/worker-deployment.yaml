@@ -68,9 +68,7 @@ spec:
             - name: MAX_TURNS
               value: {{ .Values.worker.maxTurns | quote }}
             {{- end }}
-            {{- if .Values.perplexity.existingSecret }}
-            - name: USE_PERPLEXITY
-              value: "true"
+            {{- if .Values.perplexity.enabled }}
             - name: PERPLEXITY_URL
               value: "http://{{ include "errand.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
             {{- end }}

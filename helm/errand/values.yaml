@@ -78,10 +78,10 @@ hindsight:
   bankId: "errand-tasks"
 
 perplexity:
-  existingSecret: ""
+  enabled: true
   replicaCount: 1
   image:
-    repository: quay.io/devops_consultants/perplexity-mcp-server
+    repository: ghcr.io/errand-ai/errand-ai/perplexity-mcp
     tag: latest
     pullPolicy: IfNotPresent
   service:

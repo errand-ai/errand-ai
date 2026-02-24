@@ -673,7 +673,7 @@ def _read_callback_result(task_id: str) -> str | None:
         return None
 
 
-def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None) -> tuple[int, str, str]:
+def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None, perplexity_credentials: dict | None = None) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
 
@@ -777,8 +777,8 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                     + recalled
                 )
 
-        # Inject Perplexity MCP server if enabled via environment
-        if os.environ.get("USE_PERPLEXITY") == "true":
+        # Inject Perplexity MCP server if platform credentials exist
+        if perplexity_credentials:
             mcp_servers.setdefault("mcpServers", {})
             if "perplexity-ask" not in mcp_servers["mcpServers"]:
                 mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
@@ -1146,6 +1146,15 @@ async def run() -> None:
             except Exception:
                 logger.warning("Failed to load GitHub credentials", exc_info=True)
 
+            # Load Perplexity credentials while we have a session
+            perplexity_credentials = None
+            try:
+                from models import PlatformCredential
+                from platforms.credentials import load_credentials
+                perplexity_credentials = await load_credentials("perplexity", session)
+            except Exception:
+                logger.warning("Failed to load Perplexity credentials", exc_info=True)
+
             # Set status to running with initial heartbeat
             task.status = "running"
             task.heartbeat_at = datetime.now(timezone.utc)
@@ -1157,7 +1166,7 @@ async def run() -> None:
         # Process outside the dequeue transaction
         try:
             exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, settings, github_credentials
+                None, process_task_in_container, task, settings, github_credentials, perplexity_credentials
             )
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout

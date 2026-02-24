@@ -1,4 +1,4 @@
-{{- if .Values.perplexity.existingSecret }}
+{{- if .Values.perplexity.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,7 +24,7 @@ spec:
           imagePullPolicy: {{ .Values.perplexity.image.pullPolicy }}
           ports:
             - containerPort: 8080
-          envFrom:
-            - secretRef:
-                name: {{ .Values.perplexity.existingSecret }}
+          env:
+            - name: BACKEND_URL
+              value: "http://{{ include \"errand.fullname\" . }}-backend:{{ .Values.backend.service.port }}"
 {{- end }}

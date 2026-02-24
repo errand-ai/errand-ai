@@ -883,7 +883,7 @@ def test_process_task_container_omits_log_level_when_unset():
 
 
 def test_perplexity_injected_when_enabled():
-    """When USE_PERPLEXITY=true and PERPLEXITY_URL is set, perplexity-ask is injected into mcp.json."""
+    """When Perplexity credentials exist and PERPLEXITY_URL is set, perplexity-ask is injected into mcp.json."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {"other": {"url": "http://other/mcp"}}},
@@ -904,10 +904,10 @@ def test_perplexity_injected_when_enabled():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "USE_PERPLEXITY": "true",
             "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
         }):
-            process_task_in_container(task, settings)
+            perplexity_credentials = {"api_key": "pplx-test-key"}
+            process_task_in_container(task, settings, github_credentials=None, perplexity_credentials=perplexity_credentials)
     finally:
         worker.container_runtime = original_runtime
 
