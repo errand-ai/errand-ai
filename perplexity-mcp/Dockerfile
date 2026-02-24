@@ -2,9 +2,9 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Install curl for the entrypoint script
+# Install curl and jq for the entrypoint script
 RUN apt-get update && \
-    apt-get install -y curl && \
+    apt-get install -y curl jq && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy package files and install dependencies

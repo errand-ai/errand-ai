@@ -26,5 +26,19 @@ spec:
             - containerPort: 8080
           env:
             - name: BACKEND_URL
-              value: "http://{{ include \"errand.fullname\" . }}-backend:{{ .Values.backend.service.port }}"
+              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}"
+          readinessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
 {{- end }}

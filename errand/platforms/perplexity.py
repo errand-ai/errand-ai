@@ -18,7 +18,10 @@ class PerplexityPlatform(Platform):
         )
 
     async def verify_credentials(self, credentials: dict) -> bool:
-        """Verify credentials by making a minimal API call to Perplexity."""
+        """Verify credentials by making a minimal API call to Perplexity.
+
+        Note: This makes a real API call (with max_tokens=1) which incurs a small cost.
+        """
         api_key = credentials.get("api_key")
         if not api_key:
             return False

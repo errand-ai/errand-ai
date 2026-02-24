@@ -173,7 +173,7 @@ jobs:
           file: ./perplexity-mcp/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/errand-ai/perplexity-mcp:${{ needs.version.outputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/perplexity-mcp:${{ needs.version.outputs.tag }}
 
   helm:
     needs: [version, build-errand, build-task-runner, build-perplexity-mcp]

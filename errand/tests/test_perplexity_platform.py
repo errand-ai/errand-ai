@@ -32,7 +32,7 @@ async def test_perplexity_verify_credentials_success():
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
     
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with patch("platforms.perplexity.httpx.AsyncClient", return_value=mock_client):
         result = await perplexity.verify_credentials({"api_key": "pplx-valid-key"})
     
     assert result is True
@@ -48,7 +48,7 @@ async def test_perplexity_verify_credentials_invalid_key():
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
     
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with patch("platforms.perplexity.httpx.AsyncClient", return_value=mock_client):
         result = await perplexity.verify_credentials({"api_key": "invalid-key"})
     
     assert result is False
@@ -68,7 +68,7 @@ async def test_perplexity_verify_credentials_api_error():
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Network error"))
     
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with patch("platforms.perplexity.httpx.AsyncClient", return_value=mock_client):
         result = await perplexity.verify_credentials({"api_key": "pplx-key"})
     
     assert result is False

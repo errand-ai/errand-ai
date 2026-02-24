@@ -81,7 +81,7 @@ perplexity:
   enabled: true
   replicaCount: 1
   image:
-    repository: ghcr.io/errand-ai/errand-ai/perplexity-mcp
+    repository: ghcr.io/errand-ai/perplexity-mcp
     tag: latest
     pullPolicy: IfNotPresent
   service:

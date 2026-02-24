@@ -10,6 +10,6 @@
     "@perplexity-ai/mcp-server": "^0.14.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }
