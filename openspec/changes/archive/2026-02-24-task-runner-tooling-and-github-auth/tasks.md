@@ -2,14 +2,14 @@
 
 - [x] 1.1 Add `GH_VERSION` build arg and `TARGETARCH` to git-builder stage, download gh tarball and extract binary to `/usr/local/bin/gh`
 - [x] 1.2 Add `COPY --from=git-builder /usr/local/bin/gh /usr/local/bin/gh` to final stage
-- [ ] 1.3 Verify `gh --version` works in built container
+- [x] 1.3 Verify `gh --version` works in built container
 
 ## 2. Task Runner Image — Node.js + openspec
 
 - [x] 2.1 Add `node-builder` stage from `node:22-bookworm-slim`, run `npm install -g @fission-ai/openspec@latest`
 - [x] 2.2 Copy node binary from node-builder to final stage (`/usr/local/bin/node`)
 - [x] 2.3 Copy global node_modules and openspec symlink from node-builder to final stage
-- [ ] 2.4 Verify `node --version` and `openspec --version` work in built container
+- [x] 2.4 Verify `node --version` and `openspec --version` work in built container
 
 ## 3. GitHub Platform Module
 
@@ -45,6 +45,6 @@
 
 ## 6. Integration Testing
 
-- [ ] 6.1 Build task-runner image and verify all new binaries are available (`gh`, `node`, `openspec`)
-- [ ] 6.2 Test end-to-end: configure GitHub PAT in settings, run a task, verify `GH_TOKEN` is present in container env
-- [ ] 6.3 Test end-to-end: configure GitHub App in settings, run a task, verify ephemeral token is minted and injected
+- [x] 6.1 Build task-runner image and verify all new binaries are available (`gh`, `node`, `openspec`)
+- [x] 6.2 Test end-to-end: configure GitHub PAT in settings, run a task, verify `GH_TOKEN` is present in container env
+- [x] 6.3 Test end-to-end: configure GitHub App in settings, run a task, verify ephemeral token is minted and injected

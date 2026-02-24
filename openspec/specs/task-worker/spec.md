@@ -55,6 +55,31 @@ The worker SHALL store the captured stderr in the task's `runner_logs` field for
 
 The worker SHALL publish `task_updated` WebSocket events containing all task fields matching the API's `TaskResponse` schema: `id`, `title`, `description`, `status`, `position`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `output`, `runner_logs`, `retry_count`, `tags`, `created_at`, and `updated_at`. The `_task_to_dict()` helper SHALL serialise the complete task object including the `tags` relationship and the `runner_logs` field.
 
+#### Scenario: GitHub PAT token injected when integration connected
+
+- **WHEN** the worker processes a task and the GitHub platform credential exists with status "connected" and `auth_mode` is `pat`
+- **THEN** the worker decrypts the credential, reads `personal_access_token`, and sets `env_vars["GH_TOKEN"]` to the PAT value
+
+#### Scenario: GitHub App token minted and injected when integration connected
+
+- **WHEN** the worker processes a task and the GitHub platform credential exists with status "connected" and `auth_mode` is `app`
+- **THEN** the worker decrypts the credential, calls `mint_installation_token(app_id, private_key, installation_id)`, and sets `env_vars["GH_TOKEN"]` to the returned ephemeral token
+
+#### Scenario: No GH_TOKEN when GitHub integration not configured
+
+- **WHEN** the worker processes a task and no GitHub platform credential exists in the database
+- **THEN** `GH_TOKEN` is not present in the container environment variables
+
+#### Scenario: No GH_TOKEN when GitHub integration disconnected
+
+- **WHEN** the worker processes a task and the GitHub platform credential has status "disconnected"
+- **THEN** `GH_TOKEN` is not present in the container environment variables
+
+#### Scenario: GitHub App token minting failure does not block task
+
+- **WHEN** the worker attempts to mint a GitHub App installation token and the GitHub API returns an error
+- **THEN** the worker logs a warning and proceeds without setting `GH_TOKEN` (task runs without GitHub access)
+
 #### Scenario: Callback token generated and passed to container
 
 - **WHEN** the worker prepares a task-runner container and Valkey is available
