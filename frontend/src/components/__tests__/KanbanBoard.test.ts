@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
@@ -52,9 +52,26 @@ function mountWithTasks(tasks: TaskData[]) {
   return { wrapper, store }
 }
 
+// Stub WebSocket so TaskLogModal.connect() doesn't hit real network in jsdom
+class MockWebSocket {
+  readyState = 1
+  onmessage: ((e: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+  constructor(_url: string) {}
+  close() { this.readyState = 3 }
+}
+
 describe('KanbanBoard', () => {
+  let originalWebSocket: typeof WebSocket
+
   beforeEach(() => {
     setActivePinia(createPinia())
+    originalWebSocket = globalThis.WebSocket
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket
   })
 
   it('renders 5 columns with correct labels when tasks exist', () => {
