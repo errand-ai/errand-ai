@@ -27,7 +27,7 @@ The `/settings` route SHALL have a navigation guard that checks `isAdmin` from t
 - **THEN** the user is redirected to `/auth/login` (handled by existing auth logic)
 
 ### Requirement: Settings page layout
-The Settings page SHALL use a sidebar navigation layout with four sub-pages instead of a single scrolling page. The **"Agent Configuration"** sub-page (`/settings/agent`) SHALL contain "System Prompt", "Skills", "Skills Repository", and "MCP Server Configuration" sections (in that order). The **"Task Management"** sub-page (`/settings/tasks`) SHALL contain "LLM Models" and "Task Management" sections (in that order). The **"Security"** sub-page (`/settings/security`) SHALL contain "Git SSH Key" and "MCP API Key" sections. The **"Integrations"** sub-page (`/settings/integrations`) SHALL contain the platform integrations section. The "MCP Server Configuration" section SHALL remain collapsible.
+The Settings page SHALL use a sidebar navigation layout with five sub-pages. The **"Agent Configuration"** sub-page (`/settings/agent`) SHALL contain "System Prompt", "Skills", "Skills Repository", and "MCP Server Configuration" sections (in that order). The **"Task Management"** sub-page (`/settings/tasks`) SHALL contain "LLM Models" and "Task Management" sections (in that order). The **"Security"** sub-page (`/settings/security`) SHALL contain "Git SSH Key" and "MCP API Key" sections. The **"Integrations"** sub-page (`/settings/integrations`) SHALL contain the platform integrations section. The **"User Management"** sub-page (`/settings/users`) SHALL contain authentication mode and local admin account sections. The "MCP Server Configuration" section SHALL remain collapsible.
 
 Each settings section SHALL remain a separate Vue component in `frontend/src/components/settings/`:
 - `SystemPromptSettings.vue`
@@ -45,6 +45,10 @@ Four new sub-page components SHALL exist in `frontend/src/pages/settings/`:
 - `SecurityPage.vue`
 - `IntegrationsPage.vue`
 
+#### Scenario: Settings sidebar shows five items
+- **WHEN** an admin navigates to any settings sub-page
+- **THEN** the sidebar displays five links including "User Management"
+
 #### Scenario: Agent Configuration sub-page renders its sections
 - **WHEN** an admin navigates to `/settings/agent`
 - **THEN** the page displays System Prompt, Skills, Skills Repository, and MCP Server Configuration sections
@@ -60,6 +64,21 @@ Four new sub-page components SHALL exist in `frontend/src/pages/settings/`:
 #### Scenario: Integrations sub-page renders its sections
 - **WHEN** an admin navigates to `/settings/integrations`
 - **THEN** the page displays the platform integrations section
+
+### Requirement: Settings fields display source metadata
+All settings input fields SHALL adapt based on the `source` and `readonly` metadata returned by `GET /api/settings`. When a setting has `readonly: true`, the input field SHALL be disabled with a lock icon and a tooltip or label indicating "Set via environment variable". When a setting has `sensitive: true` and `source: "env"`, the displayed value SHALL be the masked value from the API.
+
+#### Scenario: Env-sourced setting shown read-only
+- **WHEN** the settings page loads and `openai_base_url` has `source: "env"` and `readonly: true`
+- **THEN** the field is disabled with a lock indicator
+
+#### Scenario: DB-sourced setting is editable
+- **WHEN** the settings page loads and `system_prompt` has `source: "database"` and `readonly: false`
+- **THEN** the field is editable as before
+
+#### Scenario: Sensitive env-sourced value is masked
+- **WHEN** the settings page loads and `openai_api_key` has `sensitive: true` and `source: "env"`
+- **THEN** the field shows the masked value (e.g., `sk-p****`) and is disabled
 
 ### Requirement: Consistent explicit save pattern
 All settings sections SHALL use explicit Save buttons. The three previously auto-saving controls (LLM model dropdowns, Timezone dropdown, Task Runner Log Level dropdown) SHALL no longer auto-save on change. Instead, they SHALL require the user to click a Save button. Each section SHALL track whether its current values differ from the last-saved values. When a section has unsaved changes, it SHALL display a "Unsaved changes" indicator (`text-xs text-amber-600`) near its Save button.
