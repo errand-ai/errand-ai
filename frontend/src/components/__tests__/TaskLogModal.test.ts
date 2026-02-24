@@ -754,4 +754,108 @@ describe('TaskLogModal', () => {
 
     wrapper.unmount()
   })
+
+  // --- Static mode (runnerLogs prop) ---
+
+  it('renders parsed events from runnerLogs prop without WebSocket', async () => {
+    const logs = [
+      JSON.stringify({ type: 'thinking', data: { text: 'Analyzing...' } }),
+      JSON.stringify({ type: 'tool_call', data: { tool: 'execute_command', args: { command: 'ls' } } }),
+    ].join('\n')
+
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Completed Task', runnerLogs: logs },
+    })
+    await flushPromises()
+
+    // No WebSocket should be created
+    expect(MockWebSocket.instances).toHaveLength(0)
+
+    expect(wrapper.find('[data-testid="event-thinking"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="event-tool-call"]').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('shows "Task Logs" header in static mode', () => {
+    const logs = JSON.stringify({ type: 'agent_start', data: { agent: 'TaskRunner' } })
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'My Completed Task', runnerLogs: logs },
+    })
+
+    expect(wrapper.text()).toContain('Task Logs: My Completed Task')
+    expect(wrapper.text()).not.toContain('Live Logs')
+
+    wrapper.unmount()
+  })
+
+  it('shows "Live Logs" header in WebSocket mode', () => {
+    const wrapper = mount(TaskLogModal, {
+      props: { taskId: 'abc-123', title: 'My Running Task' },
+    })
+
+    expect(wrapper.text()).toContain('Live Logs: My Running Task')
+    expect(wrapper.text()).not.toContain('Task Logs:')
+
+    wrapper.unmount()
+  })
+
+  it('does not show "Waiting for logs..." in static mode', () => {
+    const logs = JSON.stringify({ type: 'agent_start', data: { agent: 'TaskRunner' } })
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Completed Task', runnerLogs: logs },
+    })
+
+    expect(wrapper.text()).not.toContain('Waiting for logs...')
+
+    wrapper.unmount()
+  })
+
+  it('does not show "Task finished" indicator in static mode', () => {
+    const logs = JSON.stringify({ type: 'agent_end', data: { output: { status: 'completed' } } })
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Completed Task', runnerLogs: logs },
+    })
+
+    const indicator = wrapper.find('[data-testid="task-finished-indicator"]')
+    expect(indicator.exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('renders non-JSON lines as raw events in static mode', async () => {
+    const logs = 'plain text line\nnot json either'
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Completed Task', runnerLogs: logs },
+    })
+    await flushPromises()
+
+    const rawEvents = wrapper.findAll('[data-testid="event-raw"]')
+    expect(rawEvents.length).toBe(2)
+    expect(rawEvents[0].text()).toContain('plain text line')
+    expect(rawEvents[1].text()).toContain('not json either')
+
+    wrapper.unmount()
+  })
+
+  it('appends tool_result to preceding tool_call in static mode', async () => {
+    const logs = [
+      JSON.stringify({ type: 'tool_call', data: { tool: 'execute_command', args: { command: 'ls' } } }),
+      JSON.stringify({ type: 'tool_result', data: { tool: 'execute_command', output: 'file1.txt', length: 9 } }),
+    ].join('\n')
+
+    const wrapper = mount(TaskLogModal, {
+      props: { title: 'Completed Task', runnerLogs: logs },
+    })
+    await flushPromises()
+
+    // Should have only one tool_call card with result appended
+    const toolCards = wrapper.findAll('[data-testid="event-tool-call"]')
+    expect(toolCards).toHaveLength(1)
+
+    const resultSection = wrapper.find('[data-testid="tool-result-section"]')
+    expect(resultSection.exists()).toBe(true)
+
+    wrapper.unmount()
+  })
 })

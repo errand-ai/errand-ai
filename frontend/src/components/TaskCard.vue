@@ -29,7 +29,11 @@ const relativeTime = computed(() => {
   return formatRelativeTime(props.task.execute_at, now.value)
 })
 
-const showLogButton = computed(() => props.columnStatus === 'running')
+const showLogButton = computed(() => {
+  const col = props.columnStatus
+  return col === 'running'
+    || ((col === 'review' || col === 'completed' || col === 'scheduled') && !!props.task.runner_logs)
+})
 
 const showOutputButton = computed(() => {
   const col = props.columnStatus

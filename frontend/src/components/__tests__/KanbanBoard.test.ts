@@ -205,6 +205,40 @@ describe('KanbanBoard', () => {
     expect(store.removeTask).not.toHaveBeenCalled()
   })
 
+  // --- TaskLogModal routing ---
+
+  it('opens TaskLogModal with taskId for running tasks', async () => {
+    const { wrapper } = mountWithTasks(makeTasks([
+      { id: '5', title: 'Running task', status: 'running' },
+    ]))
+
+    const logBtn = wrapper.find('button[title="View logs"]')
+    expect(logBtn.exists()).toBe(true)
+    await logBtn.trigger('click')
+    await nextTick()
+
+    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
+    expect(logModal.exists()).toBe(true)
+    expect(logModal.props('taskId')).toBe('5')
+    expect(logModal.props('runnerLogs')).toBeUndefined()
+  })
+
+  it('opens TaskLogModal with runnerLogs for completed tasks', async () => {
+    const { wrapper } = mountWithTasks(makeTasks([
+      { id: '6', title: 'Done task', status: 'completed', runner_logs: '{"type":"agent_start","data":{}}' },
+    ]))
+
+    const logBtn = wrapper.find('button[title="View logs"]')
+    expect(logBtn.exists()).toBe(true)
+    await logBtn.trigger('click')
+    await nextTick()
+
+    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
+    expect(logModal.exists()).toBe(true)
+    expect(logModal.props('taskId')).toBeUndefined()
+    expect(logModal.props('runnerLogs')).toBe('{"type":"agent_start","data":{}}')
+  })
+
   // --- Intra-column reorder ---
 
   it('calls store.updateTask with position on same-column drop in reorderable column', async () => {

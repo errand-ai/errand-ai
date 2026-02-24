@@ -226,9 +226,36 @@ describe('TaskCard', () => {
     expect(btn.exists()).toBe(true)
   })
 
-  it('hides log button when columnStatus is not running', () => {
+  it('hides log button when columnStatus is not running and no runner_logs', () => {
     const wrapper = mount(TaskCard, {
       props: { task, columnStatus: 'pending' },
+    })
+    const btn = wrapper.find('button[title="View logs"]')
+    expect(btn.exists()).toBe(false)
+  })
+
+  it('shows log button when columnStatus is completed and task has runner_logs', () => {
+    const completedWithLogs: TaskData = { ...task, status: 'completed', runner_logs: 'some log data' }
+    const wrapper = mount(TaskCard, {
+      props: { task: completedWithLogs, columnStatus: 'completed' },
+    })
+    const btn = wrapper.find('button[title="View logs"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('shows log button when columnStatus is review and task has runner_logs', () => {
+    const reviewWithLogs: TaskData = { ...task, status: 'review', runner_logs: 'some log data' }
+    const wrapper = mount(TaskCard, {
+      props: { task: reviewWithLogs, columnStatus: 'review' },
+    })
+    const btn = wrapper.find('button[title="View logs"]')
+    expect(btn.exists()).toBe(true)
+  })
+
+  it('hides log button when columnStatus is completed and no runner_logs', () => {
+    const completedNoLogs: TaskData = { ...task, status: 'completed', runner_logs: null }
+    const wrapper = mount(TaskCard, {
+      props: { task: completedNoLogs, columnStatus: 'completed' },
     })
     const btn = wrapper.find('button[title="View logs"]')
     expect(btn.exists()).toBe(false)
