@@ -23,6 +23,7 @@ from worker import (
     start_playwright_container, health_check_playwright,
     cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
     _read_callback_result,
+    REPO_CONTEXT_INSTRUCTIONS,
 )
 from container_runtime import (
     _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
@@ -952,9 +953,10 @@ def test_perplexity_not_injected_when_disabled():
     mcp_config = json.loads(files["mcp.json"])
     assert "perplexity-ask" not in mcp_config["mcpServers"]
 
-    # Extract system_prompt.txt — should be unchanged
+    # Extract system_prompt.txt — should have original prompt + repo context (no perplexity)
     system_prompt_content = files["system_prompt.txt"]
-    assert system_prompt_content == original_prompt
+    assert system_prompt_content.startswith(original_prompt)
+    assert "perplexity-ask" not in system_prompt_content
 
 
 def test_perplexity_database_value_takes_precedence():
@@ -1114,7 +1116,7 @@ def test_skills_directive_omitted_when_no_skills():
     # Check files passed to prepare()
     files = mock_runtime.prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
-    assert system_prompt_content == "You are a helpful assistant."
+    assert system_prompt_content.startswith("You are a helpful assistant.")
     assert "## Skills" not in system_prompt_content
 
     # Check MCP config does NOT have the errand server
@@ -3270,3 +3272,86 @@ def test_nonzero_exit_code_with_invalid_json_still_retries():
     stdout = '{"not_a_task_runner_output": true}'
     clean_stdout = extract_json(stdout) if stdout else None
     assert clean_stdout is None, "Invalid TaskRunnerOutput should not be extracted"
+
+
+# --- Repo context discovery instructions ---
+
+
+def test_repo_context_instructions_in_system_prompt():
+    """System prompt always includes repo context discovery instructions."""
+    task = _make_mock_task(description="Clone and fix a repo")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
+
+    assert "## Repo Context Discovery" in system_prompt_content
+    assert "CLAUDE.md" in system_prompt_content
+    assert ".claude/commands/" in system_prompt_content
+    assert ".claude/skills/" in system_prompt_content
+
+
+def test_repo_context_instructions_after_skill_manifest():
+    """Repo context instructions appear after the skill manifest when skills are present."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+        "skills": [
+            {"name": "researcher", "description": "Web research", "instructions": "Full instructions", "files": []},
+        ],
+        "mcp_api_key": "test-api-key-123",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }, clear=True):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
+
+    # Both sections present
+    assert "## Skills" in system_prompt_content
+    assert "## Repo Context Discovery" in system_prompt_content
+
+    # Repo context comes after skills
+    skills_pos = system_prompt_content.index("## Skills")
+    repo_context_pos = system_prompt_content.index("## Repo Context Discovery")
+    assert repo_context_pos > skills_pos

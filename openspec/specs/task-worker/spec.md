@@ -49,11 +49,23 @@ When Hindsight is configured (via `HINDSIGHT_URL` environment variable or `hinds
 
 When skills exist in the database, the worker SHALL append a skill manifest section to the system prompt after any Perplexity block. The worker SHALL NOT inject the backend MCP server into the MCP configuration for skill purposes. The worker SHALL NOT append the legacy "call list_skills" directive.
 
+After all other system prompt augmentation blocks (Hindsight memories, Perplexity, Hindsight tools, skill manifest), the worker SHALL always append repo context discovery instructions. The repo context block SHALL instruct the agent to check for `CLAUDE.md`, `.claude/commands/`, and `.claude/skills/` after any `git clone` operation.
+
 Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the worker SHALL perform environment variable substitution on all string values within the JSON structure. The substitution SHALL support two syntaxes: `$VARIABLE_NAME` and `${VARIABLE_NAME}`, where `VARIABLE_NAME` matches the pattern `[A-Za-z_][A-Za-z0-9_]*`. The worker SHALL resolve variable references against its own process environment (`os.environ`). If a referenced variable does not exist in the worker's environment, the placeholder SHALL be left unchanged in the output. Substitution SHALL only operate on string values within the JSON structure — keys, numbers, booleans, and nulls SHALL NOT be modified.
 
 The worker SHALL store the captured stderr in the task's `runner_logs` field for all execution outcomes: successful completion, needs_input, retry on failure, and retry on parse error. The `runner_logs` field SHALL be written in every UPDATE statement that modifies the task after container execution.
 
 The worker SHALL publish `task_updated` WebSocket events containing all task fields matching the API's `TaskResponse` schema: `id`, `title`, `description`, `status`, `position`, `category`, `execute_at`, `repeat_interval`, `repeat_until`, `output`, `runner_logs`, `retry_count`, `tags`, `created_at`, and `updated_at`. The `_task_to_dict()` helper SHALL serialise the complete task object including the `tags` relationship and the `runner_logs` field.
+
+#### Scenario: System prompt includes repo context instructions
+
+- **WHEN** the worker assembles the system prompt for any task
+- **THEN** the system prompt includes a "Repo Context Discovery" section instructing the agent to check cloned repos for CLAUDE.md, commands, and skills
+
+#### Scenario: Repo context instructions placed after skill manifest
+
+- **WHEN** the worker assembles the system prompt with both skills and repo context
+- **THEN** the repo context instructions appear after the skill manifest section
 
 #### Scenario: GitHub PAT token injected when integration connected
 
