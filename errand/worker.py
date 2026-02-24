@@ -537,6 +537,29 @@ def substitute_env_vars(obj, environ=None):
 
 DEFAULT_HINDSIGHT_BANK_ID = "errand-tasks"
 
+REPO_CONTEXT_INSTRUCTIONS = """
+
+## Repo Context Discovery
+
+After cloning any git repository, you MUST check for the following context files and use them:
+
+### CLAUDE.md (Project Instructions)
+After any `git clone`, check if `CLAUDE.md` exists in the repository root. If it does, read the file and treat its contents as project-specific instructions. Follow these instructions when working within that repository — they may contain coding conventions, architecture guidance, tool preferences, or workflow rules.
+
+### Commands (.claude/commands/)
+After any `git clone`, check if a `.claude/commands/` directory exists. If it does, list all `.md` files within it recursively. Each `.md` file defines a command:
+- The relative path within `.claude/commands/` (without the `.md` extension) forms the command name
+- Directory separators become colons (e.g., `.claude/commands/deploy/staging.md` → command `deploy:staging`)
+- If the user prompt references a command by name (with or without a leading `/`), read the corresponding `.md` file and execute the steps described in it
+- Do not read command files unless the user prompt references them
+
+### Repo-Level Skills (.claude/skills/)
+After any `git clone`, check if a `.claude/skills/` directory exists. If it does, find all `SKILL.md` files in subdirectories. For each `SKILL.md`:
+- Read only the YAML frontmatter (between `---` delimiters) to get the `name` and `description` fields
+- If a skill's description indicates it is relevant to the current task, read the full `SKILL.md` file and follow its instructions
+- Do not read the full file for skills that are not relevant to the task
+"""
+
 
 def recall_from_hindsight(hindsight_url: str, bank_id: str, query: str, max_tokens: int = 2048) -> str | None:
     """Call Hindsight REST API to recall memories relevant to the query.
@@ -838,6 +861,9 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
         # Inject skill manifest into system prompt if skills are defined
         if skills:
             system_prompt += build_skill_manifest(skills)
+
+        # Inject repo context discovery instructions
+        system_prompt += REPO_CONTEXT_INSTRUCTIONS
 
         # Build files dict for the container
         prompt_text = task.description or task.title
