@@ -4,6 +4,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
 
 FROM debian:bookworm-slim AS git-builder
+ARG GH_VERSION=2.67.0
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
@@ -11,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     busybox \
     curl \
     && rm -rf /var/lib/apt/lists/*
+# Download gh CLI (static Go binary — no shared library staging needed)
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    | tar xz -C /tmp && cp "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh
 # Create .ssh directory with correct permissions (preserved by COPY --from)
 RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
 # Stage shared libraries needed by git, ssh, and busybox into an arch-independent
@@ -29,6 +34,14 @@ RUN mkdir -p /staged-libs && \
         fi ; \
       done ; \
     done
+
+FROM node:22-bookworm-slim AS node-builder
+RUN npm install -g @fission-ai/openspec@latest
+# Resolve the openspec entry point for the wrapper script
+RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
+    echo "#!/bin/sh" > /usr/local/bin/openspec-sh && \
+    echo "exec /usr/local/bin/node $OPENSPEC_ENTRY \"\$@\"" >> /usr/local/bin/openspec-sh && \
+    chmod +x /usr/local/bin/openspec-sh
 
 FROM gcr.io/distroless/python3-debian12:nonroot
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
@@ -50,6 +63,14 @@ COPY --from=git-builder /usr/bin/ssh-keyscan /usr/bin/ssh-keyscan
 
 # Copy curl binary (for HTTP requests in tasks)
 COPY --from=git-builder /usr/bin/curl /usr/bin/curl
+
+# Copy gh CLI binary (static Go binary)
+COPY --from=git-builder /usr/local/bin/gh /usr/local/bin/gh
+
+# Copy node binary and openspec CLI from node-builder
+COPY --from=node-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node-builder /usr/local/bin/openspec-sh /usr/local/bin/openspec
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.

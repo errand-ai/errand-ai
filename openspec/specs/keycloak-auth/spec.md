@@ -1,15 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: OIDC discovery at startup
-The backend SHALL fetch the OIDC configuration from `OIDC_DISCOVERY_URL` at startup and cache the authorization endpoint, token endpoint, JWKS URI, and end-session endpoint. If the discovery fetch fails, the backend SHALL fail to start.
+The backend SHALL fetch the OIDC configuration from the discovery URL at startup and cache the authorization endpoint, token endpoint, JWKS URI, and end-session endpoint. If the discovery fetch fails and OIDC is configured, the backend SHALL log an error and start without SSO (falling back to local auth) rather than failing to start entirely.
 
 #### Scenario: Successful discovery
-- **WHEN** the backend starts with a valid `OIDC_DISCOVERY_URL`
+- **WHEN** the backend starts with a valid OIDC discovery URL
 - **THEN** it fetches the well-known configuration and resolves all required OIDC endpoints
 
 #### Scenario: Discovery URL unreachable
 - **WHEN** the backend starts and the discovery URL is unreachable
-- **THEN** the backend exits with an error indicating OIDC discovery failed
+- **THEN** the backend logs an error and starts without SSO enabled
 
 ### Requirement: Login endpoint initiates OIDC flow
 The backend SHALL expose `GET /auth/login` which redirects the browser to Keycloak's authorization endpoint with `client_id`, `redirect_uri=/auth/callback`, `response_type=code`, and `scope=openid offline_access`.
@@ -83,19 +83,49 @@ The backend SHALL cache JWKS public keys in memory. If a token's `kid` does not 
 - **THEN** the backend returns HTTP 401
 
 ### Requirement: OIDC configuration via environment variables
-The backend SHALL read `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` from environment variables. All three are required — if any is missing, the backend SHALL fail to start. The backend SHALL also read `OIDC_ROLES_CLAIM` (optional, defaulting to `resource_access.errand.roles`) to configure the dot-path used to extract roles from the JWT.
+The backend SHALL read `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` from environment variables. These are NOT required — if any is missing, the backend SHALL check the database settings table for equivalent keys (`oidc_discovery_url`, `oidc_client_id`, `oidc_client_secret`). If neither env vars nor DB settings provide OIDC configuration, the backend SHALL start without SSO (local auth or setup mode). The backend SHALL also read `OIDC_ROLES_CLAIM` (optional, defaulting to `resource_access.errand.roles`) from env vars or the DB setting `oidc_roles_claim`.
 
-#### Scenario: All required variables set
+#### Scenario: All required variables set via env
 - **WHEN** all three required OIDC environment variables are set
-- **THEN** the backend starts and configures OIDC authentication with the default roles claim path
+- **THEN** the backend starts with SSO enabled using env-sourced config
+
+#### Scenario: OIDC config from database
+- **WHEN** OIDC env vars are not set but `oidc_discovery_url`, `oidc_client_id`, and `oidc_client_secret` exist in the settings table
+- **THEN** the backend starts with SSO enabled using DB-sourced config
+
+#### Scenario: No OIDC config anywhere
+- **WHEN** neither OIDC env vars nor DB settings are present
+- **THEN** the backend starts without SSO (local auth or setup mode depending on whether a local admin exists)
 
 #### Scenario: Custom roles claim path
 - **WHEN** `OIDC_ROLES_CLAIM` is set to `resource_access.my-client.roles`
 - **THEN** the backend extracts roles from that path in the JWT
 
-#### Scenario: Missing required variable
-- **WHEN** `OIDC_CLIENT_SECRET` is not set
-- **THEN** the backend exits with an error indicating the missing variable
+### Requirement: Hot-reload OIDC configuration
+The backend SHALL support hot-reloading OIDC configuration when the admin saves SSO settings via the User Management page. The hot-reload SHALL perform OIDC discovery, and on success, atomically swap the module-level `oidc` variable. On failure, the existing auth mode SHALL be preserved and an error returned to the client.
+
+#### Scenario: Hot-reload succeeds
+- **WHEN** the admin saves valid OIDC settings via the API and the discovery URL is reachable
+- **THEN** the backend switches to SSO mode without requiring a restart
+
+#### Scenario: Hot-reload fails
+- **WHEN** the admin saves OIDC settings but the discovery URL is unreachable
+- **THEN** the backend returns an error, and the previous auth mode is preserved
+
+### Requirement: JWT validation supports both OIDC and local tokens
+The `get_current_user` dependency SHALL validate JWTs from both sources: OIDC tokens (verified via JWKS public keys) and local auth tokens (verified via HMAC with the `jwt_signing_secret`). The dependency SHALL distinguish token type by checking for the `iss` claim — local tokens have issuer `errand-local`, OIDC tokens have the IdP issuer.
+
+#### Scenario: OIDC token validated
+- **WHEN** a request includes a JWT with an issuer matching the OIDC configuration
+- **THEN** the token is validated against JWKS public keys
+
+#### Scenario: Local token validated
+- **WHEN** a request includes a JWT with issuer `errand-local`
+- **THEN** the token is validated against the HMAC signing secret
+
+#### Scenario: Unknown issuer rejected
+- **WHEN** a request includes a JWT with an unrecognized issuer
+- **THEN** the backend returns HTTP 401
 
 ### Requirement: Refresh token endpoint
 The backend SHALL expose `POST /auth/refresh` which accepts a JSON body `{"refresh_token": "<token>"}`, exchanges it with Keycloak's token endpoint using `grant_type=refresh_token`, `client_id`, and `client_secret`, and returns the new tokens as JSON.

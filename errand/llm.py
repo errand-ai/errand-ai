@@ -45,6 +45,27 @@ def get_llm_client() -> AsyncOpenAI | None:
     return _client
 
 
+async def get_llm_client_with_db(session: AsyncSession) -> AsyncOpenAI | None:
+    """Get LLM client, checking env vars first then DB settings."""
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    api_key = os.environ.get("OPENAI_API_KEY")
+
+    if not (base_url and api_key):
+        # Try DB settings
+        for key in ["openai_base_url", "openai_api_key"]:
+            result = await session.execute(select(Setting).where(Setting.key == key))
+            s = result.scalar_one_or_none()
+            if s and s.value:
+                if key == "openai_base_url":
+                    base_url = str(s.value)
+                else:
+                    api_key = str(s.value)
+
+    if base_url and api_key:
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
+    return None
+
+
 async def _get_model(session: AsyncSession) -> str:
     result = await session.execute(select(Setting).where(Setting.key == "llm_model"))
     setting = result.scalar_one_or_none()
@@ -128,7 +149,7 @@ async def generate_title(description: str, session: AsyncSession, now: datetime 
     if now is None:
         now = datetime.now(timezone.utc)
 
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         return LLMResult(title=_fallback_title(description), success=False)
 
@@ -190,7 +211,7 @@ async def transcribe_audio(file, session: AsyncSession) -> str:
     Raises TranscriptionNotConfiguredError if no transcription_model setting exists.
     Raises LLMClientNotConfiguredError if the LLM client is not available.
     """
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         raise LLMClientNotConfiguredError("LLM client is not configured")
 

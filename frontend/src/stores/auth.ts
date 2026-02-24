@@ -6,6 +6,7 @@ export const useAuthStore = defineStore('auth', () => {
   const idToken = ref<string | null>(null)
   const refreshToken = ref<string | null>(null)
   const accessDenied = ref(false)
+  const authMode = ref<'setup' | 'local' | 'sso' | null>(null)
   let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
   const isAuthenticated = computed(() => token.value !== null)
@@ -24,6 +25,9 @@ export const useAuthStore = defineStore('auth', () => {
     if (!token.value) return []
     try {
       const payload = JSON.parse(atob(token.value.split('.')[1]))
+      // Local auth tokens use _roles claim directly
+      if (Array.isArray(payload._roles)) return payload._roles
+      // SSO tokens use resource_access
       const clientId = payload?.azp ?? 'errand'
       const clientRoles = payload?.resource_access?.[clientId]?.roles
       return Array.isArray(clientRoles) ? clientRoles : []
@@ -31,6 +35,10 @@ export const useAuthStore = defineStore('auth', () => {
       return []
     }
   })
+
+  function setAuthMode(mode: 'setup' | 'local' | 'sso') {
+    authMode.value = mode
+  }
 
   const isAdmin = computed(() => roles.value.includes('admin'))
   const isEditor = computed(() => roles.value.includes('editor') || roles.value.includes('admin'))
@@ -110,5 +118,5 @@ export const useAuthStore = defineStore('auth', () => {
     accessDenied.value = true
   }
 
-  return { token, idToken, refreshToken, isAuthenticated, accessDenied, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, scheduleRefresh, cancelRefresh, doRefresh }
+  return { token, idToken, refreshToken, isAuthenticated, accessDenied, authMode, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, setAuthMode, scheduleRefresh, cancelRefresh, doRefresh }
 })

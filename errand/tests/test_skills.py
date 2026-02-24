@@ -379,4 +379,4 @@ async def test_put_settings_ignores_skills(admin_client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert "skills" not in data
-    assert data["system_prompt"] == "test"
+    assert data["system_prompt"]["value"] == "test"

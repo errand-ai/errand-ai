@@ -17,6 +17,18 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/login',
+      name: 'login',
+      component: () => import('../pages/LoginPage.vue'),
+      meta: { requiresAuth: false },
+    },
+    {
+      path: '/setup',
+      name: 'setup',
+      component: () => import('../pages/SetupWizard.vue'),
+      meta: { requiresAuth: false },
+    },
+    {
       path: '/settings',
       component: () => import('../pages/SettingsPage.vue'),
       meta: { requiresAdmin: true },
@@ -46,8 +58,9 @@ const router = createRouter({
           component: () => import('../pages/settings/IntegrationsPage.vue'),
         },
         {
-          path: ':pathMatch(.*)*',
-          redirect: { name: 'settings-agent' },
+          path: 'users',
+          name: 'settings-users',
+          component: () => import('../pages/settings/UserManagementPage.vue'),
         },
       ],
     },
@@ -56,9 +69,26 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore()
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return { name: 'home' }
+
+  // Public routes that don't need auth
+  if (to.name === 'login' || to.name === 'setup') {
+    // /login only in local mode
+    if (to.name === 'login' && auth.authMode !== 'local') {
+      return { name: 'home' }
+    }
+    // /setup only in setup mode
+    if (to.name === 'setup' && auth.authMode !== 'setup') {
+      return { name: 'home' }
+    }
+    return
   }
+
+  if (!auth.isAuthenticated) {
+    if (auth.authMode === 'local') return { name: 'login' }
+    if (auth.authMode === 'setup') return { name: 'setup' }
+    return false // SSO handles redirect in App.vue
+  }
+
   if (to.meta.requiresAdmin && !auth.isAdmin) {
     return { name: 'home' }
   }

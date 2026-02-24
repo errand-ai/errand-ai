@@ -24,9 +24,40 @@ from sqlalchemy.orm import selectinload
 from container_runtime import ContainerRuntime, DockerRuntime, create_runtime, RuntimeHandle
 from database import async_session, engine
 import redis as sync_redis
+from sqlalchemy import create_engine as create_sync_engine, text as sa_text
 
 from events import init_valkey, close_valkey, publish_event, VALKEY_URL
 from models import Setting, Skill, Tag, Task, task_tags
+
+HEARTBEAT_INTERVAL = 60  # seconds between heartbeat updates
+
+# Lazy sync engine for heartbeat updates from executor thread
+_sync_engine = None
+
+
+def _get_sync_engine():
+    """Get or create a sync SQLAlchemy engine for heartbeat updates."""
+    global _sync_engine
+    if _sync_engine is None:
+        db_url = os.environ.get("DATABASE_URL", "")
+        # Convert async URL to sync if needed
+        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("sqlite+aiosqlite://", "sqlite://")
+        _sync_engine = create_sync_engine(sync_url)
+    return _sync_engine
+
+
+def _update_heartbeat(task_id) -> None:
+    """Update heartbeat_at for a task. Safe to call from executor thread."""
+    try:
+        eng = _get_sync_engine()
+        with eng.connect() as conn:
+            conn.execute(
+                sa_text("UPDATE tasks SET heartbeat_at = :now WHERE id = :id"),
+                {"now": datetime.now(timezone.utc), "id": str(task_id)},
+            )
+            conn.commit()
+    except Exception:
+        logger.warning("Failed to update heartbeat for task %s", task_id, exc_info=True)
 
 
 class TaskRunnerOutput(BaseModel):
@@ -465,6 +496,7 @@ def _task_to_dict(task: Task) -> dict:
         "runner_logs": task.runner_logs,
         "questions": task.questions,
         "retry_count": task.retry_count,
+        "heartbeat_at": task.heartbeat_at.isoformat() if task.heartbeat_at else None,
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
@@ -618,7 +650,7 @@ def _read_callback_result(task_id: str) -> str | None:
         return None
 
 
-def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str]:
+def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
 
@@ -682,6 +714,27 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
 
         # Internal key for K8s runtime labels (stripped from actual container env)
         env_vars["_TASK_ID"] = str(task.id)
+
+        # Inject GitHub token if integration is connected
+        # github_credentials is loaded in the async caller (run_worker) to
+        # avoid cross-event-loop issues with asyncio.run() inside run_in_executor.
+        if github_credentials:
+            try:
+                auth_mode = github_credentials.get("auth_mode", "pat")
+                if auth_mode == "pat":
+                    pat = github_credentials.get("personal_access_token", "")
+                    if pat:
+                        env_vars["GH_TOKEN"] = pat
+                elif auth_mode == "app":
+                    from platforms.github import mint_installation_token
+                    token = mint_installation_token(
+                        app_id=github_credentials["app_id"],
+                        private_key=github_credentials["private_key"],
+                        installation_id=github_credentials["installation_id"],
+                    )
+                    env_vars["GH_TOKEN"] = token
+            except Exception:
+                logger.warning("Failed to inject GitHub token, skipping GH_TOKEN", exc_info=True)
 
         # Resolve Hindsight configuration: env var → admin setting → disabled
         hindsight_url = os.environ.get("HINDSIGHT_URL", "") or settings.get("hindsight_url", "")
@@ -839,10 +892,15 @@ def process_task_in_container(task: Task, settings: dict) -> tuple[int, str, str
 
             # Stream logs in real-time, publishing structured events to Valkey
             last_token_refresh = time.monotonic()
+            last_heartbeat = time.monotonic()
             try:
                 for line in runtime.run(handle):
                     if not line:
                         continue
+                    # Update heartbeat periodically
+                    if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
+                        _update_heartbeat(task.id)
+                        last_heartbeat = time.monotonic()
                     # Refresh callback token TTL every 15 minutes
                     if log_redis is not None and time.monotonic() - last_token_refresh >= 900:
                         try:
@@ -1045,8 +1103,26 @@ async def run() -> None:
             # Read settings for this task
             settings = await read_settings(session)
 
-            # Set status to running
+            # Load GitHub credentials while we have a session
+            github_credentials = None
+            try:
+                from models import PlatformCredential
+                from platforms.credentials import decrypt as decrypt_credentials
+                result = await session.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform_id == "github",
+                        PlatformCredential.status == "connected",
+                    )
+                )
+                gh_cred = result.scalar_one_or_none()
+                if gh_cred:
+                    github_credentials = decrypt_credentials(gh_cred.encrypted_data)
+            except Exception:
+                logger.warning("Failed to load GitHub credentials", exc_info=True)
+
+            # Set status to running with initial heartbeat
             task.status = "running"
+            task.heartbeat_at = datetime.now(timezone.utc)
             task.updated_by = "system"
             await session.commit()
             await session.refresh(task)
@@ -1055,7 +1131,7 @@ async def run() -> None:
         # Process outside the dequeue transaction
         try:
             exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, settings
+                None, process_task_in_container, task, settings, github_credentials
             )
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout

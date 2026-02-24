@@ -34,8 +34,10 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client, generate_title, transcribe_audio, LLMResult, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
-from models import PlatformCredential, Setting, Skill, SkillFile, Tag, Task, task_tags
+from llm import init_llm_client, get_llm_client_with_db, generate_title, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
+from local_auth import router as local_auth_router
+from models import LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, task_tags
+from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
@@ -43,6 +45,7 @@ from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from scheduler import run_scheduler, release_lock
+from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
 
 security = HTTPBearer()
 
@@ -78,11 +81,25 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(_run_migrations)
         logger.info("Migrations complete")
 
-    auth_module.oidc = OIDCConfig.from_env()
-    if auth_module.oidc is not None:
-        await auth_module.oidc.discover()
+    # OIDC: try env vars first, then DB settings
+    async with async_session() as session:
+        db_settings = {}
+        for key in ["oidc_discovery_url", "oidc_client_id", "oidc_client_secret", "oidc_roles_claim"]:
+            result = await session.execute(select(Setting).where(Setting.key == key))
+            s = result.scalar_one_or_none()
+            if s:
+                db_settings[key] = s.value
+    oidc_config = OIDCConfig.from_env(db_settings)
+    if oidc_config:
+        try:
+            await oidc_config.discover()
+            auth_module.oidc = oidc_config
+        except Exception:
+            logger.error("OIDC discovery failed — starting without SSO", exc_info=True)
+            auth_module.oidc = None
     else:
-        logger.warning("OIDC not configured — authentication is disabled")
+        auth_module.oidc = None
+        logger.info("OIDC not configured — using local auth")
     await init_valkey()
     init_llm_client()
 
@@ -96,9 +113,11 @@ async def lifespan(app: FastAPI):
     # Register platforms
     from platforms.twitter import TwitterPlatform
     from platforms.slack import SlackPlatform
+    from platforms.github import GitHubPlatform
     registry = get_registry()
     registry.register(TwitterPlatform())
     registry.register(SlackPlatform())
+    registry.register(GitHubPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:
@@ -139,16 +158,41 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info("Created default git SSH hosts")
 
+        # Auto-generate JWT signing secret
+        result = await session.execute(select(Setting).where(Setting.key == "jwt_signing_secret"))
+        if result.scalar_one_or_none() is None:
+            import secrets as _secrets
+            session.add(Setting(key="jwt_signing_secret", value=_secrets.token_hex(32)))
+            await session.commit()
+            logger.info("Generated JWT signing secret")
+
+        # Auto-provision local admin user from env vars
+        admin_username = os.environ.get("ADMIN_USERNAME")
+        admin_password = os.environ.get("ADMIN_PASSWORD")
+        if admin_username and admin_password:
+            from passlib.hash import bcrypt
+            result = await session.execute(select(LocalUser).where(LocalUser.username == admin_username))
+            if result.scalar_one_or_none() is None:
+                session.add(LocalUser(username=admin_username, password_hash=bcrypt.hash(admin_password)))
+                await session.commit()
+                logger.info("Auto-provisioned local admin user '%s'", admin_username)
+
     scheduler_task = asyncio.create_task(run_scheduler())
+    zombie_cleanup_task = asyncio.create_task(run_zombie_cleanup())
     slack_updater_task = asyncio.create_task(
         run_status_updater(get_valkey, async_session, _load_creds)
     )
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
+    zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
     try:
         await scheduler_task
+    except asyncio.CancelledError:
+        pass  # Expected after explicit cancel()
+    try:
+        await zombie_cleanup_task
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     try:
@@ -156,6 +200,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     await release_lock()
+    await release_zombie_lock()
     await close_valkey()
     await engine.dispose()
 
@@ -170,78 +215,109 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(local_auth_router)
 app.include_router(slack_router)
 
 app.mount("/mcp", create_mcp_app())
 
 
+# --- Auth helpers ---
+
+
+async def _resolve_auth_mode(session: AsyncSession) -> str:
+    """Determine current auth mode: 'sso', 'local', or 'setup'."""
+    # 1. OIDC env vars?
+    if all(os.environ.get(v) for v in ["OIDC_DISCOVERY_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"]):
+        return "sso"
+    # 2. OIDC DB settings?
+    oidc_db_ok = True
+    for key in ["oidc_discovery_url", "oidc_client_id", "oidc_client_secret"]:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        s = result.scalar_one_or_none()
+        if not s or not s.value:
+            oidc_db_ok = False
+            break
+    if oidc_db_ok:
+        return "sso"
+    # 3. Local user exists?
+    result = await session.execute(select(LocalUser).limit(1))
+    if result.scalar_one_or_none() is not None:
+        return "local"
+    # 4. Setup mode
+    return "setup"
+
+
+async def _validate_token(token: str) -> dict:
+    """Validate a JWT token (OIDC or local). Returns claims dict with _roles."""
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    issuer = unverified.get("iss", "")
+
+    if issuer == "errand-local":
+        # Local token — verify with HMAC secret
+        async with async_session() as db:
+            result = await db.execute(
+                select(Setting).where(Setting.key == "jwt_signing_secret")
+            )
+            secret_setting = result.scalar_one_or_none()
+        if not secret_setting:
+            raise HTTPException(status_code=401, detail="Local auth not configured")
+        try:
+            claims = jwt.decode(
+                token, str(secret_setting.value), algorithms=["HS256"], issuer="errand-local"
+            )
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        claims["_roles"] = claims.get("_roles", [])
+        return claims
+    else:
+        # OIDC token
+        if auth_module.oidc is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        try:
+            claims = auth_module.oidc.decode_token(token)
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        roles = auth_module.oidc.extract_roles(claims)
+        if not roles:
+            raise HTTPException(status_code=403, detail="No roles assigned")
+        claims["_roles"] = roles
+        return claims
+
+
 # --- Auth dependency ---
-
-
-_ANONYMOUS_CLAIMS = {"sub": "anonymous", "email": "anonymous@local", "_roles": ["admin"]}
 
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    if auth_module.oidc is None:
-        return _ANONYMOUS_CLAIMS
-    token = credentials.credentials
-    try:
-        claims = auth_module.oidc.decode_token(token)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    roles = auth_module.oidc.extract_roles(claims)
-    if not roles:
-        raise HTTPException(
-            status_code=403,
-            detail="No roles assigned. Contact your administrator for access.",
-        )
-
-    claims["_roles"] = roles
-    return claims
+    return await _validate_token(credentials.credentials)
 
 
 async def require_editor(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    if auth_module.oidc is None:
-        return _ANONYMOUS_CLAIMS
-    token = credentials.credentials
-    try:
-        claims = auth_module.oidc.decode_token(token)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    roles = auth_module.oidc.extract_roles(claims)
+    claims = await _validate_token(credentials.credentials)
+    roles = claims.get("_roles", [])
     if "editor" not in roles and "admin" not in roles:
         raise HTTPException(status_code=403, detail="Editor role required")
-
     return claims
 
 
 async def require_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
-    if auth_module.oidc is None:
-        return _ANONYMOUS_CLAIMS
-    token = credentials.credentials
-    try:
-        claims = auth_module.oidc.decode_token(token)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    roles = auth_module.oidc.extract_roles(claims)
+    claims = await _validate_token(credentials.credentials)
+    roles = claims.get("_roles", [])
     if "admin" not in roles:
         raise HTTPException(status_code=403, detail="Admin role required")
-
     return claims
 
 
@@ -287,6 +363,7 @@ class TaskResponse(BaseModel):
     runner_logs: Optional[str] = None
     questions: Optional[list[str]] = None
     retry_count: int = 0
+    heartbeat_at: Optional[datetime] = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -311,6 +388,7 @@ class TaskResponse(BaseModel):
             runner_logs=task.runner_logs,
             questions=task.questions,
             retry_count=task.retry_count,
+            heartbeat_at=task.heartbeat_at,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -607,9 +685,10 @@ async def delete_task(
 
 @app.get("/api/llm/models")
 async def list_llm_models(
+    session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_admin),
 ):
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         raise HTTPException(status_code=503, detail="LLM provider not configured")
     try:
@@ -644,7 +723,7 @@ async def transcribe_status(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    client = get_llm_client()
+    client = await get_llm_client_with_db(session)
     if client is None:
         return {"enabled": False}
     result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))
@@ -689,10 +768,7 @@ async def get_settings(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_admin),
 ):
-    result = await session.execute(select(Setting))
-    settings = result.scalars().all()
-    data = {s.key: s.value for s in settings if s.key not in ("ssh_private_key", "skills")}
-    return data
+    return await resolve_settings(session)
 
 
 @app.put("/api/settings")
@@ -704,6 +780,14 @@ async def update_settings(
     for key, value in body.items():
         if key == "skills":
             continue  # Skills managed via /api/skills
+        if key in EXCLUDED_KEYS:
+            continue
+        # Check if this key is env-sourced (readonly)
+        meta = SETTINGS_REGISTRY.get(key)
+        if meta and meta["env_var"]:
+            env_val = os.environ.get(meta["env_var"])
+            if env_val is not None and env_val != "":
+                continue  # Skip readonly env-sourced keys
         result = await session.execute(select(Setting).where(Setting.key == key))
         existing = result.scalar_one_or_none()
         if existing:
@@ -712,9 +796,12 @@ async def update_settings(
             session.add(Setting(key=key, value=value))
     await session.commit()
 
-    result = await session.execute(select(Setting))
-    settings = result.scalars().all()
-    return {s.key: s.value for s in settings if s.key not in ("ssh_private_key", "skills")}
+    # Check if OIDC settings were updated — trigger hot-reload
+    oidc_keys = {"oidc_discovery_url", "oidc_client_id", "oidc_client_secret", "oidc_roles_claim"}
+    if oidc_keys.intersection(body.keys()):
+        await _try_oidc_hot_reload(session)
+
+    return await resolve_settings(session)
 
 
 @app.post("/api/settings/regenerate-ssh-key")
@@ -1183,6 +1270,84 @@ async def delete_skill_file(
     await session.commit()
 
 
+# --- OIDC hot-reload ---
+
+
+async def _try_oidc_hot_reload(session: AsyncSession):
+    """Attempt to hot-reload OIDC config after settings change."""
+    # Don't hot-reload if OIDC comes from env vars
+    if all(os.environ.get(v) for v in ["OIDC_DISCOVERY_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"]):
+        return
+
+    # Load DB settings
+    db_settings = {}
+    for key in ["oidc_discovery_url", "oidc_client_id", "oidc_client_secret", "oidc_roles_claim"]:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        s = result.scalar_one_or_none()
+        if s:
+            db_settings[key] = s.value
+
+    new_config = OIDCConfig.from_env(db_settings)
+    if new_config:
+        try:
+            await new_config.discover()
+            auth_module.oidc = new_config
+            logger.info("OIDC hot-reload successful")
+        except Exception:
+            logger.error("OIDC hot-reload failed", exc_info=True)
+            raise HTTPException(
+                status_code=400,
+                detail="OIDC discovery failed — check the discovery URL",
+            )
+    else:
+        auth_module.oidc = None
+        logger.info("OIDC config removed — reverted to local auth")
+
+
+# --- Auth status & Setup endpoints ---
+
+
+@app.get("/api/auth/status")
+async def auth_status(session: AsyncSession = Depends(get_session)):
+    mode = await _resolve_auth_mode(session)
+    result = {"mode": mode}
+    if mode == "sso":
+        result["login_url"] = "/auth/login"
+    return result
+
+
+@app.post("/api/setup/create-user")
+async def setup_create_user(body: dict, session: AsyncSession = Depends(get_session)):
+    # Check if any local user exists
+    result = await session.execute(select(LocalUser).limit(1))
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=403, detail="Setup already completed")
+
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+    if not username or not password:
+        raise HTTPException(status_code=422, detail="Username and password required")
+
+    from passlib.hash import bcrypt
+
+    user = LocalUser(username=username, password_hash=bcrypt.hash(password))
+    session.add(user)
+    await session.commit()
+
+    # Generate JWT for auto-login
+    jwt_result = await session.execute(
+        select(Setting).where(Setting.key == "jwt_signing_secret")
+    )
+    secret_setting = jwt_result.scalar_one_or_none()
+    if not secret_setting:
+        raise HTTPException(status_code=500, detail="JWT signing secret not configured")
+
+    from local_auth import _mint_local_jwt
+
+    token = _mint_local_jwt(username, "admin", str(secret_setting.value))
+    return {"access_token": token, "token_type": "bearer"}
+
+
 # --- Unprotected endpoints ---
 
 
@@ -1246,20 +1411,15 @@ PONG_TIMEOUT = 10
 
 @app.websocket("/api/ws/tasks")
 async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
-    # Authenticate via query parameter (skip when OIDC is not configured)
-    if auth_module.oidc is not None:
-        if not token:
-            await websocket.close(code=4001, reason="Missing token")
-            return
-        try:
-            claims = auth_module.oidc.decode_token(token)
-            roles = auth_module.oidc.extract_roles(claims)
-            if not roles:
-                await websocket.close(code=4001, reason="No roles")
-                return
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-            await websocket.close(code=4001, reason="Invalid token")
-            return
+    # Authenticate via query parameter
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        await _validate_token(token)
+    except HTTPException:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
 
     await websocket.accept()
 
@@ -1305,20 +1465,15 @@ async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
 
 @app.websocket("/api/ws/tasks/{task_id}/logs")
 async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(default=None)):
-    # Authenticate via query parameter (skip when OIDC is not configured)
-    if auth_module.oidc is not None:
-        if not token:
-            await websocket.close(code=4001, reason="Missing token")
-            return
-        try:
-            claims = auth_module.oidc.decode_token(token)
-            roles = auth_module.oidc.extract_roles(claims)
-            if not roles:
-                await websocket.close(code=4001, reason="No roles")
-                return
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-            await websocket.close(code=4001, reason="Invalid token")
-            return
+    # Authenticate via query parameter
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        await _validate_token(token)
+    except HTTPException:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
 
     # Check task exists and status
     try:

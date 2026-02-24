@@ -131,7 +131,7 @@ async def test_auto_route_immediate_to_pending(client: AsyncClient):
         return_value=_mock_json_response("Fix Bug", "immediate")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the critical authentication bug in production"},
@@ -148,7 +148,7 @@ async def test_auto_route_scheduled_to_scheduled(client: AsyncClient):
         return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-15T17:00:00Z")
     )
 
-    with patch.object(llm_module, "_client", mock_client):
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
         resp = await client.post(
             "/api/tasks",
             json={"input": "Send the quarterly financial report to the board next Friday"},

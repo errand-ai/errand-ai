@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
@@ -59,6 +59,15 @@ function makeRouter() {
 describe('App navigation', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // Mock auth status endpoint so boot sequence completes
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ mode: 'local' }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('renders nav links for Board and Archived', async () => {
@@ -73,6 +82,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const nav = wrapper.find('[data-testid="main-nav"]')
     expect(nav.exists()).toBe(true)
 
@@ -94,6 +104,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const nav = wrapper.find('[data-testid="main-nav"]')
     const links = nav.findAll('a')
     expect(links.length).toBe(3)
@@ -112,6 +123,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const nav = wrapper.find('[data-testid="main-nav"]')
     const links = nav.findAll('a')
     const settingsLink = links.find(l => l.text() === 'Settings')
@@ -130,6 +142,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const nav = wrapper.find('[data-testid="main-nav"]')
     const boardLink = nav.findAll('a')[0]
     expect(boardLink.classes()).toContain('bg-gray-100')
@@ -148,6 +161,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const nav = wrapper.find('[data-testid="main-nav"]')
     const settingsLink = nav.findAll('a').find(l => l.text() === 'Settings')
     expect(settingsLink).toBeTruthy()
@@ -167,6 +181,7 @@ describe('App navigation', () => {
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
     const trigger = wrapper.find('.dropdown-trigger button')
     await trigger.trigger('click')
 

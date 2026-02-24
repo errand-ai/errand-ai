@@ -601,23 +601,51 @@ class KubernetesRuntime(ContainerRuntime):
 
 
 def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
-    """Clean up orphaned task-runner Jobs and ConfigMaps on worker startup."""
-    from kubernetes.client.rest import ApiException
+    """Clean up orphaned task-runner Jobs and ConfigMaps on worker startup.
 
+    Cross-references each orphaned Job with the task database:
+    - Running tasks: move to scheduled (with backoff) or review (if retries exhausted)
+    - Non-running or missing tasks: delete silently
+    """
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from kubernetes.client.rest import ApiException
+    from sqlalchemy import select, update as sa_update
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from database import async_session
+    from events import publish_event
+    from models import Task
+
+    MAX_RETRIES = 5
     label_selector = "app.kubernetes.io/managed-by=content-manager-worker"
+
     try:
         jobs = runtime.batch_v1.list_namespaced_job(
             runtime.namespace, label_selector=label_selector
         )
         for job in jobs.items:
-            name = job.metadata.name
-            logger.info("Cleaning up orphaned Job %s", name)
+            job_name = job.metadata.name
+            task_id = job.metadata.labels.get("content-manager/task-id")
+
+            if task_id:
+                # Cross-reference with task database
+                try:
+                    _recover_orphaned_task(task_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to recover task %s for orphaned Job %s",
+                        task_id, job_name, exc_info=True,
+                    )
+
+            logger.info("Cleaning up orphaned Job %s (task=%s)", job_name, task_id or "unknown")
             try:
                 runtime.batch_v1.delete_namespaced_job(
-                    name, runtime.namespace, propagation_policy="Foreground"
+                    job_name, runtime.namespace, propagation_policy="Foreground"
                 )
             except ApiException:
-                logger.debug("Failed to delete orphaned Job %s", name, exc_info=True)
+                logger.debug("Failed to delete orphaned Job %s", job_name, exc_info=True)
 
         # Clean up orphaned ConfigMaps
         configmaps = runtime.core_v1.list_namespaced_config_map(
@@ -644,6 +672,87 @@ def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
                 logger.debug("Failed to delete orphaned Secret %s", name, exc_info=True)
     except ApiException:
         logger.warning("Failed to list orphaned resources", exc_info=True)
+
+
+def _recover_orphaned_task(task_id: str) -> None:
+    """Cross-reference an orphaned K8s Job with the task DB and recover if running.
+
+    Called from the sync cleanup_orphaned_jobs context, uses a new event loop
+    to perform the async DB operation.
+    """
+    import asyncio
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select, func
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import selectinload
+
+    from database import async_session
+    from events import publish_event
+    from models import Task
+
+    MAX_RETRIES = 5
+
+    async def _do_recover():
+        async with async_session() as session:
+            result = await session.execute(
+                select(Task).options(selectinload(Task.tags)).where(Task.id == _uuid.UUID(task_id))
+            )
+            task = result.scalar_one_or_none()
+
+            if task is None:
+                logger.warning("Orphaned Job references task %s which does not exist in DB", task_id)
+                return
+
+            if task.status != "running":
+                logger.debug("Orphaned Job task %s has status=%s, no recovery needed", task_id, task.status)
+                return
+
+            now = datetime.now(timezone.utc)
+
+            if task.retry_count >= MAX_RETRIES:
+                task.status = "review"
+                # Get next position
+                from sqlalchemy import func as sa_func
+                pos_result = await session.execute(
+                    select(sa_func.max(Task.position)).where(Task.status == "review")
+                )
+                task.position = (pos_result.scalar() or 0) + 1
+                task.output = (
+                    f"Task recovered during worker startup cleanup. "
+                    f"Retry count ({task.retry_count}) has reached the maximum ({MAX_RETRIES}). "
+                    "Moved to review for manual inspection."
+                )
+                task.updated_by = "system"
+                task.updated_at = now
+                task.heartbeat_at = None
+                logger.info("Orphaned task %s moved to review (retries exhausted)", task_id)
+            else:
+                backoff_minutes = 2 ** task.retry_count
+                task.status = "scheduled"
+                pos_result = await session.execute(
+                    select(func.max(Task.position)).where(Task.status == "scheduled")
+                )
+                task.position = (pos_result.scalar() or 0) + 1
+                task.retry_count += 1
+                task.execute_at = now + timedelta(minutes=backoff_minutes)
+                task.updated_by = "system"
+                task.updated_at = now
+                task.heartbeat_at = None
+                logger.info(
+                    "Orphaned task %s recovered to scheduled (retry %d, backoff %dm)",
+                    task_id, task.retry_count, backoff_minutes,
+                )
+
+            await session.commit()
+            await session.refresh(task, ["tags"])
+
+            # Publish WebSocket event
+            from scheduler import _task_to_dict
+            await publish_event("task_updated", _task_to_dict(task))
+
+    asyncio.run(_do_recover())
 
 
 # ---------------------------------------------------------------------------

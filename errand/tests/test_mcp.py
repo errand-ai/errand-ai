@@ -37,6 +37,7 @@ _TABLES_SQL = [
         runner_logs TEXT,
         questions TEXT,
         retry_count INTEGER DEFAULT 0 NOT NULL,
+        heartbeat_at DATETIME,
         created_by TEXT,
         updated_by TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -217,7 +218,7 @@ async def test_mcp_api_key_in_settings_response(admin_mcp_client: AsyncClient, d
 
     resp = await admin_mcp_client.get("/api/settings")
     assert resp.status_code == 200
-    assert resp.json()["mcp_api_key"] == "test-key-123"
+    assert resp.json()["mcp_api_key"]["value"] == "test-key-123"
 
 
 # --- 5.3: MCP endpoint auth (via TokenVerifier) ---

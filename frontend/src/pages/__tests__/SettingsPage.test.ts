@@ -9,6 +9,7 @@ import AgentConfigurationPage from '../settings/AgentConfigurationPage.vue'
 import TaskManagementPage from '../settings/TaskManagementPage.vue'
 import SecurityPage from '../settings/SecurityPage.vue'
 import IntegrationsPage from '../settings/IntegrationsPage.vue'
+import UserManagementPage from '../settings/UserManagementPage.vue'
 
 // Mock vue-sonner
 const { toastMock } = vi.hoisted(() => {
@@ -72,6 +73,7 @@ function makeSettingsRouter() {
           { path: 'tasks', name: 'settings-tasks', component: TaskManagementPage },
           { path: 'security', name: 'settings-security', component: SecurityPage },
           { path: 'integrations', name: 'settings-integrations', component: IntegrationsPage },
+          { path: 'users', name: 'settings-users', component: UserManagementPage },
         ],
       },
     ],
@@ -126,11 +128,12 @@ describe('SettingsPage', () => {
       expect(sidebar.exists()).toBe(true)
 
       const links = sidebar.findAll('a')
-      expect(links).toHaveLength(4)
+      expect(links).toHaveLength(5)
       expect(links[0].text()).toBe('Agent Configuration')
       expect(links[1].text()).toBe('Task Management')
       expect(links[2].text()).toBe('Security')
       expect(links[3].text()).toBe('Integrations')
+      expect(links[4].text()).toBe('User Management')
     })
 
     it('highlights active sidebar link', async () => {

@@ -33,6 +33,7 @@ def _task_to_dict(task: Task) -> dict:
         "repeat_until": task.repeat_until.isoformat() if task.repeat_until else None,
         "output": task.output,
         "retry_count": task.retry_count,
+        "heartbeat_at": task.heartbeat_at.isoformat() if task.heartbeat_at else None,
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
