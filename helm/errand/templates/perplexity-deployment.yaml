@@ -1,4 +1,4 @@
-{{- if .Values.perplexity.existingSecret }}
+{{- if .Values.perplexity.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,7 +24,21 @@ spec:
           imagePullPolicy: {{ .Values.perplexity.image.pullPolicy }}
           ports:
             - containerPort: 8080
-          envFrom:
-            - secretRef:
-                name: {{ .Values.perplexity.existingSecret }}
+          env:
+            - name: BACKEND_URL
+              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}"
+          readinessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
 {{- end }}

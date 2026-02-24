@@ -114,10 +114,12 @@ async def lifespan(app: FastAPI):
     from platforms.twitter import TwitterPlatform
     from platforms.slack import SlackPlatform
     from platforms.github import GitHubPlatform
+    from platforms.perplexity import PerplexityPlatform
     registry = get_registry()
     registry.register(TwitterPlatform())
     registry.register(SlackPlatform())
     registry.register(GitHubPlatform())
+    registry.register(PerplexityPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:
@@ -1040,6 +1042,41 @@ def validate_skill_file_path(path: str) -> str | None:
     if parts[0] not in _ALLOWED_SUBDIRS:
         return f"Path must be in one of: {', '.join(sorted(_ALLOWED_SUBDIRS))}/"
     return None
+
+
+
+@app.get("/api/internal/credentials/{platform_id}")
+async def get_internal_credentials(
+    platform_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Internal endpoint for sidecar pods to retrieve decrypted platform credentials.
+
+    This endpoint is not exposed via ingress and relies on Kubernetes network isolation
+    for security. Only pods in the same namespace can reach this endpoint.
+    An optional shared secret (INTERNAL_API_TOKEN env var) provides defense in depth.
+    """
+    expected_token = os.environ.get("INTERNAL_API_TOKEN")
+    if expected_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header != f"Bearer {expected_token}":
+            raise HTTPException(status_code=401, detail="Invalid or missing internal token")
+
+    from platforms.credentials import load_credentials
+
+    # Check if platform exists in registry
+    registry = get_registry()
+    platform = registry.get(platform_id)
+    if platform is None:
+        raise HTTPException(status_code=404, detail=f"Platform '{platform_id}' not found")
+
+    # Load credentials from database
+    credentials = await load_credentials(platform_id, session)
+    if credentials is None:
+        raise HTTPException(status_code=404, detail="No credentials configured")
+
+    return credentials
 
 
 # --- Skills API ---

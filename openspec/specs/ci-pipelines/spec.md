@@ -51,8 +51,23 @@ The CI workflow SHALL include a `test` job that runs application and frontend te
 - **WHEN** the `test` job executes
 - **THEN** it runs `pytest` for application tests (working directory `errand`) and `npm test` for frontend tests, reporting results for both
 
+### Requirement: Build Perplexity MCP image
+The CI workflow SHALL include a `build-perplexity-mcp` job that builds the Docker image from `perplexity-mcp/Dockerfile` and pushes it to the container registry. The job SHALL depend on the `version` job. The image SHALL be tagged with the version from the `VERSION` file (same as other images). On pull requests, the image SHALL be tagged with the PR-specific tag (e.g., `0.4.0-pr5`). The `helm` job SHALL depend on `build-perplexity-mcp` in addition to the existing build jobs.
+
+#### Scenario: Perplexity MCP image built on main push
+- **WHEN** a commit is pushed to `main` and `VERSION` contains `0.5.0`
+- **THEN** the Perplexity MCP image is built and pushed with tag `0.5.0`
+
+#### Scenario: Perplexity MCP image built on PR
+- **WHEN** PR #5 is created and `VERSION` contains `0.5.0`
+- **THEN** the Perplexity MCP image is built and pushed with tag `0.5.0-pr5`
+
+#### Scenario: Helm job waits for Perplexity MCP build
+- **WHEN** the CI pipeline runs
+- **THEN** the `helm` job depends on `build-perplexity-mcp` completing successfully
+
 ### Requirement: Helm job depends on image builds
-The `helm` job SHALL depend on `build-errand` and `build-task-runner`. The Helm chart SHALL not be packaged until both images have been successfully built and pushed.
+The `helm` job SHALL depend on `build-errand`, `build-task-runner`, and `build-perplexity-mcp`. The Helm chart SHALL not be packaged until all images have been successfully built and pushed.
 
 #### Scenario: All builds succeed
 - **WHEN** `build-errand` and `build-task-runner` both succeed

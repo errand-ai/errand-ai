@@ -883,7 +883,7 @@ def test_process_task_container_omits_log_level_when_unset():
 
 
 def test_perplexity_injected_when_enabled():
-    """When USE_PERPLEXITY=true and PERPLEXITY_URL is set, perplexity-ask is injected into mcp.json."""
+    """When Perplexity credentials exist and PERPLEXITY_URL is set, perplexity-ask is injected into mcp.json."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {"other": {"url": "http://other/mcp"}}},
@@ -904,10 +904,10 @@ def test_perplexity_injected_when_enabled():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "USE_PERPLEXITY": "true",
             "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
         }):
-            process_task_in_container(task, settings)
+            perplexity_credentials = {"api_key": "pplx-test-key"}
+            process_task_in_container(task, settings, github_credentials=None, perplexity_credentials=perplexity_credentials)
     finally:
         worker.container_runtime = original_runtime
 
@@ -981,10 +981,9 @@ def test_perplexity_database_value_takes_precedence():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "USE_PERPLEXITY": "true",
             "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
         }):
-            process_task_in_container(task, settings)
+            process_task_in_container(task, settings, perplexity_credentials={"api_key": "pplx-test"})
     finally:
         worker.container_runtime = original_runtime
 
@@ -995,7 +994,7 @@ def test_perplexity_database_value_takes_precedence():
 
 
 def test_perplexity_system_prompt_appended_when_enabled():
-    """When USE_PERPLEXITY=true, system prompt has the Perplexity instruction block appended."""
+    """When perplexity_credentials are provided, system prompt has the Perplexity instruction block appended."""
     task = _make_mock_task(description="Research task")
     original_prompt = "You are a helpful assistant."
     settings = {
@@ -1017,10 +1016,9 @@ def test_perplexity_system_prompt_appended_when_enabled():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "USE_PERPLEXITY": "true",
             "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
         }):
-            process_task_in_container(task, settings)
+            process_task_in_container(task, settings, perplexity_credentials={"api_key": "pplx-test"})
     finally:
         worker.container_runtime = original_runtime
 
@@ -1129,7 +1127,7 @@ def test_skills_directive_omitted_when_no_skills():
 
 
 def test_perplexity_and_skills_combined_system_prompt():
-    """When both Perplexity and skills are enabled, system prompt has Perplexity block before skills manifest."""
+    """When both perplexity_credentials and skills are provided, system prompt has Perplexity block before skills manifest."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -1154,10 +1152,9 @@ def test_perplexity_and_skills_combined_system_prompt():
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-            "USE_PERPLEXITY": "true",
             "PERPLEXITY_URL": "http://cm-perplexity-mcp:8000/sse",
         }):
-            process_task_in_container(task, settings)
+            process_task_in_container(task, settings, perplexity_credentials={"api_key": "pplx-test"})
     finally:
         worker.container_runtime = original_runtime
 
