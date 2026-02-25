@@ -6,6 +6,7 @@ import { fetchTranscriptionStatus, transcribeAudio } from '../composables/useApi
 const store = useTaskStore()
 const input = ref('')
 const error = ref('')
+const submitting = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
 
 // Voice input state
@@ -103,17 +104,21 @@ async function sendForTranscription(blob: Blob) {
 }
 
 async function submit() {
+  if (submitting.value) return
   const trimmed = input.value.trim()
   if (!trimmed) {
     error.value = 'Task cannot be empty'
     return
   }
   error.value = ''
+  submitting.value = true
   try {
     await store.addTask(trimmed)
     input.value = ''
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create task'
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -131,19 +136,20 @@ function formatTime(seconds: number): string {
       v-model="input"
       type="text"
       placeholder="New task..."
-      class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+      :disabled="submitting"
+      class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
     />
     <button
       v-if="showMicButton"
       type="button"
-      :disabled="isTranscribing"
+      :disabled="isTranscribing || submitting"
       @click="toggleRecording"
       :class="[
         'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
         isRecording
           ? 'bg-red-600 text-white animate-pulse'
           : 'bg-gray-200 text-gray-700 hover:bg-gray-300',
-        isTranscribing ? 'opacity-50 cursor-not-allowed' : ''
+        (isTranscribing || submitting) ? 'opacity-50 cursor-not-allowed' : ''
       ]"
       :title="isRecording ? 'Stop recording' : 'Start voice input'"
       data-testid="mic-button"
@@ -166,7 +172,8 @@ function formatTime(seconds: number): string {
     </button>
     <button
       type="submit"
-      class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+      :disabled="submitting"
+      class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
     >
       Add Task
     </button>

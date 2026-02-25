@@ -65,6 +65,84 @@ describe('TaskForm', () => {
     expect((wrapper.find('input').element as HTMLInputElement).value).toBe('')
   })
 
+  // --- Submission disabled state ---
+
+  it('disables input and submit button during submission, re-enables after success', async () => {
+    const wrapper = mount(TaskForm)
+    const store = useTaskStore()
+
+    let resolveAddTask!: () => void
+    store.addTask = vi.fn().mockImplementation(() => new Promise<void>(r => { resolveAddTask = r }))
+
+    await wrapper.find('input').setValue('New task')
+    const submitPromise = wrapper.find('form').trigger('submit')
+    await submitPromise
+    // After submit triggered but before addTask resolves
+    await flushPromises()
+
+    const inputEl = wrapper.find('input').element as HTMLInputElement
+    const submitBtn = wrapper.find('button[type="submit"]')
+    expect(inputEl.disabled).toBe(true)
+    expect(submitBtn.attributes('disabled')).toBeDefined()
+
+    // Resolve the API call
+    resolveAddTask()
+    await flushPromises()
+
+    expect(inputEl.disabled).toBe(false)
+    expect(submitBtn.attributes('disabled')).toBeUndefined()
+    expect(inputEl.value).toBe('')
+  })
+
+  it('re-enables inputs after failed submission and preserves input text', async () => {
+    const wrapper = mount(TaskForm)
+    const store = useTaskStore()
+
+    let rejectAddTask!: (e: Error) => void
+    store.addTask = vi.fn().mockImplementation(() => new Promise<void>((_, rej) => { rejectAddTask = rej }))
+
+    await wrapper.find('input').setValue('New task')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    const inputEl = wrapper.find('input').element as HTMLInputElement
+    const submitBtn = wrapper.find('button[type="submit"]')
+    expect(inputEl.disabled).toBe(true)
+    expect(submitBtn.attributes('disabled')).toBeDefined()
+
+    // Reject the API call
+    rejectAddTask(new Error('Server error'))
+    await flushPromises()
+
+    expect(inputEl.disabled).toBe(false)
+    expect(submitBtn.attributes('disabled')).toBeUndefined()
+    expect(inputEl.value).toBe('New task')
+    expect(wrapper.text()).toContain('Server error')
+  })
+
+  it('prevents double submission when Enter is pressed twice rapidly', async () => {
+    const wrapper = mount(TaskForm)
+    const store = useTaskStore()
+
+    let resolveAddTask!: () => void
+    store.addTask = vi.fn().mockImplementation(() => new Promise<void>(r => { resolveAddTask = r }))
+
+    await wrapper.find('input').setValue('New task')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    // Second submit while first is still in progress — input is disabled so
+    // the form handler runs but the empty/trimmed guard or disabled state blocks it
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    // Only one call should have been made
+    expect(store.addTask).toHaveBeenCalledTimes(1)
+
+    resolveAddTask()
+    await flushPromises()
+  })
+
   // --- 9.1 Microphone button visibility ---
 
   it('hides microphone button when transcription is disabled', async () => {
