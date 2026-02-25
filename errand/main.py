@@ -837,6 +837,115 @@ async def regenerate_mcp_key(
     return {"mcp_api_key": new_key}
 
 
+# --- LiteLLM MCP discovery ---
+
+LITELLM_SENSITIVE_FIELDS = {
+    "env", "credentials", "command", "args", "static_headers",
+    "authorization_url", "token_url", "registration_url", "extra_headers",
+}
+
+
+async def _resolve_openai_settings(session: AsyncSession) -> tuple[str, str]:
+    """Resolve openai_base_url and openai_api_key: env var → DB → default."""
+    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if base_url and api_key:
+        return base_url, api_key
+
+    for key in ["openai_base_url", "openai_api_key"]:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        s = result.scalar_one_or_none()
+        if s and s.value:
+            if key == "openai_base_url" and not base_url:
+                base_url = str(s.value)
+            elif key == "openai_api_key" and not api_key:
+                api_key = str(s.value)
+    return base_url, api_key
+
+
+@app.get("/api/litellm/mcp-servers")
+async def get_litellm_mcp_servers(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    unavailable = {"available": False, "servers": {}, "enabled": []}
+
+    base_url, api_key = await _resolve_openai_settings(session)
+    if not base_url:
+        return unavailable
+
+    # Probe LiteLLM and fetch servers + tools in parallel
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            server_resp, tools_resp = await asyncio.gather(
+                client.get(f"{base_url.rstrip('/')}/v1/mcp/server", headers=headers),
+                client.get(f"{base_url.rstrip('/')}/v1/mcp/tools", headers=headers),
+                return_exceptions=True,
+            )
+    except Exception:
+        return unavailable
+
+    # Check server response is valid
+    if isinstance(server_resp, BaseException) or server_resp.status_code != 200:
+        return unavailable
+    try:
+        server_list = server_resp.json()
+        if not isinstance(server_list, list):
+            return unavailable
+    except Exception:
+        return unavailable
+
+    # Parse tools response (best-effort)
+    tools_by_alias: dict[str, list[str]] = {}
+    if not isinstance(tools_resp, BaseException) and tools_resp.status_code == 200:
+        try:
+            tools_list = tools_resp.json()
+            if isinstance(tools_list, list):
+                # Build set of known aliases for matching
+                known_aliases = {
+                    srv.get("alias", "") for srv in server_list if isinstance(srv, dict)
+                }
+                for tool in tools_list:
+                    if not isinstance(tool, dict):
+                        continue
+                    tool_name = tool.get("name", "")
+                    # Match prefix before first '-' against known aliases
+                    dash_idx = tool_name.find("-")
+                    if dash_idx > 0:
+                        prefix = tool_name[:dash_idx]
+                        if prefix in known_aliases:
+                            short_name = tool_name[dash_idx + 1:]
+                            tools_by_alias.setdefault(prefix, []).append(short_name)
+                        else:
+                            logger.warning("LiteLLM tool %s did not match any known server alias", tool_name)
+        except Exception:
+            pass  # Tools are best-effort
+
+    # Build response: strip sensitive fields, add tools
+    servers = {}
+    for srv in server_list:
+        if not isinstance(srv, dict):
+            continue
+        alias = srv.get("alias", "")
+        if not alias:
+            continue
+        clean = {
+            k: v for k, v in srv.items() if k not in LITELLM_SENSITIVE_FIELDS
+        }
+        clean["tools"] = tools_by_alias.get(alias, [])
+        servers[alias] = clean
+
+    # Read enabled servers from DB
+    result = await session.execute(
+        select(Setting).where(Setting.key == "litellm_mcp_servers")
+    )
+    setting = result.scalar_one_or_none()
+    enabled = setting.value if setting and isinstance(setting.value, list) else []
+
+    return {"available": True, "servers": servers, "enabled": enabled}
+
+
 # --- Platform credential endpoints ---
 
 
