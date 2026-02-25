@@ -332,53 +332,6 @@ describe('TaskEditModal', () => {
     expect(rightCol.classList.contains('gap-4')).toBe(true)
   })
 
-  // --- Task Runner Logs section ---
-
-  it('hides runner logs section when runner_logs is null', () => {
-    const wrapper = mount(TaskEditModal, { props: { task } })
-    expect(wrapper.text()).not.toContain('Task Runner Logs')
-  })
-
-  it('shows runner logs section when runner_logs is present', () => {
-    const taskWithLogs: TaskData = { ...task, runner_logs: '2026-02-10 INFO Starting agent execution' }
-    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-    expect(wrapper.text()).toContain('Task Runner Logs')
-  })
-
-  it('runner logs are in a full-width col-span-2 row (not inside right column)', () => {
-    const taskWithLogs: TaskData = { ...task, runner_logs: 'some logs' }
-    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-    const logsLabel = wrapper.findAll('label').find(l => l.text() === 'Task Runner Logs')!
-    const logsContainer = logsLabel.element.parentElement!
-    expect(logsContainer.classList.contains('md:col-span-2')).toBe(true)
-  })
-
-  it('renders runner_logs as structured events via TaskEventLog', () => {
-    const logs = [
-      JSON.stringify({ type: 'thinking', data: { text: 'Analyzing...' } }),
-      JSON.stringify({ type: 'tool_call', data: { tool: 'execute_command', args: { command: 'ls' } } }),
-    ].join('\n')
-    const taskWithLogs: TaskData = { ...task, runner_logs: logs }
-    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-
-    expect(wrapper.find('[data-testid="event-thinking"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="event-tool-call"]').exists()).toBe(true)
-    // Should have the Task Runner Logs section
-    const logsSection = wrapper.findAll('.md\\:col-span-2').find(el => el.text().includes('Task Runner Logs'))
-    expect(logsSection).toBeDefined()
-  })
-
-  it('renders non-JSON runner_logs lines as raw events', () => {
-    const logs = 'plain text line\nnot json either'
-    const taskWithLogs: TaskData = { ...task, runner_logs: logs }
-    const wrapper = mount(TaskEditModal, { props: { task: taskWithLogs } })
-
-    const rawEvents = wrapper.findAll('[data-testid="event-raw"]')
-    expect(rawEvents.length).toBe(2)
-    expect(rawEvents[0].text()).toContain('plain text line')
-    expect(rawEvents[1].text()).toContain('not json either')
-  })
-
   // --- Backdrop dismiss with dirty guard ---
 
   it('emits cancel on backdrop click when form is clean', async () => {

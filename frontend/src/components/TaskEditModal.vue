@@ -2,9 +2,6 @@
 import { ref, computed, onMounted } from 'vue'
 import type { TaskData, TaskStatus } from '../composables/useApi'
 import { fetchTags } from '../composables/useApi'
-import TaskEventLog from './TaskEventLog.vue'
-import type { TaskEvent } from './TaskEventLog.vue'
-
 type Category = 'immediate' | 'scheduled' | 'repeating'
 
 const props = defineProps<{
@@ -92,59 +89,6 @@ const isDirty = computed(() => {
     || repeatInterval.value !== (props.task.repeat_interval || '')
     || repeatUntilLocal.value !== toLocalDatetime(props.task.repeat_until)
     || JSON.stringify(tags.value) !== JSON.stringify(props.task.tags || [])
-})
-
-function lineCount(text: string): number {
-  return text.split('\n').length
-}
-
-function parseRunnerLogs(text: string): TaskEvent[] {
-  const events: TaskEvent[] = []
-  const lines = text.split('\n')
-
-  for (const line of lines) {
-    if (!line.trim()) continue
-
-    try {
-      const parsed = JSON.parse(line)
-      const eventType = parsed.type as string
-      const eventData = (parsed.data ?? {}) as Record<string, unknown>
-
-      // Append tool_result to preceding tool_call card
-      if (eventType === 'tool_result') {
-        const lastEvent = events[events.length - 1]
-        if (lastEvent && lastEvent.type === 'tool_call' && lastEvent.data.tool === eventData.tool) {
-          const output = eventData.output as string
-          lastEvent.result = {
-            output,
-            length: eventData.length as number,
-            collapsed: lineCount(output) > 3,
-          }
-          continue
-        }
-      }
-
-      // Determine default collapsed state
-      let collapsed = false
-      if (eventType === 'tool_call') {
-        collapsed = true
-      } else if (eventType === 'thinking' || eventType === 'reasoning') {
-        const text = eventData.text as string
-        collapsed = lineCount(text) > 3
-      }
-
-      events.push({ type: eventType, data: eventData, collapsed })
-    } catch {
-      events.push({ type: 'raw', data: { line }, collapsed: false })
-    }
-  }
-
-  return events
-}
-
-const parsedRunnerEvents = computed(() => {
-  if (!props.task.runner_logs) return []
-  return parseRunnerLogs(props.task.runner_logs)
 })
 
 function onCancel() {
@@ -410,14 +354,6 @@ function onTagBlur() {
             />
           </div>
 
-        </div>
-
-        <!-- Runner logs: full-width bottom row -->
-        <div v-if="task.runner_logs" class="md:col-span-2">
-          <label class="mb-1 block text-sm font-medium text-gray-700">Task Runner Logs</label>
-          <div class="max-h-96 overflow-auto rounded-md border border-gray-200 bg-gray-900 p-3">
-            <TaskEventLog :events="parsedRunnerEvents" />
-          </div>
         </div>
 
         <!-- Error + action buttons: span both columns -->

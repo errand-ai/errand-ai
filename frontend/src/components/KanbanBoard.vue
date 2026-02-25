@@ -309,7 +309,8 @@ onUnmounted(() => store.stop())
 
   <TaskLogModal
     v-if="logTask"
-    :task-id="logTask.id"
+    :task-id="logTask.status === 'running' ? logTask.id : undefined"
+    :runner-logs="logTask.status !== 'running' ? (logTask.runner_logs ?? undefined) : undefined"
     :title="logTask.title"
     @close="logTask = null"
   />

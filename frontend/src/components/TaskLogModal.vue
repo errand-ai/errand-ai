@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, nextTick, watch } from 'vue'
+import { onMounted, onUnmounted, ref, nextTick, watch, computed } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import TaskEventLog from './TaskEventLog.vue'
 import type { TaskEvent } from './TaskEventLog.vue'
 
 const props = defineProps<{
-  taskId: string
+  taskId?: string
   title: string
+  runnerLogs?: string
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +19,11 @@ const events = ref<TaskEvent[]>([])
 const finished = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
 const logContainerRef = ref<HTMLElement | null>(null)
+
+const isStaticMode = computed(() => props.runnerLogs !== undefined && props.runnerLogs !== null)
+const headerText = computed(() =>
+  isStaticMode.value ? `Task Logs: ${props.title}` : `Live Logs: ${props.title}`
+)
 
 let ws: WebSocket | null = null
 let userScrolledUp = false
@@ -42,6 +48,50 @@ watch(events, () => {
 
 function lineCount(text: string): number {
   return text.split('\n').length
+}
+
+function parseRunnerLogs(text: string): TaskEvent[] {
+  const parsed: TaskEvent[] = []
+  const lines = text.split('\n')
+
+  for (const line of lines) {
+    if (!line.trim()) continue
+
+    try {
+      const obj = JSON.parse(line)
+      const eventType = obj.type as string
+      const eventData = (obj.data ?? {}) as Record<string, unknown>
+
+      // Append tool_result to preceding tool_call card
+      if (eventType === 'tool_result') {
+        const lastEvent = parsed[parsed.length - 1]
+        if (lastEvent && lastEvent.type === 'tool_call' && lastEvent.data.tool === eventData.tool) {
+          const output = eventData.output as string
+          lastEvent.result = {
+            output,
+            length: eventData.length as number,
+            collapsed: lineCount(output) > 3,
+          }
+          continue
+        }
+      }
+
+      // Determine default collapsed state
+      let collapsed = false
+      if (eventType === 'tool_call') {
+        collapsed = true
+      } else if (eventType === 'thinking' || eventType === 'reasoning') {
+        const text = typeof eventData.text === 'string' ? eventData.text : ''
+        collapsed = lineCount(text) > 3
+      }
+
+      parsed.push({ type: eventType, data: eventData, collapsed })
+    } catch {
+      parsed.push({ type: 'raw', data: { line }, collapsed: false })
+    }
+  }
+
+  return parsed
 }
 
 function connect() {
@@ -75,7 +125,7 @@ function connect() {
         if (eventType === 'tool_call') {
           collapsed = true
         } else if (eventType === 'thinking' || eventType === 'reasoning') {
-          const text = eventData.text as string
+          const text = typeof eventData.text === 'string' ? eventData.text : ''
           collapsed = lineCount(text) > 3
         }
 
@@ -122,7 +172,11 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   dialogRef.value?.showModal()
-  connect()
+  if (isStaticMode.value) {
+    events.value = parseRunnerLogs(props.runnerLogs!)
+  } else {
+    connect()
+  }
   document.addEventListener('keydown', onKeydown)
 })
 
@@ -141,7 +195,7 @@ onUnmounted(() => {
   >
     <div class="flex flex-col" style="height: 70vh;">
       <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-        <h3 class="text-sm font-semibold text-gray-800 truncate">Live Logs: {{ title }}</h3>
+        <h3 class="text-sm font-semibold text-gray-800 truncate">{{ headerText }}</h3>
         <button
           class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
           title="Close"
@@ -158,14 +212,14 @@ onUnmounted(() => {
         data-testid="log-container"
         @scroll="onScroll"
       >
-        <p v-if="events.length === 0 && !finished" class="text-sm text-gray-500 italic">
+        <p v-if="!isStaticMode && events.length === 0 && !finished" class="text-sm text-gray-500 italic">
           Waiting for logs...
         </p>
 
         <TaskEventLog :events="events" />
 
         <div
-          v-if="finished"
+          v-if="!isStaticMode && finished"
           class="mt-3 inline-flex items-center gap-1.5 rounded bg-gray-700 px-2 py-1 text-xs text-gray-300"
           data-testid="task-finished-indicator"
         >

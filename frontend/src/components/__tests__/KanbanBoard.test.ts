@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
@@ -52,9 +52,26 @@ function mountWithTasks(tasks: TaskData[]) {
   return { wrapper, store }
 }
 
+// Stub WebSocket so TaskLogModal.connect() doesn't hit real network in jsdom
+class MockWebSocket {
+  readyState = 1
+  onmessage: ((e: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+  constructor(_url: string) {}
+  close() { this.readyState = 3 }
+}
+
 describe('KanbanBoard', () => {
+  let originalWebSocket: typeof WebSocket
+
   beforeEach(() => {
     setActivePinia(createPinia())
+    originalWebSocket = globalThis.WebSocket
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket
   })
 
   it('renders 5 columns with correct labels when tasks exist', () => {
@@ -203,6 +220,40 @@ describe('KanbanBoard', () => {
     await nextTick()
 
     expect(store.removeTask).not.toHaveBeenCalled()
+  })
+
+  // --- TaskLogModal routing ---
+
+  it('opens TaskLogModal with taskId for running tasks', async () => {
+    const { wrapper } = mountWithTasks(makeTasks([
+      { id: '5', title: 'Running task', status: 'running' },
+    ]))
+
+    const logBtn = wrapper.find('button[title="View logs"]')
+    expect(logBtn.exists()).toBe(true)
+    await logBtn.trigger('click')
+    await nextTick()
+
+    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
+    expect(logModal.exists()).toBe(true)
+    expect(logModal.props('taskId')).toBe('5')
+    expect(logModal.props('runnerLogs')).toBeUndefined()
+  })
+
+  it('opens TaskLogModal with runnerLogs for completed tasks', async () => {
+    const { wrapper } = mountWithTasks(makeTasks([
+      { id: '6', title: 'Done task', status: 'completed', runner_logs: '{"type":"agent_start","data":{}}' },
+    ]))
+
+    const logBtn = wrapper.find('button[title="View logs"]')
+    expect(logBtn.exists()).toBe(true)
+    await logBtn.trigger('click')
+    await nextTick()
+
+    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
+    expect(logModal.exists()).toBe(true)
+    expect(logModal.props('taskId')).toBeUndefined()
+    expect(logModal.props('runnerLogs')).toBe('{"type":"agent_start","data":{}}')
   })
 
   // --- Intra-column reorder ---
