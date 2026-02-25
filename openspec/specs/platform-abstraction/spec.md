@@ -26,10 +26,6 @@ The system SHALL define a `PlatformCapability` string enum with values: `POST`, 
 - **WHEN** a `TwitterPlatform` is instantiated
 - **THEN** its `info().capabilities` includes `PlatformCapability.POST` and `PlatformCapability.MEDIA`
 
-#### Scenario: Tool provider declares capability
-- **WHEN** a `PerplexityPlatform` is instantiated
-- **THEN** its `info().capabilities` includes `PlatformCapability.TOOL_PROVIDER`
-
 ### Requirement: PlatformInfo dataclass
 The system SHALL define a `PlatformInfo` dataclass with fields: `id` (str), `label` (str), `capabilities` (set of PlatformCapability), and `credential_schema` (dict describing required credential fields with name, type, label, and optional help_text for each field).
 
