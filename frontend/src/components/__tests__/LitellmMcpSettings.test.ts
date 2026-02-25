@@ -64,7 +64,7 @@ describe('LitellmMcpSettings', () => {
     expect(wrapper.find('[data-testid="litellm-server-argocd"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="litellm-server-perplexity"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('3 tools')
-    expect(wrapper.text()).toContain('1 tools')
+    expect(wrapper.text()).toContain('1 tool')
   })
 
   it('is hidden when unavailable', async () => {

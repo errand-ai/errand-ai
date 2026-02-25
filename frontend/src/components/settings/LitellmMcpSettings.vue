@@ -137,7 +137,7 @@ defineExpose({ isDirty })
               <span class="font-medium text-gray-800">{{ alias }}</span>
               <span v-if="server.description" class="ml-2 text-sm text-gray-500">{{ server.description }}</span>
             </div>
-            <span class="text-xs text-gray-400">{{ server.tools?.length || 0 }} tools</span>
+            <span class="text-xs text-gray-400">{{ server.tools?.length || 0 }} tool{{ (server.tools?.length || 0) === 1 ? '' : 's' }}</span>
           </button>
         </div>
 

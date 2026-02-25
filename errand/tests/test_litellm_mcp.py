@@ -1,6 +1,5 @@
 """Tests for GET /api/litellm/mcp-servers discovery endpoint."""
 
-import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
