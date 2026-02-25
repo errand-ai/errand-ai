@@ -7,7 +7,7 @@ The task edit modal SHALL be implemented as a `<dialog>` element with a maximum 
 The modal SHALL use a two-column CSS Grid layout (`grid grid-cols-1 md:grid-cols-[1fr_2fr] gap-6`) at viewports 768px and above, producing an approximate 35:65 column ratio. Below 768px, the grid SHALL collapse to a single column.
 
 **Layout assignment:**
-- **Full-width (spanning both columns):** Title input at the top; runner logs panel (conditional); error message and action buttons (Delete, Cancel, Save) at the bottom
+- **Full-width (spanning both columns):** Title input at the top; error message and action buttons (Delete, Cancel, Save) at the bottom
 - **Left column:** Status selector, Category selector, Execute at / Completed at, Repeat interval (conditional), Repeat until (conditional), Tags
 - **Right column:** Description textarea (stretches to fill the full height of the right column, minimum 8 rows)
 
@@ -15,9 +15,9 @@ The right column SHALL use a flex column layout (`flex flex-col`) so the descrip
 
 For tasks in `review` or `completed` status, the modal SHALL display the `updated_at` value with the label "Completed at" as a read-only formatted datetime, instead of the editable `execute_at` datetime picker. For all other statuses, the modal SHALL display the `execute_at` field as before.
 
-When `task.runner_logs` is present, the modal SHALL display the logs using the shared `TaskEventLog` component spanning both columns as a full-width row, positioned below the two content columns and above the action buttons row. The component SHALL parse `runner_logs` (newline-delimited JSON, one event per line) into structured events and render them with the same rich formatting as the live task log viewer. Each line SHALL be parsed as JSON; lines that are not valid JSON SHALL be rendered as `raw` events. The logs section SHALL have a "Task Runner Logs" heading label and a `max-h-96` height constraint with `overflow-auto` for scrolling.
+The modal SHALL NOT display task runner logs. Runner logs are viewed via the `TaskLogModal` component, accessed from the task card's "View Logs" button.
 
-When the edit modal opens for a task with `status = "running"` or `status = "completed"`, all form fields (title, description, status, tags, category, execute_at, repeat_interval, repeat_until) SHALL be rendered as read-only (disabled inputs or plain text). The "Save" and "Delete" action buttons SHALL be hidden. Only the "Close" / "Cancel" button SHALL be visible. The runner logs section (if present) SHALL remain viewable.
+When the edit modal opens for a task with `status = "running"` or `status = "completed"`, all form fields (title, description, status, tags, category, execute_at, repeat_interval, repeat_until) SHALL be rendered as read-only (disabled inputs or plain text). The "Save" and "Delete" action buttons SHALL be hidden. Only the "Close" / "Cancel" button SHALL be visible.
 
 #### Scenario: Modal shows current task data
 
@@ -44,25 +44,10 @@ When the edit modal opens for a task with `status = "running"` or `status = "com
 - **WHEN** the edit modal opens on a viewport 768px or wider
 - **THEN** the description textarea stretches to fill the full height of the right column, with a minimum height of 8 rows
 
-#### Scenario: Runner logs displayed with rich rendering
+#### Scenario: Runner logs not displayed in edit modal
 
 - **WHEN** the edit modal opens for a task with runner_logs containing newline-delimited JSON events
-- **THEN** the logs are displayed using the TaskEventLog component with rich event formatting (collapsible tool calls, styled thinking/reasoning blocks, etc.) spanning both columns below the content and above action buttons, with a "Task Runner Logs" heading
-
-#### Scenario: Runner logs fallback for non-JSON lines
-
-- **WHEN** the edit modal opens for a task with runner_logs containing lines that are not valid JSON
-- **THEN** those lines are rendered as `raw` events (plain monospace text)
-
-#### Scenario: Runner logs hidden when absent
-
-- **WHEN** the edit modal opens for a task with runner_logs null
-- **THEN** no runner logs section is rendered
-
-#### Scenario: Runner logs scrollable when long
-
-- **WHEN** the edit modal opens for a task with runner_logs content exceeding the `max-h-96` height
-- **THEN** the runner logs panel shows a scrollbar and caps at `max-h-96`
+- **THEN** no runner logs section is rendered in the edit modal
 
 #### Scenario: Review task shows completion time
 
@@ -89,11 +74,6 @@ When the edit modal opens for a task with `status = "running"` or `status = "com
 - **WHEN** an editor opens the edit modal for a task with status "pending"
 - **THEN** all form fields are editable and the Save and Delete buttons are visible
 
-#### Scenario: Runner logs visible in read-only mode
-
-- **WHEN** the edit modal opens in read-only mode for a completed task with runner_logs
-- **THEN** the "Task Runner Logs" section is visible with rich event rendering
-
 #### Scenario: Pending task shows execute_at picker
 
 - **WHEN** the edit modal opens for a task with status "pending"
@@ -102,7 +82,7 @@ When the edit modal opens for a task with `status = "running"` or `status = "com
 #### Scenario: Status selector shows all valid statuses
 
 - **WHEN** the edit modal is open
-- **THEN** the status field SHALL present six statuses as selectable options: New, Scheduled, Pending, Running, Review, Completed
+- **THEN** the status field SHALL present five statuses as selectable options: Scheduled, Pending, Running, Review, Completed
 
 #### Scenario: Category selector shows all valid categories
 
@@ -173,56 +153,3 @@ When the edit modal opens for a task with `status = "running"` or `status = "com
 
 - **WHEN** the user cancels the deletion
 - **THEN** the modal remains open and no API call is made
-
-### Requirement: Edit modal read-only for viewer users
-
-When a user with the `viewer` role opens the edit modal, all form fields SHALL be rendered as read-only regardless of the task's status. The "Save" and "Delete" action buttons SHALL be hidden. Only the "Close" / "Cancel" button SHALL be visible. This allows viewers to inspect task details without the ability to modify them.
-
-#### Scenario: Viewer opens edit modal for any task
-
-- **WHEN** a viewer opens the edit modal for a task with status "pending"
-- **THEN** all form fields are disabled/read-only and the Save and Delete buttons are hidden
-
-#### Scenario: Viewer opens edit modal for completed task
-
-- **WHEN** a viewer opens the edit modal for a task with status "completed"
-- **THEN** all form fields are disabled/read-only, runner logs are viewable with rich rendering, and action buttons are hidden
-
-#### Scenario: Editor opens edit modal for non-running non-completed task
-
-- **WHEN** an editor opens the edit modal for a task with status "review"
-- **THEN** all form fields are editable and action buttons are visible
-
-### Requirement: Task edit modal dismissal behavior
-
-The task edit modal SHALL be dismissible by clicking the Cancel button, pressing Escape, or clicking the backdrop (outside the modal content area). Backdrop-click dismissal SHALL be implemented via `@click.self` on the `<dialog>` element. When the form has unsaved changes (any field value differs from the original task props), backdrop click and Escape SHALL show a browser `confirm("Discard unsaved changes?")` dialog before closing. If the user cancels the confirmation, the modal SHALL remain open. If the form has no unsaved changes, the modal SHALL close immediately on backdrop click or Escape. When the modal is in read-only mode (completed, running, or viewer), the dirty check SHALL be skipped and the modal SHALL close immediately.
-
-#### Scenario: Backdrop click closes clean modal
-
-- **WHEN** the edit modal is open with no changes made and the user clicks the backdrop
-- **THEN** the modal closes immediately
-
-#### Scenario: Backdrop click with unsaved changes shows confirmation
-
-- **WHEN** the edit modal has unsaved changes and the user clicks the backdrop
-- **THEN** a confirmation dialog "Discard unsaved changes?" appears
-
-#### Scenario: User confirms discard on backdrop click
-
-- **WHEN** the confirmation dialog is shown and the user clicks OK
-- **THEN** the modal closes and changes are discarded
-
-#### Scenario: User cancels discard on backdrop click
-
-- **WHEN** the confirmation dialog is shown and the user clicks Cancel
-- **THEN** the modal remains open with the user's changes preserved
-
-#### Scenario: Escape with unsaved changes shows confirmation
-
-- **WHEN** the edit modal has unsaved changes and the user presses Escape
-- **THEN** a confirmation dialog "Discard unsaved changes?" appears
-
-#### Scenario: Completed task modal closes immediately on backdrop click
-
-- **WHEN** the edit modal is in read-only mode for a completed task and the user clicks the backdrop
-- **THEN** the modal closes immediately without a dirty check
