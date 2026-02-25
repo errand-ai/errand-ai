@@ -673,7 +673,7 @@ def _read_callback_result(task_id: str) -> str | None:
         return None
 
 
-def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None, perplexity_credentials: dict | None = None) -> tuple[int, str, str]:
+def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
 
@@ -776,32 +776,6 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                     "\n\n## Relevant Context from Memory\n\n"
                     + recalled
                 )
-
-        # Inject Perplexity MCP server if platform credentials exist
-        if perplexity_credentials:
-            mcp_servers.setdefault("mcpServers", {})
-            if "perplexity-ask" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["perplexity-ask"] = {"url": "$PERPLEXITY_URL"}
-            system_prompt += (
-                "\n\n## Web Research\n\n"
-                "You have access to the `perplexity-ask` MCP tool for web search. "
-                "Try it first when you need current information online.\n\n"
-                "**If `perplexity-ask` is unavailable or returns an error**, fall back to "
-                "fetching web content directly using the `execute_command` tool. "
-                "Both `curl` and Python's `httpx` library are available:\n\n"
-                "```\n"
-                "# Fetch a web page with curl\n"
-                "execute_command('curl -sL https://example.com')\n"
-                "\n"
-                "# Fetch JSON from an API with curl\n"
-                "execute_command('curl -sL https://api.example.com/data')\n"
-                "\n"
-                "# Use Python httpx for more complex requests\n"
-                "execute_command('python3 -c \"import httpx; r = httpx.get(\\\"https://example.com\\\"); print(r.text[:5000])\"')\n"
-                "```\n\n"
-                "Use this approach to retrieve documentation, API responses, or any "
-                "public web content needed to complete the task."
-            )
 
         # Inject errand MCP server for task tools (post_tweet, new_task, etc.)
         errand_mcp_url = os.environ.get("ERRAND_MCP_URL", "")
@@ -1146,15 +1120,6 @@ async def run() -> None:
             except Exception:
                 logger.warning("Failed to load GitHub credentials", exc_info=True)
 
-            # Load Perplexity credentials while we have a session
-            perplexity_credentials = None
-            try:
-                from models import PlatformCredential
-                from platforms.credentials import load_credentials
-                perplexity_credentials = await load_credentials("perplexity", session)
-            except Exception:
-                logger.warning("Failed to load Perplexity credentials", exc_info=True)
-
             # Set status to running with initial heartbeat
             task.status = "running"
             task.heartbeat_at = datetime.now(timezone.utc)
@@ -1166,7 +1131,7 @@ async def run() -> None:
         # Process outside the dequeue transaction
         try:
             exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, settings, github_credentials, perplexity_credentials
+                None, process_task_in_container, task, settings, github_credentials
             )
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout

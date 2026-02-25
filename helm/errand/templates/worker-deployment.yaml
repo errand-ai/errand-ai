@@ -68,10 +68,6 @@ spec:
             - name: MAX_TURNS
               value: {{ .Values.worker.maxTurns | quote }}
             {{- end }}
-            {{- if .Values.perplexity.enabled }}
-            - name: PERPLEXITY_URL
-              value: "http://{{ include "errand.fullname" . }}-perplexity-mcp:{{ .Values.perplexity.service.port }}/mcp"
-            {{- end }}
             {{- if .Values.hindsight.url }}
             - name: HINDSIGHT_URL
               value: {{ .Values.hindsight.url | quote }}

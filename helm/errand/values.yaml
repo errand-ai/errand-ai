@@ -77,16 +77,6 @@ hindsight:
   url: ""
   bankId: "errand-tasks"
 
-perplexity:
-  enabled: true
-  replicaCount: 1
-  image:
-    repository: ghcr.io/errand-ai/perplexity-mcp
-    tag: latest
-    pullPolicy: IfNotPresent
-  service:
-    port: 8080
-
 ingress:
   enabled: true
   host: tasks.example.com
