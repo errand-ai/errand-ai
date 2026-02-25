@@ -28,6 +28,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
     fetchTranscriptionModels: vi.fn().mockResolvedValue([]),
     saveTranscriptionModel: vi.fn().mockResolvedValue({}),
+    saveLlmTimeout: vi.fn().mockResolvedValue({}),
     fetchPlatforms: vi.fn().mockResolvedValue([]),
     savePlatformCredentials: vi.fn().mockResolvedValue({ status: 'connected' }),
     deletePlatformCredentials: vi.fn().mockResolvedValue(undefined),
@@ -35,7 +36,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   }
 })
 
-import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveLlmTimeout, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -946,6 +947,52 @@ describe('SettingsPage', () => {
       expect(wrapper.text()).toContain('Failed to load transcription models')
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
       expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
+    })
+
+    // --- LLM Timeout ---
+
+    it('renders LLM Timeout input with default value of 30', async () => {
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
+      expect(timeoutInput.exists()).toBe(true)
+      expect((timeoutInput.element as HTMLInputElement).value).toBe('30')
+    })
+
+    it('loads LLM timeout from settings', async () => {
+      fetchMock = mockSettingsAndSkills({ llm_timeout: 60 })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
+      expect((timeoutInput.element as HTMLInputElement).value).toBe('60')
+    })
+
+    it('saves LLM timeout on Save click', async () => {
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
+      await timeoutInput.setValue(120)
+
+      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
+      await saveBtn!.trigger('click')
+      await flushPromises()
+
+      expect(saveLlmTimeout).toHaveBeenCalledWith(120)
+    })
+
+    it('shows unsaved changes when timeout is modified', async () => {
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      expect(llmSection!.text()).not.toContain('Unsaved changes')
+
+      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
+      await timeoutInput.setValue(60)
+
+      expect(llmSection!.text()).toContain('Unsaved changes')
     })
 
     // --- Task Management Card ---

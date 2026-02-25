@@ -8,6 +8,7 @@ const {
   llmModel,
   taskProcessingModel,
   transcriptionModel,
+  llmTimeout,
   timezoneValue,
   archiveAfterDays,
   taskRunnerLogLevel,
@@ -43,9 +44,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     :llm-model="llmModel"
     :task-processing-model="taskProcessingModel"
     :transcription-model="transcriptionModel"
+    :llm-timeout="llmTimeout"
     @update:llm-model="llmModel = $event"
     @update:task-processing-model="taskProcessingModel = $event"
     @update:transcription-model="transcriptionModel = $event"
+    @update:llm-timeout="llmTimeout = $event"
   />
 
   <TaskManagementSettings

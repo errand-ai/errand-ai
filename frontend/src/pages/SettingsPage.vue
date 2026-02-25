@@ -17,6 +17,7 @@ const taskProcessingModel = ref(DEFAULT_TASK_PROCESSING_MODEL)
 const transcriptionModel = ref<string>('')
 const taskRunnerLogLevel = ref('INFO')
 const timezoneValue = ref('UTC')
+const llmTimeout = ref(30)
 const archiveAfterDays = ref(3)
 const mcpApiKey = ref<string | null>(null)
 const sshPublicKey = ref<string | null>(null)
@@ -86,6 +87,7 @@ async function loadSettings() {
     llmModel.value = extractValue(data, 'llm_model', DEFAULT_MODEL)
     taskProcessingModel.value = extractValue(data, 'task_processing_model', DEFAULT_TASK_PROCESSING_MODEL)
     transcriptionModel.value = extractValue(data, 'transcription_model', '')
+    llmTimeout.value = extractValue(data, 'llm_timeout', 30)
     taskRunnerLogLevel.value = extractValue(data, 'task_runner_log_level', 'INFO') || 'INFO'
     timezoneValue.value = extractValue(data, 'timezone', 'UTC')
     archiveAfterDays.value = extractValue(data, 'archive_after_days', 3)
@@ -103,6 +105,7 @@ provide('settings-state', {
   llmModel,
   taskProcessingModel,
   transcriptionModel,
+  llmTimeout,
   taskRunnerLogLevel,
   timezoneValue,
   archiveAfterDays,
