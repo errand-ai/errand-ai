@@ -145,6 +145,16 @@ export async function saveLlmModel(model: string): Promise<Record<string, unknow
   return res.json()
 }
 
+export async function saveLlmTimeout(timeout: number): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ llm_timeout: timeout }),
+  })
+  if (!res.ok) throw new Error(`Failed to save timeout: ${res.status}`)
+  return res.json()
+}
+
 export async function saveTaskProcessingModel(model: string): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',

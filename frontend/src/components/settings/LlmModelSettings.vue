@@ -1,23 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
-import { fetchLlmModels, saveLlmModel, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
+import { fetchLlmModels, saveLlmModel, saveLlmTimeout, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
 
 const props = defineProps<{
   llmModel: string
   taskProcessingModel: string
   transcriptionModel: string
+  llmTimeout: number
 }>()
 
 const emit = defineEmits<{
   'update:llmModel': [value: string]
   'update:taskProcessingModel': [value: string]
   'update:transcriptionModel': [value: string]
+  'update:llmTimeout': [value: number]
 }>()
 
 const localLlmModel = ref(props.llmModel)
 const localTaskModel = ref(props.taskProcessingModel)
 const localTranscriptionModel = ref(props.transcriptionModel)
+const localLlmTimeout = ref(props.llmTimeout)
 const llmModels = ref<string[]>([])
 const transcriptionModels = ref<string[]>([])
 const llmModelsError = ref<string | null>(null)
@@ -28,6 +31,7 @@ const isDirty = computed(() =>
   localLlmModel.value !== props.llmModel
   || localTaskModel.value !== props.taskProcessingModel
   || localTranscriptionModel.value !== props.transcriptionModel
+  || localLlmTimeout.value !== props.llmTimeout
 )
 
 onMounted(async () => {
@@ -41,9 +45,11 @@ async function save() {
     await saveLlmModel(localLlmModel.value)
     await saveTaskProcessingModel(localTaskModel.value)
     await saveTranscriptionModel(localTranscriptionModel.value || null)
+    await saveLlmTimeout(localLlmTimeout.value)
     emit('update:llmModel', localLlmModel.value)
     emit('update:taskProcessingModel', localTaskModel.value)
     emit('update:transcriptionModel', localTranscriptionModel.value)
+    emit('update:llmTimeout', localLlmTimeout.value)
     toast.success('Model settings saved.')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'Failed to save model settings.')
@@ -96,6 +102,18 @@ defineExpose({ isDirty })
         <option value="">{{ transcriptionModels.length === 0 && !transcriptionModelsError ? 'No transcription models available' : 'Select a model to enable voice input' }}</option>
         <option v-for="m in transcriptionModels" :key="m" :value="m">{{ m }}</option>
       </select>
+    </div>
+
+    <div class="mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-1">LLM Timeout (seconds)</label>
+      <input
+        v-model.number="localLlmTimeout"
+        type="number"
+        min="1"
+        class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+        data-testid="llm-timeout-input"
+      />
+      <p class="mt-1 text-xs text-gray-500">How long to wait for LLM responses. Increase for local models that need loading time.</p>
     </div>
 
     <div class="flex items-center gap-3">

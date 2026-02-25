@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import llm as llm_module
-from llm import LLMResult, _parse_llm_response, _strip_markdown_fences, generate_title
+from llm import DEFAULT_LLM_TIMEOUT, _parse_llm_response, _strip_markdown_fences, generate_title
 from models import Setting
 
 
@@ -444,3 +444,37 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
     now = datetime.now(timezone.utc)
     delta = abs((now - execute_at).total_seconds())
     assert delta < 10, f"execute_at is {delta}s away from now"
+
+
+# --- Configurable LLM timeout ---
+
+
+async def test_generate_title_uses_custom_timeout(db_session: AsyncSession):
+    """generate_title uses llm_timeout setting when it exists."""
+    db_session.add(Setting(key="llm_timeout", value="60"))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+        await generate_title("some long enough description for the test", db_session)
+
+    call_args = mock_client.chat.completions.create.call_args
+    assert call_args.kwargs["timeout"] == 60.0
+
+
+async def test_generate_title_uses_default_timeout(db_session: AsyncSession):
+    """generate_title uses default 30s timeout when no llm_timeout setting exists."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+
+    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+        await generate_title("some long enough description for the test", db_session)
+
+    call_args = mock_client.chat.completions.create.call_args
+    assert call_args.kwargs["timeout"] == DEFAULT_LLM_TIMEOUT

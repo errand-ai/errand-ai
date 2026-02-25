@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: LLM title generation from task description
 When a new task is created with an input longer than 5 words, the backend SHALL call the LLM to generate a short title (2-5 words), categorise the task as `immediate`, `scheduled`, or `repeating`, and extract timing information. The LLM call SHALL use the `chat.completions.create` method with the model from the `llm_model` setting (default: `claude-haiku-4-5-20251001`). The system prompt SHALL instruct the model to return a JSON object with fields: `title` (string, 2-5 words), `category` (immediate|scheduled|repeating), `execute_at` (ISO 8601 datetime string or null), `repeat_interval` (string like "15m", "1h", "1d", or crontab expression, or null), `repeat_until` (ISO 8601 datetime string or null). The call SHALL use a timeout read from the `llm_timeout` setting (in seconds). If no `llm_timeout` setting exists, the timeout SHALL default to `30` seconds.
