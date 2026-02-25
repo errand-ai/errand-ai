@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Worker executes tasks via ContainerRuntime
 
@@ -17,6 +17,8 @@ The worker SHALL generate a one-time callback token using `secrets.token_hex(32)
 During the log-streaming loop, the worker SHALL refresh the token TTL by calling `EXPIRE` on the `task_result_token:{task_id}` key every 15 minutes, resetting the TTL to 30 minutes. This ensures long-running tasks retain a valid callback token for the duration of execution.
 
 After `runtime.result()` returns, the worker SHALL check Valkey for a callback result at key `task_result:{task_id}`. If found, the worker SHALL use the callback result as stdout (overriding the value from `runtime.result()`). The worker SHALL then delete both `task_result:{task_id}` and `task_result_token:{task_id}` from Valkey to clean up. If the callback result is not found in Valkey, the worker SHALL proceed with the stdout from `runtime.result()` as before (existing fallback). All Valkey operations in this flow SHALL use the synchronous Redis client and SHALL swallow exceptions to avoid interrupting task processing.
+
+The worker SHALL NOT load Perplexity credentials, inject a `perplexity-ask` MCP server entry, or append Perplexity usage instructions to the system prompt. All Perplexity-related logic SHALL be removed.
 
 All other behaviour (settings retrieval, system prompt construction, MCP configuration injection, Hindsight recall, skills injection, SSH credential injection, env var substitution, log publishing to Valkey, output parsing, retry logic, repeating task rescheduling, WebSocket event publishing) SHALL remain unchanged.
 
@@ -41,13 +43,13 @@ Host <hostname>
 
 If `ssh_private_key` is not present in settings or is empty, the worker SHALL skip the SSH credential injection step and proceed without SSH configuration. This allows the task runner to still use git over HTTPS for public repositories.
 
+Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the worker SHALL perform environment variable substitution on all string values within the JSON structure. The substitution SHALL support two syntaxes: `$VARIABLE_NAME` and `${VARIABLE_NAME}`, where `VARIABLE_NAME` matches the pattern `[A-Za-z_][A-Za-z0-9_]*`. The worker SHALL resolve variable references against its own process environment (`os.environ`). If a referenced variable does not exist in the worker's environment, the placeholder SHALL be left unchanged in the output. Substitution SHALL only operate on string values within the JSON structure — keys, numbers, booleans, and nulls SHALL NOT be modified.
+
 When Hindsight is configured (via `HINDSIGHT_URL` environment variable or `hindsight_url` admin setting), the worker SHALL: (a) call `POST {hindsight_url}/v1/default/banks/{bank_id}/memories/recall` with a JSON body `{"query": "<task title>. <task description>", "max_tokens": 2048}` to retrieve relevant memories, (b) if the recall returns content, append a `## Relevant Context from Memory` section to the system prompt containing the recalled text, (c) inject a `"hindsight"` entry into the `mcpServers` object with `{"url": "{hindsight_url}/mcp/{bank_id}/"}`, and (d) append a memory usage instruction block to the system prompt instructing the agent to use `retain`, `recall`, and `reflect` tools for persistent memory. If the recall API call fails, the worker SHALL log a warning and continue without memory context. The Hindsight MCP injection SHALL NOT overwrite a database-configured `"hindsight"` entry.
 
 When skills exist in the database, the worker SHALL append a skill manifest section to the system prompt. The worker SHALL NOT inject the backend MCP server into the MCP configuration for skill purposes. The worker SHALL NOT append the legacy "call list_skills" directive.
 
 After all other system prompt augmentation blocks (Hindsight memories, Hindsight tools, skill manifest), the worker SHALL always append repo context discovery instructions. The repo context block SHALL instruct the agent to check for `CLAUDE.md`, `.claude/commands/`, and `.claude/skills/` after any `git clone` operation.
-
-Before writing the `mcp_servers` configuration as `/workspace/mcp.json`, the worker SHALL perform environment variable substitution on all string values within the JSON structure. The substitution SHALL support two syntaxes: `$VARIABLE_NAME` and `${VARIABLE_NAME}`, where `VARIABLE_NAME` matches the pattern `[A-Za-z_][A-Za-z0-9_]*`. The worker SHALL resolve variable references against its own process environment (`os.environ`). If a referenced variable does not exist in the worker's environment, the placeholder SHALL be left unchanged in the output. Substitution SHALL only operate on string values within the JSON structure — keys, numbers, booleans, and nulls SHALL NOT be modified.
 
 The worker SHALL store the captured stderr in the task's `runner_logs` field for all execution outcomes: successful completion, needs_input, retry on failure, and retry on parse error. The `runner_logs` field SHALL be written in every UPDATE statement that modifies the task after container execution.
 
@@ -87,6 +89,11 @@ The worker SHALL publish `task_updated` WebSocket events containing all task fie
 
 - **WHEN** the worker attempts to mint a GitHub App installation token and the GitHub API returns an error
 - **THEN** the worker logs a warning and proceeds without setting `GH_TOKEN` (task runs without GitHub access)
+
+#### Scenario: No Perplexity injection
+
+- **WHEN** the worker processes a task
+- **THEN** the worker does not load Perplexity credentials, does not inject a `perplexity-ask` MCP entry, and does not append Perplexity usage instructions to the system prompt
 
 #### Scenario: Callback token generated and passed to container
 

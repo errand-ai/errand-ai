@@ -27,5 +27,5 @@ When the worker prepares the system prompt for a task and skills exist in the da
 - **THEN** the system prompt contains no skills section
 
 #### Scenario: Manifest placement after other augmentations
-- **WHEN** the worker prepares the system prompt and both Perplexity and skills are enabled
-- **THEN** the skill manifest appears after the Perplexity instruction block
+- **WHEN** the worker prepares the system prompt and skills are enabled
+- **THEN** the skill manifest appears after other system prompt augmentation blocks

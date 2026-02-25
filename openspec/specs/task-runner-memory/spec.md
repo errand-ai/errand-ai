@@ -45,7 +45,7 @@ The worker SHALL call the Hindsight REST API to recall memories relevant to the 
 
 ### Requirement: Worker injects Hindsight MCP server for task runner
 
-The worker SHALL inject a `hindsight` entry into the task runner's MCP server configuration when Hindsight is configured. The MCP server URL SHALL follow the single-bank pattern: `{hindsight_url}/mcp/{bank_id}/`. The injection SHALL follow the same pattern as existing MCP server injections (Perplexity, errand backend): inject only if not already present in the database-configured MCP servers.
+The worker SHALL inject a `hindsight` entry into the task runner's MCP server configuration when Hindsight is configured. The MCP server URL SHALL follow the single-bank pattern: `{hindsight_url}/mcp/{bank_id}/`. The injection SHALL follow the same pattern as existing MCP server injections (errand backend): inject only if not already present in the database-configured MCP servers.
 
 #### Scenario: Hindsight MCP server injected
 
