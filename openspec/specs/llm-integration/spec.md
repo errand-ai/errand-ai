@@ -1,7 +1,7 @@
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: LLM title generation from task description
-When a new task is created with an input longer than 5 words, the backend SHALL call the LLM to generate a short title (2-5 words), categorise the task as `immediate`, `scheduled`, or `repeating`, and extract timing information. The LLM call SHALL use the `chat.completions.create` method with the model from the `llm_model` setting (default: `claude-haiku-4-5-20251001`). The system prompt SHALL instruct the model to return a JSON object with fields: `title` (string, 2-5 words), `category` (immediate|scheduled|repeating), `execute_at` (ISO 8601 datetime string or null), `repeat_interval` (string like "15m", "1h", "1d", or crontab expression, or null), `repeat_until` (ISO 8601 datetime string or null). The call SHALL have a 5-second timeout.
+When a new task is created with an input longer than 5 words, the backend SHALL call the LLM to generate a short title (2-5 words), categorise the task as `immediate`, `scheduled`, or `repeating`, and extract timing information. The LLM call SHALL use the `chat.completions.create` method with the model from the `llm_model` setting (default: `claude-haiku-4-5-20251001`). The system prompt SHALL instruct the model to return a JSON object with fields: `title` (string, 2-5 words), `category` (immediate|scheduled|repeating), `execute_at` (ISO 8601 datetime string or null), `repeat_interval` (string like "15m", "1h", "1d", or crontab expression, or null), `repeat_until` (ISO 8601 datetime string or null). The call SHALL use a timeout read from the `llm_timeout` setting (in seconds). If no `llm_timeout` setting exists, the timeout SHALL default to `30` seconds.
 
 The system prompt SHALL include the current UTC datetime and the user's configured timezone so the LLM can resolve relative time references (e.g. "in 10 minutes", "at 5pm", "tomorrow morning", "end of the working day") to concrete ISO 8601 timestamps. The datetime SHALL be formatted as ISO 8601 (e.g. `2026-02-11T14:30:00Z`) and the timezone SHALL be an IANA timezone name (e.g. `Europe/London`). If no timezone setting is configured, the prompt SHALL default to `UTC`.
 
@@ -56,3 +56,11 @@ The LLM client SHALL be initialised using `OPENAI_BASE_URL` and `OPENAI_API_KEY`
 #### Scenario: LLM client not available
 - **WHEN** a task is created with a long input but the OpenAI client was not initialized (missing env vars)
 - **THEN** the task uses the fallback title (first 5 words + "..."), category `immediate`, execute_at set to current server time (as per immediate task rule), and gets a "Needs Info" tag
+
+#### Scenario: Custom timeout from settings
+- **WHEN** `generate_title` is called and the `llm_timeout` setting is `60`
+- **THEN** the LLM chat completion call uses a 60-second timeout
+
+#### Scenario: Default timeout when not configured
+- **WHEN** `generate_title` is called and no `llm_timeout` setting exists in the database
+- **THEN** the LLM chat completion call uses the default 30-second timeout
