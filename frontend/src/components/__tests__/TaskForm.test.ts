@@ -131,8 +131,8 @@ describe('TaskForm', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    // Second submit while first is still in progress — input is disabled so
-    // the form handler runs but the empty/trimmed guard or disabled state blocks it
+    // Second submit while first is still in progress — the submitting
+    // re-entry guard at the top of submit() blocks it
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 

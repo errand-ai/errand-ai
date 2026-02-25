@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import llm as llm_module
-from llm import DEFAULT_LLM_TIMEOUT, LLMResult, _parse_llm_response, _strip_markdown_fences, generate_title
+from llm import DEFAULT_LLM_TIMEOUT, _parse_llm_response, _strip_markdown_fences, generate_title
 from models import Setting
 
 

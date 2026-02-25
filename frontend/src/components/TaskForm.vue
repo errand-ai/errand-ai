@@ -105,6 +105,7 @@ async function sendForTranscription(blob: Blob) {
 
 async function submit() {
   if (submitting.value) return
+  if (isRecording.value) stopRecording()
   const trimmed = input.value.trim()
   if (!trimmed) {
     error.value = 'Task cannot be empty'
@@ -119,6 +120,7 @@ async function submit() {
     error.value = e instanceof Error ? e.message : 'Failed to create task'
   } finally {
     submitting.value = false
+    inputRef.value?.focus()
   }
 }
 
@@ -142,14 +144,14 @@ function formatTime(seconds: number): string {
     <button
       v-if="showMicButton"
       type="button"
-      :disabled="isTranscribing || submitting"
+      :disabled="isTranscribing || (submitting && !isRecording)"
       @click="toggleRecording"
       :class="[
         'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
         isRecording
           ? 'bg-red-600 text-white animate-pulse'
           : 'bg-gray-200 text-gray-700 hover:bg-gray-300',
-        (isTranscribing || submitting) ? 'opacity-50 cursor-not-allowed' : ''
+        (isTranscribing || (submitting && !isRecording)) ? 'opacity-50 cursor-not-allowed' : ''
       ]"
       :title="isRecording ? 'Stop recording' : 'Start voice input'"
       data-testid="mic-button"
