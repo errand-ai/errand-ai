@@ -165,6 +165,13 @@ onMounted(() => {
             Security
           </router-link>
           <router-link
+            to="/settings/profiles"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/profiles' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Task Profiles
+          </router-link>
+          <router-link
             to="/settings/integrations"
             class="block px-3 py-2 text-sm rounded-md"
             :class="route.path === '/settings/integrations' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"

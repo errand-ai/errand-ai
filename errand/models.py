@@ -65,9 +65,13 @@ class Task(Base):
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    profile_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("task_profiles.id", ondelete="SET NULL"), nullable=True
+    )
     created_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
+    profile: Mapped[Optional["TaskProfile"]] = relationship(lazy="raise")
 
 
 class Tag(Base):
@@ -173,6 +177,37 @@ class LocalUser(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         server_default=text("now()"),
+    )
+
+
+class TaskProfile(Base):
+    __tablename__ = "task_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    match_rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    max_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reasoning_effort: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    litellm_mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    skill_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
 

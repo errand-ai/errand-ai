@@ -16,7 +16,25 @@ export interface TaskData {
   runner_logs: string | null
   questions: string[] | null
   retry_count: number
+  profile_id: string | null
+  profile_name: string | null
   tags: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface TaskProfile {
+  id: string
+  name: string
+  description: string | null
+  match_rules: string | null
+  model: string | null
+  system_prompt: string | null
+  max_turns: number | null
+  reasoning_effort: string | null
+  mcp_servers: string[] | null
+  litellm_mcp_servers: string[] | null
+  skill_ids: string[] | null
   created_at: string
   updated_at: string
 }
@@ -100,7 +118,7 @@ export async function createTask(input: string): Promise<TaskData> {
   return res.json()
 }
 
-export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }): Promise<TaskData> {
+export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string; profile_id?: string | null }): Promise<TaskData> {
   const res = await authFetch(`${BASE}/tasks/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -265,4 +283,41 @@ export async function fetchLitellmMcpServers(): Promise<LitellmMcpResponse> {
   const res = await authFetch(`${BASE}/litellm/mcp-servers`)
   if (!res.ok) throw new Error(`Failed to fetch LiteLLM MCP servers: ${res.status}`)
   return res.json()
+}
+
+export async function fetchTaskProfiles(): Promise<TaskProfile[]> {
+  const res = await authFetch(`${BASE}/task-profiles`)
+  if (!res.ok) throw new Error(`Failed to fetch task profiles: ${res.status}`)
+  return res.json()
+}
+
+export async function createTaskProfile(data: Record<string, unknown>): Promise<TaskProfile> {
+  const res = await authFetch(`${BASE}/task-profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to create profile: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateTaskProfile(id: string, data: Record<string, unknown>): Promise<TaskProfile> {
+  const res = await authFetch(`${BASE}/task-profiles/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to update profile: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteTaskProfile(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/task-profiles/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete profile: ${res.status}`)
 }

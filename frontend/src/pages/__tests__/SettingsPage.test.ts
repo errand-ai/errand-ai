@@ -73,6 +73,7 @@ function makeSettingsRouter() {
           { path: 'agent', name: 'settings-agent', component: AgentConfigurationPage },
           { path: 'tasks', name: 'settings-tasks', component: TaskManagementPage },
           { path: 'security', name: 'settings-security', component: SecurityPage },
+          { path: 'profiles', name: 'settings-profiles', component: { template: '<div>Task Profiles</div>' } },
           { path: 'integrations', name: 'settings-integrations', component: IntegrationsPage },
           { path: 'users', name: 'settings-users', component: UserManagementPage },
         ],
@@ -129,12 +130,13 @@ describe('SettingsPage', () => {
       expect(sidebar.exists()).toBe(true)
 
       const links = sidebar.findAll('a')
-      expect(links).toHaveLength(5)
+      expect(links).toHaveLength(6)
       expect(links[0].text()).toBe('Agent Configuration')
       expect(links[1].text()).toBe('Task Management')
       expect(links[2].text()).toBe('Security')
-      expect(links[3].text()).toBe('Integrations')
-      expect(links[4].text()).toBe('User Management')
+      expect(links[3].text()).toBe('Task Profiles')
+      expect(links[4].text()).toBe('Integrations')
+      expect(links[5].text()).toBe('User Management')
     })
 
     it('highlights active sidebar link', async () => {

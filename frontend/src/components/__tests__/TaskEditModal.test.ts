@@ -9,6 +9,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   return {
     ...actual,
     fetchTags: vi.fn().mockResolvedValue([]),
+    fetchTaskProfiles: vi.fn().mockResolvedValue([]),
   }
 })
 
@@ -26,6 +27,8 @@ const task: TaskData = {
   runner_logs: null,
   questions: null,
   retry_count: 0,
+  profile_id: null,
+  profile_name: null,
   tags: ['urgent'],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
@@ -385,5 +388,35 @@ describe('TaskEditModal', () => {
     const wrapper = mount(TaskEditModal, { props: { task } })
     await wrapper.find('dialog').trigger('cancel')
     expect(wrapper.emitted('cancel')).toHaveLength(1)
+  })
+
+  // --- Profile selector ---
+
+  it('shows profile selector when profiles are loaded', async () => {
+    const { fetchTaskProfiles } = await import('../../composables/useApi')
+    ;(fetchTaskProfiles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'p1', name: 'email-triage', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+    ])
+
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    await new Promise(r => setTimeout(r, 10))
+    await wrapper.vm.$nextTick()
+
+    const select = wrapper.find('[data-testid="edit-profile-select"]')
+    expect(select.exists()).toBe(true)
+    expect(select.text()).toContain('email-triage')
+    ;(fetchTaskProfiles as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  })
+
+  it('hides profile selector when no profiles exist', async () => {
+    const { fetchTaskProfiles } = await import('../../composables/useApi')
+    ;(fetchTaskProfiles as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const wrapper = mount(TaskEditModal, { props: { task } })
+    await new Promise(r => setTimeout(r, 10))
+    await wrapper.vm.$nextTick()
+
+    const select = wrapper.find('[data-testid="edit-profile-select"]')
+    expect(select.exists()).toBe(false)
   })
 })

@@ -8,6 +8,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   return {
     ...actual,
     fetchTags: vi.fn().mockResolvedValue([]),
+    fetchTaskProfiles: vi.fn().mockResolvedValue([]),
   }
 })
 
@@ -25,6 +26,8 @@ const baseTask: TaskData = {
   runner_logs: null,
   questions: null,
   retry_count: 0,
+  profile_id: null,
+  profile_name: null,
   tags: ['tag1'],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',

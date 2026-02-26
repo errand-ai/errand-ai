@@ -814,6 +814,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     questions TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
     heartbeat_at DATETIME,
+    profile_id VARCHAR(36),
     created_by TEXT,
     updated_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,

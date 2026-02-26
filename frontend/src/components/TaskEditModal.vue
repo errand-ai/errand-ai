@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import type { TaskData, TaskStatus } from '../composables/useApi'
-import { fetchTags } from '../composables/useApi'
+import type { TaskData, TaskStatus, TaskProfile } from '../composables/useApi'
+import { fetchTags, fetchTaskProfiles } from '../composables/useApi'
 type Category = 'immediate' | 'scheduled' | 'repeating'
 
 const props = defineProps<{
@@ -10,7 +10,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  save: [data: { title: string; description?: string; status: TaskStatus; tags: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }]
+  save: [data: { title: string; description?: string; status: TaskStatus; tags: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string; profile_id?: string | null }]
   cancel: []
   delete: []
 }>()
@@ -39,6 +39,8 @@ const executeAtLocal = ref(toLocalDatetime(props.task.execute_at))
 const repeatInterval = ref(props.task.repeat_interval || '')
 const repeatUntilLocal = ref(toLocalDatetime(props.task.repeat_until))
 const tags = ref<string[]>([...(props.task.tags || [])])
+const selectedProfileId = ref<string>(props.task.profile_id || '')
+const profiles = ref<TaskProfile[]>([])
 const tagInput = ref('')
 const tagSuggestions = ref<string[]>([])
 const showSuggestions = ref(false)
@@ -76,8 +78,13 @@ function formatDatetime(iso: string | null | undefined): string {
   })
 }
 
-onMounted(() => {
+onMounted(async () => {
   dialogRef.value?.showModal()
+  try {
+    profiles.value = await fetchTaskProfiles()
+  } catch {
+    // Profiles are optional — silently ignore errors
+  }
 })
 
 const isDirty = computed(() => {
@@ -89,6 +96,7 @@ const isDirty = computed(() => {
     || repeatInterval.value !== (props.task.repeat_interval || '')
     || repeatUntilLocal.value !== toLocalDatetime(props.task.repeat_until)
     || JSON.stringify(tags.value) !== JSON.stringify(props.task.tags || [])
+    || selectedProfileId.value !== (props.task.profile_id || '')
 })
 
 function onCancel() {
@@ -120,6 +128,7 @@ async function onSave() {
       execute_at: toUtcIso(executeAtLocal.value),
       repeat_interval: repeatInterval.value || undefined,
       repeat_until: toUtcIso(repeatUntilLocal.value),
+      profile_id: selectedProfileId.value || 'null',
     })
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to save'
@@ -232,6 +241,20 @@ function onTagBlur() {
               class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
             >
               <option v-for="c in categories" :key="c.key" :value="c.key">{{ c.label }}</option>
+            </select>
+          </div>
+
+          <div v-if="profiles.length > 0">
+            <label for="edit-profile" class="mb-1 block text-sm font-medium text-gray-700">Task Profile</label>
+            <select
+              id="edit-profile"
+              v-model="selectedProfileId"
+              :disabled="readOnly"
+              class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+              data-testid="edit-profile-select"
+            >
+              <option value="">None (default)</option>
+              <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
 

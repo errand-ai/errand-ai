@@ -58,6 +58,11 @@ const router = createRouter({
           component: () => import('../pages/settings/IntegrationsPage.vue'),
         },
         {
+          path: 'profiles',
+          name: 'settings-profiles',
+          component: () => import('../pages/settings/TaskProfilesPage.vue'),
+        },
+        {
           path: 'users',
           name: 'settings-users',
           component: () => import('../pages/settings/UserManagementPage.vue'),

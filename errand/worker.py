@@ -27,7 +27,7 @@ import redis as sync_redis
 from sqlalchemy import create_engine as create_sync_engine, text as sa_text
 
 from events import init_valkey, close_valkey, publish_event, VALKEY_URL
-from models import Setting, Skill, Tag, Task, task_tags
+from models import Setting, Skill, Tag, Task, TaskProfile, task_tags
 
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat updates
 
@@ -441,6 +441,7 @@ async def read_settings(session: AsyncSession) -> dict:
     skills_list = []
     for skill in skill_result.scalars().all():
         skills_list.append({
+            "id": str(skill.id),
             "name": skill.name,
             "description": skill.description,
             "instructions": skill.instructions,
@@ -449,6 +450,45 @@ async def read_settings(session: AsyncSession) -> dict:
     settings["skills"] = skills_list
 
     return settings
+
+
+async def resolve_profile(session: AsyncSession, task: Task, settings: dict) -> dict:
+    """Apply task profile overrides to global settings.
+
+    Returns a new settings dict with profile overrides applied.
+    If task has no profile or profile was deleted, returns settings unchanged.
+    """
+    if not task.profile_id:
+        return settings
+
+    result = await session.execute(select(TaskProfile).where(TaskProfile.id == task.profile_id))
+    profile = result.scalar_one_or_none()
+    if profile is None:
+        logger.warning("Task %s references deleted profile %s, using default settings", task.id, task.profile_id)
+        return settings
+
+    # Copy settings to avoid mutating the original
+    resolved = dict(settings)
+
+    # Scalar overrides: non-null value overrides global
+    if profile.model is not None:
+        resolved["task_processing_model"] = profile.model
+    if profile.system_prompt is not None:
+        resolved["system_prompt"] = profile.system_prompt
+    if profile.max_turns is not None:
+        resolved["_profile_max_turns"] = str(profile.max_turns)
+    if profile.reasoning_effort is not None:
+        resolved["_profile_reasoning_effort"] = profile.reasoning_effort
+
+    # List overrides: null=inherit, []=empty, [items]=subset
+    if profile.mcp_servers is not None:
+        resolved["_profile_mcp_servers"] = profile.mcp_servers  # [] or ["name", ...]
+    if profile.litellm_mcp_servers is not None:
+        resolved["_profile_litellm_mcp_servers"] = profile.litellm_mcp_servers
+    if profile.skill_ids is not None:
+        resolved["_profile_skill_ids"] = profile.skill_ids
+
+    return resolved
 
 
 async def dequeue_task(session: AsyncSession) -> Task | None:
@@ -484,7 +524,7 @@ def parse_interval(interval_str: str) -> timedelta | None:
 
 
 
-def _task_to_dict(task: Task) -> dict:
+def _task_to_dict(task: Task, profile_name: str | None = None) -> dict:
     return {
         "id": str(task.id),
         "title": task.title,
@@ -500,6 +540,8 @@ def _task_to_dict(task: Task) -> dict:
         "questions": task.questions,
         "retry_count": task.retry_count,
         "heartbeat_at": task.heartbeat_at.isoformat() if task.heartbeat_at else None,
+        "profile_id": str(task.profile_id) if task.profile_id else None,
+        "profile_name": profile_name,
         "tags": sorted([t.name for t in task.tags]),
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
@@ -714,6 +756,18 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
         task_processing_model = settings.get("task_processing_model", DEFAULT_TASK_PROCESSING_MODEL)
         system_prompt = settings.get("system_prompt", "")
 
+        # Apply profile mcp_servers filter (only affects user-configured servers, not auto-injected)
+        profile_mcp_filter = settings.get("_profile_mcp_servers")
+        if profile_mcp_filter is not None:
+            if isinstance(mcp_servers, dict) and "mcpServers" in mcp_servers:
+                if len(profile_mcp_filter) == 0:
+                    # Empty list = no user servers
+                    mcp_servers = {}
+                else:
+                    # Keep only servers in the profile's list
+                    filtered = {k: v for k, v in mcp_servers["mcpServers"].items() if k in profile_mcp_filter}
+                    mcp_servers = {"mcpServers": filtered} if filtered else {}
+
         # Build environment variables from credentials
         env_vars = {}
         for cred in credentials:
@@ -734,9 +788,18 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
         task_runner_log_level = settings.get("task_runner_log_level") or os.environ.get("TASK_RUNNER_LOG_LEVEL", "")
         if task_runner_log_level:
             env_vars["LOG_LEVEL"] = task_runner_log_level
-        max_turns = os.environ.get("MAX_TURNS", "")
-        if max_turns:
-            env_vars["MAX_TURNS"] = max_turns
+        # Max turns: profile override > env var
+        profile_max_turns = settings.get("_profile_max_turns")
+        if profile_max_turns:
+            env_vars["MAX_TURNS"] = profile_max_turns
+        else:
+            max_turns = os.environ.get("MAX_TURNS", "")
+            if max_turns:
+                env_vars["MAX_TURNS"] = max_turns
+        # Reasoning effort from profile
+        profile_reasoning = settings.get("_profile_reasoning_effort")
+        if profile_reasoning:
+            env_vars["REASONING_EFFORT"] = profile_reasoning
 
         # Internal key for K8s runtime labels (stripped from actual container env)
         env_vars["_TASK_ID"] = str(task.id)
@@ -822,7 +885,12 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                 mcp_servers["mcpServers"]["playwright"] = {"url": pw_url}
 
         # Inject LiteLLM MCP gateway if enabled servers exist
-        litellm_enabled = settings.get("litellm_mcp_servers", [])
+        # Apply profile litellm_mcp_servers override
+        profile_litellm = settings.get("_profile_litellm_mcp_servers")
+        if profile_litellm is not None:
+            litellm_enabled = profile_litellm
+        else:
+            litellm_enabled = settings.get("litellm_mcp_servers", [])
         if litellm_enabled and openai_base_url:
             mcp_servers.setdefault("mcpServers", {})
             if "litellm" not in mcp_servers["mcpServers"]:
@@ -847,6 +915,15 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
             git_skills = parse_skills_from_directory(base_path)
             logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
             skills = merge_skills(skills, git_skills)
+
+        # Apply profile skill_ids filter
+        profile_skill_ids = settings.get("_profile_skill_ids")
+        if profile_skill_ids is not None:
+            if len(profile_skill_ids) == 0:
+                skills = []
+            else:
+                # Filter DB skills by UUID; git-sourced skills don't have UUIDs so they're excluded
+                skills = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
 
         # Inject skill manifest into system prompt if skills are defined
         if skills:
@@ -1055,6 +1132,7 @@ async def _reschedule_if_repeating(task: Task) -> None:
             execute_at=datetime.now(timezone.utc) + interval,
             repeat_interval=task.repeat_interval,
             repeat_until=task.repeat_until,
+            profile_id=task.profile_id,
             position=position,
             output=None,
             runner_logs=None,
@@ -1118,6 +1196,9 @@ async def run() -> None:
 
             # Read settings for this task
             settings = await read_settings(session)
+
+            # Apply task profile overrides
+            settings = await resolve_profile(session, task, settings)
 
             # Load GitHub credentials while we have a session
             github_credentials = None

@@ -34,9 +34,9 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client_with_db, generate_title, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
+from llm import init_llm_client, get_llm_client_with_db, generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from local_auth import router as local_auth_router
-from models import LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, task_tags
+from models import LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
 from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
@@ -341,6 +341,7 @@ class TaskUpdate(BaseModel):
     repeat_interval: Optional[str] = None
     repeat_until: Optional[str] = None
     output: Optional[str] = None
+    profile_id: Optional[str] = Field(None, description="UUID of task profile, or null to clear")
 
     def model_post_init(self, __context):
         if self.status is not None and self.status not in VALID_STATUSES:
@@ -364,6 +365,8 @@ class TaskResponse(BaseModel):
     questions: Optional[list[str]] = None
     retry_count: int = 0
     heartbeat_at: Optional[datetime] = None
+    profile_id: Optional[uuid.UUID] = None
+    profile_name: Optional[str] = None
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -373,7 +376,7 @@ class TaskResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_task(cls, task: Task) -> "TaskResponse":
+    def from_task(cls, task: Task, profile_name: str | None = None) -> "TaskResponse":
         return cls(
             id=task.id,
             title=task.title,
@@ -389,6 +392,8 @@ class TaskResponse(BaseModel):
             questions=task.questions,
             retry_count=task.retry_count,
             heartbeat_at=task.heartbeat_at,
+            profile_id=task.profile_id,
+            profile_name=profile_name,
             tags=sorted([t.name for t in task.tags]),
             created_at=task.created_at,
             updated_at=task.updated_at,
@@ -461,18 +466,18 @@ async def list_tasks(
     # All other columns: position ASC, created_at ASC
     active = await session.execute(
         select(Task)
-        .options(selectinload(Task.tags))
+        .options(selectinload(Task.tags), selectinload(Task.profile))
         .where(Task.status.not_in(["new", "deleted", "archived", "completed"]))
         .order_by(Task.position.asc(), Task.created_at.asc())
     )
     completed = await session.execute(
         select(Task)
-        .options(selectinload(Task.tags))
+        .options(selectinload(Task.tags), selectinload(Task.profile))
         .where(Task.status == "completed")
         .order_by(Task.updated_at.desc())
     )
     tasks = list(active.scalars().all()) + list(completed.scalars().all())
-    return [TaskResponse.from_task(t) for t in tasks]
+    return [TaskResponse.from_task(t, profile_name=t.profile.name if t.profile else None) for t in tasks]
 
 
 @app.post("/api/tasks", response_model=TaskResponse, status_code=201)
@@ -484,9 +489,15 @@ async def create_task(
     input_text = body.input.strip()
     words = input_text.split()
     tag_names: list[str] = []
+    resolved_profile_id = None
 
     if len(words) > 5:
-        llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
+        # Load profiles for LLM classification
+        prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+        db_profiles = prof_result.scalars().all()
+        profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+
+        llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc), profiles=profile_infos)
         title = llm_result.title
         description = input_text
         category = llm_result.category
@@ -495,6 +506,11 @@ async def create_task(
         repeat_until_str = llm_result.repeat_until
         if not llm_result.success:
             tag_names.append("Needs Info")
+
+        # Resolve profile name to ID
+        if llm_result.profile and db_profiles:
+            profile_map = {p.name: p.id for p in db_profiles}
+            resolved_profile_id = profile_map.get(llm_result.profile)
     else:
         title = input_text
         description = None
@@ -530,6 +546,7 @@ async def create_task(
         execute_at=execute_at,
         repeat_interval=repeat_interval,
         repeat_until=repeat_until,
+        profile_id=resolved_profile_id,
         created_by=_user.get("email"),
     )
     session.add(task)
@@ -550,8 +567,8 @@ async def create_task(
     task.position = await _next_position(session, task.status)
 
     await session.commit()
-    await session.refresh(task, ["tags"])
-    resp = TaskResponse.from_task(task)
+    await session.refresh(task, ["tags", "profile"])
+    resp = TaskResponse.from_task(task, profile_name=task.profile.name if task.profile else None)
     await publish_event("task_created", resp.model_dump(mode="json"))
     return resp
 
@@ -567,10 +584,10 @@ async def list_archived_tasks(
     else:
         status_filter = Task.status == "archived"
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).where(status_filter).order_by(Task.updated_at.desc())
+        select(Task).options(selectinload(Task.tags), selectinload(Task.profile)).where(status_filter).order_by(Task.updated_at.desc())
     )
     tasks = result.scalars().all()
-    return [TaskResponse.from_task(t) for t in tasks]
+    return [TaskResponse.from_task(t, profile_name=t.profile.name if t.profile else None) for t in tasks]
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -580,12 +597,12 @@ async def get_task(
     _user: dict = Depends(get_current_user),
 ):
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+        select(Task).options(selectinload(Task.tags), selectinload(Task.profile)).where(Task.id == task_id)
     )
     task = result.scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return TaskResponse.from_task(task)
+    return TaskResponse.from_task(task, profile_name=task.profile.name if task.profile else None)
 
 
 @app.patch("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -596,7 +613,7 @@ async def update_task(
     _user: dict = Depends(require_editor),
 ):
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags)).where(Task.id == task_id)
+        select(Task).options(selectinload(Task.tags), selectinload(Task.profile)).where(Task.id == task_id)
     )
     task = result.scalar_one_or_none()
     if task is None:
@@ -654,10 +671,23 @@ async def update_task(
             task.repeat_until = None
     if body.tags is not None:
         await _sync_tags(session, task, body.tags)
+    if body.profile_id is not None:
+        if body.profile_id == "null" or body.profile_id == "":
+            task.profile_id = None
+        else:
+            try:
+                pid = uuid.UUID(body.profile_id)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="Invalid profile_id format")
+            # Validate FK exists
+            prof = await session.execute(select(TaskProfile).where(TaskProfile.id == pid))
+            if not prof.scalar_one_or_none():
+                raise HTTPException(status_code=422, detail="Task profile not found")
+            task.profile_id = pid
 
     await session.commit()
-    await session.refresh(task, ["tags"])
-    resp = TaskResponse.from_task(task)
+    await session.refresh(task, ["tags", "profile"])
+    resp = TaskResponse.from_task(task, profile_name=task.profile.name if task.profile else None)
     await publish_event("task_updated", resp.model_dump(mode="json"))
     return resp
 
@@ -1378,6 +1408,147 @@ async def delete_skill_file(
     if not skill_file:
         raise HTTPException(status_code=404, detail="File not found")
     await session.delete(skill_file)
+    await session.commit()
+
+
+# --- Task Profiles CRUD ---
+
+VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+
+
+def _profile_to_dict(p: TaskProfile) -> dict:
+    return {
+        "id": str(p.id),
+        "name": p.name,
+        "description": p.description,
+        "match_rules": p.match_rules,
+        "model": p.model,
+        "system_prompt": p.system_prompt,
+        "max_turns": p.max_turns,
+        "reasoning_effort": p.reasoning_effort,
+        "mcp_servers": p.mcp_servers,
+        "litellm_mcp_servers": p.litellm_mcp_servers,
+        "skill_ids": p.skill_ids,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+@app.get("/api/task-profiles")
+async def list_task_profiles(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+    profiles = result.scalars().all()
+    return [_profile_to_dict(p) for p in profiles]
+
+
+@app.post("/api/task-profiles", status_code=201)
+async def create_task_profile(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name is required")
+
+    reasoning_effort = body.get("reasoning_effort")
+    if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid reasoning_effort '{reasoning_effort}'. Must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}",
+        )
+
+    # Check name uniqueness
+    result = await session.execute(select(TaskProfile).where(TaskProfile.name == name))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"Task profile with name '{name}' already exists")
+
+    profile = TaskProfile(
+        name=name,
+        description=body.get("description"),
+        match_rules=body.get("match_rules"),
+        model=body.get("model"),
+        system_prompt=body.get("system_prompt"),
+        max_turns=body.get("max_turns"),
+        reasoning_effort=reasoning_effort,
+        mcp_servers=body.get("mcp_servers"),
+        litellm_mcp_servers=body.get("litellm_mcp_servers"),
+        skill_ids=body.get("skill_ids"),
+    )
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+    return _profile_to_dict(profile)
+
+
+@app.get("/api/task-profiles/{profile_id}")
+async def get_task_profile(
+    profile_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(TaskProfile).where(TaskProfile.id == profile_id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Task profile not found")
+    return _profile_to_dict(profile)
+
+
+@app.put("/api/task-profiles/{profile_id}")
+async def update_task_profile(
+    profile_id: uuid.UUID,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(TaskProfile).where(TaskProfile.id == profile_id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Task profile not found")
+
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name is required")
+        # Check uniqueness if name changed
+        if name != profile.name:
+            dup = await session.execute(select(TaskProfile).where(TaskProfile.name == name))
+            if dup.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail=f"Task profile with name '{name}' already exists")
+        profile.name = name
+
+    if "reasoning_effort" in body:
+        re_val = body["reasoning_effort"]
+        if re_val is not None and re_val not in VALID_REASONING_EFFORTS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid reasoning_effort '{re_val}'. Must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}",
+            )
+        profile.reasoning_effort = re_val
+
+    for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
+        if field in body:
+            setattr(profile, field, body[field])
+
+    await session.commit()
+    await session.refresh(profile)
+    return _profile_to_dict(profile)
+
+
+@app.delete("/api/task-profiles/{profile_id}", status_code=204)
+async def delete_task_profile(
+    profile_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(select(TaskProfile).where(TaskProfile.id == profile_id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Task profile not found")
+    await session.delete(profile)
     await session.commit()
 
 

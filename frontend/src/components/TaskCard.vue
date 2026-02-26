@@ -122,6 +122,11 @@ const showOutputButton = computed(() => {
     >
       {{ relativeTime }}
     </p>
+    <div v-if="task.profile_name" class="mt-1 flex gap-1" data-testid="profile-badge">
+      <span class="inline-block rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700 font-medium">
+        {{ task.profile_name }}
+      </span>
+    </div>
     <div v-if="task.tags && task.tags.length > 0" class="mt-1.5 flex flex-wrap gap-1">
       <span
         v-for="tag in task.tags"
