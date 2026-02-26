@@ -111,6 +111,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/errand:${{ needs.version.outputs.tag }}
+          build-args: APP_VERSION=${{ needs.version.outputs.tag }}
 
   build-task-runner:
     needs: [version, test]

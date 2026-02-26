@@ -45,6 +45,7 @@ from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from scheduler import run_scheduler, release_lock
+from version_checker import run_version_checker, get_version_info
 from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
 
 security = HTTPBearer()
@@ -182,11 +183,13 @@ async def lifespan(app: FastAPI):
     slack_updater_task = asyncio.create_task(
         run_status_updater(get_valkey, async_session, _load_creds)
     )
+    version_checker_task = asyncio.create_task(run_version_checker())
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
     zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
+    version_checker_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -197,6 +200,10 @@ async def lifespan(app: FastAPI):
         pass  # Expected after explicit cancel()
     try:
         await slack_updater_task
+    except asyncio.CancelledError:
+        pass  # Expected after explicit cancel()
+    try:
+        await version_checker_task
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     await release_lock()
@@ -219,6 +226,11 @@ app.include_router(local_auth_router)
 app.include_router(slack_router)
 
 app.mount("/mcp", create_mcp_app())
+
+
+@app.get("/api/version")
+async def api_version():
+    return get_version_info()
 
 
 # --- Auth helpers ---
