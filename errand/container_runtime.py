@@ -822,9 +822,11 @@ class AppleContainerRuntime(ContainerRuntime):
             f"{self.bridge_url}/containers/{container_id}/status",
         )
         status_resp.raise_for_status()
-        exit_code = status_resp.json().get("exitCode", -1)
+        status_data = status_resp.json()
+        exit_code = status_data.get("exitCode", -1)
         if exit_code is None:
             exit_code = -1
+        stderr = status_data.get("logs", "")
 
         output_resp = self._session.get(
             f"{self.bridge_url}/containers/{container_id}/output",
@@ -832,7 +834,7 @@ class AppleContainerRuntime(ContainerRuntime):
         output_resp.raise_for_status()
         stdout = output_resp.json().get("output", "")
 
-        return exit_code, stdout, ""
+        return exit_code, stdout, stderr
 
     def cleanup(self, handle: RuntimeHandle) -> None:
         container_id = handle.runtime_data.get("container_id")

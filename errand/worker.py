@@ -396,11 +396,12 @@ async def read_settings(session: AsyncSession) -> dict:
         "skills_git_repo": None,
         "hindsight_url": "",
         "hindsight_bank_id": "",
+        "litellm_mcp_servers": [],
     }
 
     result = await session.execute(
         select(Setting).where(
-            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "mcp_api_key", "ssh_private_key", "git_ssh_hosts", "skills_git_repo", "hindsight_url", "hindsight_bank_id"])
+            Setting.key.in_(["mcp_servers", "credentials", "task_processing_model", "system_prompt", "task_runner_log_level", "mcp_api_key", "ssh_private_key", "git_ssh_hosts", "skills_git_repo", "hindsight_url", "hindsight_bank_id", "litellm_mcp_servers"])
         )
     )
     for setting in result.scalars().all():
@@ -430,6 +431,8 @@ async def read_settings(session: AsyncSession) -> dict:
             settings["hindsight_url"] = str(setting.value) if setting.value else ""
         elif setting.key == "hindsight_bank_id":
             settings["hindsight_bank_id"] = str(setting.value) if setting.value else ""
+        elif setting.key == "litellm_mcp_servers":
+            settings["litellm_mcp_servers"] = setting.value if isinstance(setting.value, list) else []
 
     # Query skills from dedicated tables
     skill_result = await session.execute(
@@ -817,6 +820,19 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                     pod_ip = os.environ.get("POD_IP", "localhost")
                     pw_url = f"http://{pod_ip}:{PLAYWRIGHT_PORT}/mcp"
                 mcp_servers["mcpServers"]["playwright"] = {"url": pw_url}
+
+        # Inject LiteLLM MCP gateway if enabled servers exist
+        litellm_enabled = settings.get("litellm_mcp_servers", [])
+        if litellm_enabled and openai_base_url:
+            mcp_servers.setdefault("mcpServers", {})
+            if "litellm" not in mcp_servers["mcpServers"]:
+                litellm_headers = {"x-mcp-servers": ",".join(litellm_enabled)}
+                if openai_api_key:
+                    litellm_headers["Authorization"] = f"Bearer {openai_api_key}"
+                mcp_servers["mcpServers"]["litellm"] = {
+                    "url": f"{openai_base_url.rstrip('/')}/mcp",
+                    "headers": litellm_headers,
+                }
 
         # Merge DB skills with git-sourced skills if configured
         skills = settings.get("skills", [])

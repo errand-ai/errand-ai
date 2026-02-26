@@ -3153,3 +3153,141 @@ def test_repo_context_instructions_after_skill_manifest():
     skills_pos = system_prompt_content.index("## Skills")
     repo_context_pos = system_prompt_content.index("## Repo Context Discovery")
     assert repo_context_pos > skills_pos
+
+
+# --- LiteLLM MCP injection ---
+
+
+def test_litellm_mcp_injected_when_enabled():
+    """When litellm_mcp_servers has entries and openai_base_url is set, litellm is injected."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "litellm_mcp_servers": ["argocd", "perplexity"],
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "https://litellm.example.com",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "litellm" in mcp_config["mcpServers"]
+    litellm_entry = mcp_config["mcpServers"]["litellm"]
+    assert litellm_entry["url"] == "https://litellm.example.com/mcp"
+    assert litellm_entry["headers"]["Authorization"] == "Bearer sk-test"
+    assert litellm_entry["headers"]["x-mcp-servers"] == "argocd,perplexity"
+
+
+def test_litellm_mcp_not_injected_when_empty():
+    """When litellm_mcp_servers is empty, no litellm entry is added."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "litellm_mcp_servers": [],
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "https://litellm.example.com",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "litellm" not in mcp_config.get("mcpServers", {})
+
+
+def test_litellm_mcp_not_injected_when_no_base_url():
+    """When openai_base_url is not set, no litellm entry is added."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "litellm_mcp_servers": ["argocd"],
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {}, clear=True):
+            # Ensure no OPENAI_BASE_URL in env
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "litellm" not in mcp_config.get("mcpServers", {})
+
+
+def test_litellm_mcp_manual_override_preserved():
+    """When user has manually configured a litellm key, it is preserved."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"litellm": {"url": "http://custom:4000/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "litellm_mcp_servers": ["argocd"],
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "https://litellm.example.com",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    # Manual entry should be preserved, not overwritten
+    assert mcp_config["mcpServers"]["litellm"]["url"] == "http://custom:4000/mcp"

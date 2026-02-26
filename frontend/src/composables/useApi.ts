@@ -247,3 +247,22 @@ export async function verifyPlatformCredentials(platformId: string): Promise<{ s
   if (!res.ok) throw new Error(`Failed to verify credentials: ${res.status}`)
   return res.json()
 }
+
+export interface LitellmMcpServer {
+  alias: string
+  server_name?: string
+  description?: string
+  tools: string[]
+}
+
+export interface LitellmMcpResponse {
+  available: boolean
+  servers: Record<string, LitellmMcpServer>
+  enabled: string[]
+}
+
+export async function fetchLitellmMcpServers(): Promise<LitellmMcpResponse> {
+  const res = await authFetch(`${BASE}/litellm/mcp-servers`)
+  if (!res.ok) throw new Error(`Failed to fetch LiteLLM MCP servers: ${res.status}`)
+  return res.json()
+}
