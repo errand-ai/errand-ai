@@ -441,7 +441,7 @@ onMounted(() => {
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 data-testid="profile-reasoning-effort-select"
               >
-                <option value="">Use default{{ defaultReasoningEffort ? ` (${defaultReasoningEffort})` : '' }}</option>
+                <option value="">Use default{{ defaultReasoningEffort ? ` (${defaultReasoningEffort})` : ' (not set)' }}</option>
                 <option v-for="opt in reasoningEffortOptions.filter(o => o)" :key="opt" :value="opt">{{ opt }}</option>
               </select>
             </div>
@@ -453,7 +453,7 @@ onMounted(() => {
                 type="number"
                 min="1"
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                :placeholder="defaultMaxTurns ? `Use default (${defaultMaxTurns})` : 'Use default'"
+                :placeholder="defaultMaxTurns ? `Use default (${defaultMaxTurns})` : 'Use default (not set)'"
                 data-testid="profile-max-turns-input"
               />
             </div>
