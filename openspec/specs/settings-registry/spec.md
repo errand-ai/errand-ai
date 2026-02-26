@@ -43,3 +43,14 @@ When a `PUT /api/settings` request includes a key whose value is sourced from an
 #### Scenario: Attempt to override env-sourced setting
 - **WHEN** an admin sends `PUT /api/settings` with `{"openai_api_key": "sk-new"}` and the key is env-sourced
 - **THEN** the write is silently ignored and the response shows the env-sourced value unchanged
+
+### Requirement: litellm_mcp_servers setting
+The settings registry SHALL include a `litellm_mcp_servers` entry with no environment variable mapping, `sensitive: false`, and a default value of an empty list `[]`. The value SHALL be a JSON array of server alias strings.
+
+#### Scenario: Default value
+- **WHEN** no database entry exists for `litellm_mcp_servers` and no env var is mapped
+- **THEN** the resolved value is `[]` with `source: "default"`
+
+#### Scenario: Database value
+- **WHEN** the database contains `litellm_mcp_servers` = `["argocd", "perplexity"]`
+- **THEN** the resolved value is `["argocd", "perplexity"]` with `source: "database"`
