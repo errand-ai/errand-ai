@@ -48,7 +48,6 @@ function makeRouter() {
 }
 
 function stubFetch(versionResponse: { ok: boolean; json?: () => Promise<unknown> }) {
-  let callCount = 0
   vi.stubGlobal('fetch', vi.fn((url: string) => {
     if (url === '/api/auth/status') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ mode: 'local' }) })
