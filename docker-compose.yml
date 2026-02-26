@@ -80,6 +80,7 @@ services:
       TWITTER_ACCESS_SECRET: ${TWITTER_ACCESS_SECRET:-}
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: changeme
+      MAX_TURNS: "200"
     depends_on:
       migrate:
         condition: service_completed_successfully

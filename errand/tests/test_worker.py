@@ -166,6 +166,11 @@ def _make_mock_task(**overrides):
         tag.name = t
         mock_tags.append(tag)
     task.tags = mock_tags
+    task.questions = overrides.get("questions", None)
+    task.heartbeat_at = overrides.get("heartbeat_at", None)
+    task.profile_id = overrides.get("profile_id", None)
+    task.created_by = overrides.get("created_by", None)
+    task.updated_by = overrides.get("updated_by", None)
     task.created_at = MagicMock()
     task.created_at.isoformat.return_value = overrides.get("created_at_iso", "2026-01-01T00:00:00")
     task.updated_at = MagicMock()
@@ -295,6 +300,23 @@ async def db_session():
             )
         """))
         await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS task_profiles (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                match_rules TEXT,
+                model TEXT,
+                system_prompt TEXT,
+                max_turns INTEGER,
+                reasoning_effort TEXT,
+                mcp_servers TEXT,
+                litellm_mcp_servers TEXT,
+                skill_ids TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -310,6 +332,7 @@ async def db_session():
                 questions TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
                 heartbeat_at DATETIME,
+                profile_id VARCHAR(36),
                 created_by TEXT,
                 updated_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -366,6 +389,23 @@ async def retry_session_factory(db_session):
 
     async with engine.begin() as conn:
         await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS task_profiles (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                match_rules TEXT,
+                model TEXT,
+                system_prompt TEXT,
+                max_turns INTEGER,
+                reasoning_effort TEXT,
+                mcp_servers TEXT,
+                litellm_mcp_servers TEXT,
+                skill_ids TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )
+        """))
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id VARCHAR(36) NOT NULL PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -381,6 +421,7 @@ async def retry_session_factory(db_session):
                 questions TEXT,
                 retry_count INTEGER DEFAULT 0 NOT NULL,
                 heartbeat_at DATETIME,
+                profile_id VARCHAR(36),
                 created_by TEXT,
                 updated_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1359,6 +1400,7 @@ def _make_completed_repeating_task(**overrides):
     task.category = overrides.get("category", "repeating")
     task.repeat_interval = overrides.get("repeat_interval", "30m")
     task.repeat_until = overrides.get("repeat_until", None)
+    task.profile_id = overrides.get("profile_id", None)
     task.tags = overrides.get("tags", [])
     return task
 
@@ -2047,6 +2089,23 @@ class TestGitFailureRetry:
                 )
             """))
             await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS task_profiles (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    match_rules TEXT,
+                    model TEXT,
+                    system_prompt TEXT,
+                    max_turns INTEGER,
+                    reasoning_effort TEXT,
+                    mcp_servers TEXT,
+                    litellm_mcp_servers TEXT,
+                    skill_ids TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                )
+            """))
+            await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id VARCHAR(36) NOT NULL PRIMARY KEY,
                     title TEXT NOT NULL,
@@ -2061,6 +2120,7 @@ class TestGitFailureRetry:
                     runner_logs TEXT,
                     questions TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
+                    profile_id VARCHAR(36),
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
                 )

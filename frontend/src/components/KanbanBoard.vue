@@ -152,7 +152,7 @@ function onEdit(task: TaskData) {
   editingTask.value = { ...task }
 }
 
-async function onSave(data: { title: string; description?: string; status: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
+async function onSave(data: { title: string; description?: string; status: TaskStatus; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string; profile_id?: string | null }) {
   if (!editingTask.value) return
   try {
     await store.updateTask(editingTask.value.id, data)

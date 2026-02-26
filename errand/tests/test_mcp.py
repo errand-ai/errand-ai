@@ -23,6 +23,21 @@ FAKE_ADMIN_CLAIMS = {
 }
 
 _TABLES_SQL = [
+    """CREATE TABLE IF NOT EXISTS task_profiles (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        match_rules TEXT,
+        model TEXT,
+        system_prompt TEXT,
+        max_turns INTEGER,
+        reasoning_effort TEXT,
+        mcp_servers TEXT,
+        litellm_mcp_servers TEXT,
+        skill_ids TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )""",
     """CREATE TABLE IF NOT EXISTS tasks (
         id VARCHAR(36) NOT NULL PRIMARY KEY,
         title TEXT NOT NULL,
@@ -38,6 +53,7 @@ _TABLES_SQL = [
         questions TEXT,
         retry_count INTEGER DEFAULT 0 NOT NULL,
         heartbeat_at DATETIME,
+        profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
         created_by TEXT,
         updated_by TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -288,6 +304,7 @@ async def test_new_task_tool(db_session):
             "execute_at": None,
             "repeat_interval": None,
             "repeat_until": None,
+            "profile": None,
         })()
         mock_gen.return_value = mock_result
 
@@ -558,6 +575,7 @@ async def test_schedule_task_long_description_uses_llm(db_session):
             "execute_at": None,
             "repeat_interval": None,
             "repeat_until": None,
+            "profile": None,
         })()
         mock_gen.return_value = mock_result
 

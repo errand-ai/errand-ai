@@ -13,8 +13,8 @@ from starlette.applications import Starlette
 
 from database import async_session
 from events import publish_event
-from llm import generate_title
-from models import Setting, Task
+from llm import generate_title, ProfileInfo
+from models import Setting, Task, TaskProfile
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,21 @@ async def new_task(description: str) -> str:
         words = description.strip().split()
 
         category = "immediate"
+        resolved_profile_id = None
         if len(words) > 5:
-            llm_result = await generate_title(description, session)
+            # Load profiles for classification
+            prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+            db_profiles = prof_result.scalars().all()
+            profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+
+            llm_result = await generate_title(description, session, profiles=profile_infos)
             title = llm_result.title
             category = llm_result.category or "immediate"
+
+            # Resolve profile name to ID
+            if llm_result.profile and db_profiles:
+                profile_map = {p.name: p.id for p in db_profiles}
+                resolved_profile_id = profile_map.get(llm_result.profile)
         else:
             title = description.strip()
 
@@ -87,6 +98,7 @@ async def new_task(description: str) -> str:
             category=category,
             status=status,
             position=position,
+            profile_id=resolved_profile_id,
             created_by="mcp",
         )
         session.add(task)
@@ -106,6 +118,8 @@ async def new_task(description: str) -> str:
             "output": None,
             "runner_logs": None,
             "retry_count": 0,
+            "profile_id": str(task.profile_id) if task.profile_id else None,
+            "profile_name": None,
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
@@ -173,8 +187,9 @@ async def schedule_task(
     execute_at: str,
     repeat_interval: str | None = None,
     repeat_until: str | None = None,
+    profile: str | None = None,
 ) -> str:
-    """Create a scheduled or repeating task. Returns the task UUID."""
+    """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID."""
     try:
         parsed_execute_at = datetime.fromisoformat(execute_at)
     except ValueError:
@@ -188,6 +203,15 @@ async def schedule_task(
             return f"Error: Invalid repeat_until datetime format: '{repeat_until}'. Use ISO 8601 format (e.g. '2026-06-01T00:00:00Z')."
 
     async with async_session() as session:
+        # Resolve profile name to ID
+        resolved_profile_id = None
+        if profile:
+            prof_result = await session.execute(select(TaskProfile).where(TaskProfile.name == profile))
+            found = prof_result.scalar_one_or_none()
+            if not found:
+                return f"Error: Task profile '{profile}' not found."
+            resolved_profile_id = found.id
+
         words = description.strip().split()
 
         if len(words) > 5:
@@ -214,6 +238,7 @@ async def schedule_task(
             execute_at=parsed_execute_at,
             repeat_interval=repeat_interval,
             repeat_until=parsed_repeat_until,
+            profile_id=resolved_profile_id,
             created_by="mcp",
         )
         session.add(task)
@@ -233,6 +258,8 @@ async def schedule_task(
             "output": None,
             "runner_logs": None,
             "retry_count": 0,
+            "profile_id": str(task.profile_id) if task.profile_id else None,
+            "profile_name": None,
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),

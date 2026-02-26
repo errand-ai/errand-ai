@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     questions TEXT,
     retry_count INTEGER DEFAULT 0 NOT NULL,
     heartbeat_at DATETIME,
+    profile_id VARCHAR(36),
     created_by TEXT,
     updated_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -84,8 +85,28 @@ CREATE TABLE IF NOT EXISTS slack_message_refs (
 """
 
 
+_TASK_PROFILES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_profiles (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    match_rules TEXT,
+    model TEXT,
+    system_prompt TEXT,
+    max_turns INTEGER,
+    reasoning_effort TEXT,
+    mcp_servers TEXT,
+    litellm_mcp_servers TEXT,
+    skill_ids TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+
 async def _create_tables(engine):
     async with engine.begin() as conn:
+        await conn.execute(text(_TASK_PROFILES_TABLE_SQL))
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_SETTINGS_TABLE_SQL))
         await conn.execute(text(_TAGS_TABLE_SQL))

@@ -68,6 +68,10 @@ spec:
                   name: {{ .Values.credentialEncryption.existingSecret }}
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
+            {{- if .Values.worker.maxTurns }}
+            - name: MAX_TURNS
+              value: {{ .Values.worker.maxTurns | quote }}
+            {{- end }}
           {{- if .Values.twitter.existingSecret }}
           envFrom:
             - secretRef:

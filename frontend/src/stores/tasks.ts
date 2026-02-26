@@ -98,7 +98,7 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string }) {
+  async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string; profile_id?: string | null }) {
     try {
       await apiUpdateTask(id, data)
       error.value = null

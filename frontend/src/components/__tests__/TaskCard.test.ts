@@ -17,6 +17,8 @@ const task: TaskData = {
   runner_logs: null,
   questions: null,
   retry_count: 0,
+  profile_id: null,
+  profile_name: null,
   tags: [],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
@@ -281,5 +283,21 @@ describe('TaskCard', () => {
     const wrapper = mount(TaskCard, { props: { task } })
     await wrapper.find('button[title="Delete task"]').trigger('click')
     expect(wrapper.emitted('delete')).toHaveLength(1)
+  })
+
+  // --- Profile badge ---
+
+  it('shows profile badge when profile_name is set', () => {
+    const taskWithProfile: TaskData = { ...task, profile_id: 'abc-123', profile_name: 'email-triage' }
+    const wrapper = mount(TaskCard, { props: { task: taskWithProfile } })
+    const badge = wrapper.find('[data-testid="profile-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('email-triage')
+  })
+
+  it('hides profile badge when profile_name is null', () => {
+    const wrapper = mount(TaskCard, { props: { task } })
+    const badge = wrapper.find('[data-testid="profile-badge"]')
+    expect(badge.exists()).toBe(false)
   })
 })
