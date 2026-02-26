@@ -56,7 +56,13 @@ function mockFetch(responses: Record<string, any> = {}) {
       return { ok: true, status: 204 }
     }
     if (url === '/api/settings') {
-      return { ok: true, status: 200, json: () => Promise.resolve({}) }
+      return { ok: true, status: 200, json: () => Promise.resolve({ task_processing_model: { value: 'claude-sonnet-4-5-20250929', source: 'default' } }) }
+    }
+    if (url === '/api/llm/models') {
+      return { ok: true, status: 200, json: () => Promise.resolve(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929']) }
+    }
+    if (url === '/api/worker/defaults') {
+      return { ok: true, status: 200, json: () => Promise.resolve({ max_turns: '200', reasoning_effort: null }) }
     }
     if (url === '/api/litellm/mcp-servers') {
       return { ok: true, status: 200, json: () => Promise.resolve({ available: false, servers: {}, enabled: [] }) }

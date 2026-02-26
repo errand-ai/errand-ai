@@ -867,6 +867,15 @@ async def regenerate_mcp_key(
     return {"mcp_api_key": new_key}
 
 
+@app.get("/api/worker/defaults")
+async def get_worker_defaults(_user: dict = Depends(require_admin)):
+    """Return runtime defaults for worker settings (env vars not visible in settings UI)."""
+    return {
+        "max_turns": os.environ.get("MAX_TURNS", "") or None,
+        "reasoning_effort": os.environ.get("REASONING_EFFORT", "") or None,
+    }
+
+
 # --- LiteLLM MCP discovery ---
 
 LITELLM_SENSITIVE_FIELDS = {

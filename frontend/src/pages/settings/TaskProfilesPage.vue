@@ -7,6 +7,7 @@ import {
   updateTaskProfile,
   deleteTaskProfile,
   fetchLitellmMcpServers,
+  fetchLlmModels,
   type TaskProfile,
 } from '../../composables/useApi'
 import { useAuthStore } from '../../stores/auth'
@@ -20,7 +21,11 @@ const error = ref<string | null>(null)
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 
-// Available options for three-state selectors
+// Available options for dropdowns and three-state selectors
+const availableModels = ref<string[]>([])
+const defaultModel = ref('')
+const defaultMaxTurns = ref<string>('')
+const defaultReasoningEffort = ref('')
 const availableMcpServers = ref<string[]>([])
 const availableLitellmServers = ref<string[]>([])
 const availableSkills = ref<{ id: string; name: string }[]>([])
@@ -83,12 +88,19 @@ async function loadProfiles() {
   }
 }
 
+function extractSettingValue(data: any, key: string, fallback: string = ''): string {
+  const entry = data[key]
+  if (entry && typeof entry === 'object' && 'value' in entry) return entry.value ?? fallback
+  return entry ?? fallback
+}
+
 async function loadOptions() {
   try {
-    // Load MCP server names from settings
+    // Load settings for defaults and MCP server names
     const settingsRes = await authFetch('/api/settings')
     if (settingsRes.ok) {
       const data = await settingsRes.json()
+      defaultModel.value = extractSettingValue(data, 'task_processing_model', '')
       const mcpRaw = data.mcp_servers?.value ?? data.mcp_servers
       if (mcpRaw && typeof mcpRaw === 'object') {
         const servers = mcpRaw.mcpServers
@@ -96,6 +108,20 @@ async function loadOptions() {
           availableMcpServers.value = Object.keys(servers)
         }
       }
+    }
+  } catch { /* ignore */ }
+
+  try {
+    availableModels.value = await fetchLlmModels()
+  } catch { /* ignore */ }
+
+  try {
+    // Load runtime defaults from worker config endpoint
+    const runtimeRes = await authFetch('/api/worker/defaults')
+    if (runtimeRes.ok) {
+      const data = await runtimeRes.json()
+      defaultMaxTurns.value = data.max_turns ?? ''
+      defaultReasoningEffort.value = data.reasoning_effort ?? ''
     }
   } catch { /* ignore */ }
 
@@ -397,13 +423,15 @@ onMounted(() => {
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
-              <input
+              <select
                 v-model="formModel"
-                type="text"
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="Leave blank to inherit default"
                 data-testid="profile-model-input"
-              />
+              >
+                <option value="">Use default{{ defaultModel ? ` (${defaultModel})` : '' }}</option>
+                <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
+                <option v-if="formModel && !availableModels.includes(formModel)" :value="formModel">{{ formModel }}</option>
+              </select>
             </div>
 
             <div>
@@ -413,7 +441,7 @@ onMounted(() => {
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 data-testid="profile-reasoning-effort-select"
               >
-                <option value="">Inherit default</option>
+                <option value="">Use default{{ defaultReasoningEffort ? ` (${defaultReasoningEffort})` : '' }}</option>
                 <option v-for="opt in reasoningEffortOptions.filter(o => o)" :key="opt" :value="opt">{{ opt }}</option>
               </select>
             </div>
@@ -425,7 +453,7 @@ onMounted(() => {
                 type="number"
                 min="1"
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="Inherit default"
+                :placeholder="defaultMaxTurns ? `Use default (${defaultMaxTurns})` : 'Use default'"
                 data-testid="profile-max-turns-input"
               />
             </div>
