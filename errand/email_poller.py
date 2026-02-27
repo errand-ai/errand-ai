@@ -37,14 +37,17 @@ async def connect_imap(credentials: dict) -> tuple[aioimaplib.IMAP4_SSL | aioima
     password = credentials["password"]
     security = credentials.get("security", "ssl")
 
-    if security == "ssl":
+    # Determine IMAP security from port (993=SSL, 143=STARTTLS, else follow toggle)
+    use_ssl = port == 993 or (port != 143 and security == "ssl")
+
+    if use_ssl:
         imap = aioimaplib.IMAP4_SSL(host=host, port=port)
     else:
         imap = aioimaplib.IMAP4(host=host, port=port)
 
     await imap.wait_hello_from_server()
 
-    if security == "starttls":
+    if not use_ssl:
         await imap.starttls()
 
     await imap.login(username, password)

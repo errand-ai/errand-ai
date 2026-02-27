@@ -344,13 +344,16 @@ async def _connect_imap(creds: dict):
     port = int(creds["imap_port"])
     security = creds.get("security", "ssl")
 
-    if security == "ssl":
+    # Determine IMAP security from port (993=SSL, 143=STARTTLS, else follow toggle)
+    use_ssl = port == 993 or (port != 143 and security == "ssl")
+
+    if use_ssl:
         imap = aioimaplib.IMAP4_SSL(host=host, port=port)
     else:
         imap = aioimaplib.IMAP4(host=host, port=port)
     await imap.wait_hello_from_server()
 
-    if security == "starttls":
+    if not use_ssl:
         await imap.starttls()
 
     await imap.login(creds["username"], creds["password"])
@@ -674,11 +677,12 @@ async def send_email(to: str, subject: str, body: str) -> str:
         smtp_host = creds["smtp_host"]
         smtp_port = int(creds["smtp_port"])
         security = creds.get("security", "ssl")
-        use_tls = security == "ssl"
+        # Determine SMTP security from port (465=SSL, 587/25=STARTTLS, else follow toggle)
+        smtp_use_ssl = smtp_port == 465 or (smtp_port not in (587, 25) and security == "ssl")
 
-        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=use_tls)
+        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=smtp_use_ssl)
         await smtp.connect()
-        if security == "starttls":
+        if not smtp_use_ssl:
             await smtp.starttls()
         await smtp.login(creds["username"], creds["password"])
         await smtp.send_message(msg)
@@ -754,11 +758,12 @@ async def forward_email(message_uid: str, to: str, folder: str = "INBOX") -> str
         smtp_host = creds["smtp_host"]
         smtp_port = int(creds["smtp_port"])
         security = creds.get("security", "ssl")
-        use_tls = security == "ssl"
+        # Determine SMTP security from port (465=SSL, 587/25=STARTTLS, else follow toggle)
+        smtp_use_ssl = smtp_port == 465 or (smtp_port not in (587, 25) and security == "ssl")
 
-        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=use_tls)
+        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=smtp_use_ssl)
         await smtp.connect()
-        if security == "starttls":
+        if not smtp_use_ssl:
             await smtp.starttls()
         await smtp.login(creds["username"], creds["password"])
         await smtp.send_message(msg)

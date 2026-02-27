@@ -94,6 +94,8 @@ class TestEmailPlatformVerifyCredentials:
     @pytest.mark.asyncio
     async def test_verify_credentials_starttls(self, credentials):
         credentials["security"] = "starttls"
+        credentials["imap_port"] = "143"
+        credentials["smtp_port"] = "587"
         platform = EmailPlatform()
 
         mock_imap = AsyncMock()
@@ -108,7 +110,9 @@ class TestEmailPlatformVerifyCredentials:
             result = await platform.verify_credentials(credentials)
 
         assert result is True
+        mock_aioimaplib.IMAP4.assert_called_once_with(host="imap.example.com", port=143)
         mock_imap.starttls.assert_awaited_once()
+        mock_aiosmtplib.SMTP.assert_called_once_with(hostname="smtp.example.com", port=587, use_tls=False)
         mock_smtp.starttls.assert_awaited_once()
 
     @pytest.mark.asyncio
