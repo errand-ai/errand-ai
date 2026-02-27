@@ -71,6 +71,7 @@ class TestEmailPlatformVerifyCredentials:
         platform = EmailPlatform()
 
         mock_imap = AsyncMock()
+        mock_imap.login.return_value = MagicMock(result="OK")
         mock_smtp = AsyncMock()
 
         with patch("platforms.email.aioimaplib") as mock_aioimaplib, \
@@ -99,6 +100,7 @@ class TestEmailPlatformVerifyCredentials:
         platform = EmailPlatform()
 
         mock_imap = AsyncMock()
+        mock_imap.login.return_value = MagicMock(result="OK")
         mock_smtp = AsyncMock()
 
         with patch("platforms.email.aioimaplib") as mock_aioimaplib, \
@@ -112,8 +114,8 @@ class TestEmailPlatformVerifyCredentials:
         assert result is True
         mock_aioimaplib.IMAP4.assert_called_once_with(host="imap.example.com", port=143)
         mock_imap.starttls.assert_awaited_once()
-        mock_aiosmtplib.SMTP.assert_called_once_with(hostname="smtp.example.com", port=587, use_tls=False)
-        mock_smtp.starttls.assert_awaited_once()
+        mock_aiosmtplib.SMTP.assert_called_once_with(hostname="smtp.example.com", port=587, use_tls=False, start_tls=True)
+        mock_smtp.starttls.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_verify_credentials_imap_failure(self, credentials):

@@ -70,7 +70,10 @@ class EmailPlatform(Platform):
             if imap_use_starttls:
                 await imap.starttls()
 
-            await imap.login(username, password)
+            login_resp = await imap.login(username, password)
+            if login_resp.result != "OK":
+                logger.error("IMAP login failed: %s", login_resp.lines)
+                return False
             await imap.select("INBOX")
             await imap.logout()
         except Exception:
@@ -88,10 +91,9 @@ class EmailPlatform(Platform):
                 hostname=smtp_host,
                 port=smtp_port,
                 use_tls=smtp_use_ssl,
+                start_tls=not smtp_use_ssl,
             )
             await smtp.connect()
-            if not smtp_use_ssl:
-                await smtp.starttls()
             await smtp.login(username, password)
             await smtp.quit()
         except Exception:
