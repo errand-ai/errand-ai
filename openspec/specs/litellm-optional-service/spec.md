@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Optional LiteLLM container as a managed service for the macOS app, with toggle and model provider configuration.
+
+## Requirements
 
 ### Requirement: LiteLLM as an optional managed service
 The app SHALL support running a LiteLLM container as an optional service, toggled on/off in settings. When enabled, LiteLLM SHALL be started before the backend and worker, and the backend and worker SHALL use LiteLLM's URL as their `OPENAI_BASE_URL`. When disabled, the backend and worker SHALL use the user's direct `OPENAI_BASE_URL` from settings.

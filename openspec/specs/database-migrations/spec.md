@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Alembic database migrations for schema changes including new columns and tables.
+
+## Requirements
 
 ### Requirement: Migration adds runner_logs column
 An Alembic migration SHALL add a `runner_logs` column to the `tasks` table. The column SHALL be of type `Text`, nullable, with no default value. The migration SHALL be backward-compatible — existing rows receive NULL and existing backend replicas continue to function.

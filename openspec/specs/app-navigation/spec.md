@@ -1,3 +1,7 @@
+## Purpose
+
+Persistent header navigation bar with links to Board, Archived, and Settings pages with active-route highlighting.
+
 ## Requirements
 
 ### Requirement: Persistent header navigation bar

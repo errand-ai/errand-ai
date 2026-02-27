@@ -1,3 +1,7 @@
+## Purpose
+
+Backend endpoint for discovering MCP servers available on a LiteLLM proxy instance and managing user selections.
+
 ## Requirements
 
 ### Requirement: LiteLLM MCP server discovery endpoint

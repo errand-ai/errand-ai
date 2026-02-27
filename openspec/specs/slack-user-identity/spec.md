@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Slack user ID to email resolution via the Slack Web API with in-memory caching.
+
+## Requirements
 
 ### Requirement: Slack user email resolution
 The system SHALL provide a function in `backend/platforms/slack/identity.py` that resolves a Slack `user_id` to an email address by calling the Slack Web API `users.info` method. The function SHALL use the Slack bot token from encrypted credentials. The function SHALL return the email from `response.user.profile.email`. If the email is not available (user has no email, or the bot lacks the `users:read.email` scope), the function SHALL return `None`.

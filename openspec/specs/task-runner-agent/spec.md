@@ -1,3 +1,7 @@
+## Purpose
+
+Task runner Python application — reads configuration, executes a ReAct agent via the OpenAI Agents SDK, and produces structured output.
+
 ## Requirements
 
 ### Requirement: Task runner Python application

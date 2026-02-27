@@ -1,3 +1,7 @@
+## Purpose
+
+Search and filter controls for the Archived Tasks page — text search, status dropdown, and result count.
+
 ## Requirements
 
 ### Requirement: Archived tasks search and filter controls

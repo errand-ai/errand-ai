@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Keycloak OIDC integration — discovery, login/callback/logout endpoints, JWT validation, and role extraction.
+
+## Requirements
 
 ### Requirement: OIDC discovery at startup
 The backend SHALL fetch the OIDC configuration from the discovery URL at startup and cache the authorization endpoint, token endpoint, JWKS URI, and end-session endpoint. If the discovery fetch fails and OIDC is configured, the backend SHALL log an error and start without SSO (falling back to local auth) rather than failing to start entirely.

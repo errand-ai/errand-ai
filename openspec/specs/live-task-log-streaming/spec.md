@@ -1,3 +1,7 @@
+## Purpose
+
+Live log viewer button on task cards and WebSocket-based real-time log streaming from running task runners.
+
 ## Requirements
 
 ### Requirement: Live log viewer button on running task cards

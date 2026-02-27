@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+GitHub Actions CI pipeline with multi-stage Docker builds, Helm chart packaging, and version tagging for PRs and main.
+
+## Requirements
 
 ### Requirement: Multi-stage Docker builds
 The CI pipeline SHALL use a multi-stage Dockerfile for the application image: a Node.js stage to build the frontend assets, a Python build stage to install dependencies, and a slim Python runtime as the final stage. The Dockerfile SHALL copy source from `errand/` (not `backend/`). The task runner SHALL continue to use its own Dockerfile. The Dockerfile SHALL accept an `APP_VERSION` build argument and set it as an environment variable in the final image. CI SHALL pass the computed version tag (including `-prN` suffix for PR builds) as `--build-arg APP_VERSION=<tag>` when building the application image.

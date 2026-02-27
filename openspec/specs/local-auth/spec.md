@@ -1,3 +1,7 @@
+## Purpose
+
+Local authentication with bcrypt password hashing, JWT issuance, and a local_users database table.
+
 ## Requirements
 
 ### Requirement: Local user database table

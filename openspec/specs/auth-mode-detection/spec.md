@@ -1,3 +1,7 @@
+## Purpose
+
+Backend endpoint for detecting the current authentication mode (setup, local, or SSO) without requiring authentication.
+
 ## Requirements
 
 ### Requirement: Auth status endpoint

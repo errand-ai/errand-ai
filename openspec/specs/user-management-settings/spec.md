@@ -1,3 +1,7 @@
+## Purpose
+
+Settings sub-page for authentication mode configuration and local admin account management.
+
 ## Requirements
 
 ### Requirement: User Management settings sub-page

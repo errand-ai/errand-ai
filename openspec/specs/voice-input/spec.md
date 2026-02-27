@@ -1,3 +1,9 @@
+## Purpose
+
+Microphone recording button for voice-to-text task creation using the MediaRecorder API and backend transcription.
+
+## Requirements
+
 ### Requirement: Microphone recording button
 
 The task creation form SHALL display a microphone icon button adjacent to the text input, but only when two conditions are met: (1) the browser supports the `MediaRecorder` API, and (2) the backend reports transcription is enabled via `GET /api/transcribe/status`. If either condition is not met, the microphone button SHALL NOT be rendered.

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Slack interactivity endpoint for handling button clicks and menu selections on task messages.
+
+## Requirements
 
 ### Requirement: Slack interactions endpoint
 

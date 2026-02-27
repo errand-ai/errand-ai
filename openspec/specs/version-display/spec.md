@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Frontend header component displaying the deployed version with an update-available indicator.
+
+## Requirements
 
 ### Requirement: Version displayed in header
 The frontend header SHALL display the current deployed version as text, positioned to the left of the GitHub link in the header's right-aligned section. The version SHALL be prefixed with `v` (e.g., `v0.65.0`). The text SHALL use a muted style consistent with the existing GitHub link.

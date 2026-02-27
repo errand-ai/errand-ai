@@ -1,3 +1,7 @@
+## Purpose
+
+Pytest test infrastructure using async SQLite, httpx, and FastAPI dependency overrides for backend unit testing.
+
 ## Requirements
 
 ### Requirement: Backend test infrastructure

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Task REST API extensions including profile_id field, task listing, creation, and status updates.
+
+## Requirements
 
 ### Requirement: Task model includes profile_id
 The Task model SHALL include a `profile_id` field (UUID, nullable) as a foreign key to `task_profiles.id` with `ON DELETE SET NULL`. The field SHALL be included in all task API responses. The field SHALL be writable via `PATCH /api/tasks/{id}`.

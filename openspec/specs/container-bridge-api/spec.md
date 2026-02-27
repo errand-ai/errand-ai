@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Local HTTP bridge API for the macOS app to manage task-runner containers on behalf of the worker.
+
+## Requirements
 
 ### Requirement: Local HTTP bridge API for container management
 The Swift app SHALL expose a local HTTP API for the worker container to request task-runner container creation. The API SHALL bind to localhost only (or a Unix domain socket) and SHALL require a shared secret token generated at app startup. The token SHALL be passed to the worker container as an environment variable.

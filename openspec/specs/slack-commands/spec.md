@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Slack slash command handling for task creation with automatic slack tag assignment.
+
+## Requirements
 
 ### Requirement: /task new command — automatic slack tag
 The `/task new` slash command SHALL automatically add a `slack` tag to every task it creates. The tag SHALL be added after the task is committed to the database, using the existing tag find-or-create logic.

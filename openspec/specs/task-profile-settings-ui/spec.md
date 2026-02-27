@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Frontend settings page for managing task profiles — listing, creating, editing, and deleting profiles.
+
+## Requirements
 
 ### Requirement: Task Profiles settings sub-page
 The frontend SHALL have a "Task Profiles" settings sub-page at `/settings/profiles`. The page SHALL display a list of all custom task profiles with their name, description, model override, and tool selection summary. Each profile SHALL have Edit and Delete actions.

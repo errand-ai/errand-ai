@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+FastAPI static file serving for frontend assets and SPA fallback routing in production.
+
+## Requirements
 
 ### Requirement: Backend serves frontend static assets
 The FastAPI application SHALL serve the frontend's built static assets from a `static/` directory when that directory exists. Vite-generated assets in `static/assets/` SHALL be served at the `/assets/` URL path. The static file mount SHALL only be registered if the `static/` directory is present at startup.

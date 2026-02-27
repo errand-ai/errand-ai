@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Background scheduler loop that promotes due scheduled tasks to pending status using row-level locking.
+
+## Requirements
 
 ### Requirement: Scheduler promotes due scheduled tasks to pending
 The backend SHALL run a scheduler loop that periodically queries for tasks where `status = 'scheduled'` and `execute_at <= now()` (using database server time), and updates their status to `pending`. The scheduler SHALL use `SELECT ... FOR UPDATE SKIP LOCKED` when claiming tasks to prevent duplicate promotion. Promoted tasks SHALL have their `updated_at` timestamp set to the current time. The scheduler SHALL process tasks in batches of up to 100 per cycle.

@@ -1,3 +1,7 @@
+## Purpose
+
+Backend API for managing application settings via a key-value store with admin role protection.
+
 ## Requirements
 
 ### Requirement: Settings database table

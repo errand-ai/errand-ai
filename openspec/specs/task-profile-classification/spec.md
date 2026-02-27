@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+LLM classifier extension that selects a task profile based on match rules during task creation.
+
+## Requirements
 
 ### Requirement: LLM classifier selects task profile
 The `generate_title` function SHALL include available task profiles in the LLM classifier system prompt. Each profile's `name` and `match_rules` SHALL be listed as options. The LLM SHALL return a `profile` field in its JSON response with the selected profile name. If no profiles exist or the LLM omits/returns an unknown profile name, the result SHALL default to `null` (default profile).

@@ -1,3 +1,9 @@
+## Purpose
+
+Internal HTTP endpoint for task runners to push structured output with one-time token authentication via Valkey.
+
+## Requirements
+
 ### Requirement: Internal result callback endpoint
 
 The backend SHALL expose `POST /api/internal/task-result/{task_id}` as an internal endpoint for the task-runner to push its structured output. The endpoint SHALL NOT use OIDC authentication. Instead, the endpoint SHALL read a `Bearer` token from the `Authorization` header and validate it against the expected token stored in Valkey at key `task_result_token:{task_id}` using constant-time comparison (`secrets.compare_digest`). If the token is missing, not found in Valkey, or does not match, the endpoint SHALL return HTTP 401. On successful validation, the endpoint SHALL: (1) delete the token key from Valkey (one-time use), (2) store the raw request body at Valkey key `task_result:{task_id}` with a TTL of 10 minutes, (3) return HTTP 200 with `{"ok": true}`.

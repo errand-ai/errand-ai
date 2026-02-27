@@ -1,3 +1,7 @@
+## Purpose
+
+LLM-powered task classification — title generation, category detection, timing extraction, and timezone-aware scheduling.
+
 ## Requirements
 
 ### Requirement: LLM title generation from task description

@@ -1,3 +1,9 @@
+## Purpose
+
+MCP tool for retrieving task runner logs by task UUID.
+
+## Requirements
+
 ### Requirement: task_logs tool
 
 The MCP server SHALL expose a `task_logs` tool that accepts a `task_id` parameter (string, UUID format). The tool SHALL query the task from the database and return the contents of the `runner_logs` field. If the task does not exist, the tool SHALL return an error message. If the task exists but has no logs (null or empty), the tool SHALL return a message indicating no logs are available.

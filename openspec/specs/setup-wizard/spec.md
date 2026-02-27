@@ -1,3 +1,7 @@
+## Purpose
+
+First-run setup wizard for creating an admin account and configuring initial application settings.
+
 ## Requirements
 
 ### Requirement: Setup wizard route

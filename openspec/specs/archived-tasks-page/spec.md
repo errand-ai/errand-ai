@@ -1,3 +1,9 @@
+## Purpose
+
+Frontend page at /archived displaying archived and deleted tasks in a chronological list with status badges.
+
+## Requirements
+
 ### Requirement: Archived Tasks page
 
 The frontend SHALL provide an "Archived Tasks" page at the `/archived` route. The page SHALL be accessible to all authenticated users (viewer, editor, admin). The page SHALL fetch tasks from `GET /api/tasks/archived` and display them in a chronological list ordered by most recent first. Each list entry SHALL display the task title, status badge ("Archived" or "Deleted"), tags, and the `updated_at` timestamp formatted as a human-readable date/time.

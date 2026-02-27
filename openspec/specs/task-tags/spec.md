@@ -1,3 +1,7 @@
+## Purpose
+
+Tags and task-tags database tables for associating labels with tasks via a many-to-many relationship.
+
 ## Requirements
 
 ### Requirement: Tags database table

@@ -1,3 +1,7 @@
+## Purpose
+
+Multi-stage Dockerfile for the task-runner container with Python, git, Node.js, gh CLI, and openspec tooling.
+
 ## Requirements
 
 ### Requirement: Task runner Dockerfile

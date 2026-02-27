@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Worker-side resolution of task profiles at execution time, applying field-level overrides to global settings.
+
+## Requirements
 
 ### Requirement: Worker resolves task profile at execution time
 When the worker dequeues a task with a non-null `profile_id`, it SHALL read the corresponding `TaskProfile` row from the database. The worker SHALL then resolve the agent configuration by applying the profile's overrides to the global settings using the inheritance rules.

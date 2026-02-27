@@ -1,3 +1,7 @@
+## Purpose
+
+Docker Compose configuration for running the full application stack locally with PostgreSQL, DinD, and all services.
+
 ## Requirements
 
 ### Requirement: Docker Compose runs the full application stack

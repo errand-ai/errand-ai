@@ -1,3 +1,7 @@
+## Purpose
+
+REST API for CRUD operations on Agent Skills and their attached files, with name validation and path restrictions.
+
 ## Requirements
 
 ### Requirement: Skill data model

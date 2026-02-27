@@ -1,3 +1,7 @@
+## Purpose
+
+Structured JSON event protocol emitted by the task runner on stderr for agent lifecycle tracking.
+
 ## Requirements
 
 ### Requirement: Structured event protocol on task runner stderr

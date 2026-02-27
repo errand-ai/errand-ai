@@ -1,3 +1,7 @@
+## Purpose
+
+Agent behaviour for discovering and following CLAUDE.md project instructions and .claude/commands/ after cloning a git repository.
+
 ## Requirements
 
 ### Requirement: CLAUDE.md discovery after git clone

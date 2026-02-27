@@ -1,3 +1,7 @@
+## Purpose
+
+Hindsight memory integration for task runners — configuration, memory recall, and MCP server injection.
+
 ## Requirements
 
 ### Requirement: Hindsight memory bank configuration

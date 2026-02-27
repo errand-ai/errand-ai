@@ -1,3 +1,7 @@
+## Purpose
+
+Modal component for viewing task execution output rendered as formatted markdown with DOMPurify sanitisation.
+
 ## Requirements
 
 ### Requirement: Task output viewer popup

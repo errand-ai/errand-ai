@@ -1,3 +1,7 @@
+## Purpose
+
+Frontend authentication flow — token extraction from URL fragments, auth mode detection, role-based access, and session management.
+
 ## Requirements
 
 ### Requirement: Token extraction from URL fragment

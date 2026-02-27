@@ -1,3 +1,7 @@
+## Purpose
+
+Auto-generated Ed25519 SSH keypair for git operations, stored in the settings table and injected into task-runner containers.
+
 ## Requirements
 
 ### Requirement: SSH keypair generation on first backend start

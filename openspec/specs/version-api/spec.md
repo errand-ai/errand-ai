@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Backend endpoint returning current deployed version, latest available release, and update availability.
+
+## Requirements
 
 ### Requirement: Version endpoint returns current and latest version
 The backend SHALL expose a `GET /api/version` endpoint that returns the current deployed version, the latest available release version, and whether an update is available. The endpoint SHALL NOT require authentication.

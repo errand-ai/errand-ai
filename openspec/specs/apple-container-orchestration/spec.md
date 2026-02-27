@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Container lifecycle management using Apple's Containerization framework for local macOS deployment, with service dependency ordering.
+
+## Requirements
 
 ### Requirement: Container lifecycle management via Containerization framework
 The app SHALL use Apple's Containerization Swift package to pull OCI images, create containers, start/stop containers, bind volumes, and monitor container health. The app SHALL NOT shell out to the `container` CLI.

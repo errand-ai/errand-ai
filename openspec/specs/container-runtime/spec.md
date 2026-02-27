@@ -1,3 +1,7 @@
+## Purpose
+
+Pluggable container runtime abstraction (Docker, Kubernetes, Apple) with runtime selection via environment variable.
+
 ## Requirements
 
 ### Requirement: ContainerRuntime abstract interface

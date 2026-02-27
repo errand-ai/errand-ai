@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Frontend settings section for viewing and toggling LiteLLM-provided MCP servers on the Agent Configuration page.
+
+## Requirements
 
 ### Requirement: LiteLLM MCP Servers section on Agent Configuration page
 The Agent Configuration settings page SHALL display a "MCP Servers (via LiteLLM)" section when the LiteLLM proxy is detected. The section SHALL NOT appear when the LiteLLM proxy is not detected. The section SHALL appear below the existing MCP Server Configuration section.

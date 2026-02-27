@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Frontend settings page with sidebar navigation, sub-pages for agent configuration, task management, security, integrations, and user management.
+
+## Requirements
 
 ### Requirement: Settings page layout
 The Settings page SHALL use a sidebar navigation layout with six sub-pages. The **"Agent Configuration"** sub-page (`/settings/agent`) SHALL contain "System Prompt", "Skills", "Skills Repository", "MCP Server Configuration", and "MCP Servers (via LiteLLM)" sections (in that order). The LiteLLM MCP Servers section SHALL be conditionally visible (only when the LiteLLM proxy is detected). The **"Task Management"** sub-page (`/settings/tasks`) SHALL contain "LLM Models" and "Task Management" sections (in that order). The **"Task Profiles"** sub-page (`/settings/profiles`) SHALL contain the task profile management interface. The **"Security"** sub-page (`/settings/security`) SHALL contain "Git SSH Key" and "MCP API Key" sections. The **"Integrations"** sub-page (`/settings/integrations`) SHALL contain the platform integrations section. The **"User Management"** sub-page (`/settings/users`) SHALL contain authentication mode and local admin account sections. The "MCP Server Configuration" section SHALL remain collapsible.

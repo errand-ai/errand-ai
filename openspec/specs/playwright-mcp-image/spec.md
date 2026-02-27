@@ -1,3 +1,7 @@
+## Purpose
+
+Playwright MCP server using the official Microsoft image for browser automation in task-runner containers.
+
 ## Requirements
 
 ### Requirement: Playwright MCP image

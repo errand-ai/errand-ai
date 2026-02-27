@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Slack app_mention event handling — creating tasks from @mentions with user email resolution.
+
+## Requirements
 
 ### Requirement: App mention event handling
 

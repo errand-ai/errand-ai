@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+HTML5 drag-and-drop for moving task cards between kanban columns and reordering within columns.
+
+## Requirements
 
 ### Requirement: User can drag task cards between columns
 The frontend SHALL allow users to drag a task card from one kanban column and drop it onto another column. The drag interaction SHALL use the HTML5 Drag and Drop API. When a task is dropped on a different column, the frontend SHALL send `PATCH /api/tasks/{id}` with the new status. The task SHALL appear at the bottom of the target column.
@@ -15,7 +19,6 @@ The frontend SHALL allow users to drag a task card from one kanban column and dr
 - **WHEN** the user drags a task card and drops it back on the same column without changing position
 - **THEN** no API call is made and the card remains in its current position
 
-## ADDED Requirements
 
 ### Requirement: User can reorder task cards within a column
 The frontend SHALL allow users to drag a task card within the Review or Pending column to change its position relative to other cards. When a card is dropped at a new position within the same column, the frontend SHALL send `PATCH /api/tasks/{id}` with the new `position` value. Reordering SHALL NOT be available in the Scheduled, Running, or Completed columns.

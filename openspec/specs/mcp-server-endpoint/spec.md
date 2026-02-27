@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+MCP Streamable HTTP server mounted at /mcp exposing task management and platform tools via JSON-RPC.
+
+## Requirements
 
 ### Requirement: MCP server mounted at /mcp
 

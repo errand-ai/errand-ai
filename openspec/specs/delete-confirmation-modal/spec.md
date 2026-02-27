@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Styled dialog modal for confirming task deletion, replacing the browser's native confirm() dialog.
+
+## Requirements
 
 ### Requirement: Styled delete confirmation modal
 The frontend SHALL display a Tailwind-styled `<dialog>` modal when the user requests to delete a task. The modal SHALL display the text "Delete this task?" with the task title, a destructive "Delete" button (red), and a "Cancel" button. The modal SHALL NOT use the browser's native `confirm()` dialog.

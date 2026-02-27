@@ -1,3 +1,7 @@
+## Purpose
+
+Worker-side loading of Agent Skills from a configurable git repository, merged with database-managed skills.
+
 ## Requirements
 
 ### Requirement: Git skills repository configuration setting

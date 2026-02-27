@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+macOS app signing, notarization, and DMG packaging for distribution outside the Mac App Store.
+
+## Requirements
 
 ### Requirement: Code signing with Developer ID
 The app SHALL be signed with an Apple Developer ID certificate for distribution outside the Mac App Store. The app SHALL use hardened runtime. The signing SHALL be automated in the app's CI/CD pipeline.

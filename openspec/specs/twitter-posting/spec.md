@@ -1,3 +1,7 @@
+## Purpose
+
+MCP tool for posting tweets via the Twitter/X API v2 through the platform abstraction layer.
+
 ## Requirements
 
 ### Requirement: post_tweet MCP tool

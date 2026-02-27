@@ -1,3 +1,7 @@
+## Purpose
+
+Worker-side injection of a LiteLLM MCP gateway entry into the task runner's MCP server configuration.
+
 ## Requirements
 
 ### Requirement: Inject LiteLLM MCP gateway into task runner

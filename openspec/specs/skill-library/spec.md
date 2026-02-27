@@ -1,3 +1,7 @@
+## Purpose
+
+Database schema for storing Agent Skills (name, instructions, attached files) and integration with the settings API.
+
 ## Requirements
 
 ### Requirement: Skill data structure

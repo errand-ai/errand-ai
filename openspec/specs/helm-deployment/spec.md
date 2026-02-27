@@ -1,3 +1,7 @@
+## Purpose
+
+Helm chart defining Kubernetes resources for server, worker, migration job, and ingress with configurable values.
+
 ## Requirements
 
 ### Requirement: Helm chart deploys all application components

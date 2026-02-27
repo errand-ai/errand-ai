@@ -1,3 +1,7 @@
+## Purpose
+
+GitHub platform module with PAT and GitHub App authentication modes, credential verification, and platform registry integration.
+
 ## Requirements
 
 ### Requirement: GitHub platform module

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+HMAC-SHA256 signature verification for inbound Slack requests with replay attack protection.
+
+## Requirements
 
 ### Requirement: Slack request signature verification
 The system SHALL provide a FastAPI dependency in `backend/platforms/slack/verification.py` that verifies the authenticity of all inbound Slack requests using HMAC-SHA256 signature verification. The dependency SHALL read the `X-Slack-Signature` and `X-Slack-Request-Timestamp` headers from each request. The dependency SHALL reject requests older than 5 minutes (replay attack protection). The dependency SHALL compute `HMAC-SHA256(signing_secret, "v0:{timestamp}:{raw_body}")` and compare the result with the provided signature using `hmac.compare_digest` (timing-safe comparison). The signing secret SHALL be loaded from the Slack platform's encrypted credentials in the database.

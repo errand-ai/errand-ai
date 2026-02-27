@@ -1,3 +1,9 @@
+## Purpose
+
+Structured JSON event logging for agent lifecycle events (tool calls, results, reasoning) via RunHooks and stream events.
+
+## Requirements
+
 ### Requirement: Tool call logging via RunHooks
 
 The task runner SHALL log agent lifecycle events by emitting structured JSON events to stderr. The `ToolCallLogger` class (renamed to `StreamEventEmitter`) SHALL implement the following `RunHooks` callbacks:

@@ -1,3 +1,7 @@
+## Purpose
+
+Kubernetes-specific task runner execution — Job creation, labelling, namespace resolution, input injection via ConfigMap, and output retrieval.
+
 ## Requirements
 
 ### Requirement: Task-runner Jobs run in the worker's namespace

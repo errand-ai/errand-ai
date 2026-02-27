@@ -1,3 +1,9 @@
+## Purpose
+
+Backend endpoint for audio transcription via the OpenAI-compatible speech-to-text API.
+
+## Requirements
+
 ### Requirement: Transcription endpoint
 
 The backend SHALL expose `POST /api/transcribe` requiring an authenticated user. The endpoint SHALL accept a multipart file upload with field name `file`. The endpoint SHALL check that a `transcription_model` setting exists in the database. If no setting exists, the endpoint SHALL return HTTP 503 with `{"detail": "Transcription not configured"}`. Otherwise, the endpoint SHALL forward the audio file to the LLM provider via the OpenAI SDK's `client.audio.transcriptions.create()` method using the configured model. The endpoint SHALL return a JSON object `{"text": "<transcript>"}` with HTTP 200.

@@ -1,3 +1,7 @@
+## Purpose
+
+Modal dialog for editing task fields — title, description, status, tags, category, timing, and profile — with responsive two-column layout.
+
 ## Requirements
 
 ### Requirement: Task edit modal displays editable fields

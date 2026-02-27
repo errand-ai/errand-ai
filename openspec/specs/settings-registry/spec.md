@@ -1,3 +1,7 @@
+## Purpose
+
+Backend settings definition registry with environment variable mapping, sensitivity flags, and resolution order.
+
 ## Requirements
 
 ### Requirement: Settings definition registry

@@ -1,3 +1,7 @@
+## Purpose
+
+Global toast notification system using vue-sonner for transient success and error feedback messages.
+
 ## Requirements
 
 ### Requirement: Global toast notification system

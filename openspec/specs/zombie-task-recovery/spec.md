@@ -1,3 +1,7 @@
+## Purpose
+
+Background loop that detects stale running tasks via heartbeat timeout and recovers them with exponential backoff retry.
+
 ## Requirements
 
 ### Requirement: Zombie task detection and recovery loop

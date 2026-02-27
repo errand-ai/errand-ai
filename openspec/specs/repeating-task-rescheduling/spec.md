@@ -1,3 +1,9 @@
+## Purpose
+
+Worker logic for cloning and rescheduling repeating tasks after completion, with repeat_until expiry handling.
+
+## Requirements
+
 ### Requirement: Worker reschedules completed repeating tasks
 After the worker moves a task with `category = 'repeating'` to `status = 'completed'`, it SHALL check whether the task should be rescheduled. If `repeat_until` is set and the current UTC time is past `repeat_until`, the worker SHALL NOT create a new task. Otherwise, the worker SHALL create a new task by cloning the completed task's fields and setting `status = 'scheduled'` and `execute_at = now() + repeat_interval`.
 

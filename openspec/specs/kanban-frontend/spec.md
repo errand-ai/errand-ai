@@ -1,3 +1,7 @@
+## Purpose
+
+Kanban board task cards displaying title, tags, description preview, status indicators, and action buttons for logs and output.
+
 ## Requirements
 
 ### Requirement: Task cards display summary information

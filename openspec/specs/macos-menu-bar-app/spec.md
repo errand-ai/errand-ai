@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+macOS menu bar application using SwiftUI for managing local service lifecycle, status monitoring, and configuration.
+
+## Requirements
 
 ### Requirement: Menu bar presence
 The application SHALL run as a macOS menu bar app using SwiftUI `MenuBarExtra`. The app SHALL display a status icon in the system menu bar. The icon SHALL indicate overall status: idle (no services running), starting, running (all healthy), or degraded (some services unhealthy).

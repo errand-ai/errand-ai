@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Task position field for sort ordering within kanban columns, with scheduled column sorted by execute_at.
+
+## Requirements
 
 ### Requirement: Task position field
 Each task SHALL have a `position` integer field representing its sort order within its status column. Lower position values appear higher in the column. The default value SHALL be 0.

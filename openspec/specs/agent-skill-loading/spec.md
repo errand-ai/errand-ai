@@ -1,3 +1,7 @@
+## Purpose
+
+Worker-side injection of Agent Skills directories and a skill manifest into the task-runner container and system prompt.
+
 ## Requirements
 
 ### Requirement: Skill directories written to container

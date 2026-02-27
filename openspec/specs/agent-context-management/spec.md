@@ -1,3 +1,7 @@
+## Purpose
+
+Screenshot retention filter that prunes old base64 images from agent conversation history to manage context window size.
+
 ## Requirements
 
 ### Requirement: Screenshot retention filter for agent context

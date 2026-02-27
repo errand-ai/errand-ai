@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+MCP tool for creating scheduled and repeating tasks with optional task profile assignment.
+
+## Requirements
 
 ### Requirement: schedule_task tool
 The MCP server SHALL expose a `schedule_task` tool that accepts the following parameters:

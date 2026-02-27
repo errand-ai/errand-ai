@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Background subscriber that updates Slack confirmation messages when task status changes via pub/sub events.
+
+## Requirements
 
 ### Requirement: Task status change subscriber
 

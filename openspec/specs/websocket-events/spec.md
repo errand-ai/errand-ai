@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+WebSocket endpoint for per-task live log streaming from Valkey pub/sub to connected frontend clients.
+
+## Requirements
 
 ### Requirement: WebSocket endpoint for per-task log streaming
 

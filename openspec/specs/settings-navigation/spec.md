@@ -1,3 +1,7 @@
+## Purpose
+
+Sidebar navigation component for the Settings page with sticky positioning and active-link highlighting.
+
 ## Requirements
 
 ### Requirement: Settings sidebar navigation

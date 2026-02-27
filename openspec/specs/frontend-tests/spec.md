@@ -1,3 +1,7 @@
+## Purpose
+
+Vitest test infrastructure using vue-test-utils and jsdom for frontend component and store testing.
+
 ## Requirements
 
 ### Requirement: Frontend test infrastructure
