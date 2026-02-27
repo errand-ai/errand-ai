@@ -5,6 +5,7 @@ import SystemPromptSettings from '../../components/settings/SystemPromptSettings
 import SkillsSettings from '../../components/settings/SkillsSettings.vue'
 import SkillsRepoSettings from '../../components/settings/SkillsRepoSettings.vue'
 import McpServerConfigSettings from '../../components/settings/McpServerConfigSettings.vue'
+import LitellmMcpSettings from '../../components/settings/LitellmMcpSettings.vue'
 
 const {
   systemPrompt,
@@ -57,4 +58,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     :save-settings="saveSettings"
     @update:mcp-servers-text="mcpServersText = $event"
   />
+
+  <LitellmMcpSettings class="mt-6" :save-settings="saveSettings" />
 </template>
