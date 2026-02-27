@@ -206,12 +206,14 @@ async def process_messages(imap) -> int:
                 logger.warning("IMAP FETCH failed for UID %s: %s", uid_str, fetch_response.lines)
                 continue
 
-            # Parse the fetch response to extract raw email bytes
+            # Parse the fetch response to extract raw email bytes.
+            # aioimaplib returns multiple lines; pick the largest bytes
+            # entry which will be the email content, not protocol overhead.
             raw_email = None
             for line in fetch_response.lines:
                 if isinstance(line, bytes) and len(line) > 0:
-                    raw_email = line
-                    break
+                    if raw_email is None or len(line) > len(raw_email):
+                        raw_email = line
 
             if raw_email is None:
                 logger.warning("No email body found for UID %s", uid_str)
