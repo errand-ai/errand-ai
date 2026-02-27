@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     busybox \
     curl \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 # Download gh CLI (static Go binary — no shared library staging needed)
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
@@ -25,7 +26,7 @@ RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
 # glibc version conflicts.
 RUN mkdir -p /staged-libs && \
     echo "libc.so libdl.so libm.so libpthread.so librt.so libresolv.so libz.so libexpat.so libgcc_s.so libnsl.so libutil.so libcrypt.so liblzma.so libtirpc.so libtinfo.so libncursesw.so libreadline.so libhistory.so libbz2.so libcom_err.so libkeyutils.so" > /tmp/skip_libs && \
-    for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/bin/ssh-keyscan /usr/lib/git-core/git-remote-https /bin/busybox /usr/bin/curl; do \
+    for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/bin/ssh-keyscan /usr/lib/git-core/git-remote-https /bin/busybox /usr/bin/curl /usr/bin/jq; do \
       ldd "$bin" 2>/dev/null | awk '/ => \// {print $3}' | while read lib; do \
         basename=$(basename "$lib" | sed 's/\.so.*/.so/') ; \
         if ! grep -qw "$basename" /tmp/skip_libs; then \
@@ -63,6 +64,9 @@ COPY --from=git-builder /usr/bin/ssh-keyscan /usr/bin/ssh-keyscan
 
 # Copy curl binary (for HTTP requests in tasks)
 COPY --from=git-builder /usr/bin/curl /usr/bin/curl
+
+# Copy jq binary (for JSON processing in tasks)
+COPY --from=git-builder /usr/bin/jq /usr/bin/jq
 
 # Copy gh CLI binary (static Go binary)
 COPY --from=git-builder /usr/local/bin/gh /usr/local/bin/gh
