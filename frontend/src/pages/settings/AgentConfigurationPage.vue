@@ -59,5 +59,5 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @update:mcp-servers-text="mcpServersText = $event"
   />
 
-  <LitellmMcpSettings :save-settings="saveSettings" />
+  <LitellmMcpSettings class="mt-6" :save-settings="saveSettings" />
 </template>
