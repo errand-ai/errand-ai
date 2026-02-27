@@ -1,8 +1,10 @@
 """Tests for MCP server: API key generation, regeneration, tools, and auth."""
+import json
 import secrets
+import sys
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -280,12 +282,15 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_six_tools():
-    """The MCP server exposes exactly six tools."""
+async def test_mcp_server_has_twelve_tools():
+    """The MCP server exposes exactly twelve tools (6 original + 6 email)."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
-    assert tool_names == {"new_task", "task_status", "task_output", "task_logs", "schedule_task", "post_tweet"}
+    assert tool_names == {
+        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "post_tweet",
+        "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
+    }
 
 
 # --- 5.4: MCP tools (tested as direct function calls) ---
@@ -742,3 +747,273 @@ async def test_post_tweet_uses_db_credentials(db_session, monkeypatch):
         access_token="db-token",
         access_token_secret="db-access",
     )
+
+
+# --- Email MCP tools (Task 7.3) ---
+
+
+FAKE_EMAIL_CREDS = {
+    "imap_host": "imap.example.com",
+    "imap_port": "993",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": "465",
+    "security": "ssl",
+    "username": "user@example.com",
+    "password": "secret",
+    "authorized_recipients": "allowed@example.com\nboss@example.com",
+}
+
+
+def _make_test_email(subject="Test", sender="alice@test.com", body="Hello world"):
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = "user@example.com"
+    msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+    msg.set_content(body)
+    return msg.as_bytes()
+
+
+async def test_list_emails_success(db_session):
+    """list_emails returns JSON with messages array."""
+    mock_imap = AsyncMock()
+
+    search_resp = MagicMock()
+    search_resp.result = "OK"
+    search_resp.lines = [b"1 2"]
+    mock_imap.search.return_value = search_resp
+    mock_imap.select.return_value = MagicMock()
+
+    fetch_resp = MagicMock()
+    fetch_resp.result = "OK"
+    fetch_resp.lines = [b"1 FETCH (UID 1 FLAGS (\\Seen))"]
+    mock_imap.fetch.return_value = fetch_resp
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch("mcp_server._connect_imap", return_value=mock_imap):
+        from mcp_server import list_emails
+        result = await list_emails()
+
+    data = json.loads(result)
+    assert "messages" in data
+    assert isinstance(data["messages"], list)
+
+
+async def test_list_emails_no_credentials(db_session):
+    """list_emails returns error when no credentials configured."""
+    with patch("mcp_server._get_email_credentials", return_value=None):
+        from mcp_server import list_emails
+        result = await list_emails()
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "not configured" in data["error"]
+
+
+async def test_read_email_success(db_session):
+    """read_email returns JSON with body, headers, attachments."""
+    raw_email = _make_test_email(subject="Read Me", body="Email body here")
+    mock_imap = AsyncMock()
+    mock_imap.select.return_value = MagicMock()
+
+    fetch_resp = MagicMock()
+    fetch_resp.result = "OK"
+    fetch_resp.lines = [raw_email]
+    mock_imap.fetch.return_value = fetch_resp
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch("mcp_server._connect_imap", return_value=mock_imap):
+        from mcp_server import read_email
+        result = await read_email("1")
+
+    data = json.loads(result)
+    assert data["subject"] == "Read Me"
+    assert "Email body here" in data["body"]
+    assert "attachments" in data
+    assert "from" in data
+
+
+async def test_list_email_folders_success(db_session):
+    """list_email_folders returns JSON with folders."""
+    mock_imap = AsyncMock()
+
+    list_resp = MagicMock()
+    list_resp.result = "OK"
+    list_resp.lines = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Sent"']
+    mock_imap.list.return_value = list_resp
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch("mcp_server._connect_imap", return_value=mock_imap):
+        from mcp_server import list_email_folders
+        result = await list_email_folders()
+
+    data = json.loads(result)
+    assert "folders" in data
+    assert isinstance(data["folders"], list)
+
+
+async def test_move_email_success(db_session):
+    """move_email success case."""
+    mock_imap = AsyncMock()
+    mock_imap.select.return_value = MagicMock()
+
+    # LIST response for target folder (no blocked attributes)
+    list_resp = MagicMock()
+    list_resp.result = "OK"
+    list_resp.lines = [b'(\\HasNoChildren) "/" "Archive"']
+    mock_imap.list.return_value = list_resp
+
+    copy_resp = MagicMock()
+    copy_resp.result = "OK"
+    mock_imap.copy.return_value = copy_resp
+
+    mock_imap.store.return_value = MagicMock()
+    mock_imap.expunge.return_value = MagicMock()
+    mock_imap.create.return_value = MagicMock()
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch("mcp_server._connect_imap", return_value=mock_imap):
+        from mcp_server import move_email
+        result = await move_email("1", "Archive")
+
+    data = json.loads(result)
+    assert data["success"] is True
+
+
+async def test_move_email_blocked_folder(db_session):
+    """move_email to Trash returns error."""
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS):
+        from mcp_server import move_email
+        result = await move_email("1", "Trash")
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "not permitted" in data["error"]
+
+
+# --- Blocked folder detection (Task 7.4) ---
+
+
+class TestIsBlockedFolder:
+    def test_trash(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Trash") is True
+
+    def test_trash_case_insensitive(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("TRASH") is True
+
+    def test_gmail_trash(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("[Gmail]/Trash") is True
+
+    def test_junk(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Junk") is True
+
+    def test_spam(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Spam") is True
+
+    def test_deleted_items(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Deleted Items") is True
+
+    def test_safe_folder_invoices(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Invoices") is False
+
+    def test_safe_folder_archive(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("Archive") is False
+
+    def test_special_use_trash(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("SomeFolder", ["\\Trash"]) is True
+
+    def test_special_use_junk(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("SomeFolder", ["\\Junk"]) is True
+
+    def test_special_use_no_match(self):
+        from mcp_server import _is_blocked_folder
+        assert _is_blocked_folder("SomeFolder", ["\\HasNoChildren"]) is False
+
+
+# --- Authorized recipient enforcement (Task 7.5) ---
+
+
+async def test_send_email_authorized_recipient(db_session):
+    """send_email with authorized recipient succeeds."""
+    mock_smtp_instance = AsyncMock()
+    mock_aiosmtplib = MagicMock()
+    mock_aiosmtplib.SMTP.return_value = mock_smtp_instance
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch.dict("sys.modules", {"aiosmtplib": mock_aiosmtplib}):
+        from mcp_server import send_email
+        result = await send_email("allowed@example.com", "Subject", "Body")
+
+    data = json.loads(result)
+    assert data["success"] is True
+
+
+async def test_send_email_unauthorized_recipient(db_session):
+    """send_email with unauthorized recipient returns error."""
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS):
+        from mcp_server import send_email
+        result = await send_email("hacker@evil.com", "Subject", "Body")
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "not in authorised" in data["error"]
+
+
+async def test_send_email_no_authorized_recipients(db_session):
+    """send_email with no authorized_recipients configured returns error."""
+    creds_no_auth = {**FAKE_EMAIL_CREDS, "authorized_recipients": ""}
+
+    with patch("mcp_server._get_email_credentials", return_value=creds_no_auth):
+        from mcp_server import send_email
+        result = await send_email("anyone@example.com", "Subject", "Body")
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "No recipients are authorised" in data["error"]
+
+
+async def test_forward_email_authorized_recipient(db_session):
+    """forward_email with authorized recipient succeeds."""
+    raw_email = _make_test_email(subject="Forward Me", body="Original content")
+    mock_imap = AsyncMock()
+    mock_imap.select.return_value = MagicMock()
+
+    fetch_resp = MagicMock()
+    fetch_resp.result = "OK"
+    fetch_resp.lines = [raw_email]
+    mock_imap.fetch.return_value = fetch_resp
+
+    mock_smtp_instance = AsyncMock()
+    mock_aiosmtplib = MagicMock()
+    mock_aiosmtplib.SMTP.return_value = mock_smtp_instance
+
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS), \
+         patch("mcp_server._connect_imap", return_value=mock_imap), \
+         patch.dict("sys.modules", {"aiosmtplib": mock_aiosmtplib}):
+        from mcp_server import forward_email
+        result = await forward_email("1", "allowed@example.com")
+
+    data = json.loads(result)
+    assert data["success"] is True
+
+
+async def test_forward_email_unauthorized_recipient(db_session):
+    """forward_email with unauthorized recipient returns error."""
+    with patch("mcp_server._get_email_credentials", return_value=FAKE_EMAIL_CREDS):
+        from mcp_server import forward_email
+        result = await forward_email("1", "hacker@evil.com")
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "not in authorised" in data["error"]

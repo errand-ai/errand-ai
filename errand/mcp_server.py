@@ -1,6 +1,9 @@
+import email as email_module
+import json
 import logging
 import secrets
 import uuid as uuid_mod
+from email.message import EmailMessage
 from datetime import datetime
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -318,6 +321,452 @@ async def post_tweet(message: str) -> str:
         return f"Tweet posted: {result.url}"
     else:
         return f"Error posting tweet: {result.error}"
+
+
+_BLOCKED_FOLDER_NAMES = {
+    "trash", "deleted", "deleted items", "deleted messages",
+    "junk", "spam", "junk email",
+}
+
+
+async def _get_email_credentials() -> dict | None:
+    """Load email platform credentials from DB."""
+    from platforms.credentials import load_credentials
+    async with async_session() as session:
+        return await load_credentials("email", session)
+
+
+async def _connect_imap(creds: dict):
+    """Connect and authenticate to IMAP. Returns an aioimaplib client."""
+    import aioimaplib
+
+    host = creds["imap_host"]
+    port = int(creds["imap_port"])
+    security = creds.get("security", "ssl")
+
+    if security == "ssl":
+        imap = aioimaplib.IMAP4_SSL(host=host, port=port)
+    else:
+        imap = aioimaplib.IMAP4(host=host, port=port)
+    await imap.wait_hello_from_server()
+
+    if security == "starttls":
+        await imap.starttls()
+
+    await imap.login(creds["username"], creds["password"])
+    return imap
+
+
+def _is_blocked_folder(folder_name: str, folder_attributes: list[str] | None = None) -> bool:
+    """Check if a folder is blocked (trash/junk/spam)."""
+    # Extract final path component
+    final = folder_name.rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+    if final.lower() in _BLOCKED_FOLDER_NAMES:
+        return True
+    # Check SPECIAL-USE attributes
+    if folder_attributes:
+        for attr in folder_attributes:
+            if attr.lower() in ("\\trash", "\\junk"):
+                return True
+    return False
+
+
+def _get_authorized_recipients(creds: dict) -> list[str]:
+    """Parse authorized_recipients from credentials (newline-separated)."""
+    raw = creds.get("authorized_recipients", "")
+    if not raw or not raw.strip():
+        return []
+    return [addr.strip().lower() for addr in raw.strip().splitlines() if addr.strip()]
+
+
+def _email_body_to_markdown(raw_bytes: bytes) -> str:
+    """Convert email body to markdown."""
+    import html2text
+    from email import policy
+
+    msg = email_module.message_from_bytes(raw_bytes, policy=policy.default)
+    html_part = None
+    text_part = None
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == "text/html" and html_part is None:
+                html_part = part.get_content()
+            elif ct == "text/plain" and text_part is None:
+                text_part = part.get_content()
+    else:
+        ct = msg.get_content_type()
+        if ct == "text/html":
+            html_part = msg.get_content()
+        elif ct == "text/plain":
+            text_part = msg.get_content()
+
+    if html_part:
+        h = html2text.HTML2Text()
+        h.ignore_links = False
+        h.ignore_images = True
+        h.body_width = 0
+        return h.handle(html_part)
+    return text_part or ""
+
+
+def _extract_attachments(raw_bytes: bytes) -> list[dict]:
+    """Extract attachment metadata from raw email bytes."""
+    from email import policy
+
+    msg = email_module.message_from_bytes(raw_bytes, policy=policy.default)
+    attachments = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            cd = part.get("Content-Disposition", "")
+            if "attachment" in cd:
+                filename = part.get_filename() or "unnamed"
+                content_type = part.get_content_type()
+                payload = part.get_payload(decode=True)
+                size = len(payload) if payload else 0
+                attachments.append({
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": size,
+                })
+    return attachments
+
+
+@mcp.tool()
+async def list_emails(folder: str = "INBOX", limit: int = 20, search: str | None = None) -> str:
+    """List email messages from a folder. Returns JSON with message summaries."""
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    try:
+        imap = await _connect_imap(creds)
+        try:
+            await imap.select(folder)
+
+            if search:
+                response = await imap.search(search)
+            else:
+                response = await imap.search("ALL")
+
+            if response.result != "OK":
+                return json.dumps({"error": f"Search failed: {response.lines}"})
+
+            uid_line = response.lines[0]
+            if not uid_line or not uid_line.strip():
+                return json.dumps({"messages": []})
+
+            uids = uid_line.strip().split()
+            if isinstance(uids[0], bytes):
+                uids = [u.decode() for u in uids]
+            # Take last N messages (most recent)
+            uids = uids[-limit:]
+
+            messages = []
+            for uid in uids:
+                fetch_resp = await imap.fetch(uid, "(UID FLAGS RFC822.HEADER)")
+                if fetch_resp.result != "OK":
+                    continue
+
+                # Extract header bytes and flags from response
+                from email import policy
+                header_bytes = None
+                flags_str = ""
+                for line in fetch_resp.lines:
+                    if isinstance(line, bytes) and len(line) > 0:
+                        header_bytes = line
+                    elif isinstance(line, str) and "FLAGS" in line:
+                        flags_str = line
+
+                if header_bytes:
+                    msg = email_module.message_from_bytes(header_bytes, policy=policy.default)
+                    messages.append({
+                        "uid": uid,
+                        "from": str(msg.get("From", "")),
+                        "to": str(msg.get("To", "")),
+                        "subject": str(msg.get("Subject", "")),
+                        "date": str(msg.get("Date", "")),
+                        "flags": flags_str,
+                    })
+                else:
+                    messages.append({"uid": uid, "summary": "Failed to parse headers"})
+
+            return json.dumps({"messages": messages})
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def read_email(message_uid: str, folder: str = "INBOX") -> str:
+    """Read a full email message by UID. Returns JSON with headers, markdown body, and attachment metadata."""
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    try:
+        imap = await _connect_imap(creds)
+        try:
+            await imap.select(folder)
+            fetch_resp = await imap.fetch(message_uid, "(RFC822)")
+            if fetch_resp.result != "OK":
+                return json.dumps({"error": f"Message {message_uid} not found"})
+
+            raw_email = None
+            for line in fetch_resp.lines:
+                if isinstance(line, bytes) and len(line) > 0:
+                    raw_email = line
+                    break
+
+            if raw_email is None:
+                return json.dumps({"error": f"Message {message_uid} not found"})
+
+            from email import policy
+            msg = email_module.message_from_bytes(raw_email, policy=policy.default)
+
+            body = _email_body_to_markdown(raw_email)
+            attachments = _extract_attachments(raw_email)
+
+            return json.dumps({
+                "uid": message_uid,
+                "from": str(msg.get("From", "")),
+                "to": str(msg.get("To", "")),
+                "cc": str(msg.get("Cc", "")),
+                "subject": str(msg.get("Subject", "")),
+                "date": str(msg.get("Date", "")),
+                "body": body,
+                "attachments": attachments,
+            })
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def list_email_folders() -> str:
+    """List all email folders. Returns JSON with folder names and attributes."""
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    try:
+        imap = await _connect_imap(creds)
+        try:
+            response = await imap.list("", "*")
+            if response.result != "OK":
+                return json.dumps({"error": f"LIST failed: {response.lines}"})
+
+            folders = []
+            import re
+            for line in response.lines:
+                if not line:
+                    continue
+                line_str = line.decode() if isinstance(line, bytes) else str(line)
+                # Parse IMAP LIST response: (attributes) "delimiter" "name"
+                match = re.match(r'\(([^)]*)\)\s+"(.+?)"\s+"?(.+?)"?\s*$', line_str)
+                if match:
+                    attrs = match.group(1).split()
+                    delimiter = match.group(2)
+                    name = match.group(3).strip('"')
+                    folders.append({
+                        "name": name,
+                        "attributes": attrs,
+                        "delimiter": delimiter,
+                    })
+
+            return json.dumps({"folders": folders})
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def move_email(message_uid: str, folder: str, source_folder: str = "INBOX") -> str:
+    """Move an email to a different folder. Returns JSON indicating success or error."""
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    # Check blocked folder with name-based detection
+    if _is_blocked_folder(folder):
+        return json.dumps({"error": f"Cannot move to {folder} — deletion is not permitted"})
+
+    try:
+        imap = await _connect_imap(creds)
+        try:
+            # Also check SPECIAL-USE attributes for the target folder
+            response = await imap.list("", folder)
+            if response.result == "OK":
+                import re
+                for line in response.lines:
+                    if not line:
+                        continue
+                    line_str = line.decode() if isinstance(line, bytes) else str(line)
+                    match = re.match(r'\(([^)]*)\)', line_str)
+                    if match:
+                        attrs = match.group(1).split()
+                        if _is_blocked_folder(folder, attrs):
+                            return json.dumps({"error": f"Cannot move to {folder} — deletion is not permitted"})
+
+            await imap.select(source_folder)
+
+            # Create target folder if it doesn't exist (ignore error if exists)
+            try:
+                await imap.create(folder)
+            except Exception:
+                pass
+
+            # COPY to target
+            copy_resp = await imap.copy(message_uid, folder)
+            if copy_resp.result != "OK":
+                return json.dumps({"error": f"COPY failed: {copy_resp.lines}"})
+
+            # Mark as deleted + expunge from source
+            await imap.store(message_uid, "+FLAGS", "\\Deleted")
+            await imap.expunge()
+
+            return json.dumps({"success": True, "message": f"Moved to {folder}"})
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email to an authorised recipient. Returns JSON indicating success or error."""
+    import aiosmtplib
+
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    authorized = _get_authorized_recipients(creds)
+    if not authorized:
+        return json.dumps({"error": "No recipients are authorised"})
+
+    if to.strip().lower() not in authorized:
+        return json.dumps({"error": "Recipient not in authorised recipients list"})
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = creds["username"]
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body)
+
+        smtp_host = creds["smtp_host"]
+        smtp_port = int(creds["smtp_port"])
+        security = creds.get("security", "ssl")
+        use_tls = security == "ssl"
+
+        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=use_tls)
+        await smtp.connect()
+        if security == "starttls":
+            await smtp.starttls()
+        await smtp.login(creds["username"], creds["password"])
+        await smtp.send_message(msg)
+        await smtp.quit()
+
+        return json.dumps({"success": True, "message": "Email sent"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def forward_email(message_uid: str, to: str, folder: str = "INBOX") -> str:
+    """Forward an email to an authorised recipient. Returns JSON indicating success or error."""
+    import aiosmtplib
+
+    creds = await _get_email_credentials()
+    if not creds:
+        return json.dumps({"error": "Email platform not configured"})
+
+    authorized = _get_authorized_recipients(creds)
+    if not authorized:
+        return json.dumps({"error": "No recipients are authorised"})
+
+    if to.strip().lower() not in authorized:
+        return json.dumps({"error": "Recipient not in authorised recipients list"})
+
+    try:
+        # Fetch original message
+        imap = await _connect_imap(creds)
+        try:
+            await imap.select(folder)
+            fetch_resp = await imap.fetch(message_uid, "(RFC822)")
+            if fetch_resp.result != "OK":
+                return json.dumps({"error": f"Message {message_uid} not found"})
+
+            raw_email = None
+            for line in fetch_resp.lines:
+                if isinstance(line, bytes) and len(line) > 0:
+                    raw_email = line
+                    break
+
+            if raw_email is None:
+                return json.dumps({"error": f"Message {message_uid} not found"})
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                pass
+
+        from email import policy
+        original = email_module.message_from_bytes(raw_email, policy=policy.default)
+        orig_from = str(original.get("From", ""))
+        orig_to = str(original.get("To", ""))
+        orig_date = str(original.get("Date", ""))
+        orig_subject = str(original.get("Subject", ""))
+        orig_body = _email_body_to_markdown(raw_email)
+
+        fwd_body = (
+            f"---------- Forwarded message ----------\n"
+            f"From: {orig_from}\n"
+            f"Date: {orig_date}\n"
+            f"Subject: {orig_subject}\n"
+            f"To: {orig_to}\n\n"
+            f"{orig_body}"
+        )
+
+        msg = EmailMessage()
+        msg["From"] = creds["username"]
+        msg["To"] = to
+        msg["Subject"] = f"Fwd: {orig_subject}"
+        msg.set_content(fwd_body)
+
+        smtp_host = creds["smtp_host"]
+        smtp_port = int(creds["smtp_port"])
+        security = creds.get("security", "ssl")
+        use_tls = security == "ssl"
+
+        smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=use_tls)
+        await smtp.connect()
+        if security == "starttls":
+            await smtp.starttls()
+        await smtp.login(creds["username"], creds["password"])
+        await smtp.send_message(msg)
+        await smtp.quit()
+
+        return json.dumps({"success": True, "message": "Email forwarded"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 def create_mcp_app() -> Starlette:

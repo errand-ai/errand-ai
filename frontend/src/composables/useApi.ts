@@ -224,6 +224,7 @@ export interface PlatformCredentialField {
   required: boolean
   options?: { value: string; label: string }[]
   auth_mode?: string
+  help_text?: string
 }
 
 export interface PlatformInfo {
