@@ -29,6 +29,8 @@ EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
 FROM python:3.12-slim
+ARG APP_VERSION="dev"
+ENV APP_VERSION=$APP_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY errand/requirements.txt .
