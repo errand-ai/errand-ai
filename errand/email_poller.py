@@ -207,17 +207,26 @@ async def process_messages(imap) -> int:
                 continue
 
             # Parse the fetch response to extract raw email bytes.
-            # aioimaplib returns multiple lines; pick the largest bytes
-            # entry which will be the email content, not protocol overhead.
+            # aioimaplib returns lines as a mix of bytes (protocol lines)
+            # and bytearray (literal data like email content).
             raw_email = None
-            for line in fetch_response.lines:
-                if isinstance(line, bytes) and len(line) > 0:
+            for i, line in enumerate(fetch_response.lines):
+                logger.debug(
+                    "FETCH UID %s line[%d]: type=%s len=%d preview=%r",
+                    uid_str, i, type(line).__name__, len(line) if isinstance(line, (bytes, bytearray)) else 0,
+                    line[:100] if isinstance(line, (bytes, bytearray)) else line,
+                )
+                if isinstance(line, bytearray) and len(line) > 0:
+                    raw_email = bytes(line)
+                elif isinstance(line, bytes) and len(line) > 0:
                     if raw_email is None or len(line) > len(raw_email):
                         raw_email = line
 
             if raw_email is None:
                 logger.warning("No email body found for UID %s", uid_str)
                 continue
+
+            logger.info("FETCH UID %s: raw_email len=%d preview=%r", uid_str, len(raw_email), raw_email[:200])
 
             msg = email.message_from_bytes(raw_email, policy=policy.default)
             sender = str(msg.get("From", ""))
