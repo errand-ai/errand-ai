@@ -16,7 +16,7 @@ class SearXNGPlatform(Platform):
             label="SearXNG Search",
             capabilities={PlatformCapability.SEARCH},
             credential_schema=[
-                {"key": "url", "label": "Instance URL", "type": "text", "required": True},
+                {"key": "url", "label": "Instance URL", "type": "text", "required": True, "default": DEFAULT_URL},
                 {"key": "username", "label": "Username", "type": "text", "required": False},
                 {"key": "password", "label": "Password", "type": "password", "required": False},
             ],

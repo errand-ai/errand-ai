@@ -32,7 +32,7 @@ watch(() => props.schema, (schema) => {
   if (!schema) return
   const init: Record<string, string> = {}
   for (const field of schema) {
-    init[field.key] = field.type === 'select' && field.options?.length ? field.options[0].value : ''
+    init[field.key] = field.type === 'select' && field.options?.length ? field.options[0].value : (field.default ?? '')
   }
   fields.value = init
 }, { immediate: true })

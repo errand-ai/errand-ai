@@ -225,6 +225,7 @@ export interface PlatformCredentialField {
   options?: { value: string; label: string }[]
   auth_mode?: string
   help_text?: string
+  default?: string
 }
 
 export interface PlatformInfo {
