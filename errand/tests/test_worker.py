@@ -2839,7 +2839,7 @@ def test_callback_token_stored_in_valkey():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
@@ -2875,7 +2875,7 @@ def test_callback_url_derived_from_errand_mcp_url():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
@@ -2908,7 +2908,7 @@ def test_callback_env_vars_passed_to_container():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             mock_sync_redis.Redis.from_url.return_value = mock_redis
             process_task_in_container(task, settings)
@@ -2939,7 +2939,7 @@ def test_callback_env_vars_skipped_on_valkey_failure():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             # All Redis operations fail
             mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
@@ -2980,7 +2980,7 @@ def test_callback_result_overrides_runtime_stdout():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             # Return different mocks for each Redis.from_url call:
             # 1st: callback token storage, 2nd: log streaming, 3rd: result reading
@@ -3015,7 +3015,7 @@ def test_missing_callback_falls_back_to_runtime_stdout():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
             exit_code, stdout, stderr = process_task_in_container(task, settings)
@@ -3047,7 +3047,7 @@ def test_callback_result_valkey_keys_deleted():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
             process_task_in_container(task, settings)
@@ -3080,7 +3080,7 @@ def test_callback_result_valkey_error_swallowed():
     try:
         with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
-            "ERRAND_MCP_URL": "http://errand:8000/mcp",
+            "ERRAND_MCP_URL": "http://errand:8000/mcp/",
         }), patch("worker.sync_redis") as mock_sync_redis:
             # Token storage + log streaming succeed, result reading fails
             mock_sync_redis.Redis.from_url.side_effect = [

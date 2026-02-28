@@ -63,7 +63,7 @@ spec:
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
             - name: ERRAND_MCP_URL
-              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}/mcp"
+              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}/mcp/"
             {{- if .Values.worker.maxTurns }}
             - name: MAX_TURNS
               value: {{ .Values.worker.maxTurns | quote }}

@@ -953,7 +953,7 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
             callback_token = secrets.token_hex(32)
             cb_redis.set(f"task_result_token:{task.id}", callback_token, ex=1800)
             cb_redis.close()
-            callback_url = errand_mcp_url.removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
+            callback_url = errand_mcp_url.removesuffix("/").removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
             env_vars["RESULT_CALLBACK_URL"] = callback_url
             env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
         except Exception:
