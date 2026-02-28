@@ -588,7 +588,7 @@ async def list_email_folders() -> str:
     try:
         imap = await _connect_imap(creds)
         try:
-            response = await imap.list("", "*")
+            response = await imap.list('""', '"*"')
             if response.result != "OK":
                 return json.dumps({"error": f"LIST failed: {response.lines}"})
 
@@ -635,7 +635,7 @@ async def move_email(message_uid: str, folder: str, source_folder: str = "INBOX"
         imap = await _connect_imap(creds)
         try:
             # Also check SPECIAL-USE attributes for the target folder
-            response = await imap.list("", folder)
+            response = await imap.list('""', f'"{folder}"')
             if response.result == "OK":
                 import re
                 for line in response.lines:
