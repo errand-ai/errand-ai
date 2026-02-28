@@ -44,6 +44,7 @@ from mcp_server import create_mcp_app, mcp as mcp_server
 from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
+from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
 from version_checker import run_version_checker, get_version_info
 from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
@@ -115,10 +116,12 @@ async def lifespan(app: FastAPI):
     from platforms.twitter import TwitterPlatform
     from platforms.slack import SlackPlatform
     from platforms.github import GitHubPlatform
+    from platforms.email import EmailPlatform
     registry = get_registry()
     registry.register(TwitterPlatform())
     registry.register(SlackPlatform())
     registry.register(GitHubPlatform())
+    registry.register(EmailPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:
@@ -184,12 +187,14 @@ async def lifespan(app: FastAPI):
         run_status_updater(get_valkey, async_session, _load_creds)
     )
     version_checker_task = asyncio.create_task(run_version_checker())
+    email_poller_task = asyncio.create_task(run_email_poller())
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
     zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
     version_checker_task.cancel()
+    email_poller_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -204,6 +209,10 @@ async def lifespan(app: FastAPI):
         pass  # Expected after explicit cancel()
     try:
         await version_checker_task
+    except asyncio.CancelledError:
+        pass  # Expected after explicit cancel()
+    try:
+        await email_poller_task
     except asyncio.CancelledError:
         pass  # Expected after explicit cancel()
     await release_lock()

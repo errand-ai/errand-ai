@@ -10,6 +10,7 @@ class PlatformCapability(StrEnum):
     WEBHOOKS = "webhooks"
     ANALYTICS = "analytics"
     MONITORING = "monitoring"
+    EMAIL = "email"
 
 
 @dataclass

@@ -205,7 +205,7 @@ The worker uses a pluggable `ContainerRuntime` abstraction (`errand/container_ru
 - **ArgoCD gotcha**: Non-existent app names return `PermissionDenied` (not `NotFound`) — always verify the app name with `list_applications` before debugging RBAC
 - **ArgoCD RBAC testing**: `kubectl -n argocd exec deploy/argocd-server -- argocd admin settings rbac can <user> <action> <resource> '<project>/<app>' --namespace argocd`
 - **ArgoCD MCP account**: `mcpserver` local account (apiKey auth), role `readonly-user` (get, sync, restart deployments)
-- **Cluster context**: `devops-consultants` / namespace: `content-manager`
+- **Cluster context**: `devops-consultants` / namespace: `errand`
 - **Ingress**: nginx ingress controller (class `nginx`) — routes all paths to server (single service)
 - **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
 - **Database**: CloudNativePG — secret `content-manager-postgres-app`, key `uri`

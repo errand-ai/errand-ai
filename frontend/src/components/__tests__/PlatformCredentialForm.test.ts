@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
 import PlatformCredentialForm from '../settings/PlatformCredentialForm.vue'
+
+vi.mock('../../composables/useApi', () => ({
+  fetchTaskProfiles: vi.fn(),
+}))
+
+import { fetchTaskProfiles } from '../../composables/useApi'
 
 const githubSchema = [
   {
@@ -23,6 +29,16 @@ const simpleSchema = [
   { key: 'api_key', label: 'API Key', type: 'password', required: true },
   { key: 'api_secret', label: 'API Secret', type: 'password', required: true },
 ]
+
+const emailSchema = [
+  { key: 'imap_host', label: 'IMAP Server', type: 'text', required: true },
+  { key: 'email_profile', label: 'Task Profile', type: 'profile_select', required: true },
+  { key: 'poll_interval', label: 'Poll Interval (seconds)', type: 'text', required: false, help_text: 'Minimum 60. Reduced when IMAP IDLE is supported.' },
+]
+
+beforeEach(() => {
+  vi.mocked(fetchTaskProfiles).mockReset()
+})
 
 describe('PlatformCredentialForm', () => {
   it('renders password inputs for simple schema', () => {
@@ -181,5 +197,85 @@ describe('PlatformCredentialForm', () => {
     const button = wrapper.find('[data-testid="credential-save"]')
     expect(button.attributes('disabled')).toBeDefined()
     expect(button.text()).toBe('Testing...')
+  })
+
+  // --- Task 7.6: profile_select field type tests ---
+
+  it('renders a <select> dropdown for profile_select fields', async () => {
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([])
+
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: emailSchema, saving: false },
+    })
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    expect(select.exists()).toBe(true)
+    expect(select.element.tagName).toBe('SELECT')
+  })
+
+  it('shows "No task profiles configured" when profiles list is empty', async () => {
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([])
+
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: emailSchema, saving: false },
+    })
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const options = select.findAll('option')
+    expect(options).toHaveLength(1)
+    expect(options[0].text()).toContain('No task profiles configured')
+  })
+
+  it('shows profile names when profiles exist', async () => {
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([
+      { id: 'p1', name: 'Default Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+      { id: 'p2', name: 'Email Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+    ])
+
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: emailSchema, saving: false },
+    })
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const options = select.findAll('option')
+    // "Select a profile" + 2 profiles
+    expect(options).toHaveLength(3)
+    expect(options[0].text()).toBe('Select a profile')
+    expect(options[1].text()).toBe('Default Profile')
+    expect(options[2].text()).toBe('Email Profile')
+  })
+
+  it('displays help_text below fields that have it', async () => {
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([])
+
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: emailSchema, saving: false },
+    })
+    await flushPromises()
+
+    // poll_interval field has help_text
+    const helpText = wrapper.text()
+    expect(helpText).toContain('Minimum 60')
+  })
+
+  it('profile_select is not treated as a modeField (toggle)', async () => {
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([])
+
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: emailSchema, saving: false },
+    })
+    await flushPromises()
+
+    // Should not render as toggle buttons — profile_select type doesn't match modeField filter
+    // (modeField is type: 'select' with options, profile_select is type: 'profile_select')
+    const buttons = wrapper.findAll('button[data-testid^="cred-toggle-"]')
+    expect(buttons).toHaveLength(0)
+
+    // The profile_select should still be visible as a regular field
+    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    expect(select.exists()).toBe(true)
   })
 })

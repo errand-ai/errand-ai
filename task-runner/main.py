@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 from agents.run import CallModelData, ModelInputData
 
@@ -395,6 +395,9 @@ async def main():
     mcp_config_raw = read_file(env["MCP_CONFIGURATION_PATH"], "MCP configuration")
 
     # 3. Configure OpenAI client for LiteLLM
+    # Use Chat Completions API instead of Responses API — LiteLLM's /responses
+    # endpoint does not pass through function tools (github.com/BerriAI/litellm/issues/15371)
+    set_default_openai_api("chat_completions")
     client = AsyncOpenAI(base_url=env["OPENAI_BASE_URL"], api_key=env["OPENAI_API_KEY"])
     set_default_openai_client(client)
 
@@ -403,6 +406,18 @@ async def main():
 
     async with AsyncExitStack() as stack:
         mcp_servers = await connect_mcp_servers(mcp_config, stack)
+
+        # Diagnostic: list tools from each MCP server
+        for server in mcp_servers:
+            try:
+                tools = await server.list_tools()
+                tool_names = [t.name for t in tools]
+                logger.info(
+                    "MCP server '%s' provides %d tool(s): %s",
+                    server.name, len(tools), ", ".join(tool_names) if tool_names else "(none)",
+                )
+            except Exception as e:
+                logger.error("MCP server '%s' failed to list tools: %s", server.name, e)
 
         # 5. Create agent with reasoning settings
         reasoning_effort = get_reasoning_effort()

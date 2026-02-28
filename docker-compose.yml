@@ -103,7 +103,7 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
-      ERRAND_MCP_URL: http://errand:8000/mcp
+      ERRAND_MCP_URL: http://errand:8000/mcp/
       HINDSIGHT_URL: http://hindsight:8888
       MAX_TURNS: "200"
     depends_on:

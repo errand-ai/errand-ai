@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import type { PlatformCredentialField } from '../../composables/useApi'
+import { ref, computed, watch, onMounted } from 'vue'
+import type { PlatformCredentialField, TaskProfile } from '../../composables/useApi'
+import { fetchTaskProfiles } from '../../composables/useApi'
 
 const props = defineProps<{
   schema: PlatformCredentialField[]
@@ -12,6 +13,17 @@ const emit = defineEmits<{
 }>()
 
 const fields = ref<Record<string, string>>({})
+const profiles = ref<TaskProfile[]>([])
+
+onMounted(async () => {
+  if (props.schema.some(f => f.type === 'profile_select')) {
+    try {
+      profiles.value = await fetchTaskProfiles()
+    } catch {
+      profiles.value = []
+    }
+  }
+})
 
 // Find the mode selector field (type === 'select' with options) if any
 const modeField = computed(() => props.schema.find(f => f.type === 'select' && f.options?.length))
@@ -104,6 +116,22 @@ function onSubmit() {
         :data-testid="`cred-input-${field.key}`"
       />
 
+      <!-- Profile select dropdown -->
+      <select
+        v-else-if="field.type === 'profile_select'"
+        :id="`cred-${field.key}`"
+        v-model="fields[field.key]"
+        :required="field.required"
+        class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+        :data-testid="`cred-input-${field.key}`"
+      >
+        <option v-if="profiles.length === 0" value="" disabled>No task profiles configured. Create a profile first.</option>
+        <template v-else>
+          <option value="">Select a profile</option>
+          <option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+        </template>
+      </select>
+
       <!-- Password input (default) -->
       <input
         v-else
@@ -115,6 +143,9 @@ function onSubmit() {
         class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
         :data-testid="`cred-input-${field.key}`"
       />
+
+      <!-- Help text -->
+      <p v-if="field.help_text" class="mt-1 text-xs text-gray-500">{{ field.help_text }}</p>
     </div>
     <button
       type="submit"
