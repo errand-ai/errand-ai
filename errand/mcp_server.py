@@ -477,7 +477,9 @@ async def list_emails(folder: str = "INBOX", limit: int = 20, search: str | None
                 header_bytes = None
                 flags_str = ""
                 for line in fetch_resp.lines:
-                    if isinstance(line, bytes) and len(line) > 0:
+                    if isinstance(line, bytearray) and len(line) > 0:
+                        header_bytes = bytes(line)
+                    elif isinstance(line, bytes) and len(line) > 0:
                         if header_bytes is None or len(line) > len(header_bytes):
                             header_bytes = line
                     elif isinstance(line, str) and "FLAGS" in line:
@@ -523,7 +525,10 @@ async def read_email(message_uid: str, folder: str = "INBOX") -> str:
 
             raw_email = None
             for line in fetch_resp.lines:
-                if isinstance(line, bytes) and len(line) > 0:
+                if isinstance(line, bytearray) and len(line) > 0:
+                    raw_email = bytes(line)
+                    break
+                elif isinstance(line, bytes) and len(line) > 0:
                     if raw_email is None or len(line) > len(raw_email):
                         raw_email = line
 
@@ -719,7 +724,10 @@ async def forward_email(message_uid: str, to: str, folder: str = "INBOX") -> str
 
             raw_email = None
             for line in fetch_resp.lines:
-                if isinstance(line, bytes) and len(line) > 0:
+                if isinstance(line, bytearray) and len(line) > 0:
+                    raw_email = bytes(line)
+                    break
+                elif isinstance(line, bytes) and len(line) > 0:
                     if raw_email is None or len(line) > len(raw_email):
                         raw_email = line
 
