@@ -2,6 +2,7 @@ import asyncio
 import email
 import logging
 import uuid
+from datetime import datetime, timezone
 from email import policy
 from email.message import EmailMessage
 
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 
 from database import async_session
 from events import publish_event
+from llm import generate_title
 from models import Task
 from platforms.credentials import load_credentials
 
@@ -139,11 +141,22 @@ async def create_task_from_email(
             except (ValueError, TypeError):
                 logger.warning("Invalid profile_id '%s', creating task without profile", profile_id)
 
+        # Generate a short title via LLM (same as API-created tasks)
+        title = subject or "(no subject)"
+        try:
+            llm_result = await generate_title(description, session, now=datetime.now(timezone.utc))
+            if llm_result.success and llm_result.title:
+                title = llm_result.title
+        except Exception:
+            logger.warning("LLM title generation failed for email, using subject as title")
+
         task = Task(
-            title=subject or "(no subject)",
+            title=title,
             description=description,
             status="pending",
             position=position,
+            category="immediate",
+            execute_at=datetime.now(timezone.utc),
             profile_id=resolved_profile_id,
             created_by="email_poller",
         )
