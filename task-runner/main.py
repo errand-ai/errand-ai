@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
-from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_client, set_tracing_disabled
+from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
 from agents.run import CallModelData, ModelInputData
 
@@ -395,6 +395,9 @@ async def main():
     mcp_config_raw = read_file(env["MCP_CONFIGURATION_PATH"], "MCP configuration")
 
     # 3. Configure OpenAI client for LiteLLM
+    # Use Chat Completions API instead of Responses API — LiteLLM's /responses
+    # endpoint does not pass through function tools (github.com/BerriAI/litellm/issues/15371)
+    set_default_openai_api("chat_completions")
     client = AsyncOpenAI(base_url=env["OPENAI_BASE_URL"], api_key=env["OPENAI_API_KEY"])
     set_default_openai_client(client)
 
