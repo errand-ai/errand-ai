@@ -201,9 +201,13 @@ async def process_messages(imap) -> int:
     # response.lines[0] is space-separated UIDs (or empty)
     uid_line = response.lines[0]
     if not uid_line or not uid_line.strip():
+        logger.debug("SEARCH UNSEEN returned no UIDs")
         return 0
 
     uids = uid_line.strip().split()
+    logger.info("Found %d unseen message(s): %s", len(uids), " ".join(
+        u.decode() if isinstance(u, bytes) else str(u) for u in uids[:10]
+    ))
     created = 0
 
     for uid in uids:
@@ -314,13 +318,17 @@ async def _run_idle_loop(imap, credentials: dict):
     while True:
         # Safety poll every N cycles
         if cycle % SAFETY_POLL_CYCLES == 0:
+            logger.info("Safety poll (cycle %d)", cycle)
             count = await process_messages(imap)
             if count:
                 logger.info("Safety poll: created %d tasks", count)
+            else:
+                logger.info("Safety poll: no unseen messages")
 
         # Enter IDLE
+        logger.debug("Entering IDLE (cycle %d, timeout=%ds)", cycle, IDLE_TIMEOUT)
         idle_task = await imap.idle_start(timeout=IDLE_TIMEOUT)
-        await imap.wait_server_push()
+        await imap.wait_server_push(timeout=IDLE_TIMEOUT + 30)
         imap.idle_done()
         await asyncio.wait_for(idle_task, timeout=10)
 
