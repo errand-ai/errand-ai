@@ -172,34 +172,6 @@ class TestBuildDescription:
         assert "Message body" in result
 
 
-class TestCheckDuplicate:
-    @pytest.mark.asyncio
-    async def test_duplicate_found(self, db_session):
-        _, session_factory = db_session
-        from email_poller import check_duplicate
-
-        async with session_factory() as session:
-            task = Task(
-                title="Email task",
-                description="**Email UID:** 42\nSome content",
-                status="pending",
-                position=1,
-                created_by="email_poller",
-            )
-            session.add(task)
-            await session.commit()
-
-        result = await check_duplicate("42")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_no_duplicate(self, db_session):
-        from email_poller import check_duplicate
-
-        result = await check_duplicate("999")
-        assert result is False
-
-
 class TestCreateTaskFromEmail:
     @pytest.mark.asyncio
     async def test_creates_task(self, db_session):

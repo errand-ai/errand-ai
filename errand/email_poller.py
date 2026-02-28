@@ -110,18 +110,6 @@ def build_description(sender: str, to: str, date: str, subject: str, uid: str, b
     )
 
 
-async def check_duplicate(uid: str) -> bool:
-    """Check if a task already exists for this email UID."""
-    async with async_session() as session:
-        result = await session.execute(
-            select(Task).where(
-                Task.created_by == "email_poller",
-                Task.description.contains(f"**Email UID:** {uid}\n"),
-            )
-        )
-        return result.scalar_one_or_none() is not None
-
-
 async def create_task_from_email(
     subject: str, description: str, profile_id: str,
 ) -> bool:
@@ -213,11 +201,6 @@ async def process_messages(imap) -> int:
     for uid in uids:
         uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
         try:
-            # Check for duplicate before fetching full message
-            if await check_duplicate(uid_str):
-                logger.info("Skipping duplicate email UID %s", uid_str)
-                continue
-
             fetch_response = await imap.fetch(uid_str, "(RFC822)")
             if fetch_response.result != "OK":
                 logger.warning("IMAP FETCH failed for UID %s: %s", uid_str, fetch_response.lines)
