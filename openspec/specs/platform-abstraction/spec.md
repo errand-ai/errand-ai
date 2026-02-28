@@ -1,8 +1,8 @@
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: PlatformCapability enum
 
-The system SHALL define a `PlatformCapability` string enum with values: `POST`, `MEDIA`, `COMMANDS`, `WEBHOOKS`, `ANALYTICS`, `MONITORING`, `TOOL_PROVIDER`, `SEARCH`, `EMAIL`. Platforms declare their supported capabilities as a `set[PlatformCapability]`.
+The system SHALL define a `PlatformCapability` string enum with values: `POST`, `MEDIA`, `COMMANDS`, `WEBHOOKS`, `ANALYTICS`, `MONITORING`, `EMAIL`, `SEARCH`. Platforms declare their supported capabilities as a `set[PlatformCapability]`.
 
 #### Scenario: Platform declares capabilities
 
@@ -13,6 +13,35 @@ The system SHALL define a `PlatformCapability` string enum with values: `POST`, 
 
 - **WHEN** an `EmailPlatform` is instantiated
 - **THEN** its `info().capabilities` includes `PlatformCapability.EMAIL`
+
+#### Scenario: Search capability available
+
+- **WHEN** a `SearXNGPlatform` is instantiated
+- **THEN** its `info().capabilities` includes `PlatformCapability.SEARCH`
+
+### Requirement: Platform base class
+
+The system SHALL provide a `Platform` abstract base class in `backend/platforms/base.py` that defines the common interface for all platforms. The class SHALL declare abstract methods `info()` returning `PlatformInfo` and `verify_credentials(credentials: dict)` returning `bool`. The class SHALL provide default implementations for optional methods (`post()`, `delete_post()`, `get_post()`, `search()`) that raise `NotImplementedError`.
+
+#### Scenario: Platform subclass must implement info
+
+- **WHEN** a class inherits from `Platform` without implementing `info()`
+- **THEN** instantiation raises `TypeError` indicating the abstract method is not implemented
+
+#### Scenario: Platform subclass must implement verify_credentials
+
+- **WHEN** a class inherits from `Platform` without implementing `verify_credentials()`
+- **THEN** instantiation raises `TypeError` indicating the abstract method is not implemented
+
+#### Scenario: Optional methods raise NotImplementedError by default
+
+- **WHEN** a platform that does not override `post()` has `post()` called
+- **THEN** a `NotImplementedError` is raised
+
+#### Scenario: Search method raises NotImplementedError by default
+
+- **WHEN** a platform that does not override `search()` has `search()` called
+- **THEN** a `NotImplementedError` is raised
 
 ### Requirement: Platform registry initialization
 
