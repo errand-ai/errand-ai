@@ -510,6 +510,7 @@ async def list_emails(folder: str = "INBOX", limit: int = 20, search: str | None
                         "to": str(msg.get("To", "")),
                         "subject": str(msg.get("Subject", "")),
                         "date": str(msg.get("Date", "")),
+                        "unread": "\\Seen" not in flags_str,
                         "flags": flags_str,
                     })
                 else:
