@@ -328,6 +328,15 @@ _BLOCKED_FOLDER_NAMES = {
     "junk", "spam", "junk email",
 }
 
+# Safe IMAP search keys (RFC 3501 §6.4.4) — used to validate list_emails search param
+_SAFE_IMAP_SEARCH_KEYS = {
+    "ALL", "ANSWERED", "BCC", "BEFORE", "BODY", "CC", "DELETED", "DRAFT",
+    "FLAGGED", "FROM", "HEADER", "KEYWORD", "LARGER", "NEW", "NOT", "OLD",
+    "ON", "OR", "RECENT", "SEEN", "SENTBEFORE", "SENTON", "SENTSINCE",
+    "SINCE", "SMALLER", "SUBJECT", "TEXT", "TO", "UID", "UNANSWERED",
+    "UNDELETED", "UNDRAFT", "UNFLAGGED", "UNKEYWORD", "UNSEEN",
+}
+
 
 async def _get_email_credentials() -> dict | None:
     """Load email platform credentials from DB."""
@@ -449,6 +458,14 @@ async def list_emails(folder: str = "INBOX", limit: int = 20, search: str | None
             await imap.select(folder)
 
             if search:
+                # Validate search keys against RFC 3501 safe set to prevent injection
+                tokens = search.split()
+                for token in tokens:
+                    # Skip quoted string values (arguments to search keys like FROM "addr")
+                    if token.startswith('"') or token.isdigit() or ":" in token:
+                        continue
+                    if token.upper() not in _SAFE_IMAP_SEARCH_KEYS:
+                        return json.dumps({"error": f"Unsupported IMAP search key: {token}"})
                 response = await imap.search(search)
             else:
                 response = await imap.search("ALL")
@@ -688,9 +705,14 @@ async def send_email(to: str, subject: str, body: str) -> str:
 
         smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=smtp_use_ssl, start_tls=not smtp_use_ssl)
         await smtp.connect()
-        await smtp.login(creds["username"], creds["password"])
-        await smtp.send_message(msg)
-        await smtp.quit()
+        try:
+            await smtp.login(creds["username"], creds["password"])
+            await smtp.send_message(msg)
+        finally:
+            try:
+                await smtp.quit()
+            except Exception:
+                pass
 
         return json.dumps({"success": True, "message": "Email sent"})
     except Exception as e:
@@ -770,9 +792,14 @@ async def forward_email(message_uid: str, to: str, folder: str = "INBOX") -> str
 
         smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=smtp_use_ssl, start_tls=not smtp_use_ssl)
         await smtp.connect()
-        await smtp.login(creds["username"], creds["password"])
-        await smtp.send_message(msg)
-        await smtp.quit()
+        try:
+            await smtp.login(creds["username"], creds["password"])
+            await smtp.send_message(msg)
+        finally:
+            try:
+                await smtp.quit()
+            except Exception:
+                pass
 
         return json.dumps({"success": True, "message": "Email forwarded"})
     except Exception as e:

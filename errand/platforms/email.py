@@ -60,6 +60,7 @@ class EmailPlatform(Platform):
         imap_use_starttls = not imap_use_ssl
 
         # Verify IMAP
+        imap = None
         try:
             if imap_use_ssl:
                 imap = aioimaplib.IMAP4_SSL(host=host, port=port)
@@ -76,9 +77,16 @@ class EmailPlatform(Platform):
                 return False
             await imap.select("INBOX")
             await imap.logout()
+            imap = None
         except Exception:
             logger.exception("Email IMAP credential verification failed")
             return False
+        finally:
+            if imap:
+                try:
+                    await imap.logout()
+                except Exception:
+                    pass
 
         # Determine SMTP security from port (465=SSL, 587/25=STARTTLS, else follow toggle)
         smtp_host = credentials["smtp_host"]
@@ -86,6 +94,7 @@ class EmailPlatform(Platform):
         smtp_use_ssl = smtp_port == 465 or (smtp_port not in (587, 25) and security == "ssl")
 
         # Verify SMTP
+        smtp = None
         try:
             smtp = aiosmtplib.SMTP(
                 hostname=smtp_host,
@@ -96,8 +105,15 @@ class EmailPlatform(Platform):
             await smtp.connect()
             await smtp.login(username, password)
             await smtp.quit()
+            smtp = None
         except Exception:
             logger.exception("Email SMTP credential verification failed")
             return False
+        finally:
+            if smtp:
+                try:
+                    await smtp.quit()
+                except Exception:
+                    pass
 
         return True
