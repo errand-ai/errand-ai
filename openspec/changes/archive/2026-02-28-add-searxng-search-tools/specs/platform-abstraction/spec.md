@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: PlatformCapability enum
 
@@ -8,11 +8,6 @@ The system SHALL define a `PlatformCapability` string enum with values: `POST`, 
 
 - **WHEN** a `TwitterPlatform` is instantiated
 - **THEN** its `info().capabilities` includes `PlatformCapability.POST` and `PlatformCapability.MEDIA`
-
-#### Scenario: Email capability available
-
-- **WHEN** an `EmailPlatform` is instantiated
-- **THEN** its `info().capabilities` includes `PlatformCapability.EMAIL`
 
 #### Scenario: Search capability available
 
@@ -50,4 +45,4 @@ The backend SHALL initialize a global `PlatformRegistry` during application star
 #### Scenario: Registry available after startup
 
 - **WHEN** the FastAPI application has started
-- **THEN** `get_registry()` returns a registry with `TwitterPlatform`, `SearXNGPlatform`, and `EmailPlatform` registered
+- **THEN** `get_registry()` returns a registry with `TwitterPlatform` and `SearXNGPlatform` registered

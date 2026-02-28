@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: MCP server mounted at /mcp
 
@@ -25,6 +25,8 @@ The `post_tweet` tool SHALL delegate to the platform registry's `TwitterPlatform
 
 - **WHEN** a client calls `post_tweet` and the Twitter platform has no credentials (DB or env var)
 - **THEN** the tool returns "Error: Twitter API credentials not configured"
+
+## ADDED Requirements
 
 ### Requirement: web_search MCP tool
 

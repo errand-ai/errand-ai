@@ -26,6 +26,7 @@ SETTINGS_REGISTRY = {
     "oidc_client_secret": {"env_var": "OIDC_CLIENT_SECRET", "sensitive": True, "default": ""},
     "oidc_roles_claim": {"env_var": "OIDC_ROLES_CLAIM", "sensitive": False, "default": "resource_access.errand.roles"},
     "litellm_mcp_servers": {"env_var": None, "sensitive": False, "default": []},
+    "llm_timeout": {"env_var": None, "sensitive": False, "default": 30},
 }
 
 # Keys excluded from API responses
