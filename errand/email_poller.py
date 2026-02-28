@@ -116,7 +116,7 @@ async def check_duplicate(uid: str) -> bool:
         result = await session.execute(
             select(Task).where(
                 Task.created_by == "email_poller",
-                Task.description.contains(f"**Email UID:** {uid}"),
+                Task.description.contains(f"**Email UID:** {uid}\n"),
             )
         )
         return result.scalar_one_or_none() is not None
@@ -215,7 +215,7 @@ async def process_messages(imap) -> int:
         try:
             # Check for duplicate before fetching full message
             if await check_duplicate(uid_str):
-                logger.debug("Skipping duplicate email UID %s", uid_str)
+                logger.info("Skipping duplicate email UID %s", uid_str)
                 continue
 
             fetch_response = await imap.fetch(uid_str, "(RFC822)")
