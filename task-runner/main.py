@@ -407,6 +407,18 @@ async def main():
     async with AsyncExitStack() as stack:
         mcp_servers = await connect_mcp_servers(mcp_config, stack)
 
+        # Diagnostic: list tools from each MCP server
+        for server in mcp_servers:
+            try:
+                tools = await server.list_tools()
+                tool_names = [t.name for t in tools]
+                logger.info(
+                    "MCP server '%s' provides %d tool(s): %s",
+                    server.name, len(tools), ", ".join(tool_names) if tool_names else "(none)",
+                )
+            except Exception as e:
+                logger.error("MCP server '%s' failed to list tools: %s", server.name, e)
+
         # 5. Create agent with reasoning settings
         reasoning_effort = get_reasoning_effort()
         agent = Agent(
