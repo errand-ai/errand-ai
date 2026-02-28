@@ -206,3 +206,143 @@ async def test_delete_credentials_idempotent(admin_client):
 async def test_delete_credentials_requires_admin(client):
     resp = await client.delete("/api/platforms/fake-platform/credentials")
     assert resp.status_code == 403
+
+
+# --- Fake platform with editable fields ---
+
+
+class EditableFakePlatform(Platform):
+    """A fake platform with editable and non-editable fields."""
+
+    def __init__(self, *, verify_result: bool = True):
+        self._verify_result = verify_result
+
+    def info(self) -> PlatformInfo:
+        return PlatformInfo(
+            id="editable-fake",
+            label="Editable Fake",
+            capabilities={PlatformCapability.POST},
+            credential_schema=[
+                {"key": "api_key", "label": "API Key", "type": "password"},
+                {"key": "profile", "label": "Profile", "type": "text", "editable": True},
+                {"key": "interval", "label": "Interval", "type": "text", "editable": True},
+            ],
+        )
+
+    async def verify_credentials(self, credentials: dict) -> bool:
+        return self._verify_result
+
+
+@pytest.fixture(autouse=True)
+def _register_editable_fake():
+    registry = get_registry()
+    platform = EditableFakePlatform()
+    registry.register(platform)
+    yield
+    registry._platforms.pop("editable-fake", None)
+
+
+# --- PATCH credentials ---
+
+
+@pytest.mark.anyio
+async def test_patch_editable_field(admin_client):
+    # Save initial credentials
+    await admin_client.put(
+        "/api/platforms/editable-fake/credentials",
+        json={"api_key": "secret", "profile": "old", "interval": "60"},
+    )
+
+    resp = await admin_client.patch(
+        "/api/platforms/editable-fake/credentials",
+        json={"profile": "new-profile"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "connected"
+
+    # Verify the value was updated
+    get_resp = await admin_client.get("/api/platforms/editable-fake/credentials")
+    assert get_resp.json()["field_values"]["profile"] == "new-profile"
+    # Other editable field unchanged
+    assert get_resp.json()["field_values"]["interval"] == "60"
+
+
+@pytest.mark.anyio
+async def test_patch_reject_non_editable_field(admin_client):
+    await admin_client.put(
+        "/api/platforms/editable-fake/credentials",
+        json={"api_key": "secret", "profile": "old", "interval": "60"},
+    )
+
+    resp = await admin_client.patch(
+        "/api/platforms/editable-fake/credentials",
+        json={"api_key": "hacked"},
+    )
+    assert resp.status_code == 400
+    assert "Non-editable" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_patch_no_credentials(admin_client):
+    resp = await admin_client.patch(
+        "/api/platforms/editable-fake/credentials",
+        json={"profile": "new"},
+    )
+    assert resp.status_code == 400
+    assert "No credentials configured" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_patch_unknown_platform(admin_client):
+    resp = await admin_client.patch(
+        "/api/platforms/nonexistent/credentials",
+        json={"profile": "new"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_patch_requires_admin(client):
+    resp = await client.patch(
+        "/api/platforms/editable-fake/credentials",
+        json={"profile": "new"},
+    )
+    assert resp.status_code == 403
+
+
+# --- GET credentials with field_values ---
+
+
+@pytest.mark.anyio
+async def test_get_credentials_field_values(admin_client):
+    await admin_client.put(
+        "/api/platforms/editable-fake/credentials",
+        json={"api_key": "secret", "profile": "my-profile", "interval": "120"},
+    )
+
+    resp = await admin_client.get("/api/platforms/editable-fake/credentials")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["field_values"] == {"profile": "my-profile", "interval": "120"}
+    # api_key is NOT editable, so should not appear in field_values
+    assert "api_key" not in data["field_values"]
+
+
+@pytest.mark.anyio
+async def test_get_credentials_no_creds_empty_field_values(admin_client):
+    resp = await admin_client.get("/api/platforms/editable-fake/credentials")
+    assert resp.status_code == 200
+    assert resp.json()["field_values"] == {}
+
+
+@pytest.mark.anyio
+async def test_get_credentials_no_editable_fields(admin_client):
+    """Platform with no editable fields returns empty field_values."""
+    await admin_client.put(
+        "/api/platforms/fake-platform/credentials",
+        json={"api_key": "secret"},
+    )
+
+    resp = await admin_client.get("/api/platforms/fake-platform/credentials")
+    assert resp.status_code == 200
+    assert resp.json()["field_values"] == {}

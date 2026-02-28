@@ -30,18 +30,37 @@ const mockPlatforms = [
     status: 'connected',
     last_verified_at: '2026-01-15T10:30:00Z',
   },
+  {
+    id: 'email',
+    label: 'Email',
+    capabilities: ['email'],
+    credential_schema: [
+      { key: 'imap_host', label: 'IMAP Server', type: 'text', required: true },
+      { key: 'password', label: 'Password', type: 'password', required: true },
+      { key: 'poll_interval', label: 'Poll Interval', type: 'text', required: false, editable: true },
+      { key: 'authorized_recipients', label: 'Authorized Recipients', type: 'textarea', required: false, editable: true },
+    ],
+    status: 'connected',
+    last_verified_at: '2026-02-01T08:00:00Z',
+  },
 ]
 
 const mockFetchPlatforms = vi.fn()
 const mockSavePlatformCredentials = vi.fn()
 const mockDeletePlatformCredentials = vi.fn()
 const mockVerifyPlatformCredentials = vi.fn()
+const mockPatchPlatformCredentials = vi.fn()
+const mockFetchPlatformCredentialStatus = vi.fn()
+const mockFetchTaskProfiles = vi.fn()
 
 vi.mock('../../composables/useApi', () => ({
   fetchPlatforms: (...args: unknown[]) => mockFetchPlatforms(...args),
   savePlatformCredentials: (...args: unknown[]) => mockSavePlatformCredentials(...args),
   deletePlatformCredentials: (...args: unknown[]) => mockDeletePlatformCredentials(...args),
   verifyPlatformCredentials: (...args: unknown[]) => mockVerifyPlatformCredentials(...args),
+  patchPlatformCredentials: (...args: unknown[]) => mockPatchPlatformCredentials(...args),
+  fetchPlatformCredentialStatus: (...args: unknown[]) => mockFetchPlatformCredentialStatus(...args),
+  fetchTaskProfiles: (...args: unknown[]) => mockFetchTaskProfiles(...args),
 }))
 
 describe('PlatformSettings', () => {
@@ -160,5 +179,119 @@ describe('PlatformSettings', () => {
     const twitterCard = wrapper.find('[data-testid="platform-card-twitter"]')
     expect(twitterCard.text()).toContain('post')
     expect(twitterCard.text()).toContain('schedule')
+  })
+
+  // --- Edit mode tests ---
+
+  it('shows Edit button for connected platform with editable fields', async () => {
+    const wrapper = mount(PlatformSettings)
+    await flushPromises()
+
+    // Email has editable fields → Edit button shown
+    expect(wrapper.find('[data-testid="platform-edit-email"]').exists()).toBe(true)
+    // LinkedIn has no editable fields → no Edit button
+    expect(wrapper.find('[data-testid="platform-edit-linkedin"]').exists()).toBe(false)
+    // Twitter is disconnected → no Edit button
+    expect(wrapper.find('[data-testid="platform-edit-twitter"]').exists()).toBe(false)
+  })
+
+  it('opens edit form with pre-populated values when Edit clicked', async () => {
+    mockFetchPlatformCredentialStatus.mockResolvedValue({
+      platform_id: 'email',
+      status: 'connected',
+      field_values: { poll_interval: '120', authorized_recipients: 'user@test.com' },
+    })
+
+    const wrapper = mount(PlatformSettings)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="platform-edit-email"]').trigger('click')
+    await flushPromises()
+
+    expect(mockFetchPlatformCredentialStatus).toHaveBeenCalledWith('email')
+    expect(wrapper.find('[data-testid="platform-edit-form-email"]').exists()).toBe(true)
+
+    // The edit form should only show editable fields (poll_interval, authorized_recipients)
+    // and NOT show non-editable fields (imap_host, password)
+    const editForm = wrapper.find('[data-testid="platform-edit-form-email"]')
+    expect(editForm.find('[data-testid="cred-input-poll_interval"]').exists()).toBe(true)
+    expect(editForm.find('[data-testid="cred-input-authorized_recipients"]').exists()).toBe(true)
+    expect(editForm.find('[data-testid="cred-input-imap_host"]').exists()).toBe(false)
+    expect(editForm.find('[data-testid="cred-input-password"]').exists()).toBe(false)
+  })
+
+  it('pre-populates edit form fields with current values', async () => {
+    mockFetchPlatformCredentialStatus.mockResolvedValue({
+      platform_id: 'email',
+      status: 'connected',
+      field_values: { poll_interval: '120', authorized_recipients: 'user@test.com' },
+    })
+
+    const wrapper = mount(PlatformSettings)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="platform-edit-email"]').trigger('click')
+    await flushPromises()
+
+    const editForm = wrapper.find('[data-testid="platform-edit-form-email"]')
+    const pollInput = editForm.find('[data-testid="cred-input-poll_interval"]')
+    expect((pollInput.element as HTMLInputElement).value).toBe('120')
+
+    const recipientsInput = editForm.find('[data-testid="cred-input-authorized_recipients"]')
+    expect((recipientsInput.element as HTMLTextAreaElement).value).toBe('user@test.com')
+  })
+
+  it('calls PATCH endpoint on save and shows toast', async () => {
+    mockFetchPlatformCredentialStatus.mockResolvedValue({
+      platform_id: 'email',
+      status: 'connected',
+      field_values: { poll_interval: '60', authorized_recipients: '' },
+    })
+    mockPatchPlatformCredentials.mockResolvedValue({
+      status: 'connected',
+      last_verified_at: '2026-02-01T08:00:00Z',
+    })
+
+    const wrapper = mount(PlatformSettings)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="platform-edit-email"]').trigger('click')
+    await flushPromises()
+
+    // Change poll_interval
+    const editForm = wrapper.find('[data-testid="platform-edit-form-email"]')
+    await editForm.find('[data-testid="cred-input-poll_interval"]').setValue('120')
+    await editForm.find('[data-testid="credential-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(mockPatchPlatformCredentials).toHaveBeenCalledWith('email', {
+      poll_interval: '120',
+      authorized_recipients: '',
+    })
+
+    // Form should close after save
+    expect(wrapper.find('[data-testid="platform-edit-form-email"]').exists()).toBe(false)
+  })
+
+  it('closes edit form on cancel without calling PATCH', async () => {
+    mockFetchPlatformCredentialStatus.mockResolvedValue({
+      platform_id: 'email',
+      status: 'connected',
+      field_values: { poll_interval: '60', authorized_recipients: '' },
+    })
+
+    const wrapper = mount(PlatformSettings)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="platform-edit-email"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="platform-edit-form-email"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="platform-edit-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="platform-edit-form-email"]').exists()).toBe(false)
+    expect(mockPatchPlatformCredentials).not.toHaveBeenCalled()
   })
 })

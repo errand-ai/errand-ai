@@ -1096,6 +1096,51 @@ async def delete_platform_credentials(
         await session.commit()
 
 
+@app.patch("/api/platforms/{platform_id}/credentials")
+async def patch_platform_credentials(
+    platform_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    registry = get_registry()
+    platform = registry.get(platform_id)
+    if platform is None:
+        raise HTTPException(status_code=404, detail=f"Platform '{platform_id}' not found")
+
+    # Determine which fields are editable from the platform's credential schema
+    editable_keys = {
+        f["key"] for f in platform.info().credential_schema if f.get("editable")
+    }
+
+    # Validate that all requested fields are editable
+    non_editable = set(body.keys()) - editable_keys
+    if non_editable:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Non-editable field(s): {', '.join(sorted(non_editable))}",
+        )
+
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == platform_id)
+    )
+    cred = result.scalar_one_or_none()
+    if cred is None:
+        raise HTTPException(status_code=400, detail="No credentials configured")
+
+    # Decrypt, merge, re-encrypt
+    existing = decrypt_credentials(cred.encrypted_data)
+    existing.update(body)
+    cred.encrypted_data = encrypt_credentials(existing)
+    await session.commit()
+
+    return {
+        "platform_id": platform_id,
+        "status": cred.status,
+        "last_verified_at": cred.last_verified_at.isoformat() if cred.last_verified_at else None,
+    }
+
+
 @app.get("/api/platforms/{platform_id}/credentials")
 async def get_platform_credential_status(
     platform_id: str,
@@ -1117,10 +1162,12 @@ async def get_platform_credential_status(
             "status": "disconnected",
             "last_verified_at": None,
             "configured_fields": [],
+            "field_values": {},
         }
 
     try:
-        configured_fields = list(decrypt_credentials(cred.encrypted_data).keys())
+        decrypted = decrypt_credentials(cred.encrypted_data)
+        configured_fields = list(decrypted.keys())
     except Exception:
         logger.exception("Failed to decrypt credentials for platform '%s'", platform_id)
         return {
@@ -1128,12 +1175,21 @@ async def get_platform_credential_status(
             "status": "error",
             "last_verified_at": cred.last_verified_at.isoformat() if cred.last_verified_at else None,
             "configured_fields": [],
+            "field_values": {},
         }
+
+    # Return values only for editable fields
+    editable_keys = {
+        f["key"] for f in platform.info().credential_schema if f.get("editable")
+    }
+    field_values = {k: v for k, v in decrypted.items() if k in editable_keys}
+
     return {
         "platform_id": platform_id,
         "status": cred.status,
         "last_verified_at": cred.last_verified_at.isoformat() if cred.last_verified_at else None,
         "configured_fields": configured_fields,
+        "field_values": field_values,
     }
 
 

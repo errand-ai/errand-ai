@@ -278,4 +278,57 @@ describe('PlatformCredentialForm', () => {
     const select = wrapper.find('[data-testid="cred-input-email_profile"]')
     expect(select.exists()).toBe(true)
   })
+
+  // --- editableOnly mode tests ---
+
+  const editableSchema = [
+    { key: 'api_key', label: 'API Key', type: 'password', required: true },
+    { key: 'profile', label: 'Profile', type: 'text', required: false, editable: true },
+    { key: 'interval', label: 'Interval', type: 'text', required: false, editable: true },
+  ]
+
+  it('filters to only editable fields when editableOnly is true', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: editableSchema, saving: false, editableOnly: true, initialValues: {} },
+    })
+
+    expect(wrapper.find('[data-testid="cred-input-profile"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cred-input-interval"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cred-input-api_key"]').exists()).toBe(false)
+  })
+
+  it('pre-populates fields with initialValues', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: {
+        schema: editableSchema,
+        saving: false,
+        editableOnly: true,
+        initialValues: { profile: 'my-profile', interval: '120' },
+      },
+    })
+
+    const profileInput = wrapper.find('[data-testid="cred-input-profile"]')
+    expect((profileInput.element as HTMLInputElement).value).toBe('my-profile')
+
+    const intervalInput = wrapper.find('[data-testid="cred-input-interval"]')
+    expect((intervalInput.element as HTMLInputElement).value).toBe('120')
+  })
+
+  it('shows Save button text in editableOnly mode', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: editableSchema, saving: false, editableOnly: true, initialValues: {} },
+    })
+
+    const button = wrapper.find('[data-testid="credential-save"]')
+    expect(button.text()).toBe('Save')
+  })
+
+  it('shows Saving... button text in editableOnly mode when saving', () => {
+    const wrapper = mount(PlatformCredentialForm, {
+      props: { schema: editableSchema, saving: true, editableOnly: true, initialValues: {} },
+    })
+
+    const button = wrapper.find('[data-testid="credential-save"]')
+    expect(button.text()).toBe('Saving...')
+  })
 })

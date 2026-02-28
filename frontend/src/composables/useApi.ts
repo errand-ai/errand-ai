@@ -226,6 +226,7 @@ export interface PlatformCredentialField {
   auth_mode?: string
   help_text?: string
   default?: string
+  editable?: boolean
 }
 
 export interface PlatformInfo {
@@ -235,6 +236,7 @@ export interface PlatformInfo {
   credential_schema: PlatformCredentialField[]
   status: string
   last_verified_at: string | null
+  field_values?: Record<string, string>
 }
 
 export async function fetchPlatforms(): Promise<PlatformInfo[]> {
@@ -258,6 +260,22 @@ export async function deletePlatformCredentials(platformId: string): Promise<voi
     method: 'DELETE',
   })
   if (!res.ok) throw new Error(`Failed to delete credentials: ${res.status}`)
+}
+
+export async function fetchPlatformCredentialStatus(platformId: string): Promise<{ platform_id: string; status: string; last_verified_at: string | null; configured_fields: string[]; field_values: Record<string, string> }> {
+  const res = await authFetch(`${BASE}/platforms/${platformId}/credentials`)
+  if (!res.ok) throw new Error(`Failed to fetch credential status: ${res.status}`)
+  return res.json()
+}
+
+export async function patchPlatformCredentials(platformId: string, fields: Record<string, string>): Promise<{ status: string; last_verified_at: string | null }> {
+  const res = await authFetch(`${BASE}/platforms/${platformId}/credentials`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  })
+  if (!res.ok) throw new Error(`Failed to update credentials: ${res.status}`)
+  return res.json()
 }
 
 export async function verifyPlatformCredentials(platformId: string): Promise<{ status: string; last_verified_at: string | null }> {

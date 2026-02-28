@@ -6,7 +6,10 @@ import {
   savePlatformCredentials,
   deletePlatformCredentials,
   verifyPlatformCredentials,
+  patchPlatformCredentials,
+  fetchPlatformCredentialStatus,
   type PlatformInfo,
+  type PlatformCredentialField,
 } from '../../composables/useApi'
 import PlatformCredentialForm from './PlatformCredentialForm.vue'
 
@@ -18,6 +21,9 @@ const verifyingId = ref<string | null>(null)
 const disconnectTarget = ref<PlatformInfo | null>(null)
 const disconnectDialogRef = ref<HTMLDialogElement | null>(null)
 const disconnecting = ref(false)
+const editingId = ref<string | null>(null)
+const editFieldValues = ref<Record<string, string>>({})
+const editSavingId = ref<string | null>(null)
 
 async function loadPlatforms() {
   loading.value = true
@@ -59,6 +65,39 @@ async function onVerify(platform: PlatformInfo) {
     toast.error(`Failed to verify ${platform.label} credentials.`)
   } finally {
     verifyingId.value = null
+  }
+}
+
+function hasEditableFields(schema: PlatformCredentialField[]): boolean {
+  return schema.some(f => f.editable)
+}
+
+async function onEdit(platform: PlatformInfo) {
+  try {
+    const res = await fetchPlatformCredentialStatus(platform.id)
+    editFieldValues.value = res.field_values || {}
+  } catch {
+    editFieldValues.value = {}
+  }
+  editingId.value = platform.id
+}
+
+function cancelEdit() {
+  editingId.value = null
+  editFieldValues.value = {}
+}
+
+async function onSaveEdit(platform: PlatformInfo, fields: Record<string, string>) {
+  editSavingId.value = platform.id
+  try {
+    await patchPlatformCredentials(platform.id, fields)
+    editingId.value = null
+    editFieldValues.value = {}
+    toast.success(`${platform.label} settings updated.`)
+  } catch {
+    toast.error(`Failed to update ${platform.label} settings.`)
+  } finally {
+    editSavingId.value = null
   }
 }
 
@@ -133,6 +172,14 @@ onMounted(loadPlatforms)
           </div>
           <div class="flex items-center gap-2">
             <button
+              v-if="platform.status === 'connected' && hasEditableFields(platform.credential_schema)"
+              @click="onEdit(platform)"
+              class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              :data-testid="`platform-edit-${platform.id}`"
+            >
+              Edit
+            </button>
+            <button
               v-if="platform.status === 'connected'"
               @click="onVerify(platform)"
               :disabled="verifyingId === platform.id"
@@ -173,6 +220,25 @@ onMounted(loadPlatforms)
           :saving="savingId === platform.id"
           @save="onSaveCredentials(platform, $event)"
         />
+
+        <!-- Edit mode form for connected platforms -->
+        <div v-if="editingId === platform.id" class="mt-3" :data-testid="`platform-edit-form-${platform.id}`">
+          <PlatformCredentialForm
+            :schema="platform.credential_schema"
+            :saving="editSavingId === platform.id"
+            :editable-only="true"
+            :initial-values="editFieldValues"
+            @save="onSaveEdit(platform, $event)"
+          />
+          <button
+            type="button"
+            @click="cancelEdit"
+            class="mt-2 rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            data-testid="platform-edit-cancel"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
 
