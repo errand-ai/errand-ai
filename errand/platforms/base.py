@@ -11,6 +11,7 @@ class PlatformCapability(StrEnum):
     ANALYTICS = "analytics"
     MONITORING = "monitoring"
     EMAIL = "email"
+    SEARCH = "search"
 
 
 @dataclass
@@ -44,4 +45,7 @@ class Platform(ABC):
         raise NotImplementedError
 
     async def get_post(self, post_id: str) -> dict | None:
+        raise NotImplementedError
+
+    async def search(self, query: str, **kwargs) -> dict:
         raise NotImplementedError

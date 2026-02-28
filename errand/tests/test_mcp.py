@@ -282,14 +282,15 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_twelve_tools():
-    """The MCP server exposes exactly twelve tools (6 original + 6 email)."""
+async def test_mcp_server_has_fourteen_tools():
+    """The MCP server exposes exactly fourteen tools (6 original + 6 email + 2 search)."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
     assert tool_names == {
         "new_task", "task_status", "task_output", "task_logs", "schedule_task", "post_tweet",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
+        "web_search", "read_url",
     }
 
 
@@ -1017,3 +1018,200 @@ async def test_forward_email_unauthorized_recipient(db_session):
     data = json.loads(result)
     assert "error" in data
     assert "not in authorised" in data["error"]
+
+
+# --- web_search MCP tool ---
+
+
+async def test_web_search_default_url(db_session):
+    """web_search uses default URL when no credentials configured."""
+    mock_search_result = {
+        "query": "python frameworks",
+        "results": [{"title": "Flask", "url": "https://flask.palletsprojects.com", "content": "A micro framework", "engines": ["google"], "score": 1.0}],
+        "suggestions": [],
+        "number_of_results": 10,
+    }
+
+    with patch("platforms.credentials.load_credentials", return_value=None), \
+         patch("platforms.searxng.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = mock_search_result
+        mock_client.get.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import web_search
+        result = await web_search("python frameworks")
+
+    data = json.loads(result)
+    assert data["query"] == "python frameworks"
+    assert len(data["results"]) == 1
+    assert data["results"][0]["title"] == "Flask"
+
+
+async def test_web_search_with_db_credentials(db_session):
+    """web_search uses DB credentials when available."""
+    from cryptography.fernet import Fernet
+    import os
+
+    _, session_factory = db_session
+    key = Fernet.generate_key().decode()
+    os.environ["CREDENTIAL_ENCRYPTION_KEY"] = key
+
+    from platforms.credentials import encrypt
+    from models import PlatformCredential
+    creds = {"url": "https://custom.search.com", "username": "user", "password": "pass"}
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="searxng",
+            encrypted_data=encrypt(creds),
+            status="connected",
+        ))
+        await session.commit()
+
+    mock_search_result = {
+        "results": [{"title": "R1", "url": "https://r1.com", "content": "c", "engines": ["g"], "score": 1.0}],
+        "suggestions": [],
+        "number_of_results": 1,
+    }
+
+    with patch("platforms.searxng.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = mock_search_result
+        mock_client.get.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import web_search
+        result = await web_search("test")
+
+    data = json.loads(result)
+    assert "results" in data
+    # Verify custom URL was used
+    call_args = mock_client.get.call_args
+    assert "custom.search.com" in call_args.args[0]
+
+    os.environ.pop("CREDENTIAL_ENCRYPTION_KEY", None)
+
+
+async def test_web_search_error_handling(db_session):
+    """web_search returns error JSON when SearXNG is unreachable."""
+    import httpx
+
+    with patch("platforms.credentials.load_credentials", return_value=None), \
+         patch("platforms.searxng.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import web_search
+        result = await web_search("test")
+
+    data = json.loads(result)
+    assert "error" in data
+
+
+# --- read_url MCP tool ---
+
+
+async def test_read_url_success(db_session):
+    """read_url fetches URL and returns JSON with title and markdown content."""
+    html = "<html><head><title>Test Page</title></head><body><h1>Hello</h1><p>World</p></body></html>"
+
+    with patch("mcp_server.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import read_url
+        result = await read_url("https://example.com")
+
+    data = json.loads(result)
+    assert data["url"] == "https://example.com"
+    assert data["title"] == "Test Page"
+    assert "Hello" in data["content"]
+
+
+async def test_read_url_no_title(db_session):
+    """read_url returns empty title when HTML has no <title> tag."""
+    html = "<html><body><p>No title here</p></body></html>"
+
+    with patch("mcp_server.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import read_url
+        result = await read_url("https://example.com")
+
+    data = json.loads(result)
+    assert data["title"] == ""
+
+
+async def test_read_url_truncation(db_session):
+    """read_url truncates content to max_length."""
+    html = "<html><head><title>Big</title></head><body>" + "<p>x</p>" * 10000 + "</body></html>"
+
+    with patch("mcp_server.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.text = html
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get.return_value = mock_response
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import read_url
+        result = await read_url("https://example.com", max_length=100)
+
+    data = json.loads(result)
+    assert len(data["content"]) <= 100
+
+
+async def test_read_url_fetch_error(db_session):
+    """read_url returns error JSON on fetch failure."""
+    import httpx
+
+    with patch("mcp_server.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import read_url
+        result = await read_url("https://bad.example.com")
+
+    data = json.loads(result)
+    assert "error" in data
+
+
+async def test_read_url_timeout(db_session):
+    """read_url returns error JSON on timeout."""
+    import httpx
+
+    with patch("mcp_server.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.TimeoutException("Timeout")
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from mcp_server import read_url
+        result = await read_url("https://slow.example.com")
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "Timeout" in data["error"]

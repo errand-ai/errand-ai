@@ -117,11 +117,13 @@ async def lifespan(app: FastAPI):
     from platforms.slack import SlackPlatform
     from platforms.github import GitHubPlatform
     from platforms.email import EmailPlatform
+    from platforms.searxng import SearXNGPlatform
     registry = get_registry()
     registry.register(TwitterPlatform())
     registry.register(SlackPlatform())
     registry.register(GitHubPlatform())
     registry.register(EmailPlatform())
+    registry.register(SearXNGPlatform())
 
     # Auto-generate MCP API key and default system prompt if they don't exist
     async with async_session() as session:

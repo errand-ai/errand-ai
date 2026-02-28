@@ -1,10 +1,13 @@
 import email as email_module
+import html2text
 import json
 import logging
 import secrets
 import uuid as uuid_mod
 from email.message import EmailMessage
 from datetime import datetime
+
+import httpx
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -321,6 +324,78 @@ async def post_tweet(message: str) -> str:
         return f"Tweet posted: {result.url}"
     else:
         return f"Error posting tweet: {result.error}"
+
+
+@mcp.tool()
+async def read_url(url: str, max_length: int = 50000) -> str:
+    """Fetch a URL and convert its HTML content to markdown. Returns JSON with url, title, and content."""
+    import re
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+
+        html_content = resp.text
+
+        # Extract title
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html_content, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else ""
+
+        # Convert to markdown
+        h = html2text.HTML2Text()
+        h.ignore_links = False
+        h.ignore_images = True
+        h.body_width = 0
+        content = h.handle(html_content)
+
+        if len(content) > max_length:
+            content = content[:max_length]
+
+        return json.dumps({"url": url, "title": title, "content": content})
+    except httpx.TimeoutException:
+        return json.dumps({"error": f"Timeout fetching {url}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def web_search(
+    query: str,
+    categories: str | None = None,
+    time_range: str | None = None,
+    language: str | None = None,
+    safesearch: int | None = None,
+    pageno: int | None = None,
+) -> str:
+    """Search the web using SearXNG. Returns JSON with results, suggestions, and result count."""
+    from platforms.credentials import load_credentials
+    from platforms.searxng import SearXNGPlatform, DEFAULT_URL
+
+    credentials = None
+    try:
+        async with async_session() as session:
+            credentials = await load_credentials("searxng", session)
+    except Exception:
+        logger.debug("Failed to load SearXNG credentials from DB, using default URL")
+
+    if not credentials:
+        credentials = {"url": DEFAULT_URL}
+
+    platform = SearXNGPlatform()
+    try:
+        result = await platform.search(
+            query,
+            credentials=credentials,
+            categories=categories,
+            time_range=time_range,
+            language=language,
+            safesearch=safesearch,
+            pageno=pageno,
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 _BLOCKED_FOLDER_NAMES = {
