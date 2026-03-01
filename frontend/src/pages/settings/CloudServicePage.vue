@@ -55,9 +55,18 @@ async function fetchStatus() {
   }
 }
 
-function handleConnect() {
-  // Full page navigation to initiate OAuth flow
-  window.location.href = '/api/cloud/auth/login'
+async function handleConnect() {
+  try {
+    const resp = await apiFetch('/api/cloud/auth/login')
+    if (resp.ok) {
+      const data = await resp.json()
+      window.location.href = data.redirect_url
+    } else {
+      toast.error('Failed to start cloud connection')
+    }
+  } catch {
+    toast.error('Failed to start cloud connection')
+  }
 }
 
 async function handleDisconnect() {

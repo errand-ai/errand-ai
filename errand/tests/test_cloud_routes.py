@@ -131,12 +131,13 @@ class TestCloudAuthLogin:
         client, _ = cloud_client
         _mock_admin_user()
 
-        resp = await client.get("/api/cloud/auth/login", follow_redirects=False)
-        assert resp.status_code == 307
-        location = resp.headers["location"]
-        assert "protocol/openid-connect/auth" in location
-        assert "code_challenge" in location
-        assert "offline_access" in location
+        resp = await client.get("/api/cloud/auth/login")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "redirect_url" in data
+        assert "protocol/openid-connect/auth" in data["redirect_url"]
+        assert "code_challenge" in data["redirect_url"]
+        assert "offline_access" in data["redirect_url"]
 
     @pytest.mark.asyncio
     async def test_login_returns_503_when_not_configured(self, cloud_client):

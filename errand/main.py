@@ -1320,8 +1320,7 @@ async def cloud_auth_login(
     from urllib.parse import urlencode
     auth_url = f"{config['authorize_url']}?{urlencode(params)}"
 
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=auth_url)
+    return {"redirect_url": auth_url}
 
 
 @app.get("/api/cloud/auth/callback")
