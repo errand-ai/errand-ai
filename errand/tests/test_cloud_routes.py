@@ -127,7 +127,7 @@ def _mock_admin_user():
 
 class TestCloudAuthLogin:
     @pytest.mark.asyncio
-    async def test_login_redirects_to_keycloak(self, cloud_client):
+    async def test_login_redirects_to_cloud_tenant_auth(self, cloud_client):
         client, _ = cloud_client
         _mock_admin_user()
 
@@ -135,17 +135,15 @@ class TestCloudAuthLogin:
         assert resp.status_code == 200
         data = resp.json()
         assert "redirect_url" in data
-        assert "protocol/openid-connect/auth" in data["redirect_url"]
-        assert "code_challenge" in data["redirect_url"]
-        assert "offline_access" in data["redirect_url"]
+        assert "/auth/tenant/login" in data["redirect_url"]
+        assert "redirect_uri=" in data["redirect_url"]
 
     @pytest.mark.asyncio
     async def test_login_returns_503_when_not_configured(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
 
-        # Override _get_cloud_config to return None
-        with patch("main._get_cloud_config", new_callable=AsyncMock, return_value=None):
+        with patch("main._get_cloud_url", new_callable=AsyncMock, return_value=None):
             resp = await client.get("/api/cloud/auth/login", follow_redirects=False)
             assert resp.status_code == 503
             assert "not configured" in resp.json()["detail"]
@@ -153,36 +151,33 @@ class TestCloudAuthLogin:
 
 class TestCloudAuthCallback:
     @pytest.mark.asyncio
-    async def test_callback_error_redirects_with_error(self, cloud_client):
+    async def test_callback_error_redirects_through_login(self, cloud_client):
         client, _ = cloud_client
 
         resp = await client.get(
-            "/api/cloud/auth/callback?error=access_denied&error_description=User+cancelled",
+            "/api/cloud/auth/callback?error=access_denied",
             follow_redirects=False,
         )
         assert resp.status_code == 307
-        assert "/settings/cloud" in resp.headers["location"]
-        assert "error=" in resp.headers["location"]
+        assert resp.headers["location"].startswith("/auth/login?next=")
+        assert "settings/cloud" in resp.headers["location"]
+        assert "error" in resp.headers["location"]
 
     @pytest.mark.asyncio
-    async def test_callback_invalid_state(self, cloud_client):
+    async def test_callback_missing_code(self, cloud_client):
         client, _ = cloud_client
 
         resp = await client.get(
-            "/api/cloud/auth/callback?code=test-code&state=invalid-state",
+            "/api/cloud/auth/callback",
             follow_redirects=False,
         )
         assert resp.status_code == 400
-        assert "Invalid state" in resp.json()["detail"]
+        assert "Missing code" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_callback_success_stores_credentials(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
-
-        # Store a valid state
-        from cloud_auth import store_state
-        store_state("valid-state", "test-verifier")
 
         mock_tokens = {
             "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZW5hbnQtMTIzIiwiZXhwIjo5OTk5OTk5OTk5fQ.",
@@ -191,22 +186,15 @@ class TestCloudAuthCallback:
         }
 
         with patch("main.exchange_code", new_callable=AsyncMock, return_value=mock_tokens), \
-             patch("cloud_client.start_cloud_client", new_callable=AsyncMock) as mock_start, \
+             patch("cloud_client.start_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock):
-            # Patch the import inside the function
-            with patch("main._get_cloud_config", new_callable=AsyncMock, return_value={
-                "authorize_url": "https://auth.test/auth",
-                "token_url": "https://auth.test/token",
-                "client_id": "test-client",
-                "cloud_service_url": "https://test.cloud",
-            }):
-                resp = await client.get(
-                    "/api/cloud/auth/callback?code=test-code&state=valid-state",
-                    follow_redirects=False,
-                )
+            resp = await client.get(
+                "/api/cloud/auth/callback?code=test-code",
+                follow_redirects=False,
+            )
 
         assert resp.status_code == 307
-        assert "/settings/cloud" in resp.headers["location"]
+        assert resp.headers["location"] == "/auth/login?next=/settings/cloud"
 
         # Verify credentials were stored
         from models import PlatformCredential
@@ -248,9 +236,7 @@ class TestCloudDisconnect:
 
         with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
-             patch("main._get_cloud_config", new_callable=AsyncMock, return_value={
-                 "cloud_service_url": "https://test.cloud",
-             }):
+             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"):
             resp = await client.post("/api/cloud/auth/disconnect")
 
         assert resp.status_code == 200

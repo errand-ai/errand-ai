@@ -191,7 +191,7 @@ class CloudWebSocketClient:
     async def _try_refresh_token(self) -> bool:
         """Attempt to refresh the cloud access token. Returns True on success."""
         try:
-            from cloud_auth import refresh_token, get_keycloak_urls
+            from cloud_auth import refresh_token
 
             async with async_session() as session:
                 result = await session.execute(
@@ -206,32 +206,14 @@ class CloudWebSocketClient:
                 if not refresh_token_value:
                     return False
 
-                # Get cloud config for token URL
+                # Get cloud service URL
                 result = await session.execute(
                     select(Setting).where(Setting.key == "cloud_service_url")
                 )
                 url_setting = result.scalar_one_or_none()
                 cloud_url = url_setting.value if url_setting and url_setting.value else "https://service.errand.cloud"
 
-                result = await session.execute(
-                    select(Setting).where(Setting.key == "cloud_keycloak_realm_url")
-                )
-                realm_setting = result.scalar_one_or_none()
-                realm_url = realm_setting.value if realm_setting and realm_setting.value else None
-
-                result = await session.execute(
-                    select(Setting).where(Setting.key == "cloud_keycloak_client_id")
-                )
-                client_setting = result.scalar_one_or_none()
-                client_id = client_setting.value if client_setting and client_setting.value else "errand-desktop"
-
-                urls = get_keycloak_urls(cloud_url, realm_url, client_id)
-
-                tokens = await refresh_token(
-                    token_url=urls["token_url"],
-                    client_id=urls["client_id"],
-                    refresh_token_value=refresh_token_value,
-                )
+                tokens = await refresh_token(cloud_url, refresh_token_value)
 
                 # Update stored credentials
                 import time as _time

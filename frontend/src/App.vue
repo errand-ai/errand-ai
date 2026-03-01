@@ -48,7 +48,10 @@ onMounted(async () => {
         break
       case 'sso':
         if (!auth.isAuthenticated) {
-          window.location.href = data.login_url || '/auth/login'
+          const loginUrl = data.login_url || '/auth/login'
+          const currentPath = window.location.pathname
+          const next = currentPath !== '/' ? `?next=${encodeURIComponent(currentPath + window.location.search)}` : ''
+          window.location.href = loginUrl + next
         }
         break
     }

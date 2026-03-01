@@ -28,8 +28,6 @@ SETTINGS_REGISTRY = {
     "litellm_mcp_servers": {"env_var": None, "sensitive": False, "default": []},
     "llm_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://service.errand.cloud"},
-    "cloud_keycloak_realm_url": {"env_var": None, "sensitive": False, "default": ""},
-    "cloud_keycloak_client_id": {"env_var": None, "sensitive": False, "default": "errand-desktop"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
 }
 

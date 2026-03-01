@@ -44,7 +44,7 @@ from mcp_server import create_mcp_app, mcp as mcp_server
 from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
-from cloud_auth import generate_pkce, store_state, consume_state, get_keycloak_urls, exchange_code
+from cloud_auth import exchange_code
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
 from version_checker import run_version_checker, get_version_info
@@ -1262,34 +1262,15 @@ async def verify_platform_credentials(
 # --- Cloud Service API ---
 
 
-async def _get_cloud_config(session: AsyncSession) -> dict | None:
-    """Resolve cloud configuration from settings. Returns None if not configured."""
-    cloud_url = None
-    realm_url = None
-    client_id = None
+async def _get_cloud_url(session: AsyncSession) -> str | None:
+    """Resolve cloud service URL from settings. Returns None if not configured."""
+    result = await session.execute(select(Setting).where(Setting.key == "cloud_service_url"))
+    s = result.scalar_one_or_none()
+    if s and s.value:
+        return s.value
 
-    for key in ["cloud_service_url", "cloud_keycloak_realm_url", "cloud_keycloak_client_id"]:
-        result = await session.execute(select(Setting).where(Setting.key == key))
-        s = result.scalar_one_or_none()
-        if s and s.value:
-            if key == "cloud_service_url":
-                cloud_url = s.value
-            elif key == "cloud_keycloak_realm_url":
-                realm_url = s.value
-            elif key == "cloud_keycloak_client_id":
-                client_id = s.value
-
-    # Use defaults from SETTINGS_REGISTRY
     from settings_registry import SETTINGS_REGISTRY
-    cloud_url = cloud_url or SETTINGS_REGISTRY["cloud_service_url"]["default"]
-    client_id = client_id or SETTINGS_REGISTRY["cloud_keycloak_client_id"]["default"]
-
-    if not cloud_url:
-        return None
-
-    urls = get_keycloak_urls(cloud_url, realm_url or None, client_id)
-    urls["cloud_service_url"] = cloud_url
-    return urls
+    return SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
 
 @app.get("/api/cloud/auth/login")
@@ -1298,72 +1279,45 @@ async def cloud_auth_login(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_admin),
 ):
-    """Initiate OAuth 2.0 Authorization Code flow with PKCE for errand-cloud."""
-    config = await _get_cloud_config(session)
-    if not config:
+    """Initiate tenant auth flow via errand-cloud."""
+    cloud_url = await _get_cloud_url(session)
+    if not cloud_url:
         raise HTTPException(status_code=503, detail="Cloud service not configured")
 
-    code_verifier, code_challenge = generate_pkce()
-    state = secrets.token_urlsafe(32)
-    store_state(state, code_verifier)
-
-    redirect_uri = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
-    params = {
-        "client_id": config["client_id"],
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": "openid offline_access",
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "state": state,
-    }
+    callback_url = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
     from urllib.parse import urlencode
-    auth_url = f"{config['authorize_url']}?{urlencode(params)}"
+    redirect_url = f"{cloud_url.rstrip('/')}/auth/tenant/login?{urlencode({'redirect_uri': callback_url})}"
 
-    return {"redirect_url": auth_url}
+    return {"redirect_url": redirect_url}
 
 
 @app.get("/api/cloud/auth/callback")
 async def cloud_auth_callback(
     request: Request,
     code: str = Query(None),
-    state: str = Query(None),
     error: str = Query(None),
-    error_description: str = Query(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """Handle Keycloak redirect after cloud authentication."""
+    """Handle redirect from errand-cloud after tenant authentication."""
     from fastapi.responses import RedirectResponse
 
     if error:
-        from urllib.parse import urlencode
-        return RedirectResponse(url=f"/settings/cloud?{urlencode({'error': error_description or error})}")
+        from urllib.parse import urlencode, quote
+        return RedirectResponse(url=f"/auth/login?next={quote('/settings/cloud?' + urlencode({'error': error}))}")
 
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state parameter")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing code parameter")
 
-    code_verifier = consume_state(state)
-    if code_verifier is None:
-        raise HTTPException(status_code=400, detail="Invalid state parameter")
-
-    config = await _get_cloud_config(session)
-    if not config:
+    cloud_url = await _get_cloud_url(session)
+    if not cloud_url:
         raise HTTPException(status_code=503, detail="Cloud service not configured")
 
-    redirect_uri = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
-
     try:
-        tokens = await exchange_code(
-            token_url=config["token_url"],
-            client_id=config["client_id"],
-            code=code,
-            code_verifier=code_verifier,
-            redirect_uri=redirect_uri,
-        )
+        tokens = await exchange_code(cloud_url, code)
     except Exception:
-        logger.exception("Cloud OAuth token exchange failed")
-        from urllib.parse import urlencode
-        return RedirectResponse(url=f"/settings/cloud?{urlencode({'error': 'Token exchange failed'})}")
+        logger.exception("Cloud token exchange failed")
+        from urllib.parse import urlencode, quote
+        return RedirectResponse(url=f"/auth/login?next={quote('/settings/cloud?' + urlencode({'error': 'Token exchange failed'}))}")
 
     # Extract tenant_id from access token sub claim
     import time as _time
@@ -1412,7 +1366,7 @@ async def cloud_auth_callback(
     except Exception:
         logger.exception("Cloud endpoint registration failed after OAuth callback")
 
-    return RedirectResponse(url="/settings/cloud")
+    return RedirectResponse(url="/auth/login?next=/settings/cloud")
 
 
 @app.post("/api/cloud/auth/disconnect")
@@ -1436,9 +1390,9 @@ async def cloud_auth_disconnect(
         try:
             cred_data = decrypt_credentials(cred.encrypted_data)
             from cloud_endpoints import revoke_cloud_endpoints
-            config = await _get_cloud_config(session)
-            if config:
-                await revoke_cloud_endpoints(cred_data, config["cloud_service_url"])
+            cloud_url = await _get_cloud_url(session)
+            if cloud_url:
+                await revoke_cloud_endpoints(cred_data, cloud_url)
         except Exception:
             logger.exception("Cloud endpoint revocation failed during disconnect")
 

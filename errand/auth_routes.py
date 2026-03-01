@@ -15,7 +15,7 @@ def _require_oidc():
 
 
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, next: str = ""):
     _require_oidc()
     base_url = str(request.base_url).rstrip("/")
     params = {
@@ -24,13 +24,15 @@ async def login(request: Request):
         "response_type": "code",
         "scope": "openid offline_access",
     }
+    if next:
+        params["state"] = next
     return RedirectResponse(
         url=f"{auth_module.oidc.authorization_endpoint}?{urlencode(params)}"
     )
 
 
 @router.get("/callback")
-async def callback(request: Request, code: str = "", error: str = "", error_description: str = ""):
+async def callback(request: Request, code: str = "", state: str = "", error: str = "", error_description: str = ""):
     _require_oidc()
     if error:
         raise HTTPException(status_code=401, detail=error_description or error)
@@ -69,7 +71,10 @@ async def callback(request: Request, code: str = "", error: str = "", error_desc
     if refresh_token:
         fragment += f"&refresh_token={refresh_token}"
 
-    return RedirectResponse(url=f"/#{fragment}")
+    # Use state parameter as post-login redirect path
+    redirect_path = state if state and state.startswith("/") else "/"
+
+    return RedirectResponse(url=f"{redirect_path}#{fragment}")
 
 
 @router.post("/refresh")
