@@ -11,7 +11,7 @@ const { toastMock } = vi.hoisted(() => {
 })
 vi.mock('vue-sonner', () => ({ toast: toastMock }))
 
-function makeRouter(query: Record<string, string> = {}) {
+function makeRouter() {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
