@@ -3,10 +3,15 @@ import { ref, computed, watch, onMounted } from 'vue'
 import type { PlatformCredentialField, TaskProfile } from '../../composables/useApi'
 import { fetchTaskProfiles } from '../../composables/useApi'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   schema: PlatformCredentialField[]
   saving: boolean
-}>()
+  editableOnly?: boolean
+  initialValues?: Record<string, string>
+}>(), {
+  editableOnly: false,
+  initialValues: () => ({}),
+})
 
 const emit = defineEmits<{
   save: [credentials: Record<string, string>]
@@ -15,8 +20,14 @@ const emit = defineEmits<{
 const fields = ref<Record<string, string>>({})
 const profiles = ref<TaskProfile[]>([])
 
+// When editableOnly is true, filter schema to only editable fields
+const effectiveSchema = computed(() => {
+  if (!props.editableOnly) return props.schema
+  return props.schema.filter(f => f.editable)
+})
+
 onMounted(async () => {
-  if (props.schema.some(f => f.type === 'profile_select')) {
+  if (effectiveSchema.value.some(f => f.type === 'profile_select')) {
     try {
       profiles.value = await fetchTaskProfiles()
     } catch {
@@ -26,19 +37,23 @@ onMounted(async () => {
 })
 
 // Find the mode selector field (type === 'select' with options) if any
-const modeField = computed(() => props.schema.find(f => f.type === 'select' && f.options?.length))
+const modeField = computed(() => effectiveSchema.value.find(f => f.type === 'select' && f.options?.length))
 
-watch(() => props.schema, (schema) => {
+watch(() => effectiveSchema.value, (schema) => {
   if (!schema) return
   const init: Record<string, string> = {}
   for (const field of schema) {
-    init[field.key] = field.type === 'select' && field.options?.length ? field.options[0].value : (field.default ?? '')
+    if (props.initialValues[field.key] !== undefined) {
+      init[field.key] = props.initialValues[field.key]
+    } else {
+      init[field.key] = field.type === 'select' && field.options?.length ? field.options[0].value : (field.default ?? '')
+    }
   }
   fields.value = init
 }, { immediate: true })
 
 const visibleFields = computed(() => {
-  return props.schema.filter(field => {
+  return effectiveSchema.value.filter(field => {
     // Hide the mode selector from the regular field list — it's rendered as a toggle
     if (field.type === 'select' && field.options?.length) return false
     if (!field.auth_mode) return true
@@ -153,7 +168,7 @@ function onSubmit() {
       class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
       data-testid="credential-save"
     >
-      {{ saving ? 'Testing...' : 'Test & Save' }}
+      {{ saving ? (editableOnly ? 'Saving...' : 'Testing...') : (editableOnly ? 'Save' : 'Test & Save') }}
     </button>
   </form>
 </template>
