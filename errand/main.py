@@ -1299,11 +1299,14 @@ async def cloud_auth_callback(
     session: AsyncSession = Depends(get_session),
 ):
     """Handle redirect from errand-cloud after tenant authentication."""
-    from fastapi.responses import RedirectResponse
+    from fastapi.responses import HTMLResponse, RedirectResponse
+
+    def _close_popup(message: str = "", error: str = ""):
+        """Return an HTML page that closes the popup window."""
+        return HTMLResponse(f"""<!DOCTYPE html><html><body><script>window.close();</script><p>{error or message or 'Done. You may close this window.'}</p></body></html>""")
 
     if error:
-        from urllib.parse import urlencode, quote
-        return RedirectResponse(url=f"/auth/login?next={quote('/settings/cloud?' + urlencode({'error': error}))}")
+        return _close_popup(error=error)
 
     if not code:
         raise HTTPException(status_code=400, detail="Missing code parameter")
@@ -1316,8 +1319,7 @@ async def cloud_auth_callback(
         tokens = await exchange_code(cloud_url, code)
     except Exception:
         logger.exception("Cloud token exchange failed")
-        from urllib.parse import urlencode, quote
-        return RedirectResponse(url=f"/auth/login?next={quote('/settings/cloud?' + urlencode({'error': 'Token exchange failed'}))}")
+        return _close_popup(error="Token exchange failed")
 
     # Extract tenant_id from access token sub claim
     import time as _time
@@ -1366,7 +1368,7 @@ async def cloud_auth_callback(
     except Exception:
         logger.exception("Cloud endpoint registration failed after OAuth callback")
 
-    return RedirectResponse(url="/auth/login?next=/settings/cloud")
+    return _close_popup(message="Connected to Errand Cloud")
 
 
 @app.post("/api/cloud/auth/disconnect")

@@ -151,17 +151,17 @@ class TestCloudAuthLogin:
 
 class TestCloudAuthCallback:
     @pytest.mark.asyncio
-    async def test_callback_error_redirects_through_login(self, cloud_client):
+    async def test_callback_error_closes_popup(self, cloud_client):
         client, _ = cloud_client
 
         resp = await client.get(
             "/api/cloud/auth/callback?error=access_denied",
             follow_redirects=False,
         )
-        assert resp.status_code == 307
-        assert resp.headers["location"].startswith("/auth/login?next=")
-        assert "settings/cloud" in resp.headers["location"]
-        assert "error" in resp.headers["location"]
+        assert resp.status_code == 200
+        body = resp.text
+        assert "window.close()" in body
+        assert "access_denied" in body
 
     @pytest.mark.asyncio
     async def test_callback_missing_code(self, cloud_client):
@@ -193,8 +193,8 @@ class TestCloudAuthCallback:
                 follow_redirects=False,
             )
 
-        assert resp.status_code == 307
-        assert resp.headers["location"] == "/auth/login?next=/settings/cloud"
+        assert resp.status_code == 200
+        assert "window.close()" in resp.text
 
         # Verify credentials were stored
         from models import PlatformCredential

@@ -60,7 +60,26 @@ async function handleConnect() {
     const resp = await apiFetch('/api/cloud/auth/login')
     if (resp.ok) {
       const data = await resp.json()
-      window.location.href = data.redirect_url
+      // Open OAuth flow in a popup so the SPA stays loaded
+      const w = 500, h = 600
+      const left = window.screenX + (window.outerWidth - w) / 2
+      const top = window.screenY + (window.outerHeight - h) / 2
+      const popup = window.open(
+        data.redirect_url,
+        'cloud-auth',
+        `width=${w},height=${h},left=${left},top=${top}`,
+      )
+      if (!popup) {
+        toast.error('Popup blocked — please allow popups for this site')
+        return
+      }
+      // Poll until the popup closes (callback redirects it to /settings/cloud which auto-closes)
+      const poll = setInterval(async () => {
+        if (popup.closed) {
+          clearInterval(poll)
+          await fetchStatus()
+        }
+      }, 500)
     } else {
       toast.error('Failed to start cloud connection')
     }
