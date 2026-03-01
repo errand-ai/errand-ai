@@ -63,6 +63,11 @@ const router = createRouter({
           component: () => import('../pages/settings/TaskProfilesPage.vue'),
         },
         {
+          path: 'cloud',
+          name: 'settings-cloud',
+          component: () => import('../pages/settings/CloudServicePage.vue'),
+        },
+        {
           path: 'users',
           name: 'settings-users',
           component: () => import('../pages/settings/UserManagementPage.vue'),

@@ -44,6 +44,7 @@ from mcp_server import create_mcp_app, mcp as mcp_server
 from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
+from cloud_auth import generate_pkce, store_state, consume_state, get_keycloak_urls, exchange_code
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
 from version_checker import run_version_checker, get_version_info
@@ -190,6 +191,17 @@ async def lifespan(app: FastAPI):
     )
     version_checker_task = asyncio.create_task(run_version_checker())
     email_poller_task = asyncio.create_task(run_email_poller())
+
+    # Start cloud WebSocket client if credentials exist
+    async with async_session() as session:
+        result = await session.execute(
+            select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+        )
+        cloud_cred = result.scalar_one_or_none()
+        if cloud_cred and cloud_cred.status == "connected":
+            from cloud_client import start_cloud_client
+            await start_cloud_client()
+
     async with mcp_server.session_manager.run():
         yield
     scheduler_task.cancel()
@@ -197,6 +209,10 @@ async def lifespan(app: FastAPI):
     slack_updater_task.cancel()
     version_checker_task.cancel()
     email_poller_task.cancel()
+
+    # Stop cloud client
+    from cloud_client import stop_cloud_client
+    await stop_cloud_client()
     try:
         await scheduler_task
     except asyncio.CancelledError:
@@ -1074,6 +1090,15 @@ async def save_platform_credentials(
             last_verified_at=now,
         ))
     await session.commit()
+
+    # If Slack credentials were saved and cloud is connected, register cloud endpoints
+    if platform_id == "slack":
+        try:
+            from cloud_endpoints import try_register_endpoints
+            await try_register_endpoints(session)
+        except Exception:
+            logger.exception("Cloud endpoint registration failed after Slack credential save")
+
     return {
         "platform_id": platform_id,
         "status": "connected",
@@ -1231,6 +1256,253 @@ async def verify_platform_credentials(
     return {
         "status": cred.status,
         "last_verified_at": now.isoformat(),
+    }
+
+
+# --- Cloud Service API ---
+
+
+async def _get_cloud_config(session: AsyncSession) -> dict | None:
+    """Resolve cloud configuration from settings. Returns None if not configured."""
+    cloud_url = None
+    realm_url = None
+    client_id = None
+
+    for key in ["cloud_service_url", "cloud_keycloak_realm_url", "cloud_keycloak_client_id"]:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        s = result.scalar_one_or_none()
+        if s and s.value:
+            if key == "cloud_service_url":
+                cloud_url = s.value
+            elif key == "cloud_keycloak_realm_url":
+                realm_url = s.value
+            elif key == "cloud_keycloak_client_id":
+                client_id = s.value
+
+    # Use defaults from SETTINGS_REGISTRY
+    from settings_registry import SETTINGS_REGISTRY
+    cloud_url = cloud_url or SETTINGS_REGISTRY["cloud_service_url"]["default"]
+    client_id = client_id or SETTINGS_REGISTRY["cloud_keycloak_client_id"]["default"]
+
+    if not cloud_url:
+        return None
+
+    urls = get_keycloak_urls(cloud_url, realm_url or None, client_id)
+    urls["cloud_service_url"] = cloud_url
+    return urls
+
+
+@app.get("/api/cloud/auth/login")
+async def cloud_auth_login(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Initiate OAuth 2.0 Authorization Code flow with PKCE for errand-cloud."""
+    config = await _get_cloud_config(session)
+    if not config:
+        raise HTTPException(status_code=503, detail="Cloud service not configured")
+
+    code_verifier, code_challenge = generate_pkce()
+    state = secrets.token_urlsafe(32)
+    store_state(state, code_verifier)
+
+    redirect_uri = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
+    params = {
+        "client_id": config["client_id"],
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid offline_access",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    from urllib.parse import urlencode
+    auth_url = f"{config['authorize_url']}?{urlencode(params)}"
+
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/api/cloud/auth/callback")
+async def cloud_auth_callback(
+    request: Request,
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
+    error_description: str = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Handle Keycloak redirect after cloud authentication."""
+    from fastapi.responses import RedirectResponse
+
+    if error:
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/settings/cloud?{urlencode({'error': error_description or error})}")
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state parameter")
+
+    code_verifier = consume_state(state)
+    if code_verifier is None:
+        raise HTTPException(status_code=400, detail="Invalid state parameter")
+
+    config = await _get_cloud_config(session)
+    if not config:
+        raise HTTPException(status_code=503, detail="Cloud service not configured")
+
+    redirect_uri = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
+
+    try:
+        tokens = await exchange_code(
+            token_url=config["token_url"],
+            client_id=config["client_id"],
+            code=code,
+            code_verifier=code_verifier,
+            redirect_uri=redirect_uri,
+        )
+    except Exception:
+        logger.exception("Cloud OAuth token exchange failed")
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/settings/cloud?{urlencode({'error': 'Token exchange failed'})}")
+
+    # Extract tenant_id from access token sub claim
+    import time as _time
+    try:
+        unverified = jwt.decode(tokens["access_token"], options={"verify_signature": False})
+        tenant_id = unverified.get("sub", "")
+    except Exception:
+        tenant_id = ""
+
+    # Store encrypted credentials
+    token_expiry = _time.time() + tokens.get("expires_in", 300)
+    cred_data = {
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens.get("refresh_token", ""),
+        "token_expiry": token_expiry,
+        "tenant_id": tenant_id,
+    }
+    encrypted = encrypt_credentials(cred_data)
+    now = datetime.now(timezone.utc)
+
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.encrypted_data = encrypted
+        existing.status = "connected"
+        existing.last_verified_at = now
+    else:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypted,
+            status="connected",
+            last_verified_at=now,
+        ))
+    await session.commit()
+
+    # Start WebSocket client
+    from cloud_client import start_cloud_client
+    await start_cloud_client()
+
+    # Register cloud endpoints if Slack credentials are configured
+    try:
+        from cloud_endpoints import try_register_endpoints
+        await try_register_endpoints(session)
+    except Exception:
+        logger.exception("Cloud endpoint registration failed after OAuth callback")
+
+    return RedirectResponse(url="/settings/cloud")
+
+
+@app.post("/api/cloud/auth/disconnect")
+async def cloud_auth_disconnect(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Disconnect from errand-cloud service."""
+    # Check for existing credentials
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+    )
+    cred = result.scalar_one_or_none()
+
+    if cred:
+        # Stop WebSocket client
+        from cloud_client import stop_cloud_client
+        await stop_cloud_client()
+
+        # Revoke cloud endpoints
+        try:
+            cred_data = decrypt_credentials(cred.encrypted_data)
+            from cloud_endpoints import revoke_cloud_endpoints
+            config = await _get_cloud_config(session)
+            if config:
+                await revoke_cloud_endpoints(cred_data, config["cloud_service_url"])
+        except Exception:
+            logger.exception("Cloud endpoint revocation failed during disconnect")
+
+        # Delete credentials
+        await session.delete(cred)
+
+        # Delete cloud_endpoints setting
+        result = await session.execute(
+            select(Setting).where(Setting.key == "cloud_endpoints")
+        )
+        endpoints_setting = result.scalar_one_or_none()
+        if endpoints_setting:
+            await session.delete(endpoints_setting)
+
+        await session.commit()
+
+    # Publish disconnected status
+    await publish_event("cloud_status", {"status": "disconnected"})
+
+    return {"ok": True}
+
+
+@app.get("/api/cloud/status")
+async def cloud_status(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Return current cloud connection state."""
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+    )
+    cred = result.scalar_one_or_none()
+
+    if cred is None:
+        return {"status": "not_configured"}
+
+    try:
+        cred_data = decrypt_credentials(cred.encrypted_data)
+    except Exception:
+        return {"status": "error", "detail": "Failed to decrypt cloud credentials"}
+
+    # Load cloud endpoints
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_endpoints")
+    )
+    endpoints_setting = result.scalar_one_or_none()
+    endpoints = endpoints_setting.value if endpoints_setting and isinstance(endpoints_setting.value, list) else []
+
+    if cred.status == "error":
+        return {"status": "error", "detail": "Cloud connection error"}
+
+    # Check if Slack credentials are configured
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "slack")
+    )
+    slack_cred = result.scalar_one_or_none()
+    slack_configured = slack_cred is not None and slack_cred.status == "connected"
+
+    return {
+        "status": "connected",
+        "tenant_id": cred_data.get("tenant_id", ""),
+        "endpoints": endpoints,
+        "slack_configured": slack_configured,
     }
 
 

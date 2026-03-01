@@ -1,4 +1,5 @@
 """FastAPI router for Slack endpoints."""
+import asyncio
 import json
 import logging
 import re
@@ -59,13 +60,14 @@ def _is_duplicate_event(event_id: str) -> bool:
     return False
 
 
-@router.post("/commands")
-async def slack_commands(
-    background_tasks: BackgroundTasks,
-    body: bytes = Depends(verify_slack_request),
-    session: AsyncSession = Depends(get_session),
-):
-    """Handle Slack slash commands."""
+async def process_slack_command(body: bytes, session: AsyncSession, response_url_callback: str | None = None) -> dict:
+    """Process a Slack slash command payload.
+
+    Parses form data, dispatches to subcommand handlers, and handles channel message posting.
+    When response_url_callback is provided (cloud relay path), POSTs the response to that URL
+    instead of returning it as the HTTP response.
+    Called directly by the cloud webhook dispatcher (no signature verification).
+    """
     form_data = parse_qs(body.decode())
     text = form_data.get("text", [""])[0]
     user_id = form_data.get("user_id", [""])[0]
@@ -99,15 +101,61 @@ async def slack_commands(
     # If a task was just created, also post a channel message for live status updates
     task_id = response.pop("_task_id", None)
     if task_id and bot_token and channel_id:
-        background_tasks.add_task(
-            _post_channel_message_and_store_ref,
-            bot_token=bot_token,
-            channel_id=channel_id,
-            task_id=task_id,
-            blocks=response.get("blocks", []),
+        asyncio.create_task(
+            _post_channel_message_and_store_ref(
+                bot_token=bot_token,
+                channel_id=channel_id,
+                task_id=task_id,
+                blocks=response.get("blocks", []),
+            )
         )
 
+    # For cloud relay: send response via response_url instead of returning it
+    if response_url_callback:
+        response_url = form_data.get("response_url", [""])[0]
+        if response_url:
+            asyncio.create_task(
+                _post_interaction_response(
+                    response_url=response_url,
+                    blocks=response.get("blocks", []),
+                )
+            )
+        else:
+            logger.warning("Cloud relay command missing response_url, discarding response")
+        return {"ok": True}
+
+    return response
+
+
+@router.post("/commands")
+async def slack_commands(
+    background_tasks: BackgroundTasks,
+    body: bytes = Depends(verify_slack_request),
+    session: AsyncSession = Depends(get_session),
+):
+    """Handle Slack slash commands."""
+    response = await process_slack_command(body, session)
     return JSONResponse(content=response)
+
+
+async def process_slack_event(body: bytes) -> dict | None:
+    """Process a Slack event payload (event_callback with app_mention).
+
+    Handles duplicate detection and background task creation.
+    Returns a response dict for HTTP use, or None for cloud dispatch.
+    Called directly by the cloud webhook dispatcher (no signature verification).
+    """
+    data = json.loads(body)
+
+    if data.get("type") == "event_callback":
+        event = data.get("event", {})
+        event_id = data.get("event_id", "")
+
+        if event.get("type") == "app_mention":
+            if event_id and not _is_duplicate_event(event_id):
+                asyncio.create_task(_handle_mention(event=event))
+
+    return {"ok": True}
 
 
 @router.post("/events")
@@ -122,18 +170,8 @@ async def slack_events(
     if data.get("type") == "url_verification":
         return {"challenge": data["challenge"]}
 
-    if data.get("type") == "event_callback":
-        event = data.get("event", {})
-        event_id = data.get("event_id", "")
-
-        if event.get("type") == "app_mention":
-            if event_id and not _is_duplicate_event(event_id):
-                background_tasks.add_task(
-                    _handle_mention,
-                    event=event,
-                )
-
-    return JSONResponse(content={"ok": True}, status_code=200)
+    result = await process_slack_event(body)
+    return JSONResponse(content=result or {"ok": True}, status_code=200)
 
 
 async def _handle_mention(event: dict) -> None:
@@ -245,27 +283,22 @@ async def _handle_mention(event: dict) -> None:
             logger.exception("Failed to post mention confirmation to channel %s", channel)
 
 
-@router.post("/interactions")
-async def slack_interactions(
-    background_tasks: BackgroundTasks,
-    body: bytes = Depends(verify_slack_request),
-    session: AsyncSession = Depends(get_session),
-):
-    """Handle Slack interactivity payloads (button clicks).
+async def process_slack_interaction(body: bytes, session: AsyncSession) -> dict:
+    """Process a Slack interactivity payload (button clicks).
 
-    For block_actions, the direct HTTP response only acknowledges receipt.
-    Actual responses are sent via the response_url as ephemeral messages,
-    since response_type is only honoured when posted to response_url.
+    Parses the payload and dispatches block_actions, posting responses
+    to response_url. This function already uses response_url for delivery.
+    Called directly by the cloud webhook dispatcher (no signature verification).
     """
     form_data = parse_qs(body.decode())
     payload_str = form_data.get("payload", [""])[0]
     if not payload_str:
-        return JSONResponse(content={"ok": True}, status_code=200)
+        return {"ok": True}
 
     try:
         payload = json.loads(payload_str)
     except (json.JSONDecodeError, TypeError):
-        return JSONResponse(content={"ok": True}, status_code=200)
+        return {"ok": True}
 
     if payload.get("type") == "block_actions":
         response_url = payload.get("response_url", "")
@@ -281,15 +314,31 @@ async def slack_interactions(
                     response = await handle_output(task_id, session)
 
                 if response_url:
-                    background_tasks.add_task(
-                        _post_interaction_response,
-                        response_url=response_url,
-                        blocks=response.get("blocks", []),
+                    asyncio.create_task(
+                        _post_interaction_response(
+                            response_url=response_url,
+                            blocks=response.get("blocks", []),
+                        )
                     )
                 break
 
-    # Always acknowledge with 200 — actual response sent via response_url
-    return JSONResponse(content={"ok": True}, status_code=200)
+    return {"ok": True}
+
+
+@router.post("/interactions")
+async def slack_interactions(
+    background_tasks: BackgroundTasks,
+    body: bytes = Depends(verify_slack_request),
+    session: AsyncSession = Depends(get_session),
+):
+    """Handle Slack interactivity payloads (button clicks).
+
+    For block_actions, the direct HTTP response only acknowledges receipt.
+    Actual responses are sent via the response_url as ephemeral messages,
+    since response_type is only honoured when posted to response_url.
+    """
+    result = await process_slack_interaction(body, session)
+    return JSONResponse(content=result, status_code=200)
 
 
 async def _post_channel_message_and_store_ref(

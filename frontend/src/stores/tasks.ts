@@ -6,10 +6,13 @@ import { useAuthStore } from './auth'
 
 const POLL_INTERVAL = 5000
 
+export type CloudConnectionStatus = 'not_configured' | 'connected' | 'disconnected' | 'error'
+
 export const useTaskStore = defineStore('tasks', () => {
   const tasks = ref<TaskData[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const cloudStatus = ref<CloudConnectionStatus>('not_configured')
   let pollTimer: ReturnType<typeof setInterval> | null = null
 
   const auth = useAuthStore()
@@ -17,8 +20,16 @@ export const useTaskStore = defineStore('tasks', () => {
   // --- WebSocket integration ---
 
   function handleWsMessage(data: unknown) {
-    const msg = data as { event: string; task: TaskData }
-    if (!msg?.event || !msg?.task) return
+    const msg = data as { event: string; task: any }
+    if (!msg?.event) return
+
+    // Handle cloud status events
+    if (msg.event === 'cloud_status') {
+      cloudStatus.value = msg.task?.status ?? 'disconnected'
+      return
+    }
+
+    if (!msg?.task) return
 
     if (msg.event === 'task_created') {
       // Add at end if not already present (position ordering is preserved)
@@ -147,5 +158,5 @@ export const useTaskStore = defineStore('tasks', () => {
     stopPolling()
   }
 
-  return { tasks, loading, error, wsStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, wsStatus, cloudStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
 })
