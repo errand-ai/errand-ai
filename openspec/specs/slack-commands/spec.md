@@ -1,16 +1,19 @@
-## Purpose
+## MODIFIED Requirements
 
-Slack slash command handling for task creation with automatic slack tag assignment.
+### Requirement: Extracted command processing function
+The Slack command processing logic SHALL be extracted from the `POST /slack/commands` route handler into a standalone async function that can be called from both the HTTP route and the cloud webhook dispatcher.
 
-## Requirements
+#### Scenario: HTTP route calls extracted function
+- **WHEN** a Slack slash command arrives at `POST /slack/commands` and passes signature verification
+- **THEN** the route handler SHALL call the extracted `process_slack_command(body: bytes, session)` function
+- **THEN** behavior SHALL be identical to the existing implementation
 
-### Requirement: /task new command — automatic slack tag
-The `/task new` slash command SHALL automatically add a `slack` tag to every task it creates. The tag SHALL be added after the task is committed to the database, using the existing tag find-or-create logic.
+#### Scenario: Cloud dispatcher calls extracted function
+- **WHEN** a Slack commands webhook is received via the cloud WebSocket relay
+- **THEN** the cloud dispatcher SHALL call `process_slack_command(body: bytes, session)` directly
+- **THEN** the function SHALL send responses via `response_url` (extracted from the command payload) rather than returning a JSON response
 
-#### Scenario: Slash command task gets slack tag
-- **WHEN** a Slack user issues `/task new Write documentation`
-- **THEN** the created task has a `slack` tag associated with it
-
-#### Scenario: Slack tag created if not exists
-- **WHEN** no `slack` tag exists in the database and a task is created via `/task new`
-- **THEN** a new `slack` tag is created and associated with the task
+#### Scenario: Response delivery via response_url for cloud relay
+- **WHEN** a Slack command is processed via cloud relay
+- **THEN** the handler SHALL POST the Block Kit response to the command's `response_url` via the Slack client
+- **THEN** the channel message posting for new tasks (via `background_tasks`) SHALL still work normally (it uses the bot token, not the HTTP response)
