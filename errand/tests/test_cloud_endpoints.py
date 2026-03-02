@@ -65,6 +65,10 @@ class TestRegisterEndpoints:
     @pytest.mark.asyncio
     async def test_register_returns_none_on_api_failure(self):
         session = AsyncMock()
+        # session.execute() must return a result with scalar_one_or_none() -> None
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=mock_result)
 
         with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
