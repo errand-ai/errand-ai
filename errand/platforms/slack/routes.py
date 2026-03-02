@@ -60,11 +60,11 @@ def _is_duplicate_event(event_id: str) -> bool:
     return False
 
 
-async def process_slack_command(body: bytes, session: AsyncSession, response_url_callback: str | None = None) -> dict:
+async def process_slack_command(body: bytes, session: AsyncSession, use_response_url: str | None = None) -> dict:
     """Process a Slack slash command payload.
 
     Parses form data, dispatches to subcommand handlers, and handles channel message posting.
-    When response_url_callback is provided (cloud relay path), POSTs the response to that URL
+    When use_response_url is provided (cloud relay path), POSTs the response to that URL
     instead of returning it as the HTTP response.
     Called directly by the cloud webhook dispatcher (no signature verification).
     """
@@ -111,7 +111,7 @@ async def process_slack_command(body: bytes, session: AsyncSession, response_url
         )
 
     # For cloud relay: send response via response_url instead of returning it
-    if response_url_callback:
+    if use_response_url:
         response_url = form_data.get("response_url", [""])[0]
         if response_url:
             asyncio.create_task(

@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Module-level task reference for the WebSocket client
 _client_task: asyncio.Task | None = None
 _refresh_task: asyncio.Task | None = None
+_ws_connected: bool = False
+
+
+def is_connected() -> bool:
+    """Return whether the cloud WebSocket is currently connected."""
+    return _ws_connected
 
 
 class CloudWebSocketClient:
@@ -38,15 +44,18 @@ class CloudWebSocketClient:
 
     async def run(self) -> None:
         """Main run loop with reconnection logic."""
+        global _ws_connected
         self._running = True
         while self._running:
             try:
                 await self._connect_and_receive()
             except asyncio.CancelledError:
                 logger.info("Cloud WebSocket client cancelled")
+                _ws_connected = False
                 break
             except Exception:
                 logger.exception("Cloud WebSocket connection error")
+            _ws_connected = False
 
             if not self._running:
                 break
@@ -76,8 +85,10 @@ class CloudWebSocketClient:
 
         try:
             async with websockets.connect(cloud_url, additional_headers=headers) as ws:
+                global _ws_connected
                 self._backoff_attempt = 0
                 self._processed_ids.clear()
+                _ws_connected = True
                 logger.info("Connected to cloud WebSocket: %s", cloud_url)
                 await publish_event("cloud_status", {"status": "connected"})
 
@@ -297,14 +308,14 @@ async def start_cloud_client() -> None:
 
 async def stop_cloud_client() -> None:
     """Stop the cloud WebSocket client and token refresh tasks."""
-    global _client_task, _refresh_task
+    global _client_task, _refresh_task, _ws_connected
 
     if _client_task and not _client_task.done():
         _client_task.cancel()
         try:
             await _client_task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected after cancel(); ensures task is fully awaited before cleanup
     _client_task = None
 
     if _refresh_task and not _refresh_task.done():
@@ -312,6 +323,7 @@ async def stop_cloud_client() -> None:
         try:
             await _refresh_task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected after cancel(); ensures task is fully awaited before cleanup
     _refresh_task = None
+    _ws_connected = False
     logger.info("Cloud WebSocket client stopped")

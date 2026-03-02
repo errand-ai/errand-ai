@@ -50,7 +50,7 @@ async def _dispatch_slack(endpoint_type: str, body: bytes) -> None:
 
     elif endpoint_type == "commands":
         async with async_session() as session:
-            await process_slack_command(body, session, response_url_callback="cloud")
+            await process_slack_command(body, session, use_response_url="cloud")
 
     elif endpoint_type == "interactivity":
         async with async_session() as session:

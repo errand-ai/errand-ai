@@ -1284,9 +1284,21 @@ async def cloud_auth_login(
     if not cloud_url:
         raise HTTPException(status_code=503, detail="Cloud service not configured")
 
+    # Generate CSRF state nonce and store in DB
+    state = secrets.token_urlsafe(32)
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_auth_state")
+    )
+    existing_state = result.scalar_one_or_none()
+    if existing_state:
+        existing_state.value = state
+    else:
+        session.add(Setting(key="cloud_auth_state", value=state))
+    await session.commit()
+
     callback_url = str(request.base_url).rstrip("/") + "/api/cloud/auth/callback"
     from urllib.parse import urlencode
-    redirect_url = f"{cloud_url.rstrip('/')}/auth/tenant/login?{urlencode({'redirect_uri': callback_url})}"
+    redirect_url = f"{cloud_url.rstrip('/')}/auth/tenant/login?{urlencode({'redirect_uri': callback_url, 'state': state})}"
 
     return {"redirect_url": redirect_url}
 
@@ -1296,6 +1308,7 @@ async def cloud_auth_callback(
     request: Request,
     code: str = Query(None),
     error: str = Query(None),
+    state: str = Query(None),
     session: AsyncSession = Depends(get_session),
 ):
     """Handle redirect from errand-cloud after tenant authentication."""
@@ -1303,13 +1316,26 @@ async def cloud_auth_callback(
 
     def _close_popup(message: str = "", error: str = ""):
         """Return an HTML page that closes the popup window."""
-        return HTMLResponse(f"""<!DOCTYPE html><html><body><script>window.close();</script><p>{error or message or 'Done. You may close this window.'}</p></body></html>""")
+        import html
+        display = html.escape(error) if error else html.escape(message) if message else "Done. You may close this window."
+        return HTMLResponse(f"""<!DOCTYPE html><html><body><script>window.close();</script><p>{display}</p></body></html>""")
 
     if error:
         return _close_popup(error=error)
 
     if not code:
         raise HTTPException(status_code=400, detail="Missing code parameter")
+
+    # Validate CSRF state
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_auth_state")
+    )
+    stored_state = result.scalar_one_or_none()
+    if not stored_state or not state or stored_state.value != state:
+        return _close_popup(error="Invalid or missing state parameter")
+    # Delete the nonce after use
+    await session.delete(stored_state)
+    await session.commit()
 
     cloud_url = await _get_cloud_url(session)
     if not cloud_url:
@@ -1411,8 +1437,9 @@ async def cloud_auth_disconnect(
 
         await session.commit()
 
-    # Publish disconnected status
-    await publish_event("cloud_status", {"status": "disconnected"})
+    # Publish status reflecting whether credentials existed
+    status = "disconnected" if cred else "not_configured"
+    await publish_event("cloud_status", {"status": status})
 
     return {"ok": True}
 
@@ -1445,6 +1472,11 @@ async def cloud_status(
 
     if cred.status == "error":
         return {"status": "error", "detail": "Cloud connection error"}
+
+    # Check live WebSocket connection state
+    from cloud_client import is_connected as ws_is_connected
+    if not ws_is_connected():
+        return {"status": "disconnected", "tenant_id": cred_data.get("tenant_id", "")}
 
     # Check if Slack credentials are configured
     result = await session.execute(
