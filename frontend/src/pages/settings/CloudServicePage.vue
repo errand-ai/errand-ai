@@ -39,7 +39,7 @@ const subscriptionExpiry = computed(() => {
   if (!expiresAt) return null
   const d = new Date(expiresAt)
   if (isNaN(d.getTime())) return null
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
 })
 const subscriptionInactive = computed(() => cloudStatus.value.subscription?.active === false)
 
@@ -175,8 +175,8 @@ onMounted(async () => {
         <div class="flex items-center gap-2 mb-2">
           <span class="inline-block h-2.5 w-2.5 rounded-full bg-green-500"></span>
           <span class="text-sm font-medium text-green-700">Connected</span>
-          <span v-if="cloudStatus.email" class="text-xs text-gray-400 ml-2">
-            {{ cloudStatus.email }}
+          <span v-if="cloudStatus.email || cloudStatus.tenant_id" class="text-xs text-gray-400 ml-2">
+            {{ cloudStatus.email || cloudStatus.tenant_id }}
           </span>
         </div>
 
@@ -257,6 +257,10 @@ onMounted(async () => {
 
       <p v-else-if="hasEndpointError" class="text-sm text-red-600 mt-4" data-testid="cloud-endpoint-error">
         Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
+      </p>
+
+      <p v-else-if="subscriptionInactive" class="text-sm text-gray-500 mt-4" data-testid="cloud-subscription-inactive">
+        Endpoint registration is unavailable while your subscription is inactive.
       </p>
 
       <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">

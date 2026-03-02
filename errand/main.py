@@ -202,12 +202,15 @@ async def lifespan(app: FastAPI):
             from cloud_client import start_cloud_client
             await start_cloud_client()
 
-            # Attempt endpoint registration on startup (stores error if it fails)
-            try:
-                from cloud_endpoints import try_register_endpoints
-                await try_register_endpoints(session)
-            except Exception:
-                logger.exception("Cloud endpoint registration failed on startup")
+            # Register endpoints in background to avoid blocking startup
+            async def _register_endpoints_background():
+                try:
+                    async with async_session() as bg_session:
+                        from cloud_endpoints import try_register_endpoints
+                        await try_register_endpoints(bg_session)
+                except Exception:
+                    logger.exception("Cloud endpoint registration failed on startup")
+            asyncio.create_task(_register_endpoints_background())
 
     async with mcp_server.session_manager.run():
         yield
@@ -1513,7 +1516,7 @@ async def cloud_status(
             unverified = jwt.decode(cred_data["access_token"], options={"verify_signature": False})
             email = unverified.get("email", "")
         except Exception:
-            pass
+            logger.debug("Failed to extract email from access token", exc_info=True)
 
     resp: dict = {
         "status": connection_status,
@@ -1525,7 +1528,9 @@ async def cloud_status(
     if subscription is not None:
         resp["subscription"] = subscription
     if error_setting and isinstance(error_setting.value, dict):
-        resp["endpoint_error"] = {"detail": error_setting.value.get("detail", "")}
+        detail = error_setting.value.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            resp["endpoint_error"] = {"detail": detail}
 
     return resp
 

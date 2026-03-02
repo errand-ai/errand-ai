@@ -257,7 +257,16 @@ async def fetch_subscription_status(
             if not resp.is_success:
                 logger.debug("Cloud subscription check returned %s", resp.status_code)
                 return None
-            return resp.json()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            active = data.get("active")
+            expires_at = data.get("expires_at")
+            if not isinstance(active, bool):
+                return None
+            if expires_at is not None and not isinstance(expires_at, str):
+                return None
+            return {"active": active, "expires_at": expires_at}
     except Exception:
         logger.debug("Cloud subscription check failed", exc_info=True)
         return None
