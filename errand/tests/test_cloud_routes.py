@@ -1,6 +1,6 @@
 """Tests for cloud auth routes (login, callback, disconnect, status)."""
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -137,6 +137,7 @@ class TestCloudAuthLogin:
         assert "redirect_url" in data
         assert "/auth/tenant/login" in data["redirect_url"]
         assert "redirect_uri=" in data["redirect_url"]
+        assert "state=" in data["redirect_url"]
 
     @pytest.mark.asyncio
     async def test_login_returns_503_when_not_configured(self, cloud_client):
@@ -175,9 +176,44 @@ class TestCloudAuthCallback:
         assert "Missing code" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_callback_missing_state_returns_error(self, cloud_client):
+        client, _ = cloud_client
+
+        resp = await client.get(
+            "/api/cloud/auth/callback?code=test-code",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert "window.close()" in resp.text
+        assert "Invalid or missing state" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_callback_invalid_state_returns_error(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        # Generate a valid state via login
+        resp = await client.get("/api/cloud/auth/login")
+        assert resp.status_code == 200
+
+        # Use a wrong state
+        resp = await client.get(
+            "/api/cloud/auth/callback?code=test-code&state=wrong-state",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        assert "Invalid or missing state" in resp.text
+
+    @pytest.mark.asyncio
     async def test_callback_success_stores_credentials(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
+
+        # Generate a valid state via login
+        login_resp = await client.get("/api/cloud/auth/login")
+        redirect_url = login_resp.json()["redirect_url"]
+        from urllib.parse import urlparse, parse_qs
+        state = parse_qs(urlparse(redirect_url).query)["state"][0]
 
         mock_tokens = {
             "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZW5hbnQtMTIzIiwiZXhwIjo5OTk5OTk5OTk5fQ.",
@@ -189,7 +225,7 @@ class TestCloudAuthCallback:
              patch("cloud_client.start_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock):
             resp = await client.get(
-                "/api/cloud/auth/callback?code=test-code",
+                f"/api/cloud/auth/callback?code=test-code&state={state}",
                 follow_redirects=False,
             )
 
@@ -210,16 +246,18 @@ class TestCloudAuthCallback:
 
 class TestCloudDisconnect:
     @pytest.mark.asyncio
-    async def test_disconnect_when_not_connected(self, cloud_client):
+    async def test_disconnect_when_not_connected_publishes_not_configured(self, cloud_client):
         client, _ = cloud_client
         _mock_admin_user()
 
-        resp = await client.post("/api/cloud/auth/disconnect")
+        with patch("main.publish_event", new_callable=AsyncMock) as mock_publish:
+            resp = await client.post("/api/cloud/auth/disconnect")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+        mock_publish.assert_called_once_with("cloud_status", {"status": "not_configured"})
 
     @pytest.mark.asyncio
-    async def test_disconnect_deletes_credentials(self, cloud_client):
+    async def test_disconnect_deletes_credentials_publishes_disconnected(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
 
@@ -236,10 +274,12 @@ class TestCloudDisconnect:
 
         with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
-             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"):
+             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
+             patch("main.publish_event", new_callable=AsyncMock) as mock_publish:
             resp = await client.post("/api/cloud/auth/disconnect")
 
         assert resp.status_code == 200
+        mock_publish.assert_called_once_with("cloud_status", {"status": "disconnected"})
 
         # Verify credentials deleted
         async with session_maker() as session:
@@ -260,7 +300,7 @@ class TestCloudStatus:
         assert resp.json()["status"] == "not_configured"
 
     @pytest.mark.asyncio
-    async def test_status_connected(self, cloud_client):
+    async def test_status_connected_when_ws_active(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
 
@@ -273,12 +313,34 @@ class TestCloudStatus:
             ))
             await session.commit()
 
-        resp = await client.get("/api/cloud/status")
+        with patch("cloud_client.is_connected", return_value=True):
+            resp = await client.get("/api/cloud/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "connected"
         assert data["tenant_id"] == "t1"
         assert data["slack_configured"] is False
+
+    @pytest.mark.asyncio
+    async def test_status_disconnected_when_ws_inactive(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=False):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "disconnected"
+        assert data["tenant_id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_status_error(self, cloud_client):

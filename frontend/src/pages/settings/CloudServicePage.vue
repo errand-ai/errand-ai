@@ -15,7 +15,7 @@ interface CloudEndpoint {
 }
 
 interface CloudStatus {
-  status: 'not_configured' | 'connected' | 'error'
+  status: 'not_configured' | 'connected' | 'disconnected' | 'error'
   tenant_id?: string
   endpoints?: CloudEndpoint[]
   slack_configured?: boolean

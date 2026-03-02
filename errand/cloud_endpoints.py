@@ -166,7 +166,26 @@ async def try_register_endpoints(session: AsyncSession) -> None:
     # Check for existing endpoints
     existing = await check_existing_endpoints(cloud_creds, cloud_service_url)
     if existing:
-        logger.info("Cloud endpoints already exist for slack, skipping registration")
+        # Persist existing endpoints to local setting so the UI can display them
+        endpoint_list = [
+            {
+                "integration": ep.get("integration", "slack"),
+                "endpoint_type": ep.get("type", ep.get("endpoint_type", "")),
+                "url": ep.get("url", ""),
+                "token": ep.get("token", ""),
+            }
+            for ep in existing
+        ]
+        result = await session.execute(
+            select(Setting).where(Setting.key == "cloud_endpoints")
+        )
+        ep_setting = result.scalar_one_or_none()
+        if ep_setting:
+            ep_setting.value = endpoint_list
+        else:
+            session.add(Setting(key="cloud_endpoints", value=endpoint_list))
+        await session.commit()
+        logger.info("Cloud endpoints already exist for slack, persisted %d to local setting", len(endpoint_list))
         return
 
     await register_cloud_endpoints(cloud_creds, slack_creds, cloud_service_url, session)

@@ -36,8 +36,8 @@ class TestDispatchRouting:
                 "body": "text=new+Buy+groceries&user_id=U123",
             })
             mock_handler.assert_called_once()
-            # Should pass response_url_callback="cloud"
-            assert mock_handler.call_args.kwargs["response_url_callback"] == "cloud"
+            # Should pass use_response_url="cloud"
+            assert mock_handler.call_args.kwargs["use_response_url"] == "cloud"
 
     @pytest.mark.asyncio
     async def test_slack_interactivity_routed_correctly(self):
