@@ -16,8 +16,12 @@ const booting = ref(true)
 const versionInfo = ref<{ current: string; latest: string | null; update_available: boolean } | null>(null)
 
 const showCloudIndicator = computed(() => taskStore.cloudStatus !== 'not_configured')
-const cloudConnected = computed(() => taskStore.cloudStatus === 'connected' || taskStore.cloudStatus === 'disconnected')
-const cloudStatusText = computed(() => cloudConnected.value ? 'Connected' : 'Disconnected')
+const cloudConnected = computed(() => taskStore.cloudStatus === 'connected')
+const cloudStatusText = computed(() => {
+  if (cloudConnected.value) return 'Connected'
+  if (taskStore.cloudStatus === 'error') return 'Reconnect'
+  return 'Disconnected'
+})
 
 onMounted(async () => {
   // 1. Check for OIDC callback tokens in URL fragment
@@ -169,7 +173,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
             v-if="showCloudIndicator"
             to="/settings/cloud"
             class="flex items-center gap-1.5 text-sm"
-            :class="cloudConnected ? 'text-green-600' : 'text-amber-500'"
+            :class="cloudConnected ? 'text-green-600' : taskStore.cloudStatus === 'error' ? 'text-red-500' : 'text-amber-500'"
             data-testid="cloud-indicator"
           >
             <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
