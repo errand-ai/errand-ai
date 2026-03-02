@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Cloud Service settings subpage
 The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/cloud` for managing the errand-cloud connection.
@@ -15,10 +15,33 @@ The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/clou
 - **THEN** the page SHALL display a "Disconnect" button
 - **THEN** clicking "Disconnect" SHALL call `POST /api/cloud/auth/disconnect` and refresh the page state
 
+#### Scenario: Connected state with subscription expiry
+- **WHEN** cloud credentials exist with status "connected" AND the status response includes a `subscription.expires_at` field
+- **THEN** the page SHALL display the subscription expiry date below the connected status indicator
+- **THEN** the expiry SHALL be formatted as a human-readable date (e.g. "Subscription expires 15 Apr 2026")
+
+#### Scenario: Connected state with inactive subscription
+- **WHEN** cloud credentials exist with status "connected" AND the status response includes `subscription.active === false`
+- **THEN** the page SHALL display a warning indicator alongside the subscription expiry
+- **THEN** the page SHALL show the message "Your Errand Cloud subscription has expired. Endpoint registration is unavailable."
+
 #### Scenario: Error state
 - **WHEN** cloud credentials exist with status "error"
 - **THEN** the page SHALL display connection status as error (red indicator) with the error detail
 - **THEN** the page SHALL display a "Reconnect" button that initiates re-authentication
+
+### Requirement: Manage Account link in connected state
+The Cloud Service settings page SHALL display a "Manage Account" link when connected to Errand Cloud.
+
+#### Scenario: Manage Account button visible when connected
+- **WHEN** the user is on `/settings/cloud` and the cloud status is "connected"
+- **THEN** the page SHALL display a "Manage Account" link styled as a button
+- **THEN** clicking the link SHALL open `https://errand.cloud` in a new browser tab
+- **THEN** the link SHALL include `rel="noopener noreferrer"` for security
+
+#### Scenario: Manage Account button not visible when not connected
+- **WHEN** the cloud status is "not_configured" or "error"
+- **THEN** the "Manage Account" link SHALL NOT be displayed
 
 ### Requirement: Cloud endpoint URL display
 The Cloud Service settings page SHALL display the cloud webhook endpoint URLs when available.
@@ -33,16 +56,25 @@ The Cloud Service settings page SHALL display the cloud webhook endpoint URLs wh
 - **THEN** the "Cloud Endpoints" section SHALL NOT be displayed
 - **THEN** a message SHALL indicate "Enable Slack in Integrations to configure cloud webhook endpoints"
 
-#### Scenario: No endpoints yet
-- **WHEN** the user is connected to errand-cloud AND Slack credentials are configured BUT no cloud endpoints have been registered yet
-- **THEN** the page SHALL display a "Registering endpoints..." loading state or a "Register Endpoints" button
+#### Scenario: Endpoint registration error
+- **WHEN** the user is connected to errand-cloud AND Slack credentials are configured AND the status response includes `endpoint_error`
+- **THEN** the page SHALL display a toast notification on load with the error message (e.g. "Endpoint registration failed: Active subscription required")
+- **THEN** the page SHALL display an inline error message in the Cloud Endpoints section instead of "Endpoints are being registered..."
+- **THEN** the inline error SHALL include the `endpoint_error.detail` from the status response
+- **THEN** the "Endpoints are being registered..." message SHALL NOT be shown when `endpoint_error` is present
+
+#### Scenario: No endpoints yet (no error)
+- **WHEN** the user is connected to errand-cloud AND Slack credentials are configured AND no endpoints are registered AND no `endpoint_error` is present
+- **THEN** the page SHALL display a "Registering endpoints..." loading state
 
 ### Requirement: Cloud status API endpoint
 The backend SHALL expose `GET /api/cloud/status` requiring the `admin` role. The endpoint returns the current cloud connection state for the frontend.
 
 #### Scenario: Connected
 - **WHEN** cloud credentials exist with status "connected" and the WebSocket client is active
-- **THEN** the response SHALL be `{"status": "connected", "tenant_id": "...", "endpoints": [...]}`
+- **THEN** the response SHALL be `{"status": "connected", "tenant_id": "...", "endpoints": [...], "slack_configured": bool}`
+- **THEN** the response SHALL include `"subscription": {"active": bool, "expires_at": str | null}` when the cloud service subscription API responds successfully
+- **THEN** the response SHALL include `"endpoint_error": {"detail": str}` when a registration failure is stored in the `cloud_endpoint_error` Setting
 
 #### Scenario: Disconnected
 - **WHEN** no cloud credentials exist

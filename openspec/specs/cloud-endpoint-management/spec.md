@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Automatic endpoint registration with errand-cloud
 The backend SHALL automatically register webhook endpoints with errand-cloud when both cloud credentials and Slack credentials are active.
@@ -21,9 +21,14 @@ The backend SHALL automatically register webhook endpoints with errand-cloud whe
 
 #### Scenario: Registration failure
 - **WHEN** the cloud endpoint registration API call fails (network error, auth error, server error)
-- **THEN** the backend SHALL log the error
+- **THEN** the backend SHALL log the error including the HTTP status code and response body
+- **THEN** the backend SHALL store the error detail in the `cloud_endpoint_error` Setting
 - **THEN** the backend SHALL NOT block the Slack credential save or cloud authentication flow
-- **THEN** the user SHALL see a notification that cloud endpoint registration failed
+- **THEN** `GET /api/cloud/status` SHALL include `endpoint_error: {detail: "<message>"}` so the frontend can notify the user
+
+#### Scenario: Registration succeeds after previous failure
+- **WHEN** endpoint registration completes successfully
+- **THEN** the backend SHALL delete the `cloud_endpoint_error` Setting if it exists
 
 ### Requirement: Endpoint cleanup on disconnect
 When the user disconnects from errand-cloud, the backend SHALL revoke cloud endpoints.
@@ -32,7 +37,8 @@ When the user disconnects from errand-cloud, the backend SHALL revoke cloud endp
 - **WHEN** the user disconnects from errand-cloud via the settings page
 - **THEN** the backend SHALL call `DELETE /api/endpoints?integration=slack` on the cloud service
 - **THEN** the backend SHALL delete the `cloud_endpoints` setting
+- **THEN** the backend SHALL delete the `cloud_endpoint_error` setting
 
 #### Scenario: Endpoint cleanup failure
 - **WHEN** the cloud endpoint revocation API call fails
-- **THEN** the backend SHALL log the error but proceed with local cleanup (delete credentials and setting)
+- **THEN** the backend SHALL log the error but proceed with local cleanup (delete credentials and settings)
