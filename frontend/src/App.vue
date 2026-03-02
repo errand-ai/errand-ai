@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useTaskStore } from './stores/tasks'
@@ -17,7 +17,11 @@ const versionInfo = ref<{ current: string; latest: string | null; update_availab
 
 const showCloudIndicator = computed(() => taskStore.cloudStatus !== 'not_configured')
 const cloudConnected = computed(() => taskStore.cloudStatus === 'connected')
-const cloudStatusText = computed(() => cloudConnected.value ? 'Connected' : 'Disconnected')
+const cloudStatusText = computed(() => {
+  if (cloudConnected.value) return 'Connected'
+  if (taskStore.cloudStatus === 'error') return 'Reconnect'
+  return 'Disconnected'
+})
 
 onMounted(async () => {
   // 1. Check for OIDC callback tokens in URL fragment
@@ -69,20 +73,27 @@ onMounted(async () => {
     // Version display is optional — hide on failure
   }
 
-  // Fetch cloud status if authenticated
-  if (auth.isAuthenticated && auth.token) {
-    try {
-      const cResp = await fetch('/api/cloud/status', {
-        headers: { 'Authorization': `Bearer ${auth.token}` },
-      })
-      if (cResp.ok) {
-        const cData = await cResp.json()
-        taskStore.cloudStatus = cData.status ?? 'not_configured'
-      }
-    } catch {
-      // Cloud status is optional — hide on failure
+  await fetchCloudStatus()
+})
+
+async function fetchCloudStatus() {
+  if (!auth.isAuthenticated || !auth.token) return
+  try {
+    const cResp = await fetch('/api/cloud/status', {
+      headers: { 'Authorization': `Bearer ${auth.token}` },
+    })
+    if (cResp.ok) {
+      const cData = await cResp.json()
+      taskStore.cloudStatus = cData.status ?? 'not_configured'
     }
+  } catch {
+    // Cloud status is optional — hide on failure
   }
+}
+
+// Re-fetch cloud status when user authenticates (e.g. after local login)
+watch(() => auth.isAuthenticated, (authenticated) => {
+  if (authenticated) fetchCloudStatus()
 })
 
 function logout() {
@@ -162,7 +173,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
             v-if="showCloudIndicator"
             to="/settings/cloud"
             class="flex items-center gap-1.5 text-sm"
-            :class="cloudConnected ? 'text-green-600' : 'text-amber-500'"
+            :class="cloudConnected ? 'text-green-600' : taskStore.cloudStatus === 'error' ? 'text-red-500' : 'text-amber-500'"
             data-testid="cloud-indicator"
           >
             <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">

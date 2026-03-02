@@ -4,6 +4,7 @@ Handles automatic registration and revocation of webhook endpoints
 with errand-cloud when both cloud and Slack credentials are active.
 """
 import logging
+import time as _time
 
 import httpx
 from sqlalchemy import select
@@ -48,10 +49,24 @@ async def register_cloud_endpoints(
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=30,
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                logger.error(
+                    "Cloud endpoint registration failed: %s %s — body: %s",
+                    resp.status_code,
+                    resp.reason_phrase,
+                    resp.text,
+                )
+                # Extract detail from JSON response if possible
+                try:
+                    error_detail = resp.json().get("detail", resp.text)
+                except Exception:
+                    error_detail = resp.text
+                await _store_endpoint_error(session, error_detail)
+                return None
             data = resp.json()
     except Exception:
         logger.exception("Cloud endpoint registration API call failed")
+        await _store_endpoint_error(session, "Cloud endpoint registration failed (network or server error)")
         return None
 
     # Store endpoint URLs in settings
@@ -74,6 +89,9 @@ async def register_cloud_endpoints(
         existing.value = endpoint_list
     else:
         session.add(Setting(key="cloud_endpoints", value=endpoint_list))
+
+    # Clear any previous endpoint error on success
+    await _clear_endpoint_error(session)
     await session.commit()
 
     logger.info("Registered %d cloud endpoints", len(endpoint_list))
@@ -189,3 +207,66 @@ async def try_register_endpoints(session: AsyncSession) -> None:
         return
 
     await register_cloud_endpoints(cloud_creds, slack_creds, cloud_service_url, session)
+
+
+async def _store_endpoint_error(session: AsyncSession, detail: str) -> None:
+    """Store an endpoint registration error in the cloud_endpoint_error Setting."""
+    error_data = {"detail": detail, "timestamp": _time.time()}
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_endpoint_error")
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.value = error_data
+    else:
+        session.add(Setting(key="cloud_endpoint_error", value=error_data))
+    await session.commit()
+
+
+async def _clear_endpoint_error(session: AsyncSession) -> None:
+    """Delete the cloud_endpoint_error Setting if it exists."""
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_endpoint_error")
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        await session.delete(existing)
+
+
+async def fetch_subscription_status(
+    cloud_creds: dict, cloud_service_url: str
+) -> dict | None:
+    """Fetch subscription status from the cloud service.
+
+    Calls GET /api/subscription with Bearer auth.
+    Returns {active: bool, expires_at: str | None} or None on failure.
+    """
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return None
+
+    api_url = f"{cloud_service_url.rstrip('/')}/api/subscription"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                api_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10,
+            )
+            if not resp.is_success:
+                logger.debug("Cloud subscription check returned %s", resp.status_code)
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            active = data.get("active")
+            expires_at = data.get("expires_at")
+            if not isinstance(active, bool):
+                return None
+            if expires_at is not None and not isinstance(expires_at, str):
+                return None
+            return {"active": active, "expires_at": expires_at}
+    except Exception:
+        logger.debug("Cloud subscription check failed", exc_info=True)
+        return None

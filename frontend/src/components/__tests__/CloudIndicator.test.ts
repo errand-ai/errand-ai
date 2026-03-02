@@ -109,7 +109,7 @@ describe('Cloud indicator in header', () => {
     expect(indicator.classes()).toContain('text-green-600')
   })
 
-  it('shows amber "Disconnected" when cloud status is error', async () => {
+  it('shows red "Reconnect" when cloud status is error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       if (url === '/api/auth/status') return Promise.resolve({ ok: true, json: () => Promise.resolve({ mode: 'local' }) })
       if (url === '/api/version') return Promise.resolve({ ok: true, json: () => Promise.resolve({ current: '1.0.0' }) })
@@ -129,8 +129,8 @@ describe('Cloud indicator in header', () => {
 
     const indicator = wrapper.find('[data-testid="cloud-indicator"]')
     expect(indicator.exists()).toBe(true)
-    expect(indicator.text()).toContain('Disconnected')
-    expect(indicator.classes()).toContain('text-amber-500')
+    expect(indicator.text()).toContain('Reconnect')
+    expect(indicator.classes()).toContain('text-red-500')
   })
 
   it('updates when cloud_status event changes', async () => {

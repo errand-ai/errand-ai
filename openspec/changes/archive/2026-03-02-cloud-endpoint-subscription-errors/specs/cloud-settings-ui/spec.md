@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Cloud Service settings subpage
 The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/cloud` for managing the errand-cloud connection.
@@ -29,19 +29,6 @@ The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/clou
 - **WHEN** cloud credentials exist with status "error"
 - **THEN** the page SHALL display connection status as error (red indicator) with the error detail
 - **THEN** the page SHALL display a "Reconnect" button that initiates re-authentication
-
-### Requirement: Manage Account link in connected state
-The Cloud Service settings page SHALL display a "Manage Account" link when connected to Errand Cloud.
-
-#### Scenario: Manage Account button visible when connected
-- **WHEN** the user is on `/settings/cloud` and the cloud status is "connected"
-- **THEN** the page SHALL display a "Manage Account" link styled as a button
-- **THEN** clicking the link SHALL open `https://errand.cloud` in a new browser tab
-- **THEN** the link SHALL include `rel="noopener noreferrer"` for security
-
-#### Scenario: Manage Account button not visible when not connected
-- **WHEN** the cloud status is "not_configured" or "error"
-- **THEN** the "Manage Account" link SHALL NOT be displayed
 
 ### Requirement: Cloud endpoint URL display
 The Cloud Service settings page SHALL display the cloud webhook endpoint URLs when available.
