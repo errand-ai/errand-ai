@@ -57,6 +57,7 @@ describe('CloudServicePage', () => {
     vi.stubGlobal('fetch', stubFetch({
       status: 'connected',
       tenant_id: 'tenant-abc',
+      email: 'user@example.com',
       endpoints: [],
     }))
     const router = makeRouter()
@@ -69,7 +70,7 @@ describe('CloudServicePage', () => {
     expect(wrapper.find('[data-testid="cloud-connected"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="cloud-disconnect-btn"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Connected')
-    expect(wrapper.text()).toContain('tenant-abc')
+    expect(wrapper.text()).toContain('user@example.com')
   })
 
   it('renders error state with Reconnect button', async () => {
@@ -163,6 +164,133 @@ describe('CloudServicePage', () => {
     await flushPromises()
 
     expect(toastMock.error).toHaveBeenCalledWith('access_denied')
+  })
+
+  it('shows endpoint error instead of registering message', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      slack_configured: true,
+      endpoint_error: { detail: 'Active subscription required' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-endpoint-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Active subscription required')
+    expect(wrapper.find('[data-testid="cloud-registering"]').exists()).toBe(false)
+  })
+
+  it('fires toast on endpoint registration error', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      slack_configured: true,
+      endpoint_error: { detail: 'Active subscription required' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(toastMock.error).toHaveBeenCalledWith(
+      'Endpoint registration failed: Active subscription required',
+    )
+  })
+
+  it('displays subscription expiry date', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      subscription: { active: true, expires_at: '2026-04-15T00:00:00Z' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-subscription-expiry"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Subscription expires')
+    expect(wrapper.text()).toContain('2026')
+  })
+
+  it('shows warning when subscription is inactive', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      subscription: { active: false, expires_at: '2025-01-01T00:00:00Z' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-subscription-warning"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('subscription has expired')
+  })
+
+  it('does not show subscription info when absent', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-subscription-expiry"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="cloud-subscription-warning"]').exists()).toBe(false)
+  })
+
+  it('shows Manage Account link when connected', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const link = wrapper.find('[data-testid="cloud-manage-account-btn"]')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('https://errand.cloud')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(link.text()).toContain('Manage Account')
+  })
+
+  it('does not show Manage Account link when not connected', async () => {
+    vi.stubGlobal('fetch', stubFetch({ status: 'not_configured' }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-manage-account-btn"]').exists()).toBe(false)
   })
 
   it('calls disconnect API and refreshes status', async () => {

@@ -313,7 +313,8 @@ class TestCloudStatus:
             ))
             await session.commit()
 
-        with patch("cloud_client.is_connected", return_value=True):
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
             resp = await client.get("/api/cloud/status")
         assert resp.status_code == 200
         data = resp.json()
@@ -359,3 +360,195 @@ class TestCloudStatus:
         resp = await client.get("/api/cloud/status")
         assert resp.status_code == 200
         assert resp.json()["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_status_includes_endpoint_error(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        import json
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(
+                key="cloud_endpoint_error",
+                value={"detail": "Active subscription required", "timestamp": 1234567890.0},
+            ))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "connected"
+        assert data["endpoint_error"] == {"detail": "Active subscription required"}
+
+    @pytest.mark.asyncio
+    async def test_status_includes_subscription(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            await session.commit()
+
+        sub_data = {"active": True, "expires_at": "2026-12-31T23:59:59Z"}
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=sub_data):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["subscription"] == sub_data
+
+    @pytest.mark.asyncio
+    async def test_status_omits_subscription_when_fetch_fails(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "subscription" not in data
+        assert "endpoint_error" not in data
+
+
+class TestCloudDisconnectCleansEndpointError:
+    @pytest.mark.asyncio
+    async def test_disconnect_deletes_endpoint_error_setting(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        from sqlalchemy import select
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(
+                key="cloud_endpoint_error",
+                value={"detail": "Active subscription required", "timestamp": 1234567890.0},
+            ))
+            await session.commit()
+
+        with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
+             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
+             patch("main.publish_event", new_callable=AsyncMock):
+            resp = await client.post("/api/cloud/auth/disconnect")
+
+        assert resp.status_code == 200
+
+        async with session_maker() as session:
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )
+            assert result.scalar_one_or_none() is None
+
+
+class TestCloudEndpointErrorPersistence:
+    @pytest.mark.asyncio
+    async def test_registration_failure_stores_error(self, cloud_client):
+        _, session_maker = cloud_client
+
+        import httpx
+        mock_response = httpx.Response(
+            403,
+            json={"detail": "Active subscription required"},
+            request=httpx.Request("POST", "https://cloud.test/api/endpoints"),
+        )
+
+        async with session_maker() as session:
+            with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = AsyncMock(return_value=mock_response)
+                mock_client_cls.return_value = mock_client
+
+                from cloud_endpoints import register_cloud_endpoints
+                result = await register_cloud_endpoints(
+                    cloud_creds={"access_token": "test"},
+                    slack_creds={"signing_secret": "secret"},
+                    cloud_service_url="https://cloud.test",
+                    session=session,
+                )
+                assert result is None
+
+            # Verify error was stored
+            from models import Setting
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )
+            error_setting = result.scalar_one_or_none()
+            assert error_setting is not None
+            assert error_setting.value["detail"] == "Active subscription required"
+
+    @pytest.mark.asyncio
+    async def test_successful_registration_clears_error(self, cloud_client):
+        _, session_maker = cloud_client
+
+        import httpx
+        from models import Setting
+
+        # Pre-populate an endpoint error
+        async with session_maker() as session:
+            session.add(Setting(
+                key="cloud_endpoint_error",
+                value={"detail": "Previous error", "timestamp": 1234567890.0},
+            ))
+            await session.commit()
+
+        mock_response = httpx.Response(
+            200,
+            json={"integration": "slack", "endpoints": [{"type": "events", "url": "https://cloud.test/hook/t1", "token": "t1"}]},
+            request=httpx.Request("POST", "https://cloud.test/api/endpoints"),
+        )
+
+        async with session_maker() as session:
+            with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = AsyncMock(return_value=mock_response)
+                mock_client_cls.return_value = mock_client
+
+                from cloud_endpoints import register_cloud_endpoints
+                result = await register_cloud_endpoints(
+                    cloud_creds={"access_token": "test"},
+                    slack_creds={"signing_secret": "secret"},
+                    cloud_service_url="https://cloud.test",
+                    session=session,
+                )
+                assert result is not None
+                assert len(result) == 1
+
+            # Verify error was cleared
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )
+            assert result.scalar_one_or_none() is None

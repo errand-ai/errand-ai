@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useTaskStore } from './stores/tasks'
@@ -16,7 +16,7 @@ const booting = ref(true)
 const versionInfo = ref<{ current: string; latest: string | null; update_available: boolean } | null>(null)
 
 const showCloudIndicator = computed(() => taskStore.cloudStatus !== 'not_configured')
-const cloudConnected = computed(() => taskStore.cloudStatus === 'connected')
+const cloudConnected = computed(() => taskStore.cloudStatus === 'connected' || taskStore.cloudStatus === 'disconnected')
 const cloudStatusText = computed(() => cloudConnected.value ? 'Connected' : 'Disconnected')
 
 onMounted(async () => {
@@ -69,20 +69,27 @@ onMounted(async () => {
     // Version display is optional — hide on failure
   }
 
-  // Fetch cloud status if authenticated
-  if (auth.isAuthenticated && auth.token) {
-    try {
-      const cResp = await fetch('/api/cloud/status', {
-        headers: { 'Authorization': `Bearer ${auth.token}` },
-      })
-      if (cResp.ok) {
-        const cData = await cResp.json()
-        taskStore.cloudStatus = cData.status ?? 'not_configured'
-      }
-    } catch {
-      // Cloud status is optional — hide on failure
+  await fetchCloudStatus()
+})
+
+async function fetchCloudStatus() {
+  if (!auth.isAuthenticated || !auth.token) return
+  try {
+    const cResp = await fetch('/api/cloud/status', {
+      headers: { 'Authorization': `Bearer ${auth.token}` },
+    })
+    if (cResp.ok) {
+      const cData = await cResp.json()
+      taskStore.cloudStatus = cData.status ?? 'not_configured'
     }
+  } catch {
+    // Cloud status is optional — hide on failure
   }
+}
+
+// Re-fetch cloud status when user authenticates (e.g. after local login)
+watch(() => auth.isAuthenticated, (authenticated) => {
+  if (authenticated) fetchCloudStatus()
 })
 
 function logout() {

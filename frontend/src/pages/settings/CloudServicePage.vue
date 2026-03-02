@@ -17,19 +17,31 @@ interface CloudEndpoint {
 interface CloudStatus {
   status: 'not_configured' | 'connected' | 'disconnected' | 'error'
   tenant_id?: string
+  email?: string
   endpoints?: CloudEndpoint[]
   slack_configured?: boolean
   detail?: string
+  endpoint_error?: { detail: string }
+  subscription?: { active: boolean; expires_at: string | null }
 }
 
 const cloudStatus = ref<CloudStatus>({ status: 'not_configured' })
 const loading = ref(true)
 const disconnecting = ref(false)
 
-const isConnected = computed(() => cloudStatus.value.status === 'connected')
+const isConnected = computed(() => cloudStatus.value.status === 'connected' || cloudStatus.value.status === 'disconnected')
 const isError = computed(() => cloudStatus.value.status === 'error')
 const isNotConfigured = computed(() => cloudStatus.value.status === 'not_configured')
 const hasEndpoints = computed(() => (cloudStatus.value.endpoints?.length ?? 0) > 0)
+const hasEndpointError = computed(() => !!cloudStatus.value.endpoint_error?.detail)
+const subscriptionExpiry = computed(() => {
+  const expiresAt = cloudStatus.value.subscription?.expires_at
+  if (!expiresAt) return null
+  const d = new Date(expiresAt)
+  if (isNaN(d.getTime())) return null
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+})
+const subscriptionInactive = computed(() => cloudStatus.value.subscription?.active === false)
 
 async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -125,6 +137,11 @@ onMounted(async () => {
     toast.error(error)
   }
   await fetchStatus()
+
+  // Toast endpoint registration errors so the user knows about failures
+  if (cloudStatus.value.endpoint_error?.detail) {
+    toast.error('Endpoint registration failed: ' + cloudStatus.value.endpoint_error.detail)
+  }
 })
 </script>
 
@@ -155,21 +172,42 @@ onMounted(async () => {
 
       <!-- Connected -->
       <div v-else-if="isConnected" data-testid="cloud-connected">
-        <div class="flex items-center gap-2 mb-4">
+        <div class="flex items-center gap-2 mb-2">
           <span class="inline-block h-2.5 w-2.5 rounded-full bg-green-500"></span>
           <span class="text-sm font-medium text-green-700">Connected</span>
-          <span v-if="cloudStatus.tenant_id" class="text-xs text-gray-400 ml-2">
-            {{ cloudStatus.tenant_id }}
+          <span v-if="cloudStatus.email" class="text-xs text-gray-400 ml-2">
+            {{ cloudStatus.email }}
           </span>
         </div>
-        <button
-          class="rounded-md bg-red-50 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-100"
-          data-testid="cloud-disconnect-btn"
-          :disabled="disconnecting"
-          @click="handleDisconnect"
-        >
-          {{ disconnecting ? 'Disconnecting...' : 'Disconnect' }}
-        </button>
+
+        <!-- Subscription info -->
+        <p v-if="subscriptionInactive" class="text-sm text-amber-600 mb-2" data-testid="cloud-subscription-warning">
+          Your Errand Cloud subscription has expired. Endpoint registration is unavailable.
+        </p>
+        <p v-if="subscriptionExpiry" class="text-xs text-gray-500 mb-4" data-testid="cloud-subscription-expiry">
+          Subscription expires {{ subscriptionExpiry }}
+        </p>
+        <div v-else class="mb-4"></div>
+
+        <div class="flex items-center gap-3">
+          <a
+            href="https://errand.cloud"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+            data-testid="cloud-manage-account-btn"
+          >
+            Manage Account
+          </a>
+          <button
+            class="rounded-md bg-red-50 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-100"
+            data-testid="cloud-disconnect-btn"
+            :disabled="disconnecting"
+            @click="handleDisconnect"
+          >
+            {{ disconnecting ? 'Disconnecting...' : 'Disconnect' }}
+          </button>
+        </div>
       </div>
 
       <!-- Error -->
@@ -216,6 +254,10 @@ onMounted(async () => {
           </button>
         </div>
       </div>
+
+      <p v-else-if="hasEndpointError" class="text-sm text-red-600 mt-4" data-testid="cloud-endpoint-error">
+        Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
+      </p>
 
       <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">
         Endpoints are being registered with Errand Cloud...

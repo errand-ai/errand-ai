@@ -192,7 +192,7 @@ async def lifespan(app: FastAPI):
     version_checker_task = asyncio.create_task(run_version_checker())
     email_poller_task = asyncio.create_task(run_email_poller())
 
-    # Start cloud WebSocket client if credentials exist
+    # Start cloud WebSocket client and register endpoints if credentials exist
     async with async_session() as session:
         result = await session.execute(
             select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
@@ -201,6 +201,13 @@ async def lifespan(app: FastAPI):
         if cloud_cred and cloud_cred.status == "connected":
             from cloud_client import start_cloud_client
             await start_cloud_client()
+
+            # Attempt endpoint registration on startup (stores error if it fails)
+            try:
+                from cloud_endpoints import try_register_endpoints
+                await try_register_endpoints(session)
+            except Exception:
+                logger.exception("Cloud endpoint registration failed on startup")
 
     async with mcp_server.session_manager.run():
         yield
@@ -1352,8 +1359,10 @@ async def cloud_auth_callback(
     try:
         unverified = jwt.decode(tokens["access_token"], options={"verify_signature": False})
         tenant_id = unverified.get("sub", "")
+        email = unverified.get("email", "")
     except Exception:
         tenant_id = ""
+        email = ""
 
     # Store encrypted credentials
     token_expiry = _time.time() + tokens.get("expires_in", 300)
@@ -1362,6 +1371,7 @@ async def cloud_auth_callback(
         "refresh_token": tokens.get("refresh_token", ""),
         "token_expiry": token_expiry,
         "tenant_id": tenant_id,
+        "email": email,
     }
     encrypted = encrypt_credentials(cred_data)
     now = datetime.now(timezone.utc)
@@ -1427,13 +1437,14 @@ async def cloud_auth_disconnect(
         # Delete credentials
         await session.delete(cred)
 
-        # Delete cloud_endpoints setting
-        result = await session.execute(
-            select(Setting).where(Setting.key == "cloud_endpoints")
-        )
-        endpoints_setting = result.scalar_one_or_none()
-        if endpoints_setting:
-            await session.delete(endpoints_setting)
+        # Delete cloud_endpoints and cloud_endpoint_error settings
+        for key in ("cloud_endpoints", "cloud_endpoint_error"):
+            result = await session.execute(
+                select(Setting).where(Setting.key == key)
+            )
+            setting = result.scalar_one_or_none()
+            if setting:
+                await session.delete(setting)
 
         await session.commit()
 
@@ -1475,8 +1486,7 @@ async def cloud_status(
 
     # Check live WebSocket connection state
     from cloud_client import is_connected as ws_is_connected
-    if not ws_is_connected():
-        return {"status": "disconnected", "tenant_id": cred_data.get("tenant_id", "")}
+    connection_status = "connected" if ws_is_connected() else "disconnected"
 
     # Check if Slack credentials are configured
     result = await session.execute(
@@ -1485,12 +1495,39 @@ async def cloud_status(
     slack_cred = result.scalar_one_or_none()
     slack_configured = slack_cred is not None and slack_cred.status == "connected"
 
-    return {
-        "status": "connected",
+    # Load endpoint registration error if present
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_endpoint_error")
+    )
+    error_setting = result.scalar_one_or_none()
+
+    # Fetch subscription status from cloud service
+    from cloud_endpoints import fetch_subscription_status
+    cloud_url = await _get_cloud_url(session)
+    subscription = await fetch_subscription_status(cred_data, cloud_url) if cloud_url else None
+
+    # Extract email from access token if not already stored (pre-email credentials)
+    email = cred_data.get("email", "")
+    if not email and cred_data.get("access_token"):
+        try:
+            unverified = jwt.decode(cred_data["access_token"], options={"verify_signature": False})
+            email = unverified.get("email", "")
+        except Exception:
+            pass
+
+    resp: dict = {
+        "status": connection_status,
         "tenant_id": cred_data.get("tenant_id", ""),
+        "email": email,
         "endpoints": endpoints,
         "slack_configured": slack_configured,
     }
+    if subscription is not None:
+        resp["subscription"] = subscription
+    if error_setting and isinstance(error_setting.value, dict):
+        resp["endpoint_error"] = {"detail": error_setting.value.get("detail", "")}
+
+    return resp
 
 
 # --- Skill validation helpers ---
