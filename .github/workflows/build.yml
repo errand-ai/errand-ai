@@ -50,6 +50,9 @@ jobs:
 
   test:
     runs-on: gha-runner
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
