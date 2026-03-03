@@ -258,8 +258,8 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 
 ## Current State
 
-- Version: `0.47.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.69.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://content-manager.devops-consultants.net
-- Tests: 485 errand (pytest, includes task-runner) + 329 frontend (vitest) — CI `test` job gates both build jobs
-- 51 component specs in `openspec/specs/`
+- Tests: 839 errand (pytest, includes task-runner) + 440 frontend (vitest) — CI `test` job gates both build jobs
+- 52 component specs in `openspec/specs/`
