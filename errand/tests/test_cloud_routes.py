@@ -257,7 +257,7 @@ class TestCloudDisconnect:
         mock_publish.assert_called_once_with("cloud_status", {"status": "not_configured"})
 
     @pytest.mark.asyncio
-    async def test_disconnect_deletes_credentials_publishes_disconnected(self, cloud_client):
+    async def test_disconnect_deletes_credentials_publishes_not_configured(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()
 
@@ -279,7 +279,7 @@ class TestCloudDisconnect:
             resp = await client.post("/api/cloud/auth/disconnect")
 
         assert resp.status_code == 200
-        mock_publish.assert_called_once_with("cloud_status", {"status": "disconnected"})
+        mock_publish.assert_called_once_with("cloud_status", {"status": "not_configured"})
 
         # Verify credentials deleted
         async with session_maker() as session:

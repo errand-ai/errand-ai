@@ -6,13 +6,15 @@ relayed webhook payloads, and dispatches them to the appropriate handlers.
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 
+import httpx
 import websockets
 
 from database import async_session
-from events import publish_event
+from events import get_valkey, publish_event
 from models import PlatformCredential, Setting
 from platforms.credentials import decrypt as decrypt_credentials, encrypt as encrypt_credentials
 from sqlalchemy import select
@@ -37,10 +39,26 @@ class CloudWebSocketClient:
     NO_RECONNECT_CODES = {4001, 4003}
     AUTH_EXPIRED_CODE = 4002
 
+    # Channel name mapping: cloud channel → Valkey pub/sub channel
+    CHANNEL_MAP = {
+        "tasks": "task_events",
+        "system": "system_events",
+    }
+
+    PROTOCOL_VERSION = 2
+
     def __init__(self):
         self._processed_ids: set[str] = set()
         self._running = False
         self._backoff_attempt = 0
+        # Reference-counted subscriptions: channel_name → ref_count
+        self._subscriptions: dict[str, int] = {}
+        # Active subscription forwarding tasks
+        self._subscription_tasks: dict[str, asyncio.Task] = {}
+        # WebSocket reference for sending push_events
+        self._ws = None
+        # Server port for proxy requests
+        self._server_port = int(os.environ.get("PORT", "8000"))
 
     async def run(self) -> None:
         """Main run loop with reconnection logic."""
@@ -88,8 +106,17 @@ class CloudWebSocketClient:
                 global _ws_connected
                 self._backoff_attempt = 0
                 self._processed_ids.clear()
+                self._subscriptions.clear()
+                self._ws = ws
                 _ws_connected = True
                 logger.info("Connected to cloud WebSocket: %s", cloud_url)
+
+                # Send register message and wait for registered acknowledgement
+                await self._send_register(ws)
+                if not await self._wait_for_registered(ws):
+                    logger.warning("Did not receive 'registered' acknowledgement")
+                    return
+
                 await publish_event("cloud_status", {"status": "connected"})
 
                 async for raw_message in ws:
@@ -102,6 +129,9 @@ class CloudWebSocketClient:
                         logger.warning("Cloud WebSocket received non-JSON message")
                     except Exception:
                         logger.exception("Error handling cloud WebSocket message")
+
+                # Clean up subscriptions on disconnect
+                await self._cleanup_subscriptions()
 
         except websockets.exceptions.ConnectionClosedError as e:
             await self._handle_close(e.code, e.reason)
@@ -141,6 +171,185 @@ class CloudWebSocketClient:
             if msg_id:
                 self._processed_ids.add(msg_id)
             await ws.send(json.dumps({"type": "ack", "id": msg_id}))
+
+        elif msg_type == "proxy_request":
+            await self._handle_proxy_request(ws, message)
+
+        elif msg_type == "subscribe":
+            await self._handle_subscribe(ws, message)
+
+        elif msg_type == "unsubscribe":
+            await self._handle_unsubscribe(message)
+
+    # --- Registration ---
+
+    async def _send_register(self, ws) -> None:
+        """Send register message with version and capabilities."""
+        from capabilities import get_capabilities, get_server_version
+
+        version = get_server_version()
+        capabilities = await get_capabilities()
+
+        register_msg = {
+            "type": "register",
+            "server_version": version,
+            "protocol_version": self.PROTOCOL_VERSION,
+            "capabilities": capabilities,
+        }
+        await ws.send(json.dumps(register_msg))
+        logger.info("Sent register message: version=%s, capabilities=%s", version, capabilities)
+
+    async def _wait_for_registered(self, ws, timeout: float = 10.0) -> bool:
+        """Wait for 'registered' acknowledgement from cloud."""
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            message = json.loads(raw)
+            if message.get("type") == "registered":
+                logger.info("Received 'registered' acknowledgement from cloud")
+                return True
+            # Got a different message — handle it and keep waiting
+            await self._handle_message(ws, message)
+            return True  # Proceed even if we didn't get 'registered' explicitly
+        except asyncio.TimeoutError:
+            logger.warning("Timed out waiting for 'registered' acknowledgement")
+            return True  # Proceed anyway — cloud may not support v2 yet
+        except Exception:
+            logger.exception("Error waiting for 'registered' acknowledgement")
+            return False
+
+    # --- Proxy request handling ---
+
+    async def _handle_proxy_request(self, ws, message: dict) -> None:
+        """Handle proxy_request: forward HTTP request to local API."""
+        request_id = message.get("id", "")
+        method = message.get("method", "GET").upper()
+        path = message.get("path", "/")
+        headers = message.get("headers", {})
+        body = message.get("body")
+        cloud_jwt = message.get("jwt")
+
+        # Build request headers — inject X-Cloud-JWT and proxy secret for cloud-trusted auth
+        from cloud_auth_jwt import PROXY_SECRET, PROXY_SECRET_HEADER
+
+        req_headers = dict(headers)
+        req_headers[PROXY_SECRET_HEADER] = PROXY_SECRET
+        if cloud_jwt:
+            req_headers["X-Cloud-JWT"] = cloud_jwt
+
+        url = f"http://localhost:{self._server_port}{path}"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=req_headers,
+                    content=body.encode() if body else None,
+                    timeout=30.0,
+                )
+
+            # Package response
+            resp_headers = dict(response.headers)
+            proxy_response = {
+                "type": "proxy_response",
+                "id": request_id,
+                "status": response.status_code,
+                "headers": resp_headers,
+                "body": response.text,
+            }
+            await ws.send(json.dumps(proxy_response))
+
+        except Exception:
+            logger.exception("Proxy request failed: %s %s", method, path)
+            error_response = {
+                "type": "proxy_response",
+                "id": request_id,
+                "status": 502,
+                "headers": {},
+                "body": json.dumps({"detail": "Proxy request failed"}),
+            }
+            await ws.send(json.dumps(error_response))
+
+    # --- Subscribe/unsubscribe handling ---
+
+    def _map_channel(self, channel: str) -> str:
+        """Map cloud channel name to Valkey pub/sub channel name."""
+        if channel in self.CHANNEL_MAP:
+            return self.CHANNEL_MAP[channel]
+        # Handle logs:{task_id} → task_logs:{task_id}
+        if channel.startswith("logs:"):
+            task_id = channel[5:]
+            return f"task_logs:{task_id}"
+        return channel
+
+    async def _handle_subscribe(self, ws, message: dict) -> None:
+        """Handle subscribe message — start forwarding events for channels."""
+        channels = message.get("channels", [])
+        for channel in channels:
+            self._subscriptions[channel] = self._subscriptions.get(channel, 0) + 1
+            if self._subscriptions[channel] == 1:
+                # First subscription — start forwarding
+                valkey_channel = self._map_channel(channel)
+                task = asyncio.create_task(self._forward_channel(ws, channel, valkey_channel))
+                self._subscription_tasks[channel] = task
+                logger.debug("Subscribed to channel: %s → %s", channel, valkey_channel)
+
+    async def _handle_unsubscribe(self, message: dict) -> None:
+        """Handle unsubscribe message — stop forwarding events for channels."""
+        channels = message.get("channels", [])
+        for channel in channels:
+            if channel in self._subscriptions:
+                self._subscriptions[channel] -= 1
+                if self._subscriptions[channel] <= 0:
+                    del self._subscriptions[channel]
+                    # Cancel forwarding task
+                    task = self._subscription_tasks.pop(channel, None)
+                    if task:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    logger.debug("Unsubscribed from channel: %s", channel)
+
+    async def _forward_channel(self, ws, cloud_channel: str, valkey_channel: str) -> None:
+        """Forward events from a Valkey pub/sub channel as push_event messages."""
+        valkey = get_valkey()
+        if valkey is None:
+            logger.warning("Cannot subscribe to %s — Valkey not connected", valkey_channel)
+            return
+
+        pubsub = valkey.pubsub()
+        await pubsub.subscribe(valkey_channel)
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg["type"] == "message":
+                    push_event = {
+                        "type": "push_event",
+                        "channel": cloud_channel,
+                        "data": msg["data"],
+                    }
+                    await ws.send(json.dumps(push_event))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Error forwarding channel %s", valkey_channel)
+        finally:
+            await pubsub.unsubscribe(valkey_channel)
+            await pubsub.aclose()
+
+    async def _cleanup_subscriptions(self) -> None:
+        """Cancel all active subscription forwarding tasks."""
+        for task in self._subscription_tasks.values():
+            task.cancel()
+        for task in self._subscription_tasks.values():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._subscription_tasks.clear()
+        self._subscriptions.clear()
 
     async def _handle_close(self, code: int | None, reason: str | None) -> None:
         """Handle WebSocket close codes per errand-client-protocol."""

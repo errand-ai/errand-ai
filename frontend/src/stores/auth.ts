@@ -1,10 +1,22 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
+function storageGet(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+function storageSet(key: string, value: string) {
+  try { localStorage.setItem(key, value) } catch { /* noop */ }
+}
+
+function storageRemove(key: string) {
+  try { localStorage.removeItem(key) } catch { /* noop */ }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref<string | null>(null)
-  const idToken = ref<string | null>(null)
-  const refreshToken = ref<string | null>(null)
+  const token = ref<string | null>(storageGet('auth_token'))
+  const idToken = ref<string | null>(storageGet('auth_id_token'))
+  const refreshToken = ref<string | null>(storageGet('auth_refresh_token'))
   const accessDenied = ref(false)
   const authMode = ref<'setup' | 'local' | 'sso' | null>(null)
   let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -104,6 +116,11 @@ export const useAuthStore = defineStore('auth', () => {
     idToken.value = id ?? null
     refreshToken.value = rt ?? null
     accessDenied.value = false
+    storageSet('auth_token', t)
+    if (id) storageSet('auth_id_token', id)
+    else storageRemove('auth_id_token')
+    if (rt) storageSet('auth_refresh_token', rt)
+    else storageRemove('auth_refresh_token')
     scheduleRefresh()
   }
 
@@ -112,10 +129,18 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     idToken.value = null
     refreshToken.value = null
+    storageRemove('auth_token')
+    storageRemove('auth_id_token')
+    storageRemove('auth_refresh_token')
   }
 
   function setAccessDenied() {
     accessDenied.value = true
+  }
+
+  // If a token was restored from localStorage, schedule refresh
+  if (token.value) {
+    scheduleRefresh()
   }
 
   return { token, idToken, refreshToken, isAuthenticated, accessDenied, authMode, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, setAuthMode, scheduleRefresh, cancelRefresh, doRefresh }

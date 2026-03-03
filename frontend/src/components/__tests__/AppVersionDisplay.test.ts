@@ -19,14 +19,6 @@ vi.mock('../../composables/useApi', () => ({
   updateTask: vi.fn(),
 }))
 
-vi.mock('../../composables/useWebSocket', () => ({
-  useWebSocket: () => ({
-    status: { value: 'disconnected' },
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  }),
-}))
-
 vi.mock('vue-sonner', () => ({
   Toaster: { template: '<div data-testid="toaster" />' },
   toast: { success: vi.fn(), error: vi.fn() },

@@ -15,15 +15,6 @@ vi.mock('../../composables/useApi', async () => {
   }
 })
 
-// Mock useWebSocket to avoid real connections
-vi.mock('../../composables/useWebSocket', () => ({
-  useWebSocket: () => ({
-    status: { value: 'disconnected' },
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  }),
-}))
-
 function makeTask(overrides: Partial<TaskData> = {}): TaskData {
   return {
     id: '1',

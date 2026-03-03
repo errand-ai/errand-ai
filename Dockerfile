@@ -1,8 +1,12 @@
 # Stage 1: Build frontend (runs natively on build platform — output is platform-independent JS/CSS)
 FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-build
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN --mount=type=secret,id=npm_token \
+    if [ -f /run/secrets/npm_token ]; then \
+      echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/npm_token)" >> .npmrc; \
+    fi && \
+    npm ci
 COPY frontend/ .
 RUN npm run build
 

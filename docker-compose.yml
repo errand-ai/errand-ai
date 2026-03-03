@@ -51,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      secrets:
+        - npm_token
     command: alembic upgrade head
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
@@ -62,6 +64,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      secrets:
+        - npm_token
       args:
         APP_VERSION: ${APP_VERSION:-dev}
     ports:
@@ -93,6 +97,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      secrets:
+        - npm_token
     command: python worker.py
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
@@ -144,6 +150,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+secrets:
+  npm_token:
+    environment: NPM_TOKEN
 
 volumes:
   postgres-data:

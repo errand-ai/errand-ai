@@ -1,58 +1,126 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { fetchTasks, createTask, updateTask as apiUpdateTask, deleteTask as apiDeleteTask, type TaskData, type TaskStatus } from '../composables/useApi'
-import { useWebSocket, type WebSocketStatus } from '../composables/useWebSocket'
 import { useAuthStore } from './auth'
 
 const POLL_INTERVAL = 5000
+const INITIAL_BACKOFF = 1000
+const MAX_BACKOFF = 30000
 
 export type CloudConnectionStatus = 'not_configured' | 'connected' | 'disconnected' | 'error'
+export type EventStreamStatus = 'connecting' | 'connected' | 'disconnected'
 
 export const useTaskStore = defineStore('tasks', () => {
   const tasks = ref<TaskData[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
   const cloudStatus = ref<CloudConnectionStatus>('not_configured')
+  const sseStatus = ref<EventStreamStatus>('disconnected')
   let pollTimer: ReturnType<typeof setInterval> | null = null
+  let eventSource: EventSource | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let backoff = INITIAL_BACKOFF
+  let intentionalClose = false
 
   const auth = useAuthStore()
 
-  // --- WebSocket integration ---
+  // --- SSE integration ---
 
-  function handleWsMessage(data: unknown) {
-    const msg = data as { event: string; task: any }
+  function handleSseEvent(msg: { event: string; task?: TaskData; status?: string }) {
     if (!msg?.event) return
 
-    // Handle cloud status events
+    // Handle cloud status events (status is nested under "task" key from publish_event)
     if (msg.event === 'cloud_status') {
-      cloudStatus.value = msg.task?.status ?? 'disconnected'
+      const taskObj = msg.task as unknown as Record<string, unknown> | undefined
+      const status = msg.status ?? taskObj?.status
+      cloudStatus.value = (status as CloudConnectionStatus) ?? 'disconnected'
       return
     }
 
     if (!msg?.task) return
 
     if (msg.event === 'task_created') {
-      // Add at end if not already present (position ordering is preserved)
-      const exists = tasks.value.some((t) => t.id === msg.task.id)
+      const exists = tasks.value.some((t) => t.id === msg.task!.id)
       if (!exists) {
         tasks.value = [...tasks.value, msg.task]
       }
     } else if (msg.event === 'task_updated') {
       tasks.value = tasks.value.map((t) =>
-        t.id === msg.task.id ? msg.task : t
+        t.id === msg.task!.id ? msg.task! : t
       )
     } else if (msg.event === 'task_deleted') {
-      tasks.value = tasks.value.filter((t) => t.id !== msg.task.id)
+      tasks.value = tasks.value.filter((t) => t.id !== msg.task!.id)
     }
   }
 
-  const { status: wsStatus, connect: wsConnect, disconnect: wsDisconnect } = useWebSocket({
-    onMessage: handleWsMessage,
-    getToken: () => auth.token,
-  })
+  function sseConnect() {
+    const token = auth.token
+    if (!token) {
+      sseStatus.value = 'disconnected'
+      return
+    }
 
-  // Watch WebSocket status for polling fallback
-  watch(wsStatus, (newStatus: WebSocketStatus) => {
+    intentionalClose = false
+    sseStatus.value = 'connecting'
+
+    const url = `/api/events?token=${encodeURIComponent(token)}`
+    eventSource = new EventSource(url)
+
+    eventSource.onopen = () => {
+      sseStatus.value = 'connected'
+      backoff = INITIAL_BACKOFF
+      stopPolling()
+    }
+
+    // Handle named SSE events
+    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status']
+    for (const eventType of eventTypes) {
+      eventSource.addEventListener(eventType, (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data)
+          handleSseEvent({ event: eventType, ...data })
+        } catch {
+          // Ignore malformed events
+        }
+      })
+    }
+
+    eventSource.onerror = () => {
+      eventSource?.close()
+      eventSource = null
+      sseStatus.value = 'disconnected'
+
+      if (!intentionalClose) {
+        startPolling()
+        scheduleReconnect()
+      }
+    }
+  }
+
+  function sseDisconnect() {
+    intentionalClose = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
+    sseStatus.value = 'disconnected'
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      backoff = Math.min(backoff * 2, MAX_BACKOFF)
+      sseConnect()
+    }, backoff)
+  }
+
+  // Watch SSE status for polling fallback
+  watch(sseStatus, (newStatus: EventStreamStatus) => {
     if (newStatus === 'connected') {
       stopPolling()
     } else if (newStatus === 'disconnected') {
@@ -150,13 +218,13 @@ export const useTaskStore = defineStore('tasks', () => {
 
   function start() {
     load()
-    wsConnect()
+    sseConnect()
   }
 
   function stop() {
-    wsDisconnect()
+    sseDisconnect()
     stopPolling()
   }
 
-  return { tasks, loading, error, wsStatus, cloudStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, sseStatus, cloudStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
 })
