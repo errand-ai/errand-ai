@@ -2155,7 +2155,7 @@ async def sse_task_events(token: str = Query(default=None)):
                     except (json.JSONDecodeError, TypeError):
                         yield f"event: message\ndata: {msg['data']}\n\n"
         except asyncio.CancelledError:
-            pass
+            pass  # Client disconnected; clean up pub/sub below
         finally:
             await pubsub.unsubscribe(CHANNEL)
             await pubsub.aclose()

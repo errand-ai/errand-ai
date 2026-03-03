@@ -309,7 +309,7 @@ class CloudWebSocketClient:
                         try:
                             await task
                         except asyncio.CancelledError:
-                            pass
+                            pass  # Expected after cancel(); ensures task is fully awaited before cleanup
                     logger.debug("Unsubscribed from channel: %s", channel)
 
     async def _forward_channel(self, ws, cloud_channel: str, valkey_channel: str) -> None:
@@ -332,7 +332,7 @@ class CloudWebSocketClient:
                     }
                     await ws.send(json.dumps(push_event))
         except asyncio.CancelledError:
-            pass
+            pass  # Normal shutdown via unsubscribe; task was cancelled intentionally
         except Exception:
             logger.exception("Error forwarding channel %s", valkey_channel)
         finally:

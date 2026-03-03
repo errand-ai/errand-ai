@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useTaskStore } from '../stores/tasks'
 import { useAuthStore } from '../stores/auth'
 import {
@@ -21,11 +21,11 @@ const outputTask = ref<TaskData | null>(null)
 const logTask = ref<TaskData | null>(null)
 const deleteConfirmTask = ref<TaskData | null>(null)
 
-const userRole = (() => {
+const userRole = computed(() => {
   if (auth.isAdmin) return 'admin'
   if (auth.isEditor) return 'editor'
   return 'viewer'
-})()
+})
 
 function onTaskUpdate(payload: { id: string; status?: TaskStatus; position?: number }) {
   store.updateTask(payload.id, payload)
