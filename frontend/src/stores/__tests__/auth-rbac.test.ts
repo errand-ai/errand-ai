@@ -10,6 +10,9 @@ function fakeJwt(payload: Record<string, unknown>): string {
 
 describe('auth store — isEditor and isViewer', () => {
   beforeEach(() => {
+    try { localStorage.removeItem('auth_token') } catch {}
+    try { localStorage.removeItem('auth_id_token') } catch {}
+    try { localStorage.removeItem('auth_refresh_token') } catch {}
     setActivePinia(createPinia())
   })
 

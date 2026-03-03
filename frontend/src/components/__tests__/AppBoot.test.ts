@@ -36,6 +36,9 @@ describe('App boot sequence', () => {
   let locationHref: string
 
   beforeEach(() => {
+    try { localStorage.removeItem('auth_token') } catch {}
+    try { localStorage.removeItem('auth_id_token') } catch {}
+    try { localStorage.removeItem('auth_refresh_token') } catch {}
     setActivePinia(createPinia())
     locationHref = ''
     // Mock window.location.href setter
