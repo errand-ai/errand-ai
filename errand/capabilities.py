@@ -12,16 +12,20 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
-# Version file at project root
-VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+# Version file at project root (dev layout: errand/errand/capabilities.py → errand/VERSION)
+# In Docker the errand/ contents are flat under /app/, so also check parent/VERSION.
+_HERE = Path(__file__).resolve().parent
+_VERSION_PATHS = [_HERE.parent / "VERSION", _HERE / "VERSION"]
 
 
 def get_server_version() -> str:
     """Read server version from VERSION file. Returns 'unknown' on failure."""
-    try:
-        return VERSION_FILE.read_text().strip()
-    except (FileNotFoundError, OSError):
-        return "unknown"
+    for path in _VERSION_PATHS:
+        try:
+            return path.read_text().strip()
+        except (FileNotFoundError, OSError):
+            continue
+    return "unknown"
 
 
 async def get_capabilities() -> list[str]:

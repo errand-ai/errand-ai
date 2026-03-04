@@ -41,6 +41,7 @@ COPY errand/requirements.txt .
 COPY --from=build /wheels /tmp/wheels
 RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt && rm -rf /tmp/wheels
 COPY errand/ .
+COPY VERSION .
 COPY --from=frontend-build /frontend/dist ./static/
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
