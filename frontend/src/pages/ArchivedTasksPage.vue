@@ -2,8 +2,7 @@
 import { onMounted, ref, computed } from 'vue'
 import { fetchArchivedTasks } from '../composables/useApi'
 import type { TaskData } from '../composables/useApi'
-import TaskEditModal from '../components/TaskEditModal.vue'
-import TaskOutputModal from '../components/TaskOutputModal.vue'
+import { TaskEditModal, TaskOutputModal } from '@errand-ai/ui-components'
 
 const tasks = ref<TaskData[]>([])
 const loading = ref(true)

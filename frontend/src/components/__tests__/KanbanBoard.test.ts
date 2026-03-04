@@ -1,12 +1,56 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import KanbanBoard from '../KanbanBoard.vue'
 import { useTaskStore } from '../../stores/tasks'
+import { useAuthStore } from '../../stores/auth'
 import type { TaskData } from '../../composables/useApi'
 
-// Mock the useApi composable to prevent real fetch calls
+// Mock shared library components
+vi.mock('@errand-ai/ui-components', () => ({
+  TaskBoard: {
+    name: 'TaskBoard',
+    template: '<div data-testid="task-board" />',
+    props: ['tasks', 'userRole', 'loading'],
+    emits: ['task-update', 'task-edit', 'task-delete', 'view-output', 'view-live-logs', 'view-static-logs'],
+  },
+  TaskForm: {
+    name: 'TaskForm',
+    template: '<div data-testid="task-form"><slot name="voice" :onTranscription="() => {}" /></div>',
+    emits: ['task-created'],
+  },
+  TaskEditModal: {
+    name: 'TaskEditModal',
+    template: '<div data-testid="edit-modal" />',
+    props: ['task', 'readOnly'],
+    emits: ['save', 'cancel', 'delete'],
+  },
+  TaskOutputModal: {
+    name: 'TaskOutputModal',
+    template: '<div data-testid="output-modal" />',
+    props: ['title', 'output'],
+    emits: ['close'],
+  },
+  TaskLogViewer: {
+    name: 'TaskLogViewer',
+    template: '<div data-testid="log-viewer" />',
+    props: ['mode', 'taskId', 'logData', 'streamUrl'],
+    emits: ['close', 'finished'],
+  },
+  DeleteConfirmModal: {
+    name: 'DeleteConfirmModal',
+    template: '<div data-testid="delete-modal" />',
+    props: ['title'],
+    emits: ['confirm', 'cancel'],
+  },
+  AudioRecorder: {
+    name: 'AudioRecorder',
+    template: '<div data-testid="audio-recorder" />',
+    emits: ['transcription'],
+  },
+}))
+
 vi.mock('../../composables/useApi', async () => {
   const actual = await vi.importActual<typeof import('../../composables/useApi')>('../../composables/useApi')
   return {
@@ -18,7 +62,11 @@ vi.mock('../../composables/useApi', async () => {
   }
 })
 
-const COLUMN_LABELS = ['Review', 'Scheduled', 'Pending', 'Running', 'Completed']
+function fakeJwt(payload: Record<string, unknown>): string {
+  const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+  const body = btoa(JSON.stringify(payload))
+  return `${header}.${body}.fake-signature`
+}
 
 function makeTasks(overrides: Partial<TaskData>[] = []): TaskData[] {
   return overrides.map((o, i) => ({
@@ -48,238 +96,162 @@ function mountWithTasks(tasks: TaskData[]) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useTaskStore()
-  // Set tasks before mount so the initial render sees them
   store.tasks = tasks
+
+  const auth = useAuthStore()
+  auth.setToken(fakeJwt({
+    sub: 'editor-1',
+    resource_access: { 'errand': { roles: ['editor'] } },
+  }))
+
   const wrapper = mount(KanbanBoard, { global: { plugins: [pinia] } })
   return { wrapper, store }
 }
 
-// Stub WebSocket so TaskLogModal.connect() doesn't hit real network in jsdom
-class MockWebSocket {
-  readyState = 1
-  onmessage: ((e: { data: string }) => void) | null = null
-  onclose: (() => void) | null = null
-  constructor(_url: string) {}
-  close() { this.readyState = 3 }
-}
-
 describe('KanbanBoard', () => {
-  let originalWebSocket: typeof WebSocket
-
   beforeEach(() => {
     setActivePinia(createPinia())
-    originalWebSocket = globalThis.WebSocket
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket
-  })
-
-  afterEach(() => {
-    globalThis.WebSocket = originalWebSocket
-  })
-
-  it('renders 5 columns with correct labels when tasks exist', () => {
-    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'review' }]))
-    const headings = wrapper.findAll('h2')
-    const labels = headings.map((h) => h.text().replace(/\d+/, '').trim())
-    expect(labels).toEqual(COLUMN_LABELS)
-  })
-
-  it('places tasks in correct columns', () => {
-    const { wrapper } = mountWithTasks(makeTasks([
-      { title: 'Alpha', status: 'review' },
-      { title: 'Beta', status: 'running' },
-      { title: 'Gamma', status: 'completed' },
-    ]))
-
-    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Review column (index 0) should contain Alpha
-    expect(columns[0].text()).toContain('Alpha')
-    // Running column (index 3) should contain Beta
-    expect(columns[3].text()).toContain('Beta')
-    // Completed column (index 4) should contain Gamma
-    expect(columns[4].text()).toContain('Gamma')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('[]', { status: 200 })))
   })
 
   it('shows board-level empty state when no tasks exist', () => {
     const { wrapper } = mountWithTasks([])
-
     const emptyState = wrapper.find('[data-testid="board-empty-state"]')
     expect(emptyState.exists()).toBe(true)
     expect(emptyState.text()).toContain('No tasks yet')
   })
 
-  it('shows pill badge with count in column headers', () => {
-    const { wrapper } = mountWithTasks(makeTasks([
-      { title: 'Alpha', status: 'review' },
-      { title: 'Beta', status: 'review' },
-    ]))
-
-    const badges = wrapper.findAll('[data-testid="column-count"]')
-    expect(badges.length).toBe(5)
-    // Review column should show 2
-    expect(badges[0].text()).toBe('2')
+  it('renders TaskBoard when tasks exist', () => {
+    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test' }]))
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    expect(board.exists()).toBe(true)
   })
 
-  it('calls store.updateTask on drop to different column', async () => {
-    const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '42', title: 'Drag me', status: 'review' }])
-    )
+  it('passes tasks to TaskBoard', () => {
+    const tasks = makeTasks([{ title: 'Alpha' }, { title: 'Beta' }])
+    const { wrapper } = mountWithTasks(tasks)
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    expect(board.props('tasks')).toEqual(tasks)
+  })
+
+  it('calls store.updateTask on task-update event', async () => {
+    const { wrapper, store } = mountWithTasks(makeTasks([{ id: '42', title: 'Drag me' }]))
     store.updateTask = vi.fn().mockResolvedValue(undefined)
 
-    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Simulate drop on "Scheduled" column (index 1)
-    const dropEvent = new Event('drop', { bubbles: true }) as any
-    dropEvent.dataTransfer = { getData: () => '42' }
-    dropEvent.preventDefault = vi.fn()
-    columns[1].element.dispatchEvent(dropEvent)
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('task-update', { id: '42', status: 'scheduled' })
     await nextTick()
 
-    expect(store.updateTask).toHaveBeenCalledWith('42', { status: 'scheduled' })
+    expect(store.updateTask).toHaveBeenCalledWith('42', { id: '42', status: 'scheduled' })
   })
 
-  it('does not call store.updateTask on same-column drop in non-reorderable column', async () => {
-    const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '42', title: 'Stay here', status: 'completed' }])
-    )
-    store.updateTask = vi.fn()
+  it('opens edit modal on task-edit event', async () => {
+    const task = makeTasks([{ id: '10', title: 'Edit me' }])[0]
+    const { wrapper } = mountWithTasks([task])
 
-    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Drop on "Completed" column (index 4) — same as current status, non-reorderable
-    const dropEvent = new Event('drop', { bubbles: true }) as any
-    dropEvent.dataTransfer = { getData: () => '42' }
-    dropEvent.preventDefault = vi.fn()
-    columns[4].element.dispatchEvent(dropEvent)
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('task-edit', task)
     await nextTick()
 
-    expect(store.updateTask).not.toHaveBeenCalled()
+    const editModal = wrapper.findComponent({ name: 'TaskEditModal' })
+    expect(editModal.exists()).toBe(true)
+    expect(editModal.props('task')).toMatchObject({ id: '10', title: 'Edit me' })
   })
 
-  it('highlights column on drag enter', async () => {
-    const { wrapper } = mountWithTasks(makeTasks([{ title: 'Test', status: 'review' }]))
+  // --- Delete confirmation ---
 
-    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    await columns[1].trigger('dragenter')
+  it('opens delete confirmation on task-delete event', async () => {
+    const task = makeTasks([{ id: '10', title: 'Delete me' }])[0]
+    const { wrapper } = mountWithTasks([task])
+
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('task-delete', task)
     await nextTick()
 
-    // After dragenter, the column should have the highlight ring class
-    expect(columns[1].classes()).toContain('ring-2')
-    expect(columns[1].classes()).toContain('ring-blue-400')
-  })
-
-  // --- Delete confirmation modal ---
-
-  it('shows delete confirmation dialog when delete is triggered on a card', async () => {
-    const { wrapper } = mountWithTasks(
-      makeTasks([{ id: '10', title: 'Delete me' }])
-    )
-
-    // Click the delete button on the TaskCard
-    const deleteBtn = wrapper.find('button[title="Delete task"]')
-    await deleteBtn.trigger('click')
-    await nextTick()
-
-    // The delete dialog should contain the task title
-    const dialog = wrapper.find('dialog')
-    expect(dialog.exists()).toBe(true)
-    expect(dialog.text()).toContain('Delete this task?')
-    expect(dialog.text()).toContain('Delete me')
+    const deleteModal = wrapper.findComponent({ name: 'DeleteConfirmModal' })
+    expect(deleteModal.exists()).toBe(true)
+    expect(deleteModal.props('title')).toBe('Delete me')
   })
 
   it('calls store.removeTask when delete is confirmed', async () => {
-    const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '10', title: 'Delete me' }])
-    )
+    const task = makeTasks([{ id: '10', title: 'Delete me' }])[0]
+    const { wrapper, store } = mountWithTasks([task])
     store.removeTask = vi.fn().mockResolvedValue(undefined)
 
-    // Open the delete modal
-    const deleteBtn = wrapper.find('button[title="Delete task"]')
-    await deleteBtn.trigger('click')
+    // Open delete modal
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('task-delete', task)
     await nextTick()
 
-    // Click the confirm "Delete" button in the dialog
-    const dialog = wrapper.find('dialog')
-    const confirmBtn = dialog.findAll('button').find((b) => b.text() === 'Delete')!
-    await confirmBtn.trigger('click')
-    await nextTick()
+    // Confirm deletion
+    const deleteModal = wrapper.findComponent({ name: 'DeleteConfirmModal' })
+    deleteModal.vm.$emit('confirm')
+    await flushPromises()
 
     expect(store.removeTask).toHaveBeenCalledWith('10')
   })
 
   it('does not call store.removeTask when delete is cancelled', async () => {
-    const { wrapper, store } = mountWithTasks(
-      makeTasks([{ id: '10', title: 'Keep me' }])
-    )
+    const task = makeTasks([{ id: '10', title: 'Keep me' }])[0]
+    const { wrapper, store } = mountWithTasks([task])
     store.removeTask = vi.fn()
 
-    // Open the delete modal
-    const deleteBtn = wrapper.find('button[title="Delete task"]')
-    await deleteBtn.trigger('click')
+    // Open delete modal
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('task-delete', task)
     await nextTick()
 
-    // Click Cancel in the dialog
-    const dialog = wrapper.find('dialog')
-    const cancelBtn = dialog.findAll('button').find((b) => b.text() === 'Cancel')!
-    await cancelBtn.trigger('click')
+    // Cancel deletion
+    const deleteModal = wrapper.findComponent({ name: 'DeleteConfirmModal' })
+    deleteModal.vm.$emit('cancel')
     await nextTick()
 
     expect(store.removeTask).not.toHaveBeenCalled()
   })
 
-  // --- TaskLogModal routing ---
+  // --- Log viewer ---
 
-  it('opens TaskLogModal with taskId for running tasks', async () => {
-    const { wrapper } = mountWithTasks(makeTasks([
-      { id: '5', title: 'Running task', status: 'running' },
-    ]))
+  it('opens TaskLogViewer in live mode for running tasks', async () => {
+    const task = makeTasks([{ id: '5', title: 'Running task', status: 'running' }])[0]
+    const { wrapper } = mountWithTasks([task])
 
-    const logBtn = wrapper.find('button[title="View logs"]')
-    expect(logBtn.exists()).toBe(true)
-    await logBtn.trigger('click')
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('view-live-logs', task)
     await nextTick()
 
-    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
-    expect(logModal.exists()).toBe(true)
-    expect(logModal.props('taskId')).toBe('5')
-    expect(logModal.props('runnerLogs')).toBeUndefined()
+    const logViewer = wrapper.findComponent({ name: 'TaskLogViewer' })
+    expect(logViewer.exists()).toBe(true)
+    expect(logViewer.props('mode')).toBe('live')
+    expect(logViewer.props('taskId')).toBe('5')
   })
 
-  it('opens TaskLogModal with runnerLogs for completed tasks', async () => {
-    const { wrapper } = mountWithTasks(makeTasks([
-      { id: '6', title: 'Done task', status: 'completed', runner_logs: '{"type":"agent_start","data":{}}' },
-    ]))
+  it('opens TaskLogViewer in static mode for completed tasks', async () => {
+    const task = makeTasks([{ id: '6', title: 'Done task', status: 'completed', runner_logs: '{"type":"agent_start"}' }])[0]
+    const { wrapper } = mountWithTasks([task])
 
-    const logBtn = wrapper.find('button[title="View logs"]')
-    expect(logBtn.exists()).toBe(true)
-    await logBtn.trigger('click')
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('view-static-logs', task)
     await nextTick()
 
-    const logModal = wrapper.findComponent({ name: 'TaskLogModal' })
-    expect(logModal.exists()).toBe(true)
-    expect(logModal.props('taskId')).toBeUndefined()
-    expect(logModal.props('runnerLogs')).toBe('{"type":"agent_start","data":{}}')
+    const logViewer = wrapper.findComponent({ name: 'TaskLogViewer' })
+    expect(logViewer.exists()).toBe(true)
+    expect(logViewer.props('mode')).toBe('static')
+    expect(logViewer.props('logData')).toBe('{"type":"agent_start"}')
   })
 
-  // --- Intra-column reorder ---
+  // --- Output modal ---
 
-  it('calls store.updateTask with position on same-column drop in reorderable column', async () => {
-    const { wrapper, store } = mountWithTasks(
-      makeTasks([
-        { id: '1', title: 'First', status: 'review', position: 1 },
-        { id: '2', title: 'Second', status: 'review', position: 2 },
-      ])
-    )
-    store.updateTask = vi.fn().mockResolvedValue(undefined)
+  it('opens output modal on view-output event', async () => {
+    const task = makeTasks([{ id: '7', title: 'Has output', output: 'Result text' }])[0]
+    const { wrapper } = mountWithTasks([task])
 
-    const columns = wrapper.findAll('[class*="rounded-lg p-4"]')
-    // Drop task '1' (position 1) on the Review column (same status, reorderable)
-    // In jsdom getBoundingClientRect returns zeros, so insertIndex = cards.length = 2
-    // targetPosition = lastTask.position + 1 = 3, which differs from task.position = 1
-    const dropEvent = new Event('drop', { bubbles: true }) as any
-    dropEvent.dataTransfer = { getData: () => '1' }
-    dropEvent.preventDefault = vi.fn()
-    dropEvent.clientY = 9999 // below all cards
-    columns[0].element.dispatchEvent(dropEvent)
+    const board = wrapper.findComponent({ name: 'TaskBoard' })
+    board.vm.$emit('view-output', task)
     await nextTick()
 
-    expect(store.updateTask).toHaveBeenCalledWith('1', { position: 3 })
+    const outputModal = wrapper.findComponent({ name: 'TaskOutputModal' })
+    expect(outputModal.exists()).toBe(true)
+    expect(outputModal.props('title')).toBe('Has output')
+    expect(outputModal.props('output')).toBe('Result text')
   })
 })

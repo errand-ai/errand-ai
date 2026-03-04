@@ -4,6 +4,22 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import ArchivedTasksPage from '../ArchivedTasksPage.vue'
 
+// Mock shared library components that internally call useApi()
+vi.mock('@errand-ai/ui-components', () => ({
+  TaskEditModal: {
+    name: 'TaskEditModal',
+    template: '<div data-testid="edit-modal" />',
+    props: ['task', 'readOnly'],
+    emits: ['save', 'cancel', 'delete'],
+  },
+  TaskOutputModal: {
+    name: 'TaskOutputModal',
+    template: '<div data-testid="output-modal" />',
+    props: ['title', 'output'],
+    emits: ['close'],
+  },
+}))
+
 const { mockTasks } = vi.hoisted(() => {
   const mockTasks = [
     {

@@ -3,8 +3,10 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { useAuthStore } from '../../stores/auth'
+import { useTaskStore } from '../../stores/tasks'
 
 const auth = useAuthStore()
+const taskStore = useTaskStore()
 const route = useRoute()
 
 interface CloudEndpoint {
@@ -59,6 +61,7 @@ async function fetchStatus() {
     const resp = await apiFetch('/api/cloud/status')
     if (resp.ok) {
       cloudStatus.value = await resp.json()
+      taskStore.cloudStatus = cloudStatus.value.status
     }
   } catch {
     // Silent failure — status display is best-effort

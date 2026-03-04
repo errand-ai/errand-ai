@@ -17,13 +17,6 @@ vi.mock('../../composables/useApi', () => ({
   createTask: vi.fn(),
   updateTask: vi.fn(),
 }))
-vi.mock('../../composables/useWebSocket', () => ({
-  useWebSocket: () => ({
-    status: { value: 'disconnected' },
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  }),
-}))
 vi.mock('vue-sonner', () => ({
   Toaster: { template: '<div data-testid="toaster" />' },
   toast: { success: vi.fn(), error: vi.fn() },
@@ -83,7 +76,7 @@ describe('App navigation', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
-    const nav = wrapper.find('[data-testid="main-nav"]')
+    const nav = wrapper.find('[data-testid="desktop-nav"]')
     expect(nav.exists()).toBe(true)
 
     const links = nav.findAll('a')
@@ -105,7 +98,7 @@ describe('App navigation', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
-    const nav = wrapper.find('[data-testid="main-nav"]')
+    const nav = wrapper.find('[data-testid="desktop-nav"]')
     const links = nav.findAll('a')
     expect(links.length).toBe(3)
     expect(links[2].text()).toBe('Settings')
@@ -124,7 +117,7 @@ describe('App navigation', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
-    const nav = wrapper.find('[data-testid="main-nav"]')
+    const nav = wrapper.find('[data-testid="desktop-nav"]')
     const links = nav.findAll('a')
     const settingsLink = links.find(l => l.text() === 'Settings')
     expect(settingsLink).toBeUndefined()
@@ -143,7 +136,7 @@ describe('App navigation', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
-    const nav = wrapper.find('[data-testid="main-nav"]')
+    const nav = wrapper.find('[data-testid="desktop-nav"]')
     const boardLink = nav.findAll('a')[0]
     expect(boardLink.classes()).toContain('bg-gray-100')
     expect(boardLink.classes()).toContain('text-gray-900')
@@ -162,7 +155,7 @@ describe('App navigation', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
-    const nav = wrapper.find('[data-testid="main-nav"]')
+    const nav = wrapper.find('[data-testid="desktop-nav"]')
     const settingsLink = nav.findAll('a').find(l => l.text() === 'Settings')
     expect(settingsLink).toBeTruthy()
     expect(settingsLink!.classes()).toContain('bg-gray-100')

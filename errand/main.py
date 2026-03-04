@@ -17,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 import jwt
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
@@ -258,6 +259,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def mark_proxy_requests(request: Request, call_next):
+    """Mark requests that originate from the cloud WebSocket proxy handler."""
+    from cloud_auth_jwt import PROXY_REQUEST_MARKER, PROXY_SECRET, PROXY_SECRET_HEADER
+
+    secret = request.headers.get(PROXY_SECRET_HEADER)
+    if secret and secret == PROXY_SECRET:
+        setattr(request.state, PROXY_REQUEST_MARKER, True)
+    return await call_next(request)
+
+
 app.include_router(auth_router)
 app.include_router(local_auth_router)
 app.include_router(slack_router)
@@ -344,15 +357,47 @@ async def _validate_token(token: str) -> dict:
 # --- Auth dependency ---
 
 
+async def _try_cloud_jwt_auth(request: Request) -> dict | None:
+    """Try cloud-trusted JWT auth. Returns claims or None if not applicable."""
+    from cloud_auth_jwt import PROXY_REQUEST_MARKER, validate_cloud_jwt
+
+    # Only honor X-Cloud-JWT on proxy-originated requests
+    if not getattr(request.state, PROXY_REQUEST_MARKER, False):
+        return None
+
+    cloud_jwt = request.headers.get("X-Cloud-JWT")
+    if not cloud_jwt:
+        return None
+
+    try:
+        claims = validate_cloud_jwt(cloud_jwt)
+        # Cloud users get admin role (solo user accessing their own server)
+        claims["_roles"] = ["admin"]
+        claims["_auth_mode"] = "cloud"
+        return claims
+    except Exception:
+        logger.debug("Cloud JWT validation failed", exc_info=True)
+        raise HTTPException(status_code=401, detail="Invalid cloud token")
+
+
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    # Try cloud-trusted auth first (only for proxy-originated requests)
+    cloud_claims = await _try_cloud_jwt_auth(request)
+    if cloud_claims is not None:
+        return cloud_claims
     return await _validate_token(credentials.credentials)
 
 
 async def require_editor(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    cloud_claims = await _try_cloud_jwt_auth(request)
+    if cloud_claims is not None:
+        return cloud_claims
     claims = await _validate_token(credentials.credentials)
     roles = claims.get("_roles", [])
     if "editor" not in roles and "admin" not in roles:
@@ -361,8 +406,12 @@ async def require_editor(
 
 
 async def require_admin(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
+    cloud_claims = await _try_cloud_jwt_auth(request)
+    if cloud_claims is not None:
+        return cloud_claims
     claims = await _validate_token(credentials.credentials)
     roles = claims.get("_roles", [])
     if "admin" not in roles:
@@ -1451,9 +1500,8 @@ async def cloud_auth_disconnect(
 
         await session.commit()
 
-    # Publish status reflecting whether credentials existed
-    status = "disconnected" if cred else "not_configured"
-    await publish_event("cloud_status", {"status": status})
+    # Credentials have been deleted — status is now "not_configured"
+    await publish_event("cloud_status", {"status": "not_configured"})
 
     return {"ok": True}
 
@@ -2074,129 +2122,120 @@ async def health(session: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=503, detail="Database unreachable")
 
 
-# --- WebSocket endpoint ---
-
-PING_INTERVAL = 30
-PONG_TIMEOUT = 10
 
 
-@app.websocket("/api/ws/tasks")
-async def ws_tasks(websocket: WebSocket, token: str = Query(default=None)):
-    # Authenticate via query parameter
+# --- SSE endpoints ---
+
+
+@app.get("/api/events")
+async def sse_task_events(token: str = Query(default=None)):
+    """SSE endpoint for real-time task events. Replaces WS /api/ws/tasks."""
     if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
+        raise HTTPException(status_code=401, detail="Missing token")
     try:
         await _validate_token(token)
     except HTTPException:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-
-    await websocket.accept()
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     valkey = get_valkey()
     if valkey is None:
-        await websocket.close(code=1011, reason="Event bus unavailable")
-        return
+        raise HTTPException(status_code=503, detail="Event bus unavailable")
 
-    pubsub = valkey.pubsub()
-    await pubsub.subscribe(CHANNEL)
-
-    async def forward_events():
+    async def event_stream():
+        pubsub = valkey.pubsub()
+        await pubsub.subscribe(CHANNEL)
         try:
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if msg and msg["type"] == "message":
-                    await websocket.send_text(msg["data"])
-        except (WebSocketDisconnect, asyncio.CancelledError):
-            pass
+                    try:
+                        parsed = json.loads(msg["data"])
+                        event_type = parsed.get("event", "message")
+                        yield f"event: {event_type}\ndata: {msg['data']}\n\n"
+                    except (json.JSONDecodeError, TypeError):
+                        yield f"event: message\ndata: {msg['data']}\n\n"
+        except asyncio.CancelledError:
+            pass  # Client disconnected; clean up pub/sub below
+        finally:
+            await pubsub.unsubscribe(CHANNEL)
+            await pubsub.aclose()
 
-    async def keepalive():
-        try:
-            while True:
-                await asyncio.sleep(PING_INTERVAL)
-                await websocket.send_json({"event": "ping"})
-        except (WebSocketDisconnect, asyncio.CancelledError):
-            pass
-
-    forward_task = asyncio.create_task(forward_events())
-    ping_task = asyncio.create_task(keepalive())
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        forward_task.cancel()
-        ping_task.cancel()
-        await pubsub.unsubscribe(CHANNEL)
-        await pubsub.aclose()
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
-@app.websocket("/api/ws/tasks/{task_id}/logs")
-async def ws_task_logs(websocket: WebSocket, task_id: str, token: str = Query(default=None)):
-    # Authenticate via query parameter
+@app.get("/api/tasks/{task_id}/logs/stream")
+async def sse_task_logs(task_id: str, token: str = Query(default=None)):
+    """SSE endpoint for live task log streaming. Replaces WS /api/ws/tasks/{task_id}/logs."""
     if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
+        raise HTTPException(status_code=401, detail="Missing token")
     try:
         await _validate_token(token)
     except HTTPException:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Check task exists and status
+    # Validate task_id
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        await websocket.close(code=4004, reason="Invalid task ID")
-        return
+        raise HTTPException(status_code=404, detail="Invalid task ID")
 
+    # Check task exists and status
     async with async_session() as session:
         result = await session.execute(select(Task).where(Task.id == task_uuid))
         task = result.scalar_one_or_none()
         if task is None:
-            await websocket.close(code=4004, reason="Task not found")
-            return
+            raise HTTPException(status_code=404, detail="Task not found")
         task_status = task.status
 
-    await websocket.accept()
-
-    # If not running, send end sentinel and close
+    # Non-running task: send end sentinel immediately
     if task_status != "running":
-        await websocket.send_json({"event": "task_log_end"})
-        await websocket.close(code=1000)
-        return
+        async def end_stream():
+            yield "event: task_log_end\ndata: {}\n\n"
+
+        return StreamingResponse(
+            end_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     valkey = get_valkey()
     if valkey is None:
-        await websocket.close(code=1011, reason="Event bus unavailable")
-        return
+        raise HTTPException(status_code=503, detail="Event bus unavailable")
 
     log_channel = f"task_logs:{task_id}"
-    pubsub = valkey.pubsub()
-    await pubsub.subscribe(log_channel)
 
-    try:
-        while True:
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg and msg["type"] == "message":
-                data = msg["data"]
-                await websocket.send_text(data)
-                # Check for end sentinel
-                try:
-                    parsed = json.loads(data)
-                    if parsed.get("event") == "task_log_end":
-                        await websocket.close(code=1000)
-                        return
-                except (json.JSONDecodeError, TypeError):
-                    pass  # Non-JSON messages are valid log lines, not an error
-    except (WebSocketDisconnect, asyncio.CancelledError):
-        logger.debug("WebSocket disconnected for task log stream %s", task_id)
-    finally:
-        await pubsub.unsubscribe(log_channel)
-        await pubsub.aclose()
+    async def log_stream():
+        pubsub = valkey.pubsub()
+        await pubsub.subscribe(log_channel)
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg["type"] == "message":
+                    data = msg["data"]
+                    # Check for end sentinel
+                    try:
+                        parsed = json.loads(data)
+                        if parsed.get("event") == "task_log_end":
+                            yield "event: task_log_end\ndata: {}\n\n"
+                            return
+                    except (json.JSONDecodeError, TypeError):
+                        pass  # Not JSON or not the end sentinel — fall through to yield as log line
+                    yield f"event: log\ndata: {data}\n\n"
+        except asyncio.CancelledError:
+            pass  # Client disconnected; clean up pub/sub below
+        finally:
+            await pubsub.unsubscribe(log_channel)
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        log_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 # --- Static file serving (production only) ---

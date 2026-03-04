@@ -1,8 +1,12 @@
 # Stage 1: Build frontend (runs natively on build platform — output is platform-independent JS/CSS)
 FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-build
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN --mount=type=secret,id=npm_token \
+    if [ -f /run/secrets/npm_token ]; then \
+      echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/npm_token)" >> .npmrc; \
+    fi && \
+    npm ci
 COPY frontend/ .
 RUN npm run build
 
@@ -37,6 +41,7 @@ COPY errand/requirements.txt .
 COPY --from=build /wheels /tmp/wheels
 RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt && rm -rf /tmp/wheels
 COPY errand/ .
+COPY VERSION .
 COPY --from=frontend-build /frontend/dist ./static/
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
