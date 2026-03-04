@@ -267,7 +267,7 @@ async def mark_proxy_requests(request: Request, call_next):
 
     secret = request.headers.get(PROXY_SECRET_HEADER)
     if secret and secret == PROXY_SECRET:
-        request.state.__dict__[PROXY_REQUEST_MARKER] = True
+        setattr(request.state, PROXY_REQUEST_MARKER, True)
     return await call_next(request)
 
 
