@@ -1,60 +1,17 @@
-## Purpose
-
-Live log viewer button on task cards and WebSocket-based real-time log streaming from running task runners.
-
-## Requirements
-
-### Requirement: Live log viewer button on running task cards
-
-The frontend SHALL display a "View Logs" button (terminal/code icon) on task cards when the task is in the `running` status OR when the task is in `review`, `completed`, or `scheduled` status and has a non-null `runner_logs` field. The button SHALL emit a `view-logs` event when clicked.
-
-#### Scenario: Button visible on running task
-
-- **WHEN** a task card is rendered with status `running`
-- **THEN** a "View Logs" button (terminal/code icon) is visible on the card
-
-#### Scenario: Button visible on completed task with runner_logs
-
-- **WHEN** a task card is rendered with status `completed` and the task has a non-null `runner_logs` field
-- **THEN** a "View Logs" button (terminal/code icon) is visible on the card
-
-#### Scenario: Button visible on review task with runner_logs
-
-- **WHEN** a task card is rendered with status `review` and the task has a non-null `runner_logs` field
-- **THEN** a "View Logs" button (terminal/code icon) is visible on the card
-
-#### Scenario: Button visible on scheduled task with runner_logs
-
-- **WHEN** a task card is rendered with status `scheduled` and the task has a non-null `runner_logs` field
-- **THEN** a "View Logs" button (terminal/code icon) is visible on the card
-
-#### Scenario: Button hidden on completed task without runner_logs
-
-- **WHEN** a task card is rendered with status `completed` and the task has a null `runner_logs` field
-- **THEN** the "View Logs" button is not visible
-
-#### Scenario: Button hidden on pending task
-
-- **WHEN** a task card is rendered with status `pending`
-- **THEN** the "View Logs" button is not visible
-
-#### Scenario: Button click emits event
-
-- **WHEN** the user clicks the "View Logs" button on a task card
-- **THEN** the card emits a `view-logs` event with no payload
+## MODIFIED Requirements
 
 ### Requirement: Live log viewer modal
 
 The frontend SHALL provide a `TaskLogModal` component that displays task runner events. The modal SHALL support two modes:
 
-1. **Live mode**: When mounted with a `taskId` prop and no `runnerLogs` prop, the modal SHALL open a WebSocket connection to `/api/ws/tasks/{task_id}/logs` and stream events in real time. The header SHALL display "Live Logs: {title}".
-2. **Static mode**: When mounted with a `runnerLogs` prop (newline-delimited JSON string), the modal SHALL parse the string into structured events and render them immediately without a WebSocket connection. The header SHALL display "Task Logs: {title}".
+1. **Live mode**: When mounted with a `taskId` prop and no `runnerLogs` prop, the modal SHALL open an SSE connection to `/api/tasks/{task_id}/logs/stream` and stream events in real time. The header SHALL display "Live Logs: {title}".
+2. **Static mode**: When mounted with a `runnerLogs` prop (newline-delimited JSON string), the modal SHALL parse the string into structured events and render them immediately without an SSE connection. The header SHALL display "Task Logs: {title}".
 
 In both modes, the modal SHALL render events using the `TaskEventLog` component in a scrollable dark-themed container.
 
 #### Scenario: Modal displays streaming log lines
 
-- **WHEN** the log viewer modal is opened for a running task (live mode) and the WebSocket receives `{"event": "task_event", "type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls"}}}`
+- **WHEN** the log viewer modal is opened for a running task (live mode) and the SSE stream receives a log line with `{"event": "task_event", "type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls"}}}`
 - **THEN** the modal appends a tool_call event to the displayed log output
 
 #### Scenario: Auto-scroll follows new output
@@ -64,13 +21,13 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 
 #### Scenario: Stream ends gracefully
 
-- **WHEN** the WebSocket receives `{"event": "task_log_end"}`
+- **WHEN** the SSE stream receives a `task_log_end` event
 - **THEN** the modal displays a "Task finished" indicator and stops waiting for new lines
 
-#### Scenario: Modal close disconnects WebSocket
+#### Scenario: Modal close disconnects SSE
 
 - **WHEN** the user closes the log viewer modal in live mode (via Close button, Escape, or backdrop click)
-- **THEN** the WebSocket connection is closed
+- **THEN** the SSE connection is closed
 
 #### Scenario: Empty log state in live mode
 
@@ -92,10 +49,10 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 - **WHEN** the log viewer modal is opened in static mode
 - **THEN** the header displays "Task Logs: {title}" (not "Live Logs")
 
-#### Scenario: Static mode does not connect WebSocket
+#### Scenario: Static mode does not connect SSE
 
 - **WHEN** the log viewer modal is opened with a `runnerLogs` prop
-- **THEN** no WebSocket connection is established
+- **THEN** no SSE connection is established
 
 #### Scenario: Static mode does not show waiting message
 

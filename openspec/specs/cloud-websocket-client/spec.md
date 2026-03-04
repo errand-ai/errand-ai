@@ -1,71 +1,114 @@
 ## ADDED Requirements
 
-### Requirement: WebSocket connection to errand-cloud
-The backend SHALL maintain a persistent WebSocket connection to the errand-cloud relay service for receiving forwarded webhook payloads.
+### Requirement: Registration message on connect
 
-#### Scenario: Connection on startup with existing credentials
-- **WHEN** errand-server starts and cloud PlatformCredential exists with status "connected"
-- **THEN** the backend SHALL start a background task that connects to `wss://service.errand.cloud/ws` (or custom cloud_service_url) with `Authorization: Bearer {access_token}` header
-- **THEN** on successful connection, the backend SHALL publish a `cloud_status` event with status `connected`
+After the WebSocket connection to errand-cloud is established and authenticated, the client SHALL send a `register` message:
 
-#### Scenario: Connection on first authentication
-- **WHEN** a user completes OAuth authentication with errand-cloud for the first time
-- **THEN** the backend SHALL start the WebSocket client background task immediately
+```json
+{
+  "type": "register",
+  "server_version": "0.14.0",
+  "protocol_version": 2,
+  "capabilities": ["tasks", "settings", "mcp-servers", ...]
+}
+```
 
-#### Scenario: No credentials on startup
-- **WHEN** errand-server starts and no cloud PlatformCredential exists
-- **THEN** the backend SHALL NOT start the WebSocket client background task
+The server version SHALL be read from the `VERSION` file. Capabilities SHALL be derived from runtime configuration (see capability-registration spec).
 
-### Requirement: Message handling
-The WebSocket client SHALL implement the errand-client-protocol message types.
+The client SHALL wait for a `registered` acknowledgement from the cloud before processing other messages.
 
-#### Scenario: Receive webhook message
-- **WHEN** the client receives a message with `type: "webhook"`
-- **THEN** the client SHALL dispatch the payload to the cloud webhook dispatcher
-- **THEN** after successful processing, the client SHALL send an ACK: `{"type": "ack", "id": "<message_id>"}`
+#### Scenario: Register on connect
 
-#### Scenario: Receive ping message
-- **WHEN** the client receives a message with `type: "ping"` containing a `ts` field
-- **THEN** the client SHALL immediately respond with `{"type": "pong", "ts": <echoed_ts>}`
+- **WHEN** the WebSocket connection to errand-cloud is established
+- **THEN** the client sends a `register` message with the server version and current capabilities
+- **AND** waits for a `registered` response before entering the main message loop
 
-#### Scenario: Message deduplication
-- **WHEN** the client receives a webhook message with an `id` that has already been processed in the current connection session
-- **THEN** the client SHALL send an ACK but SHALL NOT re-process the payload
+#### Scenario: Re-register on reconnect
 
-### Requirement: Reconnection with exponential backoff
-The WebSocket client SHALL automatically reconnect on unexpected disconnections.
+- **WHEN** the client reconnects after a disconnection
+- **THEN** the client sends a fresh `register` message with potentially updated capabilities
 
-#### Scenario: Network error or unexpected close
-- **WHEN** the WebSocket connection drops due to a network error or non-specific close code
-- **THEN** the client SHALL reconnect with exponential backoff: 0-500ms, 1-2s, 2-4s, 4-8s, capped at 30s
-- **THEN** the backoff counter SHALL reset on successful connection
-- **THEN** a `cloud_status` event SHALL be published with status `disconnected` on disconnect and `connected` on reconnect
+### Requirement: Proxy request handling
 
-#### Scenario: Close code 4001 (superseded)
-- **WHEN** the WebSocket is closed with code 4001
-- **THEN** the client SHALL NOT auto-reconnect
-- **THEN** a `cloud_status` event SHALL be published with status `disconnected` and detail "Connection taken over by another instance"
+The WebSocket client SHALL handle `proxy_request` messages from errand-cloud by making local HTTP requests to the server's own API.
 
-#### Scenario: Close code 4002 (auth_expired)
-- **WHEN** the WebSocket is closed with code 4002
-- **THEN** the client SHALL attempt to refresh the access token
-- **THEN** if refresh succeeds, the client SHALL reconnect with the new token
-- **THEN** if refresh fails, the client SHALL NOT auto-reconnect and SHALL set PlatformCredential status to "error"
+When a `proxy_request` is received:
+1. Extract method, path, headers, body from the message
+2. Add `X-Cloud-JWT` header from the message's JWT field
+3. Make an HTTP request to `http://localhost:{port}{path}` using `httpx.AsyncClient`
+4. Package the response (status, headers, body) as a `proxy_response` message with the same `id`
+5. Send the `proxy_response` via WebSocket
 
-#### Scenario: Close code 4003 (tenant_disabled)
-- **WHEN** the WebSocket is closed with code 4003
-- **THEN** the client SHALL NOT auto-reconnect
-- **THEN** the PlatformCredential status SHALL be set to "error"
-- **THEN** a `cloud_status` event SHALL be published with status `error` and detail "Account suspended"
+#### Scenario: Successful proxy request
 
-### Requirement: Graceful shutdown
-The WebSocket client SHALL shut down cleanly when the errand-server is stopping or the user disconnects.
+- **WHEN** the client receives `{"type": "proxy_request", "id": "abc", "method": "GET", "path": "/api/tasks", "headers": {...}, "body": null}`
+- **THEN** the client makes `GET http://localhost:{port}/api/tasks` with the forwarded headers
+- **AND** sends `{"type": "proxy_response", "id": "abc", "status": 200, "headers": {...}, "body": "[...]"}`
 
-#### Scenario: Server shutdown
-- **WHEN** the errand-server lifespan exits
-- **THEN** the WebSocket client task SHALL be cancelled
-- **THEN** the client SHALL send a close frame with code 1000 before terminating
+#### Scenario: Proxy request to non-existent endpoint
 
-#### Scenario: User disconnect
-- **WHEN** the user disconnects via the cloud settings page
-- **THEN** the WebSocket client task SHALL be cancelled and the connection closed with code 1000
+- **WHEN** the client receives a proxy_request for a path that returns 404
+- **THEN** the client sends a proxy_response with status 404
+
+#### Scenario: Proxy request with body
+
+- **WHEN** the client receives a proxy_request with method POST and a non-null body
+- **THEN** the client forwards the body in the local HTTP request
+
+### Requirement: Subscribe and unsubscribe handling
+
+The WebSocket client SHALL handle `subscribe` and `unsubscribe` messages to manage real-time event forwarding through the tunnel.
+
+On `subscribe`:
+- For each channel in the channels array, subscribe to the corresponding Valkey pub/sub channel
+- Forward events from subscribed channels as `push_event` messages
+
+On `unsubscribe`:
+- For each channel in the channels array, unsubscribe from the Valkey pub/sub channel
+- Stop forwarding events for those channels
+
+Channel mapping:
+- `tasks` → Valkey channel `task_events`
+- `logs:{task_id}` → Valkey channel `task_logs:{task_id}`
+- `system` → Valkey channel `system_events`
+
+#### Scenario: Subscribe to task events
+
+- **WHEN** the client receives `{"type": "subscribe", "channels": ["tasks"]}`
+- **THEN** the client subscribes to the `task_events` Valkey pub/sub channel
+- **AND** forwards events as `{"type": "push_event", "channel": "tasks", "data": {...}}`
+
+#### Scenario: Subscribe to log streaming
+
+- **WHEN** the client receives `{"type": "subscribe", "channels": ["logs:42"]}`
+- **THEN** the client subscribes to the `task_logs:42` Valkey pub/sub channel
+- **AND** forwards log lines as `{"type": "push_event", "channel": "logs:42", "data": "..."}`
+
+#### Scenario: Unsubscribe stops forwarding
+
+- **WHEN** the client receives `{"type": "unsubscribe", "channels": ["tasks"]}`
+- **THEN** the client unsubscribes from the `task_events` Valkey channel
+- **AND** stops forwarding task events
+
+#### Scenario: No subscriptions means no event forwarding
+
+- **WHEN** no subscribe messages have been received (or all channels unsubscribed)
+- **THEN** no push_event messages are sent through the tunnel
+
+### Requirement: Push event message format
+
+Events forwarded through the tunnel SHALL use the `push_event` message type:
+
+```json
+{
+  "type": "push_event",
+  "channel": "tasks",
+  "data": { "event": "task_updated", "task": { ... } }
+}
+```
+
+#### Scenario: Task event forwarded
+
+- **WHEN** the `task_events` Valkey channel receives a task_updated event
+- **AND** the "tasks" channel is subscribed
+- **THEN** the client sends a push_event with channel "tasks" and the event data
