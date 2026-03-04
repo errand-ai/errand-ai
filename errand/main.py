@@ -2223,10 +2223,10 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
                             yield "event: task_log_end\ndata: {}\n\n"
                             return
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        pass  # Not JSON or not the end sentinel — fall through to yield as log line
                     yield f"event: log\ndata: {data}\n\n"
         except asyncio.CancelledError:
-            pass
+            pass  # Client disconnected; clean up pub/sub below
         finally:
             await pubsub.unsubscribe(log_channel)
             await pubsub.aclose()
