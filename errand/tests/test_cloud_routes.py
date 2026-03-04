@@ -552,3 +552,46 @@ class TestCloudEndpointErrorPersistence:
                 select(Setting).where(Setting.key == "cloud_endpoint_error")
             )
             assert result.scalar_one_or_none() is None
+
+
+class TestProxyRequestMarker:
+    """Verify mark_proxy_requests middleware sets state readable by route handlers."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_secret_sets_marker_readable_by_route(self, cloud_client):
+        """Marker set via setattr in middleware must be visible via getattr in route handler."""
+        client, _ = cloud_client
+        from cloud_auth_jwt import PROXY_SECRET, PROXY_SECRET_HEADER
+
+        # Include a dummy Bearer token so HTTPBearer doesn't short-circuit with 403.
+        # With the proxy secret, _try_cloud_jwt_auth reads the marker and attempts
+        # cloud JWT validation — which fails with 401 for our bogus token.
+        resp = await client.get(
+            "/api/tasks",
+            headers={
+                "Authorization": "Bearer dummy",
+                PROXY_SECRET_HEADER: PROXY_SECRET,
+                "X-Cloud-JWT": "bogus-cloud-jwt",
+            },
+        )
+        # 401 with "Invalid cloud token" = marker was set and cloud JWT path was taken
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Invalid cloud token"
+
+    @pytest.mark.asyncio
+    async def test_without_proxy_secret_marker_not_set(self, cloud_client):
+        """Without the proxy secret header, the marker should not be set."""
+        client, _ = cloud_client
+
+        # Without PROXY_SECRET_HEADER, _try_cloud_jwt_auth returns None (skips cloud auth).
+        # Falls through to normal token validation which fails on the dummy token.
+        resp = await client.get(
+            "/api/tasks",
+            headers={
+                "Authorization": "Bearer dummy",
+                "X-Cloud-JWT": "bogus-cloud-jwt",
+            },
+        )
+        # Still 401, but NOT "Invalid cloud token" — proves marker was not set
+        assert resp.status_code == 401
+        assert resp.json()["detail"] != "Invalid cloud token"
