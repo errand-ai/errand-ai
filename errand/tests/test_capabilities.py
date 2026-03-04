@@ -50,7 +50,7 @@ def test_get_server_version():
 
 def test_get_server_version_missing():
     """Should return 'unknown' when VERSION file is missing."""
-    with patch.object(cap_module, 'VERSION_FILE', Path("/nonexistent/VERSION")):
+    with patch.object(cap_module, '_VERSION_PATHS', [Path("/nonexistent/VERSION")]):
         assert cap_module.get_server_version() == "unknown"
 
 
