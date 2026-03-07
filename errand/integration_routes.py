@@ -49,9 +49,6 @@ class ProviderConfig:
     extra_auth_params: dict
 
 
-PROVIDERS: dict[str, ProviderConfig] = {}
-
-
 def _init_providers():
     """Build provider configs. Microsoft tenant_id is resolved at call time."""
     tenant_id = os.environ.get("MICROSOFT_TENANT_ID", "common")

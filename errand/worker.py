@@ -942,12 +942,11 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                     access_token = creds.get("access_token", "")
                     if access_token:
                         mcp_servers.setdefault("mcpServers", {})
-                        if mcp_name not in mcp_servers["mcpServers"]:
-                            mcp_servers["mcpServers"][mcp_name] = {
-                                "url": url_var,
-                                "headers": {"Authorization": f"Bearer {access_token}"},
-                            }
-                            cloud_storage_injected = True
+                        mcp_servers["mcpServers"][mcp_name] = {
+                            "url": url_var,
+                            "headers": {"Authorization": f"Bearer {access_token}"},
+                        }
+                        cloud_storage_injected = True
 
         if cloud_storage_injected:
             system_prompt += CLOUD_STORAGE_INSTRUCTIONS
