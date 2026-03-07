@@ -95,9 +95,9 @@ onMounted(loadStatus)
             </div>
           </div>
 
-          <div v-if="provider.status.available">
+          <div>
             <button
-              v-if="!provider.status.connected"
+              v-if="provider.status.available && !provider.status.connected"
               @click="connect(provider.id)"
               class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               :data-testid="`cloud-connect-${provider.id}`"
@@ -105,7 +105,7 @@ onMounted(loadStatus)
               Connect
             </button>
             <button
-              v-else
+              v-else-if="provider.status.connected"
               @click="disconnect(provider.id)"
               :disabled="disconnecting === provider.id"
               class="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"

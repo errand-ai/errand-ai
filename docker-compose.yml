@@ -131,6 +131,11 @@ services:
       MAX_TURNS: "200"
       GDRIVE_MCP_URL: http://gdrive-mcp:8080/mcp
       ONEDRIVE_MCP_URL: http://onedrive-mcp:8080/mcp
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
     depends_on:
       migrate:
         condition: service_completed_successfully

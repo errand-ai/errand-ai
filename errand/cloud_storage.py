@@ -87,7 +87,11 @@ async def refresh_token_if_needed(
             return None
 
         tokens = resp.json()
-        credentials["access_token"] = tokens["access_token"]
+        new_access_token = tokens.get("access_token")
+        if not new_access_token:
+            logger.warning("Token refresh for %s returned no access_token", provider)
+            return None
+        credentials["access_token"] = new_access_token
         credentials["expires_at"] = int(time.time()) + tokens.get("expires_in", 3600)
         # Some providers rotate refresh tokens
         if "refresh_token" in tokens:

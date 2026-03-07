@@ -84,6 +84,35 @@ spec:
             - name: ONEDRIVE_MCP_URL
               value: "http://{{ include "errand.fullname" . }}-onedrive-mcp:{{ .Values.onedrive.port }}/mcp"
             {{- end }}
+            {{- if .Values.gdrive.existingSecret }}
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gdrive.existingSecret }}
+                  key: GOOGLE_CLIENT_ID
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gdrive.existingSecret }}
+                  key: GOOGLE_CLIENT_SECRET
+            {{- end }}
+            {{- if .Values.onedrive.existingSecret }}
+            - name: MICROSOFT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onedrive.existingSecret }}
+                  key: MICROSOFT_CLIENT_ID
+            - name: MICROSOFT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onedrive.existingSecret }}
+                  key: MICROSOFT_CLIENT_SECRET
+            - name: MICROSOFT_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onedrive.existingSecret }}
+                  key: MICROSOFT_TENANT_ID
+            {{- end }}
             - name: PLAYWRIGHT_MCP_IMAGE
               value: "{{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}"
             - name: PLAYWRIGHT_PORT

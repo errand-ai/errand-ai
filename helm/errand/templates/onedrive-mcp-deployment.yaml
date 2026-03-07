@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: onedrive-mcp
-          image: "{{ .Values.onedrive.image.repository }}:{{ .Values.onedrive.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.onedrive.image.repository }}:{{ .Values.onedrive.image.tag | default "latest" }}"
           imagePullPolicy: {{ .Values.onedrive.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.onedrive.port }}

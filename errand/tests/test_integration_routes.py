@@ -11,6 +11,7 @@ import events as events_module
 from fakeredis.aioredis import FakeRedis
 from main import app
 from database import get_session
+from integration_routes import _require_user
 from models import PlatformCredential
 from platforms.credentials import encrypt, decrypt
 from tests.conftest import _create_tables
@@ -23,7 +24,7 @@ def _encryption_key(monkeypatch):
 
 @pytest.fixture()
 async def integration_client(monkeypatch):
-    """Client for integration route tests — no auth override needed for OAuth routes."""
+    """Client for integration route tests with auth bypassed."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     await _create_tables(engine)
 
@@ -33,14 +34,18 @@ async def integration_client(monkeypatch):
         async with session_factory() as session:
             yield session
 
+    async def override_require_user():
+        return {"sub": "test-user", "email": "test@example.com", "_roles": ["admin"]}
+
     redis = FakeRedis(decode_responses=True)
     events_module._valkey = redis
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[_require_user] = override_require_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as ac:
-        yield ac, session_factory
+        yield ac, session_factory, redis
 
     app.dependency_overrides.clear()
     events_module._valkey = None
@@ -53,7 +58,7 @@ async def integration_client(monkeypatch):
 
 @pytest.mark.anyio
 async def test_authorize_google_drive(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _, redis = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
@@ -64,11 +69,12 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     assert "goog-client-id" in location
     assert "access_type=offline" in location
     assert "drive" in location
+    assert "state=" in location
 
 
 @pytest.mark.anyio
 async def test_authorize_onedrive(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _, redis = integration_client
     monkeypatch.setenv("MICROSOFT_CLIENT_ID", "ms-client-id")
     monkeypatch.setenv("MICROSOFT_CLIENT_SECRET", "ms-secret")
     monkeypatch.setenv("MICROSOFT_TENANT_ID", "my-tenant")
@@ -79,18 +85,19 @@ async def test_authorize_onedrive(integration_client, monkeypatch):
     assert "login.microsoftonline.com/my-tenant" in location
     assert "ms-client-id" in location
     assert "Files.ReadWrite.All" in location
+    assert "state=" in location
 
 
 @pytest.mark.anyio
 async def test_authorize_not_configured(integration_client):
-    client, _ = integration_client
+    client, _, _ = integration_client
     resp = await client.get("/api/integrations/google_drive/authorize")
     assert resp.status_code == 404
 
 
 @pytest.mark.anyio
 async def test_authorize_unknown_provider(integration_client):
-    client, _ = integration_client
+    client, _, _ = integration_client
     resp = await client.get("/api/integrations/dropbox/authorize")
     assert resp.status_code == 404
 
@@ -117,9 +124,12 @@ def _mock_userinfo_response(email="user@example.com", name="Test User", provider
 
 @pytest.mark.anyio
 async def test_callback_google_success(integration_client, monkeypatch):
-    client, session_factory = integration_client
+    client, session_factory, redis = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    # Set up valid OAuth state
+    await redis.setex("oauth_state:test-state", 600, "google_drive")
 
     mock_client = AsyncMock()
     mock_client.post.return_value = _mock_token_response()
@@ -128,10 +138,13 @@ async def test_callback_google_success(integration_client, monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE")
+        resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=test-state")
 
     assert resp.status_code == 307
     assert resp.headers["location"] == "/settings/integrations"
+
+    # Verify state was consumed
+    assert await redis.get("oauth_state:test-state") is None
 
     # Verify credentials were stored
     async with session_factory() as session:
@@ -150,9 +163,11 @@ async def test_callback_google_success(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_callback_onedrive_success(integration_client, monkeypatch):
-    client, session_factory = integration_client
+    client, session_factory, redis = integration_client
     monkeypatch.setenv("MICROSOFT_CLIENT_ID", "ms-client-id")
     monkeypatch.setenv("MICROSOFT_CLIENT_SECRET", "ms-secret")
+
+    await redis.setex("oauth_state:ms-state", 600, "onedrive")
 
     mock_client = AsyncMock()
     mock_client.post.return_value = _mock_token_response()
@@ -161,15 +176,39 @@ async def test_callback_onedrive_success(integration_client, monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.get("/api/integrations/onedrive/callback?code=AUTH_CODE")
+        resp = await client.get("/api/integrations/onedrive/callback?code=AUTH_CODE&state=ms-state")
 
     assert resp.status_code == 307
     assert resp.headers["location"] == "/settings/integrations"
 
 
 @pytest.mark.anyio
+async def test_callback_invalid_state(integration_client, monkeypatch):
+    """Callback with invalid state should be rejected."""
+    client, _, redis = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=bad-state")
+    assert resp.status_code == 307
+    assert "error=invalid_state" in resp.headers["location"]
+
+
+@pytest.mark.anyio
+async def test_callback_missing_state(integration_client, monkeypatch):
+    """Callback without state parameter should be rejected."""
+    client, _, redis = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE")
+    assert resp.status_code == 307
+    assert "error=invalid_state" in resp.headers["location"]
+
+
+@pytest.mark.anyio
 async def test_callback_oauth_error(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
@@ -180,9 +219,11 @@ async def test_callback_oauth_error(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_callback_token_exchange_failure(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _, redis = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    await redis.setex("oauth_state:fail-state", 600, "google_drive")
 
     mock_client = AsyncMock()
     mock_client.post.return_value = Response(400, json={"error": "invalid_grant"})
@@ -190,7 +231,7 @@ async def test_callback_token_exchange_failure(integration_client, monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.get("/api/integrations/google_drive/callback?code=BAD_CODE")
+        resp = await client.get("/api/integrations/google_drive/callback?code=BAD_CODE&state=fail-state")
 
     assert resp.status_code == 307
     assert "error=token_exchange_failed" in resp.headers["location"]
@@ -201,7 +242,7 @@ async def test_callback_token_exchange_failure(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_disconnect(integration_client, monkeypatch):
-    client, session_factory = integration_client
+    client, session_factory, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
@@ -229,7 +270,7 @@ async def test_disconnect(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_disconnect_idempotent(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
@@ -239,7 +280,7 @@ async def test_disconnect_idempotent(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_disconnect_unknown_provider(integration_client):
-    client, _ = integration_client
+    client, _, _ = integration_client
     resp = await client.delete("/api/integrations/dropbox")
     assert resp.status_code == 404
 
@@ -249,7 +290,7 @@ async def test_disconnect_unknown_provider(integration_client):
 
 @pytest.mark.anyio
 async def test_status_both_available_one_connected(integration_client, monkeypatch):
-    client, session_factory = integration_client
+    client, session_factory, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
     monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
@@ -286,7 +327,7 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
 @pytest.mark.anyio
 async def test_status_not_available(integration_client):
     """When env vars are not set, providers show as unavailable."""
-    client, _ = integration_client
+    client, _, _ = integration_client
     resp = await client.get("/api/integrations/status")
     assert resp.status_code == 200
     data = resp.json()
@@ -299,7 +340,7 @@ async def test_status_not_available(integration_client):
 @pytest.mark.anyio
 async def test_status_partial_config(integration_client, monkeypatch):
     """Client ID set but no MCP URL — not available."""
-    client, _ = integration_client
+    client, _, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
     # No GDRIVE_MCP_URL

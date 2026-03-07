@@ -6,6 +6,7 @@ Credentials stored encrypted in PlatformCredential.
 
 import logging
 import os
+import secrets
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
@@ -17,12 +18,24 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
+from events import get_valkey
 from models import PlatformCredential
 from platforms.credentials import encrypt, load_credentials
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
+
+OAUTH_STATE_TTL = 600  # 10 minutes
+
+
+async def _require_user(request: Request):
+    """Auth dependency — late import to avoid circular import with main.py."""
+    from main import get_current_user
+    from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+    security = HTTPBearer(auto_error=True)
+    credentials = await security(request)
+    return await get_current_user(request, credentials)
 
 
 @dataclass
@@ -47,7 +60,7 @@ def _init_providers():
             authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
             userinfo_url="https://www.googleapis.com/oauth2/v2/userinfo",
-            scopes="https://www.googleapis.com/auth/drive",
+            scopes="openid email profile https://www.googleapis.com/auth/drive",
             client_id_env="GOOGLE_CLIENT_ID",
             client_secret_env="GOOGLE_CLIENT_SECRET",
             extra_auth_params={"access_type": "offline", "prompt": "consent"},
@@ -56,7 +69,7 @@ def _init_providers():
             authorize_url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize",
             token_url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
             userinfo_url="https://graph.microsoft.com/v1.0/me",
-            scopes="Files.ReadWrite.All offline_access",
+            scopes="User.Read Files.ReadWrite.All offline_access",
             client_id_env="MICROSOFT_CLIENT_ID",
             client_secret_env="MICROSOFT_CLIENT_SECRET",
             extra_auth_params={},
@@ -97,17 +110,28 @@ def _provider_available(provider: str) -> bool:
 
 
 @router.get("/{provider}/authorize")
-async def authorize(provider: str, request: Request):
+async def authorize(
+    provider: str,
+    request: Request,
+    _user: dict = Depends(_require_user),
+):
     config = _get_provider(provider)
     client_id, _ = _get_client_credentials(config)
     base_url = str(request.base_url).rstrip("/")
     redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
+
+    # Generate CSRF state token and store in Valkey
+    state = secrets.token_urlsafe(32)
+    valkey = get_valkey()
+    if valkey:
+        await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
 
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": config.scopes,
+        "state": state,
         **config.extra_auth_params,
     }
     return RedirectResponse(url=f"{config.authorize_url}?{urlencode(params)}")
@@ -119,6 +143,7 @@ async def callback(
     request: Request,
     code: str = "",
     error: str = "",
+    state: str = "",
     session: AsyncSession = Depends(get_session),
 ):
     config = _get_provider(provider)
@@ -129,6 +154,19 @@ async def callback(
 
     if not code:
         return RedirectResponse(url="/settings/integrations?error=missing_code")
+
+    # Validate CSRF state token
+    valkey = get_valkey()
+    if valkey and state:
+        stored_provider = await valkey.get(f"oauth_state:{state}")
+        if stored_provider != provider:
+            logger.warning("OAuth state mismatch for %s", provider)
+            return RedirectResponse(url="/settings/integrations?error=invalid_state")
+        await valkey.delete(f"oauth_state:{state}")
+    elif valkey:
+        # State parameter missing — reject
+        logger.warning("OAuth callback missing state for %s", provider)
+        return RedirectResponse(url="/settings/integrations?error=invalid_state")
 
     client_id, client_secret = _get_client_credentials(config)
     base_url = str(request.base_url).rstrip("/")
@@ -210,7 +248,9 @@ async def callback(
 @router.delete("/{provider}")
 async def disconnect(
     provider: str,
+    request: Request,
     session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
 ):
     _get_provider(provider)  # validate provider name
     await session.execute(
@@ -222,7 +262,9 @@ async def disconnect(
 
 @router.get("/status")
 async def integration_status(
+    request: Request,
     session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
 ):
     result = {}
     for provider in ("google_drive", "onedrive"):

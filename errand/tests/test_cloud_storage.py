@@ -55,6 +55,54 @@ async def test_token_still_valid(db_session, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_token_within_refresh_buffer_triggers_refresh(db_session, monkeypatch):
+    """Token expiring within 5-min buffer should be refreshed."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    creds = _make_credentials(expired=False)
+    creds["expires_at"] = int(time.time()) + 60  # 1 minute from now — inside buffer
+
+    db_session.add(PlatformCredential(
+        platform_id="google_drive",
+        encrypted_data=encrypt(creds),
+        status="connected",
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = Response(200, json={
+        "access_token": "buffer-refreshed-token",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    })
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("cloud_storage.httpx.AsyncClient", return_value=mock_client):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result is not None
+    assert result["access_token"] == "buffer-refreshed-token"
+    mock_client.post.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_token_just_outside_buffer_no_refresh(db_session, monkeypatch):
+    """Token expiring just outside 5-min buffer should not be refreshed."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    creds = _make_credentials(expired=False)
+    creds["expires_at"] = int(time.time()) + 301  # just over 5 minutes
+
+    result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result is not None
+    assert result["access_token"] == "old-access-token"
+
+
+@pytest.mark.anyio
 async def test_token_expired_refresh_success(db_session, monkeypatch):
     """Expired token should be refreshed via token endpoint."""
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")

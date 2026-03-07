@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: gdrive-mcp
-          image: "{{ .Values.gdrive.image.repository }}:{{ .Values.gdrive.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.gdrive.image.repository }}:{{ .Values.gdrive.image.tag | default "latest" }}"
           imagePullPolicy: {{ .Values.gdrive.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.gdrive.port }}
