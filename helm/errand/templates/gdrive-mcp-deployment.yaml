@@ -1,0 +1,27 @@
+{{- if .Values.gdrive.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "errand.fullname" . }}-gdrive-mcp
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gdrive-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: gdrive-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: gdrive-mcp
+    spec:
+      containers:
+        - name: gdrive-mcp
+          image: "{{ .Values.gdrive.image.repository }}:{{ .Values.gdrive.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.gdrive.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.gdrive.port }}
+{{- end }}

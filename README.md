@@ -192,6 +192,87 @@ The bot posts a confirmation message with task details and interactive buttons. 
 - All Slack-originated tasks are automatically tagged with `slack`
 - Tasks created via Slack record the user's email in the audit fields (`created_by`/`updated_by`)
 
+### Google Drive
+
+Google Drive integration gives task-runner agents read/write access to files in a user's Google Drive via a dedicated MCP server.
+
+#### Prerequisites
+
+- The Google Drive MCP server must be deployed (enabled by default in the Helm chart, or via docker-compose)
+- An OAuth 2.0 client must be registered in the Google Cloud Console
+
+#### Creating Google OAuth credentials
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and select or create a project
+2. Navigate to **APIs & Services > OAuth consent screen**
+   - Choose **External** user type (or **Internal** if using Google Workspace)
+   - Fill in the app name, user support email, and developer contact email
+   - On the **Scopes** step, add `https://www.googleapis.com/auth/drive`
+   - Add any test users if the app is in "Testing" publishing status
+3. Navigate to **APIs & Services > Credentials** and click **Create Credentials > OAuth client ID**
+   - **Application type**: Web application
+   - **Authorized redirect URIs**: Add `https://<your-domain>/api/integrations/google_drive/callback`
+   - Note the **Client ID** and **Client Secret**
+4. Navigate to **APIs & Services > Enabled APIs** and enable the **Google Drive API**
+
+#### Configuration
+
+Provide the credentials as environment variables to the Errand server:
+
+| Variable | Value |
+|----------|-------|
+| `GOOGLE_CLIENT_ID` | OAuth Client ID from step 3 |
+| `GOOGLE_CLIENT_SECRET` | OAuth Client Secret from step 3 |
+
+For Kubernetes, create a secret and set `gdrive.existingSecret` in your Helm values. The secret must contain keys `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+#### Connecting
+
+Once configured, go to **Settings > Integrations** in the Errand UI. The Google Drive card will show a **Connect** button. Clicking it starts the OAuth consent flow — after granting access, you'll be redirected back to Errand with the connection established.
+
+### OneDrive
+
+OneDrive integration gives task-runner agents read/write access to files in a user's OneDrive via a dedicated MCP server.
+
+#### Prerequisites
+
+- The OneDrive MCP server must be deployed (enabled by default in the Helm chart, or via docker-compose)
+- An OAuth 2.0 app registration must be created in Microsoft Entra ID (Azure AD)
+
+#### Creating Microsoft OAuth credentials
+
+1. Go to the [Microsoft Entra admin center](https://entra.microsoft.com/) and navigate to **Identity > Applications > App registrations**
+2. Click **New registration**
+   - **Name**: e.g. "Errand OneDrive"
+   - **Supported account types**: Choose based on your needs
+     - *Single tenant* — only users in your organization
+     - *Multitenant* — users in any Microsoft Entra directory
+     - *Multitenant + personal* — broadest access including personal Microsoft accounts
+   - **Redirect URI**: Select **Web** and enter `https://<your-domain>/api/integrations/onedrive/callback`
+3. After creation, note the **Application (client) ID** and **Directory (tenant) ID** from the Overview page
+4. Navigate to **Certificates & secrets > Client secrets** and click **New client secret**
+   - Note the **Value** (this is the client secret — it's only shown once)
+5. Navigate to **API permissions** and click **Add a permission**
+   - Select **Microsoft Graph > Delegated permissions**
+   - Add `Files.ReadWrite.All` and `offline_access`
+   - Click **Grant admin consent** if you have admin privileges (otherwise users will be prompted)
+
+#### Configuration
+
+Provide the credentials as environment variables to the Errand server:
+
+| Variable | Value |
+|----------|-------|
+| `MICROSOFT_CLIENT_ID` | Application (client) ID from step 3 |
+| `MICROSOFT_CLIENT_SECRET` | Client secret value from step 4 |
+| `MICROSOFT_TENANT_ID` | Directory (tenant) ID from step 3, or `common` for multi-tenant |
+
+For Kubernetes, create a secret and set `onedrive.existingSecret` in your Helm values. The secret must contain keys `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, and `MICROSOFT_TENANT_ID`.
+
+#### Connecting
+
+Once configured, go to **Settings > Integrations** in the Errand UI. The OneDrive card will show a **Connect** button. Clicking it starts the OAuth consent flow — after granting access, you'll be redirected back to Errand with the connection established.
+
 ## Project Structure
 
 ```

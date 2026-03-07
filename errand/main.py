@@ -46,6 +46,7 @@ from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from cloud_auth import exchange_code
+from integration_routes import router as integration_router
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
 from version_checker import run_version_checker, get_version_info
@@ -274,6 +275,7 @@ async def mark_proxy_requests(request: Request, call_next):
 app.include_router(auth_router)
 app.include_router(local_auth_router)
 app.include_router(slack_router)
+app.include_router(integration_router)
 
 app.mount("/mcp", create_mcp_app())
 

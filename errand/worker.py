@@ -121,6 +121,8 @@ PLAYWRIGHT_MCP_IMAGE = os.environ.get("PLAYWRIGHT_MCP_IMAGE", "")
 PLAYWRIGHT_MEMORY_LIMIT = os.environ.get("PLAYWRIGHT_MEMORY_LIMIT", "512m")
 PLAYWRIGHT_PORT = int(os.environ.get("PLAYWRIGHT_PORT", "8931"))
 PLAYWRIGHT_STARTUP_TIMEOUT = int(os.environ.get("PLAYWRIGHT_STARTUP_TIMEOUT", "30"))
+GDRIVE_MCP_URL = os.environ.get("GDRIVE_MCP_URL", "")
+ONEDRIVE_MCP_URL = os.environ.get("ONEDRIVE_MCP_URL", "")
 
 shutdown_requested = False
 shutdown_event: Optional[asyncio.Event] = None
@@ -606,6 +608,28 @@ After any `git clone`, check if a `.claude/skills/` directory exists. If it does
 """
 
 
+CLOUD_STORAGE_INSTRUCTIONS = """
+
+## Cloud Storage
+
+You have access to cloud storage via MCP servers. Available tools allow you to:
+- List, read, create, update, and delete files and folders
+- Search for files by name or content
+- Use path-based file access (e.g. `/Documents/report.docx`)
+
+### Concurrency (ETags)
+Some operations return an `etag` field. When updating a file, pass the etag you received from the read operation. If the file was modified by another process since you read it, the update will fail with a conflict error — re-read the file and retry.
+
+### Error Handling
+- **Permission errors**: The user may not have granted access to the requested file or folder. Report the error clearly.
+- **Not found errors**: The file or folder path may be incorrect. Verify the path and try again.
+- **Auth errors**: If you receive authentication errors, report that the cloud storage connection may need to be re-established.
+
+### Best Practice
+For modifying files: download the file content → modify locally → upload the new version. Avoid attempting in-place edits.
+"""
+
+
 def recall_from_hindsight(hindsight_url: str, bank_id: str, query: str, max_tokens: int = 2048) -> str | None:
     """Call Hindsight REST API to recall memories relevant to the query.
 
@@ -718,7 +742,7 @@ def _read_callback_result(task_id: str) -> str | None:
         return None
 
 
-def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None) -> tuple[int, str, str]:
+def process_task_in_container(task: Task, settings: dict, github_credentials: dict | None = None, cloud_storage_credentials: dict | None = None) -> tuple[int, str, str]:
     """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
     global active_handle
 
@@ -901,6 +925,31 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
                     "url": f"{openai_base_url.rstrip('/')}/mcp",
                     "headers": litellm_headers,
                 }
+
+        # Inject cloud storage MCP servers (two-gate: URL set AND credentials exist)
+        # Cloud storage participates in profile_mcp_servers filtering
+        cloud_storage_injected = False
+        if cloud_storage_credentials:
+            for provider, url_var, mcp_name in [
+                ("google_drive", GDRIVE_MCP_URL, "google_drive"),
+                ("onedrive", ONEDRIVE_MCP_URL, "onedrive"),
+            ]:
+                if url_var and provider in cloud_storage_credentials:
+                    # Check profile filter
+                    if profile_mcp_filter is not None and mcp_name not in profile_mcp_filter:
+                        continue
+                    creds = cloud_storage_credentials[provider]
+                    access_token = creds.get("access_token", "")
+                    if access_token:
+                        mcp_servers.setdefault("mcpServers", {})
+                        mcp_servers["mcpServers"][mcp_name] = {
+                            "url": url_var,
+                            "headers": {"Authorization": f"Bearer {access_token}"},
+                        }
+                        cloud_storage_injected = True
+
+        if cloud_storage_injected:
+            system_prompt += CLOUD_STORAGE_INSTRUCTIONS
 
         # Merge DB skills with git-sourced skills if configured
         skills = settings.get("skills", [])
@@ -1217,6 +1266,22 @@ async def run() -> None:
             except Exception:
                 logger.warning("Failed to load GitHub credentials", exc_info=True)
 
+            # Load and refresh cloud storage credentials while we have a session
+            cloud_storage_credentials = {}
+            for provider in ("google_drive", "onedrive"):
+                try:
+                    from platforms.credentials import load_credentials
+                    creds = await load_credentials(provider, session)
+                    if creds:
+                        from cloud_storage import refresh_token_if_needed
+                        refreshed = await refresh_token_if_needed(provider, creds, session)
+                        if refreshed:
+                            cloud_storage_credentials[provider] = refreshed
+                        else:
+                            logger.warning("Cloud storage token refresh failed for %s, skipping", provider)
+                except Exception:
+                    logger.warning("Failed to load cloud storage credentials for %s", provider, exc_info=True)
+
             # Set status to running with initial heartbeat
             task.status = "running"
             task.heartbeat_at = datetime.now(timezone.utc)
@@ -1228,7 +1293,7 @@ async def run() -> None:
         # Process outside the dequeue transaction
         try:
             exit_code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-                None, process_task_in_container, task, settings, github_credentials
+                None, process_task_in_container, task, settings, github_credentials, cloud_storage_credentials or None
             )
             # Combine for display/storage; use stdout only for parsing
             full_output = (stderr + "\n" + stdout).strip() if stderr else stdout

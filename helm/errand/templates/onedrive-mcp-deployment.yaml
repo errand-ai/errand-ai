@@ -1,0 +1,27 @@
+{{- if .Values.onedrive.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "errand.fullname" . }}-onedrive-mcp
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: onedrive-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: onedrive-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: onedrive-mcp
+    spec:
+      containers:
+        - name: onedrive-mcp
+          image: "{{ .Values.onedrive.image.repository }}:{{ .Values.onedrive.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.onedrive.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.onedrive.port }}
+{{- end }}
