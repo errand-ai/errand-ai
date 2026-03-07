@@ -1,6 +1,5 @@
 """Tests for cloud storage integration OAuth routes."""
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest

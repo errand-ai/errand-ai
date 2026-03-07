@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import PlatformCredential
-from platforms.credentials import decrypt, encrypt
+from platforms.credentials import encrypt
 
 logger = logging.getLogger(__name__)
 
