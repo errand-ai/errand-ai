@@ -73,6 +73,24 @@ credentialEncryption:
 twitter:
   existingSecret: ""
 
+gdrive:
+  enabled: true
+  image:
+    repository: ghcr.io/devops-consultants/google-drive-mcp-server
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8080
+  existingSecret: ""
+
+onedrive:
+  enabled: true
+  image:
+    repository: ghcr.io/devops-consultants/one-drive-mcp-server
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8080
+  existingSecret: ""
+
 hindsight:
   url: ""
   bankId: "errand-tasks"

@@ -1,0 +1,18 @@
+{{- if .Values.onedrive.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "errand.fullname" . }}-onedrive-mcp
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: onedrive-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.onedrive.port }}
+      targetPort: {{ .Values.onedrive.port }}
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: onedrive-mcp
+{{- end }}

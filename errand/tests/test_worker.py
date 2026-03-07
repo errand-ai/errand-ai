@@ -3351,3 +3351,204 @@ def test_litellm_mcp_manual_override_preserved():
     mcp_config = json.loads(files["mcp.json"])
     # Manual entry should be preserved, not overwritten
     assert mcp_config["mcpServers"]["litellm"]["url"] == "http://custom:4000/mcp"
+
+
+# --- Cloud Storage MCP injection ---
+
+
+def test_cloud_storage_mcp_injected_both_gates():
+    """When URL is set and credentials exist, cloud storage MCP is injected."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "refresh_token": "rt", "expires_at": 9999999999},
+        "onedrive": {"access_token": "eyJ.test", "refresh_token": "rt2", "expires_at": 9999999999},
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "GDRIVE_MCP_URL": "http://gdrive:8080/mcp",
+            "ONEDRIVE_MCP_URL": "http://onedrive:8080/mcp",
+        }):
+            # Force env var re-reads
+            original_gdrive = worker.GDRIVE_MCP_URL
+            original_onedrive = worker.ONEDRIVE_MCP_URL
+            worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
+            worker.ONEDRIVE_MCP_URL = "http://onedrive:8080/mcp"
+            try:
+                process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
+            finally:
+                worker.GDRIVE_MCP_URL = original_gdrive
+                worker.ONEDRIVE_MCP_URL = original_onedrive
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "google_drive" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["google_drive"]["url"] == "http://gdrive:8080/mcp"
+    assert mcp_config["mcpServers"]["google_drive"]["headers"]["Authorization"] == "Bearer ya29.test"
+    assert "onedrive" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["onedrive"]["headers"]["Authorization"] == "Bearer eyJ.test"
+
+    # System prompt should include cloud storage instructions
+    system_prompt = files["system_prompt.txt"]
+    assert "Cloud Storage" in system_prompt
+    assert "ETag" in system_prompt
+
+
+def test_cloud_storage_not_injected_no_url():
+    """When MCP URL not set, cloud storage is not injected even with credentials."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    original_gdrive = worker.GDRIVE_MCP_URL
+    original_onedrive = worker.ONEDRIVE_MCP_URL
+    worker.GDRIVE_MCP_URL = ""
+    worker.ONEDRIVE_MCP_URL = ""
+
+    try:
+        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
+    finally:
+        worker.container_runtime = original_runtime
+        worker.GDRIVE_MCP_URL = original_gdrive
+        worker.ONEDRIVE_MCP_URL = original_onedrive
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "google_drive" not in mcp_config.get("mcpServers", {})
+    # No cloud storage instructions
+    assert "Cloud Storage" not in files["system_prompt.txt"]
+
+
+def test_cloud_storage_not_injected_no_credentials():
+    """When no credentials exist, cloud storage is not injected."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    original_gdrive = worker.GDRIVE_MCP_URL
+    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
+
+    try:
+        process_task_in_container(task, settings, cloud_storage_credentials=None)
+    finally:
+        worker.container_runtime = original_runtime
+        worker.GDRIVE_MCP_URL = original_gdrive
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "google_drive" not in mcp_config.get("mcpServers", {})
+
+
+def test_cloud_storage_profile_filter():
+    """Cloud storage respects profile_mcp_servers filter."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "_profile_mcp_servers": ["errand"],  # cloud storage NOT listed
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    original_gdrive = worker.GDRIVE_MCP_URL
+    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
+
+    try:
+        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
+    finally:
+        worker.container_runtime = original_runtime
+        worker.GDRIVE_MCP_URL = original_gdrive
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "google_drive" not in mcp_config.get("mcpServers", {})
+
+
+def test_cloud_storage_profile_filter_includes():
+    """Cloud storage is injected when profile filter includes it."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "_profile_mcp_servers": ["errand", "google_drive"],
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    original_gdrive = worker.GDRIVE_MCP_URL
+    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
+
+    try:
+        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
+    finally:
+        worker.container_runtime = original_runtime
+        worker.GDRIVE_MCP_URL = original_gdrive
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "google_drive" in mcp_config["mcpServers"]

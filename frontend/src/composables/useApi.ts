@@ -286,6 +286,29 @@ export async function verifyPlatformCredentials(platformId: string): Promise<{ s
   return res.json()
 }
 
+export interface CloudStorageProviderStatus {
+  available: boolean
+  connected: boolean
+  user_email?: string
+  user_name?: string
+}
+
+export interface CloudStorageStatus {
+  google_drive: CloudStorageProviderStatus
+  onedrive: CloudStorageProviderStatus
+}
+
+export async function fetchCloudStorageStatus(): Promise<CloudStorageStatus> {
+  const res = await authFetch(`${BASE}/integrations/status`)
+  if (!res.ok) throw new Error(`Failed to fetch integration status: ${res.status}`)
+  return res.json()
+}
+
+export async function disconnectCloudStorage(provider: string): Promise<void> {
+  const res = await authFetch(`${BASE}/integrations/${provider}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to disconnect ${provider}: ${res.status}`)
+}
+
 export interface LitellmMcpServer {
   alias: string
   server_name?: string

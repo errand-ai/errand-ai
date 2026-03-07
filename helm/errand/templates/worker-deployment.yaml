@@ -76,6 +76,14 @@ spec:
             - name: HINDSIGHT_BANK_ID
               value: {{ .Values.hindsight.bankId | quote }}
             {{- end }}
+            {{- if .Values.gdrive.enabled }}
+            - name: GDRIVE_MCP_URL
+              value: "http://{{ include "errand.fullname" . }}-gdrive-mcp:{{ .Values.gdrive.port }}/mcp"
+            {{- end }}
+            {{- if .Values.onedrive.enabled }}
+            - name: ONEDRIVE_MCP_URL
+              value: "http://{{ include "errand.fullname" . }}-onedrive-mcp:{{ .Values.onedrive.port }}/mcp"
+            {{- end }}
             - name: PLAYWRIGHT_MCP_IMAGE
               value: "{{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}"
             - name: PLAYWRIGHT_PORT
