@@ -2163,7 +2163,7 @@ async def sse_task_events(token: str = Query(default=None)):
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 
@@ -2199,7 +2199,7 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
         return StreamingResponse(
             end_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
         )
 
     valkey = get_valkey()
@@ -2234,7 +2234,7 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
     return StreamingResponse(
         log_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 
