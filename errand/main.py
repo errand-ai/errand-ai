@@ -35,9 +35,14 @@ from auth import OIDCConfig
 from auth_routes import router as auth_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
-from llm import init_llm_client, get_llm_client_with_db, generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
+from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
+from llm_providers import (
+    encrypt_api_key, evict_client, mask_api_key, probe_provider_type,
+    provider_to_dict, scan_env_providers, _clear_model_settings_for_provider,
+    get_client_for_provider, get_client_for_provider_sync, resolve_model_setting,
+)
 from local_auth import router as local_auth_router
-from models import LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
+from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
 from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
@@ -106,7 +111,9 @@ async def lifespan(app: FastAPI):
         auth_module.oidc = None
         logger.info("OIDC not configured — using local auth")
     await init_valkey()
-    init_llm_client()
+    # Scan LLM_PROVIDER_{N}_* env vars and upsert providers
+    async with async_session() as provider_session:
+        await scan_env_providers(provider_session)
 
     # Credential encryption key — required for persistent credential storage
     if not os.environ.get("CREDENTIAL_ENCRYPTION_KEY"):
@@ -810,21 +817,202 @@ async def delete_task(
     await publish_event("task_deleted", {"id": str(task.id)})
 
 
-# --- LLM endpoints ---
+# --- LLM Provider endpoints ---
 
 
-@app.get("/api/llm/models")
-async def list_llm_models(
+@app.get("/api/llm/providers")
+async def list_providers(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_admin),
 ):
-    client = await get_llm_client_with_db(session)
-    if client is None:
-        raise HTTPException(status_code=503, detail="LLM provider not configured")
+    result = await session.execute(
+        select(LlmProvider).order_by(LlmProvider.is_default.desc(), LlmProvider.name.asc())
+    )
+    providers = result.scalars().all()
+    return [provider_to_dict(p) for p in providers]
+
+
+class ProviderCreate(BaseModel):
+    name: str
+    base_url: str
+    api_key: str
+
+
+@app.post("/api/llm/providers", status_code=201)
+async def create_provider(
+    body: ProviderCreate,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    # Check for duplicate name
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.name == body.name)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Provider name already exists")
+
+    provider_type = await probe_provider_type(body.base_url, body.api_key)
+
+    # If no providers exist yet, make this the default
+    count_result = await session.execute(select(func.count()).select_from(LlmProvider))
+    is_first = count_result.scalar() == 0
+
+    provider = LlmProvider(
+        name=body.name,
+        base_url=body.base_url,
+        api_key_encrypted=encrypt_api_key(body.api_key),
+        provider_type=provider_type,
+        is_default=is_first,
+        source="database",
+    )
+    session.add(provider)
+    await session.commit()
+    await session.refresh(provider)
+    return provider_to_dict(provider)
+
+
+class ProviderUpdate(BaseModel):
+    name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+@app.put("/api/llm/providers/{provider_id}")
+async def update_provider(
+    provider_id: uuid.UUID,
+    body: ProviderUpdate,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.source == "env":
+        raise HTTPException(status_code=403, detail="Cannot modify env-sourced provider")
+
+    url_changed = False
+    if body.name is not None:
+        # Check uniqueness
+        existing = await session.execute(
+            select(LlmProvider).where(LlmProvider.name == body.name, LlmProvider.id != provider_id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Provider name already exists")
+        provider.name = body.name
+    if body.base_url is not None:
+        url_changed = body.base_url != provider.base_url
+        provider.base_url = body.base_url
+    if body.api_key is not None and body.api_key != "":
+        provider.api_key_encrypted = encrypt_api_key(body.api_key)
+
+    if url_changed:
+        from llm_providers import decrypt_api_key
+        probe_key = body.api_key if (body.api_key and body.api_key != "") else decrypt_api_key(provider.api_key_encrypted)
+        provider.provider_type = await probe_provider_type(provider.base_url, probe_key)
+
+    evict_client(provider.id)
+    await session.commit()
+    await session.refresh(provider)
+    return provider_to_dict(provider)
+
+
+@app.delete("/api/llm/providers/{provider_id}", status_code=204)
+async def delete_provider(
+    provider_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.source == "env":
+        raise HTTPException(status_code=403, detail="Cannot modify env-sourced provider")
+    if provider.is_default:
+        raise HTTPException(status_code=409, detail="Cannot delete the default provider")
+
+    evict_client(provider.id)
+    await _clear_model_settings_for_provider(session, provider.id)
+    await session.delete(provider)
+    await session.commit()
+
+
+@app.put("/api/llm/providers/{provider_id}/default")
+async def set_default_provider(
+    provider_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    # Clear default from all providers
+    await session.execute(
+        update(LlmProvider).values(is_default=False)
+    )
+    provider.is_default = True
+    await session.commit()
+    await session.refresh(provider)
+    return provider_to_dict(provider)
+
+
+@app.get("/api/llm/providers/{provider_id}/models")
+async def list_provider_models(
+    provider_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+    mode: str | None = Query(default=None),
+):
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if provider.provider_type == "unknown":
+        raise HTTPException(status_code=404, detail="Provider does not support model listing")
+
+    client = get_client_for_provider_sync(provider)
+
+    # If mode filter requested and provider is litellm, use /model/info
+    if mode and provider.provider_type == "litellm":
+        from llm_providers import decrypt_api_key
+        api_key = decrypt_api_key(provider.api_key_encrypted)
+        stripped_url = provider.base_url.rstrip("/")
+        if stripped_url.endswith("/v1"):
+            stripped_url = stripped_url[:-3]
+        try:
+            async with httpx.AsyncClient() as http_client:
+                resp = await http_client.get(
+                    f"{stripped_url}/model/info",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            models = [
+                entry["model_name"]
+                for entry in data.get("data", [])
+                if entry.get("model_info", {}).get("mode") == mode
+            ]
+            return sorted(models)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
+
+    # Standard models.list() for litellm and openai_compatible
     try:
         models = await client.models.list()
-        model_ids = sorted([m.id for m in models.data])
-        return model_ids
+        return sorted([m.id for m in models.data])
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
 
@@ -853,41 +1041,22 @@ async def transcribe_status(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    client = await get_llm_client_with_db(session)
-    if client is None:
-        return {"enabled": False}
     result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))
     setting = result.scalar_one_or_none()
-    enabled = setting is not None and bool(setting.value)
-    return {"enabled": enabled}
-
-
-@app.get("/api/llm/transcription-models")
-async def list_transcription_models(
-    _user: dict = Depends(require_admin),
-):
-    base_url = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[:-3]
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not setting or not isinstance(setting.value, dict):
+        return {"enabled": False}
+    provider_id_str = setting.value.get("provider_id")
+    model = setting.value.get("model")
+    if not provider_id_str or not model:
+        return {"enabled": False}
+    # Check provider exists
     try:
-        async with httpx.AsyncClient() as http_client:
-            resp = await http_client.get(
-                f"{base_url}/model/info",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        models = []
-        for entry in data.get("data", []):
-            if entry.get("model_info", {}).get("mode") == "audio_transcription":
-                models.append(entry["model_name"])
-        return sorted(models)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
+        pid = uuid.UUID(provider_id_str)
+    except (ValueError, TypeError):
+        return {"enabled": False}
+    prov = await session.execute(select(LlmProvider).where(LlmProvider.id == pid))
+    return {"enabled": prov.scalar_one_or_none() is not None}
+
 
 
 # --- Admin settings endpoints ---

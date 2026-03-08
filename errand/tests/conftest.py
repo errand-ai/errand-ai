@@ -155,6 +155,20 @@ CREATE TABLE IF NOT EXISTS local_users (
 )
 """
 
+_LLM_PROVIDERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    provider_type TEXT DEFAULT 'unknown' NOT NULL,
+    is_default INTEGER DEFAULT 0 NOT NULL,
+    source TEXT DEFAULT 'database' NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
@@ -167,6 +181,7 @@ async def _create_tables(engine):
         await conn.execute(text(_SKILLS_TABLE_SQL))
         await conn.execute(text(_SKILL_FILES_TABLE_SQL))
         await conn.execute(text(_LOCAL_USERS_TABLE_SQL))
+        await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
 
 
 @pytest.fixture()

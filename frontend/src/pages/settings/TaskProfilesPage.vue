@@ -7,8 +7,10 @@ import {
   updateTaskProfile,
   deleteTaskProfile,
   fetchLitellmMcpServers,
-  fetchLlmModels,
+  fetchProviders,
+  fetchProviderModels,
   type TaskProfile,
+  type LlmProviderData,
 } from '../../composables/useApi'
 import { useAuthStore } from '../../stores/auth'
 
@@ -22,6 +24,7 @@ const showForm = ref(false)
 const editingId = ref<string | null>(null)
 
 // Available options for dropdowns and three-state selectors
+const providers = ref<LlmProviderData[]>([])
 const availableModels = ref<string[]>([])
 const defaultModel = ref('')
 const defaultMaxTurns = ref<string>('')
@@ -34,7 +37,8 @@ const availableSkills = ref<{ id: string; name: string }[]>([])
 const formName = ref('')
 const formDescription = ref('')
 const formMatchRules = ref('')
-const formModel = ref('')
+const formModelProviderId = ref('')
+const formModelName = ref('')
 const formSystemPrompt = ref('')
 const formMaxTurns = ref<string>('')
 const formReasoningEffort = ref('')
@@ -57,7 +61,7 @@ const reasoningEffortOptions = ['', 'low', 'medium', 'high']
 const overrideSummary = computed(() => {
   return (profile: TaskProfile) => {
     const overrides: string[] = []
-    if (profile.model) overrides.push('Model')
+    if (profile.model && profile.model.model) overrides.push('Model')
     if (profile.system_prompt) overrides.push('Prompt')
     if (profile.max_turns != null) overrides.push('Max turns')
     if (profile.reasoning_effort) overrides.push('Reasoning')
@@ -112,7 +116,7 @@ async function loadOptions() {
   } catch { /* ignore */ }
 
   try {
-    availableModels.value = await fetchLlmModels()
+    providers.value = await fetchProviders()
   } catch { /* ignore */ }
 
   try {
@@ -141,11 +145,31 @@ async function loadOptions() {
   } catch { /* ignore */ }
 }
 
+async function loadModelsForProvider(providerId: string) {
+  availableModels.value = []
+  if (!providerId) return
+  try {
+    availableModels.value = await fetchProviderModels(providerId)
+  } catch { /* ignore */ }
+}
+
+function onProviderChange() {
+  formModelName.value = ''
+  loadModelsForProvider(formModelProviderId.value)
+}
+
+function selectedProviderType(): string {
+  const p = providers.value.find(p => p.id === formModelProviderId.value)
+  return p?.provider_type || ''
+}
+
 function resetForm() {
   formName.value = ''
   formDescription.value = ''
   formMatchRules.value = ''
-  formModel.value = ''
+  formModelProviderId.value = ''
+  formModelName.value = ''
+  availableModels.value = []
   formSystemPrompt.value = ''
   formMaxTurns.value = ''
   formReasoningEffort.value = ''
@@ -168,7 +192,15 @@ function openEdit(profile: TaskProfile) {
   formName.value = profile.name
   formDescription.value = profile.description || ''
   formMatchRules.value = profile.match_rules || ''
-  formModel.value = profile.model || ''
+  if (profile.model && typeof profile.model === 'object') {
+    formModelProviderId.value = profile.model.provider_id || ''
+    formModelName.value = profile.model.model || ''
+    if (formModelProviderId.value) loadModelsForProvider(formModelProviderId.value)
+  } else {
+    formModelProviderId.value = ''
+    formModelName.value = ''
+    availableModels.value = []
+  }
   formSystemPrompt.value = profile.system_prompt || ''
   formMaxTurns.value = profile.max_turns != null ? String(profile.max_turns) : ''
   formReasoningEffort.value = profile.reasoning_effort || ''
@@ -221,8 +253,11 @@ function buildPayload(): Record<string, unknown> {
   else payload.description = null
   if (formMatchRules.value.trim()) payload.match_rules = formMatchRules.value.trim()
   else payload.match_rules = null
-  if (formModel.value.trim()) payload.model = formModel.value.trim()
-  else payload.model = null
+  if (formModelProviderId.value && formModelName.value.trim()) {
+    payload.model = { provider_id: formModelProviderId.value, model: formModelName.value.trim() }
+  } else {
+    payload.model = null
+  }
   if (formSystemPrompt.value.trim()) payload.system_prompt = formSystemPrompt.value.trim()
   else payload.system_prompt = null
   if (formMaxTurns.value.trim()) payload.max_turns = parseInt(formMaxTurns.value.trim(), 10)
@@ -340,7 +375,7 @@ onMounted(() => {
               <div class="text-sm font-semibold text-gray-800">{{ profile.name }}</div>
               <div v-if="profile.description" class="mt-0.5 text-xs text-gray-500">{{ profile.description }}</div>
               <div class="mt-1 text-xs text-gray-400">
-                <span v-if="profile.model" class="mr-3">Model: {{ profile.model }}</span>
+                <span v-if="profile.model && profile.model.model" class="mr-3">Model: {{ profile.model.model }}</span>
                 <span>{{ overrideSummary(profile) }}</span>
               </div>
             </div>
@@ -422,16 +457,38 @@ onMounted(() => {
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Provider</label>
+              <select
+                v-model="formModelProviderId"
+                @change="onProviderChange"
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                data-testid="profile-provider-select"
+              >
+                <option value="">Use default</option>
+                <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+            </div>
+
+            <div v-if="formModelProviderId">
               <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
               <select
-                v-model="formModel"
+                v-if="selectedProviderType() !== 'unknown'"
+                v-model="formModelName"
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 data-testid="profile-model-input"
               >
-                <option value="">Use default{{ defaultModel ? ` (${defaultModel})` : '' }}</option>
+                <option value="">Select model</option>
                 <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
-                <option v-if="formModel && !availableModels.includes(formModel)" :value="formModel">{{ formModel }}</option>
+                <option v-if="formModelName && !availableModels.includes(formModelName)" :value="formModelName">{{ formModelName }}</option>
               </select>
+              <input
+                v-else
+                v-model="formModelName"
+                type="text"
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="Enter model name"
+                data-testid="profile-model-input"
+              />
             </div>
 
             <div>

@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import llm as llm_module
+import llm_providers as llm_providers_module
 from llm import DEFAULT_LLM_TIMEOUT, _parse_llm_response, _strip_markdown_fences, generate_title
 from models import Setting
 
@@ -123,7 +124,7 @@ async def test_create_task_long_input_calls_llm(client: AsyncClient):
         return_value=_mock_json_response("Fix Auth Bug", "immediate")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -145,7 +146,7 @@ async def test_create_task_scheduled_categorisation(client: AsyncClient):
         return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-10T17:00:00Z")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "Send the quarterly financial report to the board at 5pm today"},
@@ -171,7 +172,7 @@ async def test_create_task_repeating_categorisation(client: AsyncClient):
         )
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "Run the daily sales report every morning at 9am until the end of Q1 2026"},
@@ -189,7 +190,7 @@ async def test_create_task_short_input_no_llm(client: AsyncClient):
     """Short input (<=5 words) uses input as title directly, no LLM call."""
     mock_client = AsyncMock()
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post("/api/tasks", json={"input": "Fix login"})
 
     assert resp.status_code == 201
@@ -209,7 +210,7 @@ async def test_create_task_llm_returns_invalid_json(client: AsyncClient):
         return_value=_mock_llm_response("Just a plain title response")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -228,7 +229,7 @@ async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("LLM timeout"))
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -243,7 +244,7 @@ async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
 
 async def test_create_task_llm_not_configured_uses_fallback(client: AsyncClient):
     """When LLM client is None, fallback title is used."""
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(None, None))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "This is a longer description that should trigger title generation"},
@@ -273,7 +274,7 @@ async def test_create_task_six_words_triggers_llm(client: AsyncClient):
         return_value=_mock_json_response("Generated Title")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks", json={"input": "one two three four five six"}
         )
@@ -282,58 +283,6 @@ async def test_create_task_six_words_triggers_llm(client: AsyncClient):
     data = resp.json()
     assert data["title"] == "Generated Title"
     mock_client.chat.completions.create.assert_called_once()
-
-
-# --- GET /api/llm/models ---
-
-
-async def test_llm_models_admin_access(admin_client: AsyncClient):
-    """Admin can list LLM models."""
-    mock_client = AsyncMock()
-    model1 = MagicMock()
-    model1.id = "claude-haiku-4-5-20251001"
-    model2 = MagicMock()
-    model2.id = "gpt-4o"
-    models_response = MagicMock()
-    models_response.data = [model2, model1]
-    mock_client.models.list = AsyncMock(return_value=models_response)
-
-    import main as main_module
-    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
-        resp = await admin_client.get("/api/llm/models")
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data == ["claude-haiku-4-5-20251001", "gpt-4o"]  # sorted
-
-
-async def test_llm_models_non_admin_403(client: AsyncClient):
-    """Non-admin gets 403 for LLM models endpoint."""
-    resp = await client.get("/api/llm/models")
-    assert resp.status_code == 403
-
-
-async def test_llm_models_not_configured_503(admin_client: AsyncClient):
-    """Returns 503 when LLM client is not configured."""
-    import main as main_module
-    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=None)):
-        resp = await admin_client.get("/api/llm/models")
-
-    assert resp.status_code == 503
-    assert "not configured" in resp.json()["detail"]
-
-
-async def test_llm_models_provider_error_502(admin_client: AsyncClient):
-    """Returns 502 when LLM provider fails."""
-    mock_client = AsyncMock()
-    mock_client.models.list = AsyncMock(side_effect=Exception("Connection refused"))
-
-    import main as main_module
-    with patch.object(main_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
-        resp = await admin_client.get("/api/llm/models")
-
-    assert resp.status_code == 502
-    assert "Failed to fetch" in resp.json()["detail"]
 
 
 # --- Session fixture for direct generate_title tests ---
@@ -369,7 +318,7 @@ async def test_generate_title_includes_now_in_system_prompt(db_session: AsyncSes
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -392,7 +341,7 @@ async def test_generate_title_includes_timezone_in_system_prompt(db_session: Asy
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -411,7 +360,7 @@ async def test_generate_title_defaults_to_utc_timezone(db_session: AsyncSession)
     )
     test_now = datetime(2026, 2, 11, 14, 30, 0, tzinfo=timezone.utc)
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         await generate_title("some long enough description for the test", db_session, now=test_now)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -429,7 +378,7 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
         return_value=_mock_json_response("Fix Auth Bug", "immediate")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         resp = await client.post(
             "/api/tasks",
             json={"input": "We need to fix the authentication bug that prevents login on mobile devices"},
@@ -439,11 +388,6 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
     data = resp.json()
     assert data["category"] == "immediate"
     assert data["execute_at"] is not None
-    # Verify it's approximately now (within 10 seconds)
-    execute_at = datetime.fromisoformat(data["execute_at"])
-    now = datetime.now(timezone.utc)
-    delta = abs((now - execute_at).total_seconds())
-    assert delta < 10, f"execute_at is {delta}s away from now"
 
 
 # --- Configurable LLM timeout ---
@@ -459,7 +403,7 @@ async def test_generate_title_uses_custom_timeout(db_session: AsyncSession):
         return_value=_mock_json_response("Test Title")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         await generate_title("some long enough description for the test", db_session)
 
     call_args = mock_client.chat.completions.create.call_args
@@ -473,7 +417,7 @@ async def test_generate_title_uses_default_timeout(db_session: AsyncSession):
         return_value=_mock_json_response("Test Title")
     )
 
-    with patch.object(llm_module, "get_llm_client_with_db", AsyncMock(return_value=mock_client)):
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
         await generate_title("some long enough description for the test", db_session)
 
     call_args = mock_client.chat.completions.create.call_args

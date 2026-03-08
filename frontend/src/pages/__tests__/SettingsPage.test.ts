@@ -18,15 +18,15 @@ const { toastMock } = vi.hoisted(() => {
 })
 vi.mock('vue-sonner', () => ({ toast: toastMock }))
 
-// Mock the useApi functions used by LlmModelSettings and PlatformSettings
+// Mock the useApi functions used by LlmModelSettings, LlmProviderSettings, and PlatformSettings
 vi.mock('../../composables/useApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../composables/useApi')>()
   return {
     ...actual,
-    fetchLlmModels: vi.fn().mockResolvedValue([]),
+    fetchProviders: vi.fn().mockResolvedValue([]),
+    fetchProviderModels: vi.fn().mockResolvedValue([]),
     saveLlmModel: vi.fn().mockResolvedValue({}),
     saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
-    fetchTranscriptionModels: vi.fn().mockResolvedValue([]),
     saveTranscriptionModel: vi.fn().mockResolvedValue({}),
     saveLlmTimeout: vi.fn().mockResolvedValue({}),
     fetchPlatforms: vi.fn().mockResolvedValue([]),
@@ -36,7 +36,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   }
 })
 
-import { fetchLlmModels, saveLlmModel, saveLlmTimeout, saveTaskProcessingModel, fetchTranscriptionModels, saveTranscriptionModel } from '../../composables/useApi'
+import { fetchProviders, fetchProviderModels, saveLlmModel, saveLlmTimeout, saveTaskProcessingModel, saveTranscriptionModel } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -107,10 +107,10 @@ describe('SettingsPage', () => {
     auth.setToken(adminToken)
     fetchMock = mockSettingsAndSkills()
     vi.stubGlobal('fetch', fetchMock)
-    vi.mocked(fetchLlmModels).mockResolvedValue([])
+    vi.mocked(fetchProviders).mockResolvedValue([])
+    vi.mocked(fetchProviderModels).mockResolvedValue([])
     vi.mocked(saveLlmModel).mockResolvedValue({})
     vi.mocked(saveTaskProcessingModel).mockResolvedValue({})
-    vi.mocked(fetchTranscriptionModels).mockResolvedValue([])
     vi.mocked(saveTranscriptionModel).mockResolvedValue({})
     toastMock.success.mockClear()
     toastMock.error.mockClear()
@@ -752,7 +752,41 @@ describe('SettingsPage', () => {
   // --- Sub-page: Task Management ---
 
   describe('Task Management sub-page', () => {
-    it('renders LLM Models section with both dropdowns', async () => {
+    const testProvider = {
+      id: 'prov-1',
+      name: 'TestProvider',
+      base_url: 'https://api.test.com/v1',
+      api_key: '****',
+      provider_type: 'openai_compatible',
+      is_default: true,
+      source: 'db',
+      created_at: null,
+      updated_at: null,
+    }
+
+    const testProvider2 = {
+      id: 'prov-2',
+      name: 'SecondProvider',
+      base_url: 'https://api.second.com/v1',
+      api_key: '****',
+      provider_type: 'openai_compatible',
+      is_default: false,
+      source: 'db',
+      created_at: null,
+      updated_at: null,
+    }
+
+    function setupProviderMocks(
+      providers = [testProvider],
+      models = ['claude-haiku-4-5-20251001', 'gpt-4o'],
+    ) {
+      vi.mocked(fetchProviders).mockResolvedValue(providers)
+      vi.mocked(fetchProviderModels).mockResolvedValue(models)
+    }
+
+    it('renders LLM Models section with provider and model dropdowns', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       expect(wrapper.text()).toContain('LLM Models')
@@ -760,86 +794,60 @@ describe('SettingsPage', () => {
       expect(wrapper.text()).toContain('Default Model')
     })
 
-    it('loads models from fetchLlmModels and populates dropdown', async () => {
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
+    it('shows provider options in provider dropdowns', async () => {
+      setupProviderMocks([testProvider, testProvider2])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const options = wrapper.findAll('select option')
-      const modelOptions = options.map((o) => o.text())
+      const optionTexts = options.map(o => o.text())
+      expect(optionTexts).toContain('TestProvider')
+      expect(optionTexts).toContain('SecondProvider')
+    })
+
+    it('loads models when a provider is selected and populates model dropdown', async () => {
+      setupProviderMocks([testProvider], ['claude-haiku-4-5-20251001', 'gpt-4o'])
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: 'prov-1', model: 'gpt-4o' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const options = wrapper.findAll('select option')
+      const optionTexts = options.map(o => o.text())
+      expect(optionTexts).toContain('claude-haiku-4-5-20251001')
+      expect(optionTexts).toContain('gpt-4o')
+    })
+
+    it('pre-selects current title generation provider from settings and loads models', async () => {
+      setupProviderMocks([testProvider], ['claude-haiku-4-5-20251001', 'gpt-4o'])
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: 'prov-1', model: 'gpt-4o' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // First select is the provider dropdown for title gen - provider is pre-selected
+      expect((selects[0].element as HTMLSelectElement).value).toBe('prov-1')
+      // Model dropdown has available models loaded for the selected provider
+      const modelOptions = selects[1].findAll('option').map(o => o.text())
       expect(modelOptions).toContain('claude-haiku-4-5-20251001')
       expect(modelOptions).toContain('gpt-4o')
     })
 
-    it('pre-selects current title generation model from settings', async () => {
-      fetchMock = mockSettingsAndSkills({ llm_model: 'gpt-4o' })
-      vi.stubGlobal('fetch', fetchMock)
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
+    it('saves title generation model as {provider_id, model} on Save click', async () => {
+      setupProviderMocks([testProvider], ['claude-haiku-4-5-20251001', 'gpt-4o'])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const selects = wrapper.findAll('select')
-      expect((selects[0].element as HTMLSelectElement).value).toBe('gpt-4o')
-    })
-
-    it('saves title generation model on explicit Save click', async () => {
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const selects = wrapper.findAll('select')
-      await selects[0].setValue('gpt-4o')
-
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
-      const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
-      await saveBtn!.trigger('click')
+      // Select provider for title gen
+      await selects[0].setValue('prov-1')
       await flushPromises()
-
-      expect(saveLlmModel).toHaveBeenCalledWith('gpt-4o')
-      expect(toastMock.success).toHaveBeenCalledWith('Model settings saved.')
-    })
-
-    it('shows error when model list fails to load', async () => {
-      vi.mocked(fetchLlmModels).mockRejectedValue(new Error('Failed'))
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      expect(wrapper.text()).toContain('Failed to load models')
-    })
-
-    it('defaults to claude-haiku when no llm_model in settings', async () => {
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const selects = wrapper.findAll('select')
-      expect((selects[0].element as HTMLSelectElement).value).toBe('claude-haiku-4-5-20251001')
-    })
-
-    // --- Task Processing Model ---
-
-    it('loads task processing model from settings', async () => {
-      fetchMock = mockSettingsAndSkills({ task_processing_model: 'gpt-4o' })
-      vi.stubGlobal('fetch', fetchMock)
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const selects = wrapper.findAll('select')
-      expect((selects[1].element as HTMLSelectElement).value).toBe('gpt-4o')
-    })
-
-    it('defaults task processing model to claude-sonnet when not in settings', async () => {
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const selects = wrapper.findAll('select')
-      expect((selects[1].element as HTMLSelectElement).value).toBe('claude-sonnet-4-5-20250929')
-    })
-
-    it('saves task processing model on Save click', async () => {
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-sonnet-4-5-20250929', 'gpt-4o'])
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const selects = wrapper.findAll('select')
+      // Select model for title gen
       await selects[1].setValue('gpt-4o')
 
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
@@ -847,23 +855,98 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTaskProcessingModel).toHaveBeenCalledWith('gpt-4o')
+      expect(saveLlmModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'gpt-4o' })
+      expect(toastMock.success).toHaveBeenCalledWith('Model settings saved.')
     })
 
-    it('disables both dropdowns when models endpoint fails', async () => {
-      vi.mocked(fetchLlmModels).mockRejectedValue(new Error('Failed'))
+    it('shows no-providers message when no providers configured', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([])
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      expect(wrapper.text()).toContain('No providers configured')
+    })
+
+    it('shows empty provider/model values when no llm_model in settings', async () => {
+      setupProviderMocks([testProvider], ['claude-haiku-4-5-20251001'])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const selects = wrapper.findAll('select')
-      expect((selects[0].element as HTMLSelectElement).disabled).toBe(true)
+      // Provider dropdown for title gen should be empty (no provider pre-selected)
+      expect((selects[0].element as HTMLSelectElement).value).toBe('')
+    })
+
+    // --- Task Processing Model ---
+
+    it('loads task processing provider from settings', async () => {
+      setupProviderMocks([testProvider], ['claude-sonnet-4-5-20250929', 'gpt-4o'])
+      fetchMock = mockSettingsAndSkills({
+        task_processing_model: { provider_id: 'prov-1', model: 'gpt-4o' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // Task processing provider is the 3rd select (index 2)
+      expect((selects[2].element as HTMLSelectElement).value).toBe('prov-1')
+      // Models are loaded for the selected provider
+      const taskModelOptions = selects[3].findAll('option').map(o => o.text())
+      expect(taskModelOptions).toContain('claude-sonnet-4-5-20250929')
+      expect(taskModelOptions).toContain('gpt-4o')
+    })
+
+    it('shows empty task processing model when not in settings', async () => {
+      setupProviderMocks([testProvider])
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // Task processing provider dropdown (index 2) should be empty
+      expect((selects[2].element as HTMLSelectElement).value).toBe('')
+    })
+
+    it('saves task processing model as {provider_id, model} on Save click', async () => {
+      setupProviderMocks([testProvider], ['claude-sonnet-4-5-20250929', 'gpt-4o'])
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // Select provider for task processing
+      await selects[2].setValue('prov-1')
+      await flushPromises()
+      // Select model for task processing
+      await selects[3].setValue('gpt-4o')
+
+      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
+      await saveBtn!.trigger('click')
+      await flushPromises()
+
+      expect(saveTaskProcessingModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'gpt-4o' })
+    })
+
+    it('disables model dropdowns when no provider is selected', async () => {
+      setupProviderMocks([testProvider], [])
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // Model dropdown for title gen (index 1) should be disabled when no provider selected
       expect((selects[1].element as HTMLSelectElement).disabled).toBe(true)
+      // Model dropdown for task processing (index 3) should be disabled when no provider selected
+      expect((selects[3].element as HTMLSelectElement).disabled).toBe(true)
     })
 
     // --- Transcription Model ---
 
-    it('renders Transcription Model dropdown with filtered models', async () => {
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
+    it('renders Transcription Model section with provider and model dropdowns', async () => {
+      setupProviderMocks([testProvider], ['whisper-1', 'whisper-large-v3'])
+      fetchMock = mockSettingsAndSkills({
+        transcription_model: { provider_id: 'prov-1', model: 'whisper-1' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
@@ -877,8 +960,8 @@ describe('SettingsPage', () => {
       expect(optionTexts).toContain('whisper-large-v3')
     })
 
-    it('shows placeholder when no transcription model is selected', async () => {
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
+    it('shows placeholder when no transcription provider is selected', async () => {
+      setupProviderMocks([testProvider], [])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
@@ -887,21 +970,35 @@ describe('SettingsPage', () => {
       expect(transcriptionSelect.text()).toContain('Select a model to enable voice input')
     })
 
-    it('loads current transcription model from settings', async () => {
-      fetchMock = mockSettingsAndSkills({ transcription_model: 'whisper-large-v3' })
+    it('loads current transcription provider from settings and populates models', async () => {
+      setupProviderMocks([testProvider], ['whisper-1', 'whisper-large-v3'])
+      fetchMock = mockSettingsAndSkills({
+        transcription_model: { provider_id: 'prov-1', model: 'whisper-large-v3' },
+      })
       vi.stubGlobal('fetch', fetchMock)
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
+      // Provider is pre-selected for transcription (index 4)
+      const selects = wrapper.findAll('select')
+      expect((selects[4].element as HTMLSelectElement).value).toBe('prov-1')
+
+      // Models are loaded for the selected provider
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
-      expect((transcriptionSelect.element as HTMLSelectElement).value).toBe('whisper-large-v3')
+      const modelOptions = transcriptionSelect.findAll('option').map(o => o.text())
+      expect(modelOptions).toContain('whisper-1')
+      expect(modelOptions).toContain('whisper-large-v3')
     })
 
-    it('saves transcription model on Save click', async () => {
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1', 'whisper-large-v3'])
+    it('saves transcription model as {provider_id, model} on Save click', async () => {
+      setupProviderMocks([testProvider], ['whisper-1', 'whisper-large-v3'])
 
       const { wrapper } = await mountSettings('/settings/tasks')
+
+      const selects = wrapper.findAll('select')
+      // Select provider for transcription (index 4)
+      await selects[4].setValue('prov-1')
+      await flushPromises()
 
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
       await transcriptionSelect.setValue('whisper-1')
@@ -911,18 +1008,13 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTranscriptionModel).toHaveBeenCalledWith('whisper-1')
+      expect(saveTranscriptionModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'whisper-1' })
     })
 
-    it('sends null when empty option is selected for transcription model', async () => {
-      fetchMock = mockSettingsAndSkills({ transcription_model: 'whisper-1' })
-      vi.stubGlobal('fetch', fetchMock)
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue(['whisper-1'])
+    it('sends null when no transcription provider/model selected on Save', async () => {
+      setupProviderMocks([testProvider], [])
 
       const { wrapper } = await mountSettings('/settings/tasks')
-
-      const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
-      await transcriptionSelect.setValue('')
 
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
@@ -932,22 +1024,11 @@ describe('SettingsPage', () => {
       expect(saveTranscriptionModel).toHaveBeenCalledWith(null)
     })
 
-    it('disables transcription dropdown when no models available', async () => {
-      vi.mocked(fetchTranscriptionModels).mockResolvedValue([])
+    it('disables transcription model dropdown when no provider selected', async () => {
+      setupProviderMocks([testProvider], [])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
-      expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
-      expect(transcriptionSelect.text()).toContain('No transcription models available')
-    })
-
-    it('disables transcription dropdown on endpoint failure', async () => {
-      vi.mocked(fetchTranscriptionModels).mockRejectedValue(new Error('Failed'))
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      expect(wrapper.text()).toContain('Failed to load transcription models')
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
       expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
     })
@@ -955,6 +1036,8 @@ describe('SettingsPage', () => {
     // --- LLM Timeout ---
 
     it('renders LLM Timeout input with default value of 30', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
@@ -963,6 +1046,7 @@ describe('SettingsPage', () => {
     })
 
     it('loads LLM timeout from settings', async () => {
+      setupProviderMocks()
       fetchMock = mockSettingsAndSkills({ llm_timeout: 60 })
       vi.stubGlobal('fetch', fetchMock)
 
@@ -973,6 +1057,8 @@ describe('SettingsPage', () => {
     })
 
     it('saves LLM timeout on Save click', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
@@ -987,6 +1073,15 @@ describe('SettingsPage', () => {
     })
 
     it('shows unsaved changes when timeout is modified', async () => {
+      setupProviderMocks([], [])
+      // Use ModelSetting objects so the immediate watcher doesn't create a mismatch
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: null, model: '' },
+        task_processing_model: { provider_id: null, model: '' },
+        transcription_model: { provider_id: null, model: '' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
@@ -1001,6 +1096,8 @@ describe('SettingsPage', () => {
     // --- Task Management Card ---
 
     it('displays Task Management card with timezone, archive, and log level', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       expect(wrapper.text()).toContain('Timezone')
@@ -1009,6 +1106,8 @@ describe('SettingsPage', () => {
     })
 
     it('renders Task Runner log level dropdown with default INFO', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
@@ -1021,6 +1120,7 @@ describe('SettingsPage', () => {
     })
 
     it('loads task runner log level from settings', async () => {
+      setupProviderMocks()
       fetchMock = mockSettingsAndSkills({ task_runner_log_level: 'DEBUG' })
       vi.stubGlobal('fetch', fetchMock)
 
@@ -1031,6 +1131,7 @@ describe('SettingsPage', () => {
     })
 
     it('saves task management settings (timezone, archive days, log level) on Save click', async () => {
+      setupProviderMocks()
       fetchMock = vi.fn().mockImplementation((url: string) => {
         if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
@@ -1059,23 +1160,26 @@ describe('SettingsPage', () => {
     })
 
     it('timezone defaults to UTC when no setting exists', async () => {
+      setupProviderMocks()
+
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const selects = wrapper.findAll('select')
-      // Timezone is the 4th select (after title gen, task processing, transcription)
-      const tzSelect = selects[3]
-      expect((tzSelect.element as HTMLSelectElement).value).toBe('UTC')
+      // Find the timezone select by looking in the Task Management section
+      const taskMgmtSection = wrapper.findAll('.shadow').find(el => el.text().includes('Timezone'))
+      const selects = taskMgmtSection!.findAll('select')
+      expect((selects[0].element as HTMLSelectElement).value).toBe('UTC')
     })
 
     // --- Unsaved changes ---
 
-    it('shows unsaved changes indicator on LLM model modification', async () => {
-      vi.mocked(fetchLlmModels).mockResolvedValue(['claude-haiku-4-5-20251001', 'gpt-4o'])
+    it('shows unsaved changes indicator on provider change', async () => {
+      setupProviderMocks([testProvider, testProvider2], ['model-a', 'model-b'])
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
       const selects = wrapper.findAll('select')
-      await selects[0].setValue('gpt-4o')
+      // Select a provider in the title gen dropdown
+      await selects[0].setValue('prov-1')
       await nextTick()
 
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))

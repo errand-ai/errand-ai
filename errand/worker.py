@@ -27,7 +27,7 @@ import redis as sync_redis
 from sqlalchemy import create_engine as create_sync_engine, text as sa_text
 
 from events import init_valkey, close_valkey, publish_event, VALKEY_URL
-from models import Setting, Skill, Tag, Task, TaskProfile, task_tags
+from models import LlmProvider, Setting, Skill, Tag, Task, TaskProfile, task_tags
 
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat updates
 
@@ -58,6 +58,30 @@ def _update_heartbeat(task_id) -> None:
             conn.commit()
     except Exception:
         logger.warning("Failed to update heartbeat for task %s", task_id, exc_info=True)
+
+
+def _resolve_provider_sync(provider_id_str: str) -> dict | None:
+    """Resolve provider credentials synchronously for use in executor thread.
+
+    Returns {"base_url": ..., "api_key": ...} or None if not found.
+    """
+    try:
+        from llm_providers import decrypt_api_key
+        eng = _get_sync_engine()
+        with eng.connect() as conn:
+            row = conn.execute(
+                sa_text("SELECT base_url, api_key_encrypted FROM llm_providers WHERE id = :id"),
+                {"id": provider_id_str},
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "base_url": row[0],
+                "api_key": decrypt_api_key(row[1]),
+            }
+    except Exception:
+        logger.warning("Failed to resolve provider %s", provider_id_str, exc_info=True)
+        return None
 
 
 class TaskRunnerOutput(BaseModel):
@@ -412,7 +436,13 @@ async def read_settings(session: AsyncSession) -> dict:
         elif setting.key == "credentials":
             settings["credentials"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "task_processing_model":
-            settings["task_processing_model"] = str(setting.value) if setting.value else DEFAULT_TASK_PROCESSING_MODEL
+            # New format: {provider_id, model} dict; legacy: flat string
+            if isinstance(setting.value, dict):
+                settings["task_processing_model"] = setting.value
+            elif setting.value:
+                settings["task_processing_model"] = str(setting.value)
+            else:
+                settings["task_processing_model"] = DEFAULT_TASK_PROCESSING_MODEL
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
@@ -798,9 +828,26 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
             if isinstance(cred, dict) and "key" in cred and "value" in cred:
                 env_vars[cred["key"]] = cred["value"]
 
-        # Add task runner env vars
-        openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
-        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        # Resolve LLM provider credentials for the task processing model
+        openai_base_url = ""
+        openai_api_key = ""
+        _provider_error = None
+        if isinstance(task_processing_model, dict):
+            provider_id_str = task_processing_model.get("provider_id")
+            model_name = task_processing_model.get("model", "")
+            if not provider_id_str or not model_name:
+                _provider_error = "LLM provider not configured"
+            else:
+                provider_creds = _resolve_provider_sync(provider_id_str)
+                if provider_creds is None:
+                    _provider_error = "LLM provider not configured"
+                else:
+                    openai_base_url = provider_creds["base_url"]
+                    openai_api_key = provider_creds["api_key"]
+                    task_processing_model = model_name
+            if _provider_error:
+                logger.error("Task %s: %s", task.id, _provider_error)
+                return (-1, json.dumps({"error": _provider_error}), _provider_error)
         if openai_base_url:
             env_vars["OPENAI_BASE_URL"] = openai_base_url
         if openai_api_key:

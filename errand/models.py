@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Table, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -189,13 +189,46 @@ class TaskProfile(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     match_rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    model: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    model: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     max_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     reasoning_effort: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     litellm_mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     skill_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class LlmProvider(Base):
+    __tablename__ = "llm_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'unknown'")
+    )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'database'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

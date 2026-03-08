@@ -797,7 +797,7 @@ def test_process_task_container_env_vars():
     settings = {
         "mcp_servers": {"mcpServers": {"test": {"url": "http://localhost/mcp"}}},
         "credentials": [],
-        "task_processing_model": "gpt-4o",
+        "task_processing_model": {"provider_id": "fake-provider-id", "model": "gpt-4o"},
         "system_prompt": "Be helpful",
     }
 
@@ -810,7 +810,7 @@ def test_process_task_container_env_vars():
     worker.container_runtime = mock_runtime
 
     try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "http://litellm:4000", "OPENAI_API_KEY": "sk-test"}):
+        with patch.object(worker, "_resolve_provider_sync", return_value={"base_url": "http://litellm:4000", "api_key": "sk-test"}):
             exit_code, stdout, stderr = process_task_in_container(task, settings)
     finally:
         worker.container_runtime = original_runtime
@@ -3219,12 +3219,12 @@ def test_repo_context_instructions_after_skill_manifest():
 
 
 def test_litellm_mcp_injected_when_enabled():
-    """When litellm_mcp_servers has entries and openai_base_url is set, litellm is injected."""
+    """When litellm_mcp_servers has entries and provider resolves, litellm is injected."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": "gpt-4o",
+        "task_processing_model": {"provider_id": "fake-provider-id", "model": "gpt-4o"},
         "system_prompt": "",
         "litellm_mcp_servers": ["argocd", "perplexity"],
     }
@@ -3238,10 +3238,7 @@ def test_litellm_mcp_injected_when_enabled():
     worker.container_runtime = mock_runtime
 
     try:
-        with patch.dict("os.environ", {
-            "OPENAI_BASE_URL": "https://litellm.example.com",
-            "OPENAI_API_KEY": "sk-test",
-        }):
+        with patch.object(worker, "_resolve_provider_sync", return_value={"base_url": "https://litellm.example.com", "api_key": "sk-test"}):
             process_task_in_container(task, settings)
     finally:
         worker.container_runtime = original_runtime
