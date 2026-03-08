@@ -436,13 +436,13 @@ async def read_settings(session: AsyncSession) -> dict:
         elif setting.key == "credentials":
             settings["credentials"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "task_processing_model":
-            # New format: {provider_id, model} dict; legacy: flat string
+            # Normalize to {provider_id, model} dict; convert legacy strings
             if isinstance(setting.value, dict):
                 settings["task_processing_model"] = setting.value
             elif setting.value:
-                settings["task_processing_model"] = str(setting.value)
+                settings["task_processing_model"] = {"provider_id": None, "model": str(setting.value)}
             else:
-                settings["task_processing_model"] = DEFAULT_TASK_PROCESSING_MODEL
+                settings["task_processing_model"] = {"provider_id": None, "model": DEFAULT_TASK_PROCESSING_MODEL}
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
@@ -831,23 +831,30 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
         # Resolve LLM provider credentials for the task processing model
         openai_base_url = ""
         openai_api_key = ""
-        _provider_error = None
+        # Normalize legacy string values to dict format
+        if isinstance(task_processing_model, str):
+            task_processing_model = {"provider_id": None, "model": task_processing_model}
         if isinstance(task_processing_model, dict):
             provider_id_str = task_processing_model.get("provider_id")
             model_name = task_processing_model.get("model", "")
-            if not provider_id_str or not model_name:
-                _provider_error = "LLM provider not configured"
-            else:
+            if provider_id_str:
+                # Explicit provider — resolve its credentials
                 provider_creds = _resolve_provider_sync(provider_id_str)
                 if provider_creds is None:
-                    _provider_error = "LLM provider not configured"
-                else:
-                    openai_base_url = provider_creds["base_url"]
-                    openai_api_key = provider_creds["api_key"]
-                    task_processing_model = model_name
-            if _provider_error:
-                logger.error("Task %s: %s", task.id, _provider_error)
-                return (-1, json.dumps({"error": _provider_error}), _provider_error)
+                    _err = "LLM provider not configured"
+                    logger.error("Task %s: %s", task.id, _err)
+                    return (-1, json.dumps({"error": _err}), _err)
+                openai_base_url = provider_creds["base_url"]
+                openai_api_key = provider_creds["api_key"]
+                task_processing_model = model_name
+            elif model_name:
+                # No provider_id but model specified — use model name directly;
+                # OPENAI_BASE_URL/OPENAI_API_KEY may come from env vars or credentials
+                task_processing_model = model_name
+            else:
+                _err = "LLM provider not configured"
+                logger.error("Task %s: %s", task.id, _err)
+                return (-1, json.dumps({"error": _err}), _err)
         if openai_base_url:
             env_vars["OPENAI_BASE_URL"] = openai_base_url
         if openai_api_key:

@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: LLM provider database model
-The backend SHALL define an `LlmProvider` SQLAlchemy model mapped to the `llm_provider` table with columns: `id` (UUID primary key, server-default), `name` (String, unique, not null), `base_url` (String, not null), `api_key_encrypted` (String, not null — Fernet-encrypted using `CREDENTIAL_ENCRYPTION_KEY`), `provider_type` (String, not null — one of `litellm`, `openai_compatible`, `unknown`), `is_default` (Boolean, not null, default False), `source` (String, not null — one of `env`, `database`), `created_at` (DateTime, server-default utcnow), `updated_at` (DateTime, server-default utcnow, onupdate utcnow). An Alembic migration SHALL create this table.
+The backend SHALL define an `LlmProvider` SQLAlchemy model mapped to the `llm_providers` table with columns: `id` (UUID primary key, server-default), `name` (String, unique, not null), `base_url` (String, not null), `api_key_encrypted` (String, not null — Fernet-encrypted using `CREDENTIAL_ENCRYPTION_KEY`), `provider_type` (String, not null — one of `litellm`, `openai_compatible`, `unknown`), `is_default` (Boolean, not null, default False), `source` (String, not null — one of `env`, `database`), `created_at` (DateTime, server-default utcnow), `updated_at` (DateTime, server-default utcnow, onupdate utcnow). An Alembic migration SHALL create this table.
 
 #### Scenario: Table created by migration
 - **WHEN** the Alembic migration runs
-- **THEN** the `llm_provider` table exists with all specified columns and constraints
+- **THEN** the `llm_providers` table exists with all specified columns and constraints
 
 #### Scenario: Provider name uniqueness enforced
 - **WHEN** a provider with name "openai" already exists and another insert with name "openai" is attempted

@@ -753,7 +753,7 @@ async def test_read_settings_with_credentials(db_session):
 
 
 async def test_read_settings_with_task_processing_model(db_session):
-    """Reads task_processing_model from settings table."""
+    """Reads task_processing_model from settings table (legacy string normalized to dict)."""
     await db_session.execute(
         text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
         {"key": "task_processing_model", "value": json.dumps("gpt-4o")},
@@ -761,7 +761,7 @@ async def test_read_settings_with_task_processing_model(db_session):
     await db_session.commit()
 
     settings = await read_settings(db_session)
-    assert settings["task_processing_model"] == "gpt-4o"
+    assert settings["task_processing_model"] == {"provider_id": None, "model": "gpt-4o"}
 
 
 async def test_read_settings_with_system_prompt(db_session):

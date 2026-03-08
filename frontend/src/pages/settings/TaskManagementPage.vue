@@ -30,13 +30,6 @@ function onProvidersChanged() {
   }
 }
 
-// Sync providers from the provider component after it loads
-function syncProviders() {
-  if (providerRef.value) {
-    providers.value = providerRef.value.providers
-  }
-}
-
 // Helper to ensure model settings are ModelSetting objects
 function toModelSetting(val: any): ModelSetting {
   if (val && typeof val === 'object' && 'provider_id' in val) {
@@ -77,7 +70,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
   <LlmProviderSettings
     ref="providerRef"
     @providers-changed="onProvidersChanged"
-    @vue:mounted="syncProviders"
   />
 
   <LlmModelSettings

@@ -205,8 +205,9 @@ async def generate_title(
 async def transcribe_audio(file, session: AsyncSession) -> str:
     """Transcribe an audio file using the configured transcription model.
 
-    Raises TranscriptionNotConfiguredError if no transcription_model setting exists.
-    Raises LLMClientNotConfiguredError if the LLM client is not available.
+    Raises:
+        TranscriptionNotConfiguredError: If no transcription model is configured
+        or the resolved client/model is unavailable.
     """
     from llm_providers import resolve_model_setting
     client, model = await resolve_model_setting(session, "transcription_model")

@@ -192,15 +192,15 @@ async def scan_env_providers(session: AsyncSession) -> None:
 
         index += 1
 
-    # If env providers were found and index 0 is default, clear default from other providers
+    # If env providers were found, clear default from all non-env providers
+    # so only the index-0 env provider remains default
     if env_provider_names:
         result = await session.execute(
             select(LlmProvider).where(LlmProvider.is_default == True)
         )
         for p in result.scalars().all():
-            if p.name not in env_provider_names or not (p.source == "env"):
-                # Only index 0 env provider should be default
-                pass  # handled by the upsert above
+            if p.source != "env" or p.name not in env_provider_names:
+                p.is_default = False
 
     # Clean up stale env-sourced providers
     result = await session.execute(

@@ -193,7 +193,7 @@ function openEdit(profile: TaskProfile) {
   formDescription.value = profile.description || ''
   formMatchRules.value = profile.match_rules || ''
   if (profile.model && typeof profile.model === 'object') {
-    formModelProviderId.value = profile.model.provider_id || ''
+    formModelProviderId.value = profile.model.provider_id ?? ''
     formModelName.value = profile.model.model || ''
     if (formModelProviderId.value) loadModelsForProvider(formModelProviderId.value)
   } else {
@@ -253,8 +253,8 @@ function buildPayload(): Record<string, unknown> {
   else payload.description = null
   if (formMatchRules.value.trim()) payload.match_rules = formMatchRules.value.trim()
   else payload.match_rules = null
-  if (formModelProviderId.value && formModelName.value.trim()) {
-    payload.model = { provider_id: formModelProviderId.value, model: formModelName.value.trim() }
+  if (formModelName.value.trim()) {
+    payload.model = { provider_id: formModelProviderId.value || null, model: formModelName.value.trim() }
   } else {
     payload.model = null
   }
@@ -469,7 +469,7 @@ onMounted(() => {
               </select>
             </div>
 
-            <div v-if="formModelProviderId">
+            <div v-if="formModelProviderId || formModelName">
               <label class="block text-xs font-medium text-gray-600 mb-1">Model</label>
               <select
                 v-if="selectedProviderType() !== 'unknown'"
