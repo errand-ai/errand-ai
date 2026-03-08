@@ -1,6 +1,5 @@
 """LLM Provider management: CRUD, type probing, client pool, env var scanning."""
 
-import json
 import logging
 import os
 import uuid as uuid_mod
@@ -9,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 from cryptography.fernet import Fernet
 from openai import AsyncOpenAI
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import LlmProvider, Setting
@@ -62,7 +61,7 @@ async def probe_provider_type(base_url: str, api_key: str) -> str:
                 if isinstance(data.get("data"), list):
                     return "litellm"
     except Exception:
-        pass
+        logger.debug("LiteLLM probe failed for %s", stripped_url, exc_info=True)
 
     # 2. Try OpenAI-compatible /models endpoint
     try:
@@ -77,7 +76,7 @@ async def probe_provider_type(base_url: str, api_key: str) -> str:
                 if isinstance(data.get("data"), list):
                     return "openai_compatible"
     except Exception:
-        pass
+        logger.debug("OpenAI-compatible probe failed for %s", base_url, exc_info=True)
 
     return "unknown"
 

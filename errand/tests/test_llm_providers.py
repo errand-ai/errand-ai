@@ -1,7 +1,5 @@
 """Tests for LLM provider management."""
 
-import json
-import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,9 +12,7 @@ from llm_providers import (
     encrypt_api_key,
     decrypt_api_key,
     probe_provider_type,
-    get_client_for_provider,
     evict_client,
-    _clear_model_settings_for_provider,
     resolve_model_setting,
     scan_env_providers,
     _clients,
@@ -172,7 +168,7 @@ async def test_update_provider_re_probes_on_url_change(admin_client: AsyncClient
 
 
 async def test_delete_provider(admin_client: AsyncClient):
-    p1 = await _create_test_provider(admin_client, "default-prov")
+    await _create_test_provider(admin_client, "default-prov")
     p2 = await _create_test_provider(admin_client, "other-prov")
     # Can delete non-default
     resp = await admin_client.delete(f"/api/llm/providers/{p2['id']}")
@@ -222,7 +218,7 @@ async def test_client_pool_eviction():
 
 
 async def test_delete_provider_clears_model_settings(admin_client: AsyncClient):
-    p1 = await _create_test_provider(admin_client, "main-prov")
+    await _create_test_provider(admin_client, "main-prov")
     p2 = await _create_test_provider(admin_client, "secondary")
 
     # Set llm_model to reference secondary provider

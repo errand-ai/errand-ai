@@ -27,7 +27,7 @@ import redis as sync_redis
 from sqlalchemy import create_engine as create_sync_engine, text as sa_text
 
 from events import init_valkey, close_valkey, publish_event, VALKEY_URL
-from models import LlmProvider, Setting, Skill, Tag, Task, TaskProfile, task_tags
+from models import Setting, Skill, Tag, Task, TaskProfile, task_tags
 
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat updates
 

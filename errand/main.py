@@ -37,9 +37,9 @@ from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from llm_providers import (
-    encrypt_api_key, evict_client, mask_api_key, probe_provider_type,
+    encrypt_api_key, evict_client, probe_provider_type,
     provider_to_dict, scan_env_providers, _clear_model_settings_for_provider,
-    get_client_for_provider, get_client_for_provider_sync, resolve_model_setting,
+    get_client_for_provider_sync,
 )
 from local_auth import router as local_auth_router
 from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
