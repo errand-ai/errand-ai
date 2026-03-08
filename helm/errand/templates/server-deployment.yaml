@@ -47,19 +47,21 @@ spec:
             - name: VALKEY_URL
               value: "redis://{{ .Release.Name }}-valkey:6379"
             {{- end }}
-            {{- if .Values.openai.baseUrl }}
-            - name: OPENAI_BASE_URL
-              value: {{ .Values.openai.baseUrl | quote }}
-            {{- end }}
-            {{- if .Values.openai.existingSecret }}
-            - name: OPENAI_API_KEY
+            {{- range $index, $provider := .Values.llmProviders }}
+            - name: LLM_PROVIDER_{{ $index }}_NAME
+              value: {{ $provider.name | quote }}
+            - name: LLM_PROVIDER_{{ $index }}_BASE_URL
+              value: {{ $provider.baseUrl | quote }}
+            {{- if $provider.existingSecret }}
+            - name: LLM_PROVIDER_{{ $index }}_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.openai.existingSecret }}
-                  key: {{ .Values.openai.secretKeyApiKey }}
-            {{- else if .Values.openai.apiKey }}
-            - name: OPENAI_API_KEY
-              value: {{ .Values.openai.apiKey | quote }}
+                  name: {{ $provider.existingSecret }}
+                  key: {{ $provider.secretKeyApiKey }}
+            {{- else }}
+            - name: LLM_PROVIDER_{{ $index }}_API_KEY
+              value: {{ $provider.apiKey | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.credentialEncryption.existingSecret }}
             - name: CREDENTIAL_ENCRYPTION_KEY

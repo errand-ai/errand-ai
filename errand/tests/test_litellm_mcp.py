@@ -17,6 +17,24 @@ def _mock_response(json_data, status_code=200):
     return resp
 
 
+async def _create_litellm_provider(admin_client: AsyncClient, base_url: str = "https://litellm.example.com", api_key: str = "test-key") -> dict:
+    """Create a LiteLLM provider via API for testing."""
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
+        resp = await admin_client.post("/api/llm/providers", json={
+            "name": "litellm-test",
+            "base_url": base_url,
+            "api_key": api_key,
+        })
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.fixture(autouse=True)
+def set_encryption_key(monkeypatch):
+    """Set CREDENTIAL_ENCRYPTION_KEY for provider creation."""
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "_26HOOIDUcxDH7fkoqI39DZulVPVK-hZe5THhiVLxIs=")
+
+
 SAMPLE_SERVERS = [
     {
         "alias": "argocd",
@@ -57,8 +75,8 @@ async def test_non_admin_rejected(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_no_base_url_returns_unavailable(admin_client: AsyncClient):
-    """When openai_base_url is empty, returns available: false."""
+async def test_no_litellm_provider_returns_unavailable(admin_client: AsyncClient):
+    """When no LiteLLM provider exists, returns available: false."""
     resp = await admin_client.get("/api/litellm/mcp-servers")
     assert resp.status_code == 200
     data = resp.json()
@@ -68,11 +86,7 @@ async def test_no_base_url_returns_unavailable(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_litellm_detected_with_servers(admin_client: AsyncClient):
     """When LiteLLM responds with servers and tools, returns merged data."""
-    # Seed openai_base_url setting
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://litellm.example.com", "openai_api_key": "test-key"},
-    )
+    await _create_litellm_provider(admin_client)
 
     server_resp = _mock_response(SAMPLE_SERVERS)
     tools_resp = _mock_response(SAMPLE_TOOLS)
@@ -117,10 +131,7 @@ async def test_litellm_detected_with_servers(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_litellm_not_detected_404(admin_client: AsyncClient):
     """When LiteLLM probe returns 404, returns unavailable."""
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://api.openai.com"},
-    )
+    await _create_litellm_provider(admin_client, base_url="https://api.openai.com")
 
     server_resp = _mock_response({"error": "not found"}, status_code=404)
     tools_resp = _mock_response([], status_code=404)
@@ -145,10 +156,7 @@ async def test_litellm_not_detected_404(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_litellm_timeout(admin_client: AsyncClient):
     """When LiteLLM probe times out, returns unavailable."""
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://litellm.example.com"},
-    )
+    await _create_litellm_provider(admin_client)
 
     async def mock_gather(*coros, return_exceptions=False):
         return [httpx.TimeoutException("timed out"), httpx.TimeoutException("timed out")]
@@ -170,10 +178,7 @@ async def test_litellm_timeout(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_empty_server_list(admin_client: AsyncClient):
     """When LiteLLM has no MCP servers, returns available with empty servers."""
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://litellm.example.com", "openai_api_key": "key"},
-    )
+    await _create_litellm_provider(admin_client)
 
     server_resp = _mock_response([])
     tools_resp = _mock_response([])
@@ -199,13 +204,10 @@ async def test_empty_server_list(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_enabled_servers_from_db(admin_client: AsyncClient):
     """Enabled list reflects stored litellm_mcp_servers setting."""
+    await _create_litellm_provider(admin_client)
     await admin_client.put(
         "/api/settings",
-        json={
-            "openai_base_url": "https://litellm.example.com",
-            "openai_api_key": "key",
-            "litellm_mcp_servers": ["argocd"],
-        },
+        json={"litellm_mcp_servers": ["argocd"]},
     )
 
     server_resp = _mock_response(SAMPLE_SERVERS)
@@ -231,10 +233,7 @@ async def test_enabled_servers_from_db(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_non_json_response_returns_unavailable(admin_client: AsyncClient):
     """When LiteLLM returns non-JSON, returns unavailable."""
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://litellm.example.com"},
-    )
+    await _create_litellm_provider(admin_client)
 
     bad_resp = MagicMock()
     bad_resp.status_code = 200
@@ -260,10 +259,7 @@ async def test_non_json_response_returns_unavailable(admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_non_list_server_response_returns_unavailable(admin_client: AsyncClient):
     """When LiteLLM returns a non-list JSON, returns unavailable."""
-    await admin_client.put(
-        "/api/settings",
-        json={"openai_base_url": "https://litellm.example.com"},
-    )
+    await _create_litellm_provider(admin_client)
 
     bad_resp = _mock_response({"error": "something"})
     tools_resp = _mock_response([])

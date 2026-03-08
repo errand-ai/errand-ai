@@ -28,7 +28,7 @@ export interface TaskProfile {
   name: string
   description: string | null
   match_rules: string | null
-  model: string | null
+  model: ModelSetting | null
   system_prompt: string | null
   max_turns: number | null
   reasoning_effort: string | null
@@ -147,17 +147,87 @@ export async function fetchTags(query: string): Promise<TagData[]> {
   return res.json()
 }
 
-export async function fetchLlmModels(): Promise<string[]> {
-  const res = await authFetch(`${BASE}/llm/models`)
+// --- LLM Provider API ---
+
+export interface LlmProviderData {
+  id: string
+  name: string
+  base_url: string
+  api_key: string  // masked
+  provider_type: string
+  is_default: boolean
+  source: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ModelSetting {
+  provider_id: string | null
+  model: string
+}
+
+export async function fetchProviders(): Promise<LlmProviderData[]> {
+  const res = await authFetch(`${BASE}/llm/providers`)
+  if (!res.ok) throw new Error(`Failed to fetch providers: ${res.status}`)
+  return res.json()
+}
+
+export async function createProvider(data: { name: string; base_url: string; api_key: string }): Promise<LlmProviderData> {
+  const res = await authFetch(`${BASE}/llm/providers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to create provider: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateProvider(id: string, data: { name?: string; base_url?: string; api_key?: string }): Promise<LlmProviderData> {
+  const res = await authFetch(`${BASE}/llm/providers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to update provider: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/llm/providers/${id}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to delete provider: ${res.status}`)
+  }
+}
+
+export async function setDefaultProvider(id: string): Promise<LlmProviderData> {
+  const res = await authFetch(`${BASE}/llm/providers/${id}/default`, { method: 'PUT' })
+  if (!res.ok) throw new Error(`Failed to set default provider: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchProviderModels(id: string, mode?: string): Promise<string[]> {
+  const url = mode
+    ? `${BASE}/llm/providers/${id}/models?mode=${encodeURIComponent(mode)}`
+    : `${BASE}/llm/providers/${id}/models`
+  const res = await authFetch(url)
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`)
   return res.json()
 }
 
-export async function saveLlmModel(model: string): Promise<Record<string, unknown>> {
+// --- LLM Model Settings ---
+
+export async function saveLlmModel(setting: ModelSetting): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ llm_model: model }),
+    body: JSON.stringify({ llm_model: setting }),
   })
   if (!res.ok) throw new Error(`Failed to save model: ${res.status}`)
   return res.json()
@@ -173,11 +243,11 @@ export async function saveLlmTimeout(timeout: number): Promise<Record<string, un
   return res.json()
 }
 
-export async function saveTaskProcessingModel(model: string): Promise<Record<string, unknown>> {
+export async function saveTaskProcessingModel(setting: ModelSetting): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_processing_model: model }),
+    body: JSON.stringify({ task_processing_model: setting }),
   })
   if (!res.ok) throw new Error(`Failed to save task processing model: ${res.status}`)
   return res.json()
@@ -201,17 +271,11 @@ export async function transcribeAudio(blob: Blob): Promise<string> {
   return data.text
 }
 
-export async function fetchTranscriptionModels(): Promise<string[]> {
-  const res = await authFetch(`${BASE}/llm/transcription-models`)
-  if (!res.ok) throw new Error(`Failed to fetch transcription models: ${res.status}`)
-  return res.json()
-}
-
-export async function saveTranscriptionModel(model: string | null): Promise<Record<string, unknown>> {
+export async function saveTranscriptionModel(setting: ModelSetting | null): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transcription_model: model }),
+    body: JSON.stringify({ transcription_model: setting }),
   })
   if (!res.ok) throw new Error(`Failed to save transcription model: ${res.status}`)
   return res.json()

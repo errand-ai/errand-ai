@@ -8,9 +8,9 @@ from models import Setting
 # Registry: key -> {env_var, sensitive, default}
 SETTINGS_REGISTRY = {
     "system_prompt": {"env_var": None, "sensitive": False, "default": ""},
-    "llm_model": {"env_var": None, "sensitive": False, "default": "claude-haiku-4-5-20251001"},
-    "task_processing_model": {"env_var": None, "sensitive": False, "default": "claude-sonnet-4-5-20250929"},
-    "transcription_model": {"env_var": None, "sensitive": False, "default": ""},
+    "llm_model": {"env_var": None, "sensitive": False, "default": {"provider_id": None, "model": ""}},
+    "task_processing_model": {"env_var": None, "sensitive": False, "default": {"provider_id": None, "model": ""}},
+    "transcription_model": {"env_var": None, "sensitive": False, "default": {"provider_id": None, "model": ""}},
     "task_runner_log_level": {"env_var": None, "sensitive": False, "default": "INFO"},
     "timezone": {"env_var": None, "sensitive": False, "default": "UTC"},
     "archive_after_days": {"env_var": None, "sensitive": False, "default": 3},
@@ -19,8 +19,6 @@ SETTINGS_REGISTRY = {
     "ssh_public_key": {"env_var": None, "sensitive": False, "default": None},
     "git_ssh_hosts": {"env_var": None, "sensitive": False, "default": ["github.com", "bitbucket.org"]},
     "skills_git_repo": {"env_var": None, "sensitive": False, "default": None},
-    "openai_base_url": {"env_var": "OPENAI_BASE_URL", "sensitive": False, "default": ""},
-    "openai_api_key": {"env_var": "OPENAI_API_KEY", "sensitive": True, "default": ""},
     "oidc_discovery_url": {"env_var": "OIDC_DISCOVERY_URL", "sensitive": False, "default": ""},
     "oidc_client_id": {"env_var": "OIDC_CLIENT_ID", "sensitive": False, "default": ""},
     "oidc_client_secret": {"env_var": "OIDC_CLIENT_SECRET", "sensitive": True, "default": ""},

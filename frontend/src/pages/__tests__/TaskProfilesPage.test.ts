@@ -10,7 +10,7 @@ const mockProfiles = [
     name: 'email-triage',
     description: 'Handle email tasks',
     match_rules: 'Tasks about email',
-    model: 'claude-haiku-4-5-20251001',
+    model: { provider_id: 'prov1', model: 'claude-haiku-4-5-20251001' },
     system_prompt: null,
     max_turns: null,
     reasoning_effort: 'low',
@@ -56,9 +56,12 @@ function mockFetch(responses: Record<string, any> = {}) {
       return { ok: true, status: 204 }
     }
     if (url === '/api/settings') {
-      return { ok: true, status: 200, json: () => Promise.resolve({ task_processing_model: { value: 'claude-sonnet-4-5-20250929', source: 'default' } }) }
+      return { ok: true, status: 200, json: () => Promise.resolve({ task_processing_model: { value: { provider_id: null, model: 'claude-sonnet-4-5-20250929' }, source: 'default' } }) }
     }
-    if (url === '/api/llm/models') {
+    if (url === '/api/llm/providers') {
+      return { ok: true, status: 200, json: () => Promise.resolve([{ id: 'prov1', name: 'Test Provider', base_url: 'https://api.test.com', api_key: 'sk-****', provider_type: 'openai_compatible', is_default: true, source: 'database', created_at: null, updated_at: null }]) }
+    }
+    if (url?.match(/\/api\/llm\/providers\/[^/]+\/models/)) {
       return { ok: true, status: 200, json: () => Promise.resolve(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929']) }
     }
     if (url === '/api/worker/defaults') {

@@ -20,12 +20,12 @@ async def test_list_profiles_empty(admin_client):
 
 @pytest.mark.asyncio
 async def test_create_profile(admin_client):
-    body = {"name": "email-triage", "model": "claude-haiku-4-5-20251001", "match_rules": "Tasks about email"}
+    body = {"name": "email-triage", "model": {"provider_id": None, "model": "claude-haiku-4-5-20251001"}, "match_rules": "Tasks about email"}
     resp = await admin_client.post("/api/task-profiles", json=body)
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "email-triage"
-    assert data["model"] == "claude-haiku-4-5-20251001"
+    assert data["model"] == {"provider_id": None, "model": "claude-haiku-4-5-20251001"}
     assert data["match_rules"] == "Tasks about email"
     assert data["id"]  # UUID assigned
 
@@ -85,11 +85,11 @@ async def test_get_profile_not_found(admin_client):
 
 @pytest.mark.asyncio
 async def test_update_profile(admin_client):
-    create_resp = await admin_client.post("/api/task-profiles", json={"name": "update-test", "model": "old-model"})
+    create_resp = await admin_client.post("/api/task-profiles", json={"name": "update-test", "model": {"provider_id": None, "model": "old-model"}})
     pid = create_resp.json()["id"]
-    resp = await admin_client.put(f"/api/task-profiles/{pid}", json={"model": "new-model"})
+    resp = await admin_client.put(f"/api/task-profiles/{pid}", json={"model": {"provider_id": None, "model": "new-model"}})
     assert resp.status_code == 200
-    assert resp.json()["model"] == "new-model"
+    assert resp.json()["model"] == {"provider_id": None, "model": "new-model"}
     assert resp.json()["name"] == "update-test"  # unchanged
 
 
@@ -535,7 +535,7 @@ async def test_resolve_profile_with_profile(worker_db_session):
     session = worker_db_session
 
     # Create a profile using ORM (ensures UUID type consistency)
-    profile = TaskProfile(name="custom-profile", model="gpt-4o", system_prompt="You are a helpful assistant.")
+    profile = TaskProfile(name="custom-profile", model={"provider_id": None, "model": "gpt-4o"}, system_prompt="You are a helpful assistant.")
     session.add(profile)
     await session.commit()
     await session.refresh(profile)
@@ -550,7 +550,7 @@ async def test_resolve_profile_with_profile(worker_db_session):
     settings = {"task_processing_model": "claude-haiku", "system_prompt": "default prompt"}
     resolved = await resolve_profile(session, task, settings)
 
-    assert resolved["task_processing_model"] == "gpt-4o"
+    assert resolved["task_processing_model"] == {"provider_id": None, "model": "gpt-4o"}
     assert resolved["system_prompt"] == "You are a helpful assistant."
     # Original settings dict should not be mutated
     assert settings["task_processing_model"] == "claude-haiku"
@@ -606,7 +606,7 @@ async def test_resolve_profile_override_model(worker_db_session):
 
     session = worker_db_session
 
-    profile = TaskProfile(name="model-override", model="gpt-4-turbo")
+    profile = TaskProfile(name="model-override", model={"provider_id": None, "model": "gpt-4-turbo"})
     session.add(profile)
     await session.commit()
     await session.refresh(profile)
@@ -619,7 +619,7 @@ async def test_resolve_profile_override_model(worker_db_session):
 
     settings = {"task_processing_model": "claude-haiku"}
     resolved = await resolve_profile(session, task, settings)
-    assert resolved["task_processing_model"] == "gpt-4-turbo"
+    assert resolved["task_processing_model"] == {"provider_id": None, "model": "gpt-4-turbo"}
 
 
 @pytest.mark.asyncio

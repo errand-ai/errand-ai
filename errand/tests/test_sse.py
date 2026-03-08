@@ -325,8 +325,8 @@ async def test_sse_logs_forwards_and_closes(sse_app):
         assert resp.status_code == 200
         body = resp.text
 
-        # Verify log lines were forwarded
-        assert "event: log" in body
+        # Verify log lines were forwarded (unnamed SSE events for onmessage compatibility)
+        assert "data:" in body
         assert "Building..." in body
         assert "Done." in body
         # Verify end sentinel

@@ -1,10 +1,8 @@
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,56 +20,7 @@ class LLMClientNotConfiguredError(Exception):
     """Raised when the LLM client is not available."""
     pass
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-
 VALID_CATEGORIES = {"immediate", "scheduled", "repeating"}
-
-_client: AsyncOpenAI | None = None
-
-
-def init_llm_client() -> None:
-    global _client
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if base_url and api_key:
-        _client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-        logger.info("LLM client initialized (base_url=%s)", base_url)
-    else:
-        _client = None
-        logger.warning("LLM client not configured: OPENAI_BASE_URL or OPENAI_API_KEY missing")
-
-
-def get_llm_client() -> AsyncOpenAI | None:
-    return _client
-
-
-async def get_llm_client_with_db(session: AsyncSession) -> AsyncOpenAI | None:
-    """Get LLM client, checking env vars first then DB settings."""
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not (base_url and api_key):
-        # Try DB settings
-        for key in ["openai_base_url", "openai_api_key"]:
-            result = await session.execute(select(Setting).where(Setting.key == key))
-            s = result.scalar_one_or_none()
-            if s and s.value:
-                if key == "openai_base_url":
-                    base_url = str(s.value)
-                else:
-                    api_key = str(s.value)
-
-    if base_url and api_key:
-        return AsyncOpenAI(base_url=base_url, api_key=api_key)
-    return None
-
-
-async def _get_model(session: AsyncSession) -> str:
-    result = await session.execute(select(Setting).where(Setting.key == "llm_model"))
-    setting = result.scalar_one_or_none()
-    if setting and setting.value:
-        return str(setting.value)
-    return DEFAULT_MODEL
 
 
 async def _get_timezone(session: AsyncSession) -> str:
@@ -181,11 +130,11 @@ async def generate_title(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    client = await get_llm_client_with_db(session)
-    if client is None:
+    from llm_providers import resolve_model_setting
+    client, model = await resolve_model_setting(session, "llm_model")
+    if client is None or model is None:
         return LLMResult(title=_fallback_title(description), success=False)
 
-    model = await _get_model(session)
     tz = await _get_timezone(session)
     timeout = await _get_llm_timeout(session)
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -256,19 +205,14 @@ async def generate_title(
 async def transcribe_audio(file, session: AsyncSession) -> str:
     """Transcribe an audio file using the configured transcription model.
 
-    Raises TranscriptionNotConfiguredError if no transcription_model setting exists.
-    Raises LLMClientNotConfiguredError if the LLM client is not available.
+    Raises:
+        TranscriptionNotConfiguredError: If no transcription model is configured
+        or the resolved client/model is unavailable.
     """
-    client = await get_llm_client_with_db(session)
-    if client is None:
-        raise LLMClientNotConfiguredError("LLM client is not configured")
-
-    result = await session.execute(select(Setting).where(Setting.key == "transcription_model"))
-    setting = result.scalar_one_or_none()
-    if not setting or not setting.value:
+    from llm_providers import resolve_model_setting
+    client, model = await resolve_model_setting(session, "transcription_model")
+    if client is None or model is None:
         raise TranscriptionNotConfiguredError("No transcription model configured")
-
-    model = str(setting.value)
     content = await file.read()
     filename = getattr(file, "filename", "audio.webm") or "audio.webm"
     content_type = getattr(file, "content_type", "audio/webm") or "audio/webm"

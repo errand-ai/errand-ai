@@ -47,7 +47,7 @@ async def test_resolve_defaults():
     assert result["system_prompt"]["sensitive"] is False
     assert result["system_prompt"]["readonly"] is False
 
-    assert result["llm_model"]["value"] == "claude-haiku-4-5-20251001"
+    assert result["llm_model"]["value"] == {"provider_id": None, "model": ""}
     assert result["llm_model"]["source"] == "default"
 
     await engine.dispose()
@@ -85,17 +85,17 @@ async def test_resolve_env_overrides_db():
     # Insert a DB value
     async with session_factory() as session:
         await session.execute(
-            text("INSERT INTO settings (key, value) VALUES ('openai_base_url', '\"http://db-url\"')")
+            text("INSERT INTO settings (key, value) VALUES ('oidc_discovery_url', '\"http://db-url\"')")
         )
         await session.commit()
 
-    with patch.dict(os.environ, {"OPENAI_BASE_URL": "http://env-url"}):
+    with patch.dict(os.environ, {"OIDC_DISCOVERY_URL": "http://env-url"}):
         async with session_factory() as session:
             result = await resolve_settings(session)
 
-    assert result["openai_base_url"]["value"] == "http://env-url"
-    assert result["openai_base_url"]["source"] == "env"
-    assert result["openai_base_url"]["readonly"] is True
+    assert result["oidc_discovery_url"]["value"] == "http://env-url"
+    assert result["oidc_discovery_url"]["source"] == "env"
+    assert result["oidc_discovery_url"]["readonly"] is True
 
     await engine.dispose()
 
@@ -106,13 +106,13 @@ async def test_sensitive_env_values_masked():
     await _create_tables(engine)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-1234567890abcdef"}):
+    with patch.dict(os.environ, {"OIDC_CLIENT_SECRET": "sk-1234567890abcdef"}):
         async with session_factory() as session:
             result = await resolve_settings(session)
 
-    assert result["openai_api_key"]["value"] == "sk-1****"
-    assert result["openai_api_key"]["sensitive"] is True
-    assert result["openai_api_key"]["readonly"] is True
+    assert result["oidc_client_secret"]["value"] == "sk-1****"
+    assert result["oidc_client_secret"]["sensitive"] is True
+    assert result["oidc_client_secret"]["readonly"] is True
 
     await engine.dispose()
 

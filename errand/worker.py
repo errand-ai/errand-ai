@@ -60,6 +60,30 @@ def _update_heartbeat(task_id) -> None:
         logger.warning("Failed to update heartbeat for task %s", task_id, exc_info=True)
 
 
+def _resolve_provider_sync(provider_id_str: str) -> dict | None:
+    """Resolve provider credentials synchronously for use in executor thread.
+
+    Returns {"base_url": ..., "api_key": ...} or None if not found.
+    """
+    try:
+        from llm_providers import decrypt_api_key
+        eng = _get_sync_engine()
+        with eng.connect() as conn:
+            row = conn.execute(
+                sa_text("SELECT base_url, api_key_encrypted FROM llm_providers WHERE id = :id"),
+                {"id": provider_id_str},
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "base_url": row[0],
+                "api_key": decrypt_api_key(row[1]),
+            }
+    except Exception:
+        logger.warning("Failed to resolve provider %s", provider_id_str, exc_info=True)
+        return None
+
+
 class TaskRunnerOutput(BaseModel):
     status: Literal["completed", "needs_input"]
     result: str
@@ -412,7 +436,13 @@ async def read_settings(session: AsyncSession) -> dict:
         elif setting.key == "credentials":
             settings["credentials"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "task_processing_model":
-            settings["task_processing_model"] = str(setting.value) if setting.value else DEFAULT_TASK_PROCESSING_MODEL
+            # Normalize to {provider_id, model} dict; convert legacy strings
+            if isinstance(setting.value, dict):
+                settings["task_processing_model"] = setting.value
+            elif setting.value:
+                settings["task_processing_model"] = {"provider_id": None, "model": str(setting.value)}
+            else:
+                settings["task_processing_model"] = {"provider_id": None, "model": DEFAULT_TASK_PROCESSING_MODEL}
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
@@ -798,9 +828,33 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
             if isinstance(cred, dict) and "key" in cred and "value" in cred:
                 env_vars[cred["key"]] = cred["value"]
 
-        # Add task runner env vars
-        openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
-        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        # Resolve LLM provider credentials for the task processing model
+        openai_base_url = ""
+        openai_api_key = ""
+        # Normalize legacy string values to dict format
+        if isinstance(task_processing_model, str):
+            task_processing_model = {"provider_id": None, "model": task_processing_model}
+        if isinstance(task_processing_model, dict):
+            provider_id_str = task_processing_model.get("provider_id")
+            model_name = task_processing_model.get("model", "")
+            if provider_id_str:
+                # Explicit provider — resolve its credentials
+                provider_creds = _resolve_provider_sync(provider_id_str)
+                if provider_creds is None:
+                    _err = "LLM provider not configured"
+                    logger.error("Task %s: %s", task.id, _err)
+                    return (-1, json.dumps({"error": _err}), _err)
+                openai_base_url = provider_creds["base_url"]
+                openai_api_key = provider_creds["api_key"]
+                task_processing_model = model_name
+            elif model_name:
+                # No provider_id but model specified — use model name directly;
+                # OPENAI_BASE_URL/OPENAI_API_KEY may come from env vars or credentials
+                task_processing_model = model_name
+            else:
+                _err = "LLM provider not configured"
+                logger.error("Task %s: %s", task.id, _err)
+                return (-1, json.dumps({"error": _err}), _err)
         if openai_base_url:
             env_vars["OPENAI_BASE_URL"] = openai_base_url
         if openai_api_key:
