@@ -1153,21 +1153,26 @@ LITELLM_SENSITIVE_FIELDS = {
 }
 
 
-async def _resolve_openai_settings(session: AsyncSession) -> tuple[str, str]:
-    """Resolve openai_base_url and openai_api_key: env var → DB → default."""
+async def _resolve_litellm_provider(session: AsyncSession) -> tuple[str, str]:
+    """Find the first LiteLLM provider and return (base_url, api_key).
+
+    Searches llm_providers table for a provider with provider_type='litellm'.
+    Falls back to legacy OPENAI_BASE_URL/OPENAI_API_KEY env vars.
+    Returns ('', '') if no LiteLLM provider is found.
+    """
+    from llm_providers import decrypt_api_key
+
+    # Check llm_providers table for a litellm provider
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.provider_type == "litellm").limit(1)
+    )
+    provider = result.scalar_one_or_none()
+    if provider:
+        return provider.base_url, decrypt_api_key(provider.api_key_encrypted)
+
+    # Fallback to legacy env vars
     base_url = os.environ.get("OPENAI_BASE_URL", "")
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    if base_url and api_key:
-        return base_url, api_key
-
-    for key in ["openai_base_url", "openai_api_key"]:
-        result = await session.execute(select(Setting).where(Setting.key == key))
-        s = result.scalar_one_or_none()
-        if s and s.value:
-            if key == "openai_base_url" and not base_url:
-                base_url = str(s.value)
-            elif key == "openai_api_key" and not api_key:
-                api_key = str(s.value)
     return base_url, api_key
 
 
@@ -1178,7 +1183,7 @@ async def get_litellm_mcp_servers(
 ):
     unavailable = {"available": False, "servers": {}, "enabled": []}
 
-    base_url, api_key = await _resolve_openai_settings(session)
+    base_url, api_key = await _resolve_litellm_provider(session)
     if not base_url:
         return unavailable
 
