@@ -211,7 +211,7 @@ async def collect_hourly_metrics(
             "hour": hour,
             "tasks_completed": count,
             "tasks_scheduled": scheduled_count,
-            "pending_count": pending_count,
+            "max_pending": pending_count,
         }
         for hour, count in sorted(hourly.items())
     ]
@@ -287,6 +287,12 @@ class TelemetryReporter:
 
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(TELEMETRY_URL, json=payload)
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "Telemetry POST returned %d: %s",
+                        resp.status_code,
+                        resp.text[:500],
+                    )
                 resp.raise_for_status()
 
             # Success — update last report time

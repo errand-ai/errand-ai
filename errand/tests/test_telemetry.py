@@ -185,7 +185,7 @@ class TestHourlyMetrics:
         async with factory() as session:
             metrics = await collect_hourly_metrics(session, None)
 
-        assert metrics[0]["pending_count"] == 1
+        assert metrics[0]["max_pending"] == 1
         assert metrics[0]["tasks_scheduled"] == 1
 
         await engine.dispose()
