@@ -14,7 +14,6 @@ const loaded = ref(false)
 // Watch for metadata to populate local state
 const meta = computed(() => settingsMetadata.value?.telemetry_enabled)
 const isReadonly = computed(() => meta.value?.readonly === true)
-const source = computed(() => meta.value?.source ?? 'default')
 
 // Initialize from metadata when available
 import { watch } from 'vue'
