@@ -39,21 +39,24 @@ _deployment_type: str | None = None
 
 
 def detect_deployment_type() -> str:
-    """Auto-detect deployment type. Result is cached after first call."""
+    """Auto-detect deployment type. Result is cached after first call.
+
+    Priority:
+    1. Kubernetes secrets path → "kubernetes"
+    2. ERRAND_CONTAINER_RUNTIME env var → use its value directly
+       (e.g. "apple-container", "apple-docker", "windows-docker", "linux-docker")
+    3. Default → "unknown-docker"
+    """
     global _deployment_type
     if _deployment_type is not None:
         return _deployment_type
 
     if Path("/var/run/secrets/kubernetes.io").exists():
         _deployment_type = "kubernetes"
-    elif os.environ.get("APPLE_CONTAINER_RUNTIME"):
-        val = os.environ["APPLE_CONTAINER_RUNTIME"].lower()
-        if val == "apple":
-            _deployment_type = "macos-apple"
-        else:
-            _deployment_type = "macos-docker"
+    elif os.environ.get("ERRAND_CONTAINER_RUNTIME"):
+        _deployment_type = os.environ["ERRAND_CONTAINER_RUNTIME"]
     else:
-        _deployment_type = "docker-other"
+        _deployment_type = "unknown-docker"
 
     return _deployment_type
 

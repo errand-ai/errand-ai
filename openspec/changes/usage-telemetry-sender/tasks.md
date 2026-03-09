@@ -5,8 +5,8 @@
 
 ## 2. Deployment Type Detection
 
-- [x] 2.1 Create `errand/telemetry.py` module with `detect_deployment_type()` function: checks `/var/run/secrets/kubernetes.io`, then `APPLE_CONTAINER_RUNTIME` env var, defaults to `docker-other`
-- [x] 2.2 Update `detect_deployment_type()` to differentiate `macos-apple` (APPLE_CONTAINER_RUNTIME=apple) from `macos-docker` (APPLE_CONTAINER_RUNTIME set to other value)
+- [x] 2.1 Create `errand/telemetry.py` module with `detect_deployment_type()` function: checks `/var/run/secrets/kubernetes.io`, then `ERRAND_CONTAINER_RUNTIME` env var (passthrough value), defaults to `unknown-docker`
+- [x] 2.2 Use `ERRAND_CONTAINER_RUNTIME` value directly as deployment type — supports `apple-container`, `apple-docker`, `windows-docker`, `linux-docker`, etc.
 - [x] 2.3 Add `collect_system_info()` function: returns OS, arch, version (from `VERSION` file), and worker count
 
 ## 3. Move Reporter from Worker to Server

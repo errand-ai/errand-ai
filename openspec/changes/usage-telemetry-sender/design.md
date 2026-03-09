@@ -4,7 +4,7 @@ errand-server is a FastAPI application with a background worker process that exe
 
 A companion change on errand-cloud adds a `POST /api/telemetry/report` endpoint to receive telemetry. This change implements the sender side: collecting metrics, detecting deployment type, and periodically posting reports.
 
-Deployment types: Kubernetes (Helm chart), macOS desktop with Apple containers, macOS desktop with Docker, Docker Compose (default/other).
+Deployment types: Kubernetes (Helm chart), or a value set by the host application via the `ERRAND_CONTAINER_RUNTIME` environment variable (e.g. `apple-container`, `apple-docker`, `linux-docker`). Defaults to `unknown-docker` when neither Kubernetes nor the env var is detected.
 
 ## Goals / Non-Goals
 
@@ -58,13 +58,12 @@ Deployment types: Kubernetes (Helm chart), macOS desktop with Apple containers, 
 
 **Decision**: Auto-detect at startup with this priority:
 1. If `/var/run/secrets/kubernetes.io` exists → `kubernetes`
-2. If `APPLE_CONTAINER_RUNTIME` environment variable is `apple` → `macos-apple`
-3. If `APPLE_CONTAINER_RUNTIME` environment variable is set to any other value → `macos-docker`
-4. Otherwise → `docker-other`
+2. If `ERRAND_CONTAINER_RUNTIME` environment variable is set → use its value directly as the deployment type
+3. Otherwise → `unknown-docker`
 
 Cache the result at startup (deployment type doesn't change at runtime).
 
-**Rationale**: These signals are reliable and non-overlapping. The errand-desktop app sets `APPLE_CONTAINER_RUNTIME` to indicate both that it's running on macOS and which container runtime is in use. Differentiating `macos-apple` from `macos-docker` enables tracking adoption of the Apple container runtime separately.
+**Rationale**: The host application (e.g. errand-desktop) is best placed to know its own deployment context. By passing `ERRAND_CONTAINER_RUNTIME` on the server container, it can declare values like `apple-container`, `apple-docker`, `windows-docker`, or `linux-docker`. The telemetry module uses the value as-is, making it extensible without code changes. The Kubernetes check remains first since it's reliable filesystem-based detection that doesn't require external configuration. Note: the worker container uses a separate `CONTAINER_RUNTIME` env var for its own runtime selection logic — that is unrelated to this telemetry detection.
 
 ### 6. Fire-and-forget POST with retry
 
@@ -77,3 +76,4 @@ Cache the result at startup (deployment type doesn't change at runtime).
 - **Completed task counting gap**: Tasks that transition through `completed` to `archived` between report cycles could be missed if only counting `status='completed'`. Mitigated by counting tasks with `updated_at` in the reporting window that have status `completed` OR `archived` (since archiving means they were completed).
 - **No high-water mark for pending**: Unlike in-memory accumulation, querying at report time only gives a point-in-time pending count, not the peak. Acceptable for aggregate analytics.
 - **Hardcoded URL**: If the telemetry endpoint URL changes, a code update is required. Mitigation: URL changes are rare and would be part of a versioned release.
+- **Deployment type depends on host app**: If errand-server runs standalone without `ERRAND_CONTAINER_RUNTIME` set, it reports `unknown-docker`. This is acceptable — the env var is the contract between the host application and the telemetry system.

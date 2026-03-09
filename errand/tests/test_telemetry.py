@@ -59,32 +59,41 @@ class TestDeploymentTypeDetection:
         assert detect_deployment_type() == "kubernetes"
 
     @patch("telemetry._deployment_type", new=None)
-    @patch.dict(os.environ, {"APPLE_CONTAINER_RUNTIME": "apple"})
+    @patch.dict(os.environ, {"ERRAND_CONTAINER_RUNTIME": "apple-container"})
     @patch("telemetry.Path")
-    def test_macos_apple_deployment(self, mock_path_cls):
+    def test_apple_container_deployment(self, mock_path_cls):
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = False
         mock_path_cls.return_value = mock_path_instance
-        assert detect_deployment_type() == "macos-apple"
+        assert detect_deployment_type() == "apple-container"
 
     @patch("telemetry._deployment_type", new=None)
-    @patch.dict(os.environ, {"APPLE_CONTAINER_RUNTIME": "docker"})
+    @patch.dict(os.environ, {"ERRAND_CONTAINER_RUNTIME": "apple-docker"})
     @patch("telemetry.Path")
-    def test_macos_docker_deployment(self, mock_path_cls):
+    def test_apple_docker_deployment(self, mock_path_cls):
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = False
         mock_path_cls.return_value = mock_path_instance
-        assert detect_deployment_type() == "macos-docker"
+        assert detect_deployment_type() == "apple-docker"
+
+    @patch("telemetry._deployment_type", new=None)
+    @patch.dict(os.environ, {"ERRAND_CONTAINER_RUNTIME": "linux-docker"})
+    @patch("telemetry.Path")
+    def test_custom_runtime_passthrough(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = False
+        mock_path_cls.return_value = mock_path_instance
+        assert detect_deployment_type() == "linux-docker"
 
     @patch("telemetry._deployment_type", new=None)
     @patch.dict(os.environ, {}, clear=True)
     @patch("telemetry.Path")
-    def test_docker_other_deployment(self, mock_path_cls):
+    def test_default_unknown_docker(self, mock_path_cls):
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = False
         mock_path_cls.return_value = mock_path_instance
-        os.environ.pop("APPLE_CONTAINER_RUNTIME", None)
-        assert detect_deployment_type() == "docker-other"
+        os.environ.pop("ERRAND_CONTAINER_RUNTIME", None)
+        assert detect_deployment_type() == "unknown-docker"
 
 
 # --- System info ---
@@ -207,7 +216,7 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch("telemetry._deployment_type", "docker-other"), \
+            with patch("telemetry._deployment_type", "unknown-docker"), \
                  patch("telemetry.get_valkey", return_value=mock_valkey):
                 await reporter._send_report()
 
@@ -216,7 +225,7 @@ class TestTelemetryReporter:
             assert call_args[0][0] == "https://service.errand.cloud/api/telemetry/report"
             payload = call_args[1]["json"]
             assert "installation_id" in payload
-            assert payload["deployment_type"] == "docker-other"
+            assert payload["deployment_type"] == "unknown-docker"
             assert "hourly_buckets" in payload
 
         await engine.dispose()
@@ -238,7 +247,7 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch("telemetry._deployment_type", "docker-other"), \
+            with patch("telemetry._deployment_type", "unknown-docker"), \
                  patch("telemetry.get_valkey", return_value=mock_valkey):
                 await reporter._send_report()
 

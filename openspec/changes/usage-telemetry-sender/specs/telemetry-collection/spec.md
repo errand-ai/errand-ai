@@ -18,17 +18,13 @@ The service SHALL auto-detect the deployment type at startup.
 - **WHEN** the path `/var/run/secrets/kubernetes.io` exists on the filesystem
 - **THEN** the deployment type SHALL be `kubernetes`
 
-#### Scenario: macOS Apple container deployment
-- **WHEN** `/var/run/secrets/kubernetes.io` does not exist and the `APPLE_CONTAINER_RUNTIME` environment variable is set to `apple`
-- **THEN** the deployment type SHALL be `macos-apple`
-
-#### Scenario: macOS Docker deployment
-- **WHEN** `/var/run/secrets/kubernetes.io` does not exist and the `APPLE_CONTAINER_RUNTIME` environment variable is set to a value other than `apple`
-- **THEN** the deployment type SHALL be `macos-docker`
+#### Scenario: Host-declared container runtime
+- **WHEN** `/var/run/secrets/kubernetes.io` does not exist and the `ERRAND_CONTAINER_RUNTIME` environment variable is set
+- **THEN** the deployment type SHALL be the value of `ERRAND_CONTAINER_RUNTIME` (e.g. `apple-container`, `apple-docker`, `windows-docker`, `linux-docker`)
 
 #### Scenario: Default deployment type
-- **WHEN** neither Kubernetes secrets nor `APPLE_CONTAINER_RUNTIME` are detected
-- **THEN** the deployment type SHALL be `docker-other`
+- **WHEN** neither Kubernetes secrets nor `ERRAND_CONTAINER_RUNTIME` are detected
+- **THEN** the deployment type SHALL be `unknown-docker`
 
 ### Requirement: Usage metrics collection
 The service SHALL collect usage metrics from the database at report time, grouped by UTC hour.
