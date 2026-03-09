@@ -173,16 +173,7 @@ async def collect_hourly_metrics(
     """Query completed tasks since `since`, grouped by hour."""
     now = datetime.now(timezone.utc)
 
-    # Count completed (and archived, since archiving implies prior completion) tasks
-    stmt = select(
-        func.count(),
-    ).select_from(Task).where(
-        Task.status.in_(["completed", "archived"]),
-    )
-    if since:
-        stmt = stmt.where(Task.updated_at >= since)
-    # We group by hour using updated_at truncated to the hour
-    # For simplicity, get all matching tasks and group in Python
+    # Get completed/archived tasks and group by hour in Python
     task_stmt = select(Task.updated_at).where(
         Task.status.in_(["completed", "archived"]),
     )
@@ -245,7 +236,7 @@ class TelemetryReporter:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                pass  # Expected during shutdown
             except Exception:
                 logger.warning("Error while stopping telemetry reporter task", exc_info=True)
         await _release_telemetry_lock()
