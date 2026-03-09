@@ -206,7 +206,7 @@ class TestTelemetryReporter:
 
             mock_client.post.assert_called_once()
             call_args = mock_client.post.call_args
-            assert call_args[0][0] == "https://cloud.errand.ai/api/telemetry/report"
+            assert call_args[0][0] == "https://service.errand.cloud/api/telemetry/report"
             payload = call_args[1]["json"]
             assert "installation_id" in payload
             assert payload["deployment_type"] == "docker-other"

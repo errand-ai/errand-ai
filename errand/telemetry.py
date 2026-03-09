@@ -19,7 +19,7 @@ from models import PlatformCredential, Setting
 
 logger = logging.getLogger(__name__)
 
-TELEMETRY_URL = "https://cloud.errand.ai/api/telemetry/report"
+TELEMETRY_URL = "https://service.errand.cloud/api/telemetry/report"
 REPORT_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
 STARTUP_DELAY_SECONDS = 30  # delay before initial report
 JITTER_MAX_SECONDS = 15 * 60  # up to 15 minutes of random jitter per cycle

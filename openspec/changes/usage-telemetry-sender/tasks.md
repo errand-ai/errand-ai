@@ -21,7 +21,7 @@
 
 ## 5. Periodic Telemetry Reporter
 
-- [x] 5.1 Implement `TelemetryReporter` class with async background task that runs every 6 hours: checks `telemetry_enabled` setting, collects system info + active integrations + hourly buckets, POSTs to `https://cloud.errand.ai/api/telemetry/report` via `httpx.AsyncClient`
+- [x] 5.1 Implement `TelemetryReporter` class with async background task that runs every 6 hours: checks `telemetry_enabled` setting, collects system info + active integrations + hourly buckets, POSTs to `https://service.errand.cloud/api/telemetry/report` via `httpx.AsyncClient`
 - [x] 5.2 Handle installation ID: generate UUID4 on first run, persist as `telemetry_installation_id` in settings, reuse on subsequent runs
 - [x] 5.3 Collect active integrations list at report time (query configured/enabled integrations)
 - [x] 5.4 Start the reporter background task in the worker process startup, register shutdown handler to persist pending buckets

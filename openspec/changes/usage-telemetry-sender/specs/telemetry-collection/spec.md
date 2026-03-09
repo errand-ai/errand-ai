@@ -64,7 +64,7 @@ The service SHALL POST telemetry reports to the errand-cloud service at a regula
 
 #### Scenario: Successful report
 - **WHEN** 6 hours have elapsed since the last report (or since startup if no report has been sent)
-- **THEN** the service SHALL POST a JSON payload to `https://cloud.errand.ai/api/telemetry/report` containing: `installation_id`, `version`, `deployment_type`, `os`, `arch`, `worker_count`, `integrations`, and all accumulated `hourly_buckets` since the last successful report
+- **THEN** the service SHALL POST a JSON payload to `https://service.errand.cloud/api/telemetry/report` containing: `installation_id`, `version`, `deployment_type`, `os`, `arch`, `worker_count`, `integrations`, and all accumulated `hourly_buckets` since the last successful report
 - **AND** upon receiving HTTP 200, the service SHALL clear the successfully sent hourly buckets
 
 #### Scenario: Failed report (network error or non-2xx)

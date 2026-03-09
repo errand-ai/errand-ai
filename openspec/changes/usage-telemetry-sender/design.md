@@ -33,7 +33,7 @@ Deployment types: Kubernetes (Helm chart), macOS desktop (errand-desktop app), D
 
 ### 2. Telemetry target URL hardcoded
 
-**Decision**: The errand-cloud telemetry endpoint URL is a constant (`https://cloud.errand.ai/api/telemetry/report`), not a configurable setting.
+**Decision**: The errand-cloud telemetry endpoint URL is a constant (`https://service.errand.cloud/api/telemetry/report`), not a configurable setting.
 
 **Rationale**: There's no use case for pointing telemetry at a different server. Hardcoding avoids exposing an internal implementation detail in the settings UI. The URL can be changed via a code update if needed.
 
