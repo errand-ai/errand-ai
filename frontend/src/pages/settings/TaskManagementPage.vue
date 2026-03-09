@@ -4,6 +4,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import LlmProviderSettings from '../../components/settings/LlmProviderSettings.vue'
 import LlmModelSettings from '../../components/settings/LlmModelSettings.vue'
 import TaskManagementSettings from '../../components/settings/TaskManagementSettings.vue'
+import TelemetrySettings from '../../components/settings/TelemetrySettings.vue'
 import type { LlmProviderData, ModelSetting } from '../../composables/useApi'
 
 const {
@@ -95,4 +96,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @update:archive-after-days="archiveAfterDays = $event"
     @update:task-runner-log-level="taskRunnerLogLevel = $event"
   />
+
+  <TelemetrySettings />
 </template>

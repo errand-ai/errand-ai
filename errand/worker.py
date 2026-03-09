@@ -28,8 +28,13 @@ from sqlalchemy import create_engine as create_sync_engine, text as sa_text
 
 from events import init_valkey, close_valkey, publish_event, VALKEY_URL
 from models import Setting, Skill, Tag, Task, TaskProfile, task_tags
+from telemetry import TelemetryBuckets, TelemetryReporter
 
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat updates
+
+# Telemetry: module-level bucket accumulator and reporter
+telemetry_buckets = TelemetryBuckets()
+telemetry_reporter: TelemetryReporter | None = None
 
 # Lazy sync engine for heartbeat updates from executor thread
 _sync_engine = None
@@ -521,6 +526,14 @@ async def resolve_profile(session: AsyncSession, task: Task, settings: dict) -> 
         resolved["_profile_skill_ids"] = profile.skill_ids
 
     return resolved
+
+
+async def get_pending_count(session: AsyncSession) -> int:
+    """Get the number of tasks with status 'pending'."""
+    result = await session.execute(
+        select(func.count()).select_from(Task).where(Task.status == "pending")
+    )
+    return result.scalar() or 0
 
 
 async def dequeue_task(session: AsyncSession) -> Task | None:
@@ -1282,11 +1295,19 @@ async def run() -> None:
         docker_client = container_runtime.client
         await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
 
+    # Start telemetry reporter
+    global telemetry_reporter
+    telemetry_reporter = TelemetryReporter(telemetry_buckets, async_session)
+    await telemetry_reporter.start()
+
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 
     while not shutdown_requested:
         async with async_session() as session:
             task = await dequeue_task(session)
+            if task is not None:
+                pending_count = await get_pending_count(session)
+                telemetry_buckets.update_max_pending(pending_count)
             if task is None:
                 await session.close()
                 if shutdown_requested:
@@ -1500,7 +1521,15 @@ async def run() -> None:
             logger.exception("Task %s failed", task.id)
             await _schedule_retry(task)
 
+        # Telemetry: record task completion and update pending high-water mark
+        telemetry_buckets.increment_completed()
+        async with async_session() as session:
+            pending_count = await get_pending_count(session)
+            telemetry_buckets.update_max_pending(pending_count)
+
     _cleanup_active_container()
+    if telemetry_reporter:
+        await telemetry_reporter.stop()
     await close_valkey()
     await engine.dispose()
     logger.info("Worker shutting down")
