@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import random
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 TELEMETRY_URL = "https://cloud.errand.ai/api/telemetry/report"
 REPORT_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
+STARTUP_DELAY_SECONDS = 30  # delay before initial report
+JITTER_MAX_SECONDS = 15 * 60  # up to 15 minutes of random jitter per cycle
 
 
 # --- Deployment type detection ---
@@ -238,8 +241,17 @@ class TelemetryReporter:
     async def _run_loop(self) -> None:
         import asyncio
 
+        # Send an initial "alive" report shortly after startup
+        await asyncio.sleep(STARTUP_DELAY_SECONDS)
+        try:
+            await self._send_report()
+        except Exception:
+            logger.warning("Telemetry startup report failed", exc_info=True)
+
+        # Then report every 6 hours with random jitter to spread load
         while True:
-            await asyncio.sleep(REPORT_INTERVAL_SECONDS)
+            jitter = random.randint(0, JITTER_MAX_SECONDS)
+            await asyncio.sleep(REPORT_INTERVAL_SECONDS + jitter)
             try:
                 await self._send_report()
             except Exception:
