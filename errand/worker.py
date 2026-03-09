@@ -1064,16 +1064,17 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
         ssh_config = generate_ssh_config(settings.get("git_ssh_hosts", [])) if ssh_private_key else None
 
         # Generate one-time callback token for result push
-        try:
-            cb_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
-            callback_token = secrets.token_hex(32)
-            cb_redis.set(f"task_result_token:{task.id}", callback_token, ex=1800)
-            cb_redis.close()
-            callback_url = errand_mcp_url.removesuffix("/").removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
-            env_vars["RESULT_CALLBACK_URL"] = callback_url
-            env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
-        except Exception:
-            logger.warning("Failed to store callback token in Valkey, skipping callback env vars", exc_info=True)
+        if errand_mcp_url:
+            try:
+                cb_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
+                callback_token = secrets.token_hex(32)
+                cb_redis.set(f"task_result_token:{task.id}", callback_token, ex=1800)
+                cb_redis.close()
+                callback_url = errand_mcp_url.removesuffix("/").removesuffix("/mcp") + f"/api/internal/task-result/{task.id}"
+                env_vars["RESULT_CALLBACK_URL"] = callback_url
+                env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
+            except Exception:
+                logger.warning("Failed to store callback token in Valkey, skipping callback env vars", exc_info=True)
 
         # Prepare container via runtime
         git_ssh_hosts = settings.get("git_ssh_hosts", []) if ssh_private_key else []
