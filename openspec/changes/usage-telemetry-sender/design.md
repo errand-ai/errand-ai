@@ -4,16 +4,17 @@ errand-server is a FastAPI application with a background worker process that exe
 
 A companion change on errand-cloud adds a `POST /api/telemetry/report` endpoint to receive telemetry. This change implements the sender side: collecting metrics, detecting deployment type, and periodically posting reports.
 
-Deployment types: Kubernetes (Helm chart), macOS desktop (errand-desktop app), Docker Compose (default/other).
+Deployment types: Kubernetes (Helm chart), macOS desktop with Apple containers, macOS desktop with Docker, Docker Compose (default/other).
 
 ## Goals / Non-Goals
 
 **Goals:**
 - Generate and persist a unique installation UUID
-- Collect hourly usage metrics (tasks completed, tasks scheduled, pending queue high-water mark)
-- Detect deployment type automatically
+- Collect usage metrics (tasks completed, tasks scheduled, pending count) at report time
+- Detect deployment type automatically, distinguishing Apple container runtimes from Docker on macOS
 - Post telemetry to errand-cloud every 6 hours
 - Provide an opt-out setting via the settings registry and Settings UI
+- Ensure only one server replica reports telemetry in multi-replica deployments
 
 **Non-Goals:**
 - Collecting any PII or user-identifiable information
@@ -37,37 +38,42 @@ Deployment types: Kubernetes (Helm chart), macOS desktop (errand-desktop app), D
 
 **Rationale**: There's no use case for pointing telemetry at a different server. Hardcoding avoids exposing an internal implementation detail in the settings UI. The URL can be changed via a code update if needed.
 
-### 3. Hourly buckets accumulated in-memory with database persistence
+### 3. Metrics collected from database at report time
 
-**Decision**: Maintain hourly bucket counters in-memory (module-level dict keyed by UTC hour) for fast increment. Persist pending buckets to the database on each telemetry report cycle so they survive restarts. After a successful POST, clear the sent buckets.
+**Decision**: Instead of accumulating in-memory counters, query the database at report time for usage metrics. Tasks completed since the last successful report are counted from the `tasks` table using `updated_at` timestamps, grouped by hour. Scheduled and pending counts are point-in-time snapshots. The timestamp of the last successful report is stored in the settings table (`telemetry_last_report_at`).
 
-**Rationale**: In-memory counters are fast for high-frequency increments (every task completion). Database persistence ensures data survives crashes between report cycles. The volume is small (at most ~6-12 hourly buckets between reports).
+**Rationale**: The server process doesn't directly observe task completions (the worker does). Querying the database eliminates cross-process synchronization. The query is lightweight and runs at most once every 6 hours. No in-memory state to lose on crash.
 
-### 4. Telemetry reporter runs in the worker process
+**Alternative considered**: In-memory hourly buckets accumulated in the worker — required the reporter to run in the worker process, preventing use of the server's established Valkey locking pattern for multi-replica safety.
 
-**Decision**: The periodic telemetry reporter runs as a background asyncio task in the worker process, not in the main web process.
+### 4. Telemetry reporter runs in the server process with Valkey lock
 
-**Rationale**: The worker already has the task execution lifecycle instrumented. Running the reporter in the same process avoids cross-process counter synchronization. If multiple workers are running, each reports independently — the cloud-side upsert (last write wins) handles this correctly since they share the same installation_id.
+**Decision**: The periodic telemetry reporter runs as a background asyncio task in the errand-server process (alongside the scheduler and zombie cleanup). It acquires a Valkey distributed lock (`errand:telemetry-lock`) before each report cycle, following the same pattern as the scheduler.
+
+**Rationale**: The server may be deployed with multiple replicas. Using the same Valkey lock pattern as the scheduler ensures only one replica reports per cycle. The worker process may also have multiple replicas and lacks this locking infrastructure. Since metrics come from the shared database, any server replica can collect and report them.
+
+**Alternative considered**: Running in the worker process — workers can scale to multiple replicas and don't have the Valkey locking pattern, leading to duplicate reports.
 
 ### 5. Deployment type detection logic
 
 **Decision**: Auto-detect at startup with this priority:
 1. If `/var/run/secrets/kubernetes.io` exists → `kubernetes`
-2. If `APPLE_CONTAINER_RUNTIME` environment variable is set → `macos-desktop`
-3. Otherwise → `docker-other`
+2. If `APPLE_CONTAINER_RUNTIME` environment variable is `apple` → `macos-apple`
+3. If `APPLE_CONTAINER_RUNTIME` environment variable is set to any other value → `macos-docker`
+4. Otherwise → `docker-other`
 
 Cache the result at startup (deployment type doesn't change at runtime).
 
-**Rationale**: These signals are reliable and non-overlapping. The errand-desktop app already sets `APPLE_CONTAINER_RUNTIME` to tell the worker whether to use Apple containers or Docker. No new env vars needed.
+**Rationale**: These signals are reliable and non-overlapping. The errand-desktop app sets `APPLE_CONTAINER_RUNTIME` to indicate both that it's running on macOS and which container runtime is in use. Differentiating `macos-apple` from `macos-docker` enables tracking adoption of the Apple container runtime separately.
 
 ### 6. Fire-and-forget POST with retry
 
-**Decision**: Use `httpx.AsyncClient` to POST telemetry. On failure (network error, non-2xx), log a warning and retain the buckets for the next cycle. No exponential backoff — simply retry on the next 6-hour cycle.
+**Decision**: Use `httpx.AsyncClient` to POST telemetry. On failure (network error, non-2xx), log a warning. The next cycle will naturally pick up any completions since the last successful report (tracked via `telemetry_last_report_at`).
 
-**Rationale**: Telemetry is best-effort. Data loss from occasional failures is acceptable. Retrying on the next cycle is simple and handles transient outages. The buckets remain in memory/database until successfully sent.
+**Rationale**: Telemetry is best-effort. Data loss from occasional failures is acceptable. Retrying on the next cycle is simple and handles transient outages.
 
 ## Risks / Trade-offs
 
-- **Multi-worker deployments**: If multiple worker replicas run, they share the same installation_id but accumulate independent counters. The last report to arrive at the cloud endpoint wins for each hourly bucket. Mitigation: acceptable for aggregate analytics — the values should be similar across workers since they share the same task queue.
-- **In-memory counter loss on crash**: If the worker crashes between database persistence cycles, in-progress hourly bucket data is lost. Mitigation: data loss is bounded to at most one reporting cycle (6 hours). For analytics purposes, this is acceptable.
+- **Completed task counting gap**: Tasks that transition through `completed` to `archived` between report cycles could be missed if only counting `status='completed'`. Mitigated by counting tasks with `updated_at` in the reporting window that have status `completed` OR `archived` (since archiving means they were completed).
+- **No high-water mark for pending**: Unlike in-memory accumulation, querying at report time only gives a point-in-time pending count, not the peak. Acceptable for aggregate analytics.
 - **Hardcoded URL**: If the telemetry endpoint URL changes, a code update is required. Mitigation: URL changes are rare and would be part of a versioned release.

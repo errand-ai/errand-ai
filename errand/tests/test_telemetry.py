@@ -1,6 +1,8 @@
 """Tests for the telemetry module."""
 
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -10,14 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from tests.conftest import _create_tables
 from telemetry import (
-    TelemetryBuckets,
     TelemetryReporter,
     collect_active_integrations,
+    collect_hourly_metrics,
     collect_system_info,
     detect_deployment_type,
     get_or_create_installation_id,
-    load_buckets_from_db,
-    save_buckets_to_db,
 )
 
 
@@ -31,7 +31,22 @@ async def _make_session_factory():
     return engine, factory
 
 
-# --- 6.1 Deployment type detection ---
+async def _insert_completed_task(factory, updated_at: datetime):
+    """Insert a task with 'completed' status and a specific updated_at."""
+    async with factory() as session:
+        task_id = str(uuid.uuid4())
+        await session.execute(
+            text(
+                "INSERT INTO tasks (id, title, status, created_at, updated_at, position) "
+                "VALUES (:id, 'test', 'completed', :now, :updated, 0)"
+            ),
+            {"id": task_id, "now": datetime.now(timezone.utc), "updated": updated_at},
+        )
+        await session.commit()
+    return task_id
+
+
+# --- Deployment type detection ---
 
 
 class TestDeploymentTypeDetection:
@@ -46,11 +61,20 @@ class TestDeploymentTypeDetection:
     @patch("telemetry._deployment_type", new=None)
     @patch.dict(os.environ, {"APPLE_CONTAINER_RUNTIME": "apple"})
     @patch("telemetry.Path")
-    def test_macos_desktop_deployment(self, mock_path_cls):
+    def test_macos_apple_deployment(self, mock_path_cls):
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = False
         mock_path_cls.return_value = mock_path_instance
-        assert detect_deployment_type() == "macos-desktop"
+        assert detect_deployment_type() == "macos-apple"
+
+    @patch("telemetry._deployment_type", new=None)
+    @patch.dict(os.environ, {"APPLE_CONTAINER_RUNTIME": "docker"})
+    @patch("telemetry.Path")
+    def test_macos_docker_deployment(self, mock_path_cls):
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = False
+        mock_path_cls.return_value = mock_path_instance
+        assert detect_deployment_type() == "macos-docker"
 
     @patch("telemetry._deployment_type", new=None)
     @patch.dict(os.environ, {}, clear=True)
@@ -63,7 +87,7 @@ class TestDeploymentTypeDetection:
         assert detect_deployment_type() == "docker-other"
 
 
-# --- 6.1 System info ---
+# --- System info ---
 
 
 def test_collect_system_info():
@@ -74,125 +98,107 @@ def test_collect_system_info():
     assert info["worker_count"] == 3
 
 
-# --- 6.2 Hourly bucket accumulator ---
+# --- Hourly metrics from database ---
 
 
-class TestTelemetryBuckets:
-    def test_increment_completed(self):
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        buckets.increment_completed()
-        result = buckets.get_and_clear()
-        assert len(result) == 1
-        assert result[0]["tasks_completed"] == 2
-
-    def test_update_max_pending(self):
-        buckets = TelemetryBuckets()
-        buckets.update_max_pending(5)
-        buckets.update_max_pending(3)  # Should not decrease
-        buckets.update_max_pending(8)
-        result = buckets.get_and_clear()
-        assert result[0]["max_pending"] == 8
-
-    def test_set_tasks_scheduled(self):
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        buckets.set_tasks_scheduled(42)
-        result = buckets.get_and_clear()
-        assert result[0]["tasks_scheduled"] == 42
-
-    def test_get_and_clear_empties_buckets(self):
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        assert not buckets.is_empty()
-        buckets.get_and_clear()
-        assert buckets.is_empty()
-
-    def test_json_roundtrip(self):
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        buckets.update_max_pending(10)
-        json_data = buckets.to_json()
-
-        buckets2 = TelemetryBuckets()
-        buckets2.load_from_json(json_data)
-        result = buckets2.get_and_clear()
-        assert len(result) == 1
-        assert result[0]["tasks_completed"] == 1
-        assert result[0]["max_pending"] == 10
-
-    def test_disabled_skips_increment(self):
-        buckets = TelemetryBuckets()
-        buckets.enabled = False
-        buckets.increment_completed()
-        buckets.update_max_pending(10)
-        assert buckets.is_empty()
-
-    def test_re_enabled_resumes_accumulation(self):
-        buckets = TelemetryBuckets()
-        buckets.enabled = False
-        buckets.increment_completed()
-        assert buckets.is_empty()
-        buckets.enabled = True
-        buckets.increment_completed()
-        result = buckets.get_and_clear()
-        assert len(result) == 1
-        assert result[0]["tasks_completed"] == 1
-
-    def test_hour_boundary_rollover(self):
-        buckets = TelemetryBuckets()
-        # Manually add data for two different hours
-        buckets._ensure_bucket("2026-03-09T10:00:00Z")
-        buckets._buckets["2026-03-09T10:00:00Z"]["tasks_completed"] = 5
-        buckets._ensure_bucket("2026-03-09T11:00:00Z")
-        buckets._buckets["2026-03-09T11:00:00Z"]["tasks_completed"] = 3
-        result = buckets.get_and_clear()
-        assert len(result) == 2
-        assert result[0]["hour"] == "2026-03-09T10:00:00Z"
-        assert result[0]["tasks_completed"] == 5
-        assert result[1]["hour"] == "2026-03-09T11:00:00Z"
-        assert result[1]["tasks_completed"] == 3
-
+class TestHourlyMetrics:
     @pytest.mark.asyncio
-    async def test_persistence_roundtrip(self):
+    async def test_completed_tasks_grouped_by_hour(self):
         engine, factory = await _make_session_factory()
 
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        buckets.increment_completed()
-        buckets.update_max_pending(7)
+        now = datetime.now(timezone.utc)
+        hour_ago = now - timedelta(hours=1)
+        await _insert_completed_task(factory, now)
+        await _insert_completed_task(factory, now)
+        await _insert_completed_task(factory, hour_ago)
 
         async with factory() as session:
-            await save_buckets_to_db(session, buckets)
+            metrics = await collect_hourly_metrics(session, now - timedelta(hours=2))
 
-        # Load into new buckets instance
-        buckets2 = TelemetryBuckets()
+        assert len(metrics) == 2
+        total_completed = sum(m["tasks_completed"] for m in metrics)
+        assert total_completed == 3
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_no_tasks_returns_current_hour_zero(self):
+        engine, factory = await _make_session_factory()
+
         async with factory() as session:
-            await load_buckets_from_db(session, buckets2)
+            metrics = await collect_hourly_metrics(session, None)
 
-        result = buckets2.get_and_clear()
-        assert len(result) == 1
-        assert result[0]["tasks_completed"] == 2
-        assert result[0]["max_pending"] == 7
+        assert len(metrics) == 1
+        assert metrics[0]["tasks_completed"] == 0
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_since_filter_excludes_older_tasks(self):
+        engine, factory = await _make_session_factory()
+
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(hours=10)
+        recent = now - timedelta(minutes=30)
+        await _insert_completed_task(factory, old)
+        await _insert_completed_task(factory, recent)
+
+        since = now - timedelta(hours=1)
+        async with factory() as session:
+            metrics = await collect_hourly_metrics(session, since)
+
+        total = sum(m["tasks_completed"] for m in metrics)
+        assert total == 1
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_includes_pending_and_scheduled_counts(self):
+        engine, factory = await _make_session_factory()
+
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO tasks (id, title, status, created_at, updated_at, position) "
+                    "VALUES (:id, 'p1', 'pending', :now, :now, 0)"
+                ),
+                {"id": str(uuid.uuid4()), "now": datetime.now(timezone.utc)},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO tasks (id, title, status, created_at, updated_at, position) "
+                    "VALUES (:id, 's1', 'scheduled', :now, :now, 0)"
+                ),
+                {"id": str(uuid.uuid4()), "now": datetime.now(timezone.utc)},
+            )
+            await session.commit()
+
+        async with factory() as session:
+            metrics = await collect_hourly_metrics(session, None)
+
+        assert metrics[0]["pending_count"] == 1
+        assert metrics[0]["tasks_scheduled"] == 1
 
         await engine.dispose()
 
 
-# --- 6.3 Telemetry reporter ---
+# --- Telemetry reporter ---
 
 
 class TestTelemetryReporter:
     @pytest.mark.asyncio
     async def test_successful_post(self):
         engine, factory = await _make_session_factory()
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
 
-        reporter = TelemetryReporter(buckets, factory)
+        reporter = TelemetryReporter(factory)
 
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
+
+        mock_valkey = AsyncMock()
+        mock_valkey.set = AsyncMock(return_value=True)
+        mock_valkey.delete = AsyncMock()
 
         with patch("telemetry.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -201,7 +207,8 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch("telemetry._deployment_type", "docker-other"):
+            with patch("telemetry._deployment_type", "docker-other"), \
+                 patch("telemetry.get_valkey", return_value=mock_valkey):
                 await reporter._send_report()
 
             mock_client.post.assert_called_once()
@@ -210,21 +217,19 @@ class TestTelemetryReporter:
             payload = call_args[1]["json"]
             assert "installation_id" in payload
             assert payload["deployment_type"] == "docker-other"
-            assert len(payload["hourly_buckets"]) == 1
-
-        # Buckets should be cleared after success
-        assert buckets.is_empty()
+            assert "hourly_buckets" in payload
 
         await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_failed_post_retains_buckets(self):
+    async def test_failed_post_does_not_update_last_report(self):
         engine, factory = await _make_session_factory()
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
-        buckets.increment_completed()
 
-        reporter = TelemetryReporter(buckets, factory)
+        reporter = TelemetryReporter(factory)
+
+        mock_valkey = AsyncMock()
+        mock_valkey.set = AsyncMock(return_value=True)
+        mock_valkey.delete = AsyncMock()
 
         with patch("telemetry.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -233,62 +238,56 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch("telemetry._deployment_type", "docker-other"):
+            with patch("telemetry._deployment_type", "docker-other"), \
+                 patch("telemetry.get_valkey", return_value=mock_valkey):
                 await reporter._send_report()
 
-        # Buckets should be retained
-        assert not buckets.is_empty()
-        result = buckets.get_and_clear()
-        assert result[0]["tasks_completed"] == 2
+        # last_report_at should not be set
+        async with factory() as session:
+            from sqlalchemy import select
+            from models import Setting
+            result = await session.execute(
+                select(Setting).where(Setting.key == "telemetry_last_report_at")
+            )
+            assert result.scalar_one_or_none() is None
 
         await engine.dispose()
 
     @pytest.mark.asyncio
     async def test_telemetry_disabled_no_post(self):
         engine, factory = await _make_session_factory()
-        buckets = TelemetryBuckets()
-        buckets.increment_completed()
 
-        reporter = TelemetryReporter(buckets, factory)
+        reporter = TelemetryReporter(factory)
 
-        # Disable via env var
         with patch.dict(os.environ, {"TELEMETRY_ENABLED": "false"}):
             with patch("telemetry.httpx.AsyncClient") as mock_client_cls:
-                await reporter._send_report()
-                mock_client_cls.assert_not_called()
-
-        # Buckets should remain (not cleared, not sent)
-        assert not buckets.is_empty()
-        # The enabled flag should have been synced to False
-        assert buckets.enabled is False
+                with patch("telemetry.get_valkey") as mock_get_valkey:
+                    await reporter._send_report()
+                    mock_client_cls.assert_not_called()
+                    # Should not even try to acquire lock
+                    mock_get_valkey.assert_not_called()
 
         await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_disabled_reporter_stops_accumulation(self):
-        """When telemetry is disabled via env var, the reporter syncs the enabled flag
-        so subsequent calls to increment_completed/update_max_pending are no-ops."""
+    async def test_lock_not_acquired_skips_report(self):
         engine, factory = await _make_session_factory()
-        buckets = TelemetryBuckets()
 
-        reporter = TelemetryReporter(buckets, factory)
+        reporter = TelemetryReporter(factory)
 
-        # Disable via env var and run a report cycle
-        with patch.dict(os.environ, {"TELEMETRY_ENABLED": "false"}):
-            await reporter._send_report()
+        mock_valkey = AsyncMock()
+        mock_valkey.set = AsyncMock(return_value=False)
+        mock_valkey.get = AsyncMock(return_value="other-host")
 
-        # The flag should be synced
-        assert buckets.enabled is False
-
-        # Accumulation calls should be no-ops
-        buckets.increment_completed()
-        buckets.update_max_pending(100)
-        assert buckets.is_empty()
+        with patch("telemetry.get_valkey", return_value=mock_valkey):
+            with patch("telemetry.httpx.AsyncClient") as mock_client_cls:
+                await reporter._send_report()
+                mock_client_cls.assert_not_called()
 
         await engine.dispose()
 
 
-# --- 6.4 Installation ID ---
+# --- Installation ID ---
 
 
 class TestInstallationId:
@@ -319,7 +318,7 @@ class TestInstallationId:
         await engine.dispose()
 
 
-# --- 6.5 Settings registry ---
+# --- Settings registry ---
 
 
 def test_telemetry_enabled_in_registry():

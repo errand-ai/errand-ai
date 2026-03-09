@@ -54,6 +54,7 @@ from cloud_auth import exchange_code
 from integration_routes import router as integration_router
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
+from telemetry import TelemetryReporter
 from version_checker import run_version_checker, get_version_info
 from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
 
@@ -200,6 +201,8 @@ async def lifespan(app: FastAPI):
     )
     version_checker_task = asyncio.create_task(run_version_checker())
     email_poller_task = asyncio.create_task(run_email_poller())
+    telemetry_reporter = TelemetryReporter(async_session)
+    await telemetry_reporter.start()
 
     # Start cloud WebSocket client and register endpoints if credentials exist
     async with async_session() as session:
@@ -228,6 +231,7 @@ async def lifespan(app: FastAPI):
     slack_updater_task.cancel()
     version_checker_task.cancel()
     email_poller_task.cancel()
+    await telemetry_reporter.stop()
 
     # Stop cloud client
     from cloud_client import stop_cloud_client

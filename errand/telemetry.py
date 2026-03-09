@@ -1,21 +1,27 @@
-"""Usage telemetry: collect anonymous metrics and report to errand-cloud."""
+"""Usage telemetry: collect anonymous metrics and report to errand-cloud.
+
+The reporter runs in the errand-server process (not the worker) and uses a
+Valkey distributed lock so only one replica reports per cycle — the same
+pattern as the scheduler and zombie cleanup.
+"""
 
 import asyncio
-import json
 import logging
 import os
 import platform
 import random
+import socket
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import PlatformCredential, Setting
+from events import get_valkey
+from models import PlatformCredential, Setting, Task
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +29,8 @@ TELEMETRY_URL = "https://service.errand.cloud/api/telemetry/report"
 REPORT_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
 STARTUP_DELAY_SECONDS = 30  # delay before initial report
 JITTER_MAX_SECONDS = 15 * 60  # up to 15 minutes of random jitter per cycle
+LOCK_KEY = "errand:telemetry-lock"
+LOCK_TTL = 60
 
 
 # --- Deployment type detection ---
@@ -39,7 +47,11 @@ def detect_deployment_type() -> str:
     if Path("/var/run/secrets/kubernetes.io").exists():
         _deployment_type = "kubernetes"
     elif os.environ.get("APPLE_CONTAINER_RUNTIME"):
-        _deployment_type = "macos-desktop"
+        val = os.environ["APPLE_CONTAINER_RUNTIME"].lower()
+        if val == "apple":
+            _deployment_type = "macos-apple"
+        else:
+            _deployment_type = "macos-docker"
     else:
         _deployment_type = "docker-other"
 
@@ -64,113 +76,32 @@ def collect_system_info(worker_count: int = 1) -> dict[str, Any]:
     }
 
 
-# --- Hourly bucket accumulator ---
+# --- Valkey distributed lock ---
 
 
-class TelemetryBuckets:
-    """In-memory hourly bucket accumulator for usage metrics."""
-
-    def __init__(self) -> None:
-        self._buckets: dict[str, dict[str, int]] = {}
-        self.enabled: bool = True
-
-    def _current_hour(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:00:00Z")
-
-    def _ensure_bucket(self, hour: str) -> dict[str, int]:
-        if hour not in self._buckets:
-            self._buckets[hour] = {
-                "tasks_completed": 0,
-                "tasks_scheduled": 0,
-                "max_pending": 0,
-            }
-        return self._buckets[hour]
-
-    def increment_completed(self) -> None:
-        if not self.enabled:
-            return
-        bucket = self._ensure_bucket(self._current_hour())
-        bucket["tasks_completed"] += 1
-
-    def update_max_pending(self, current_size: int) -> None:
-        if not self.enabled:
-            return
-        bucket = self._ensure_bucket(self._current_hour())
-        if current_size > bucket["max_pending"]:
-            bucket["max_pending"] = current_size
-
-    def set_tasks_scheduled(self, count: int) -> None:
-        """Set the scheduled count on all pending buckets at report time."""
-        for bucket in self._buckets.values():
-            bucket["tasks_scheduled"] = count
-
-    def get_and_clear(self) -> list[dict[str, Any]]:
-        """Return all buckets as a list and clear them."""
-        result = [
-            {"hour": hour, **data}
-            for hour, data in sorted(self._buckets.items())
-        ]
-        self._buckets.clear()
-        return result
-
-    def is_empty(self) -> bool:
-        return len(self._buckets) == 0
-
-    def to_json(self) -> str:
-        return json.dumps(self._buckets)
-
-    def load_from_json(self, data: str) -> None:
-        """Load buckets from JSON, merging with any existing data."""
-        loaded = json.loads(data)
-        for hour, values in loaded.items():
-            if hour in self._buckets:
-                existing = self._buckets[hour]
-                existing["tasks_completed"] += values.get("tasks_completed", 0)
-                existing["max_pending"] = max(
-                    existing["max_pending"], values.get("max_pending", 0)
-                )
-            else:
-                self._buckets[hour] = values
+async def _acquire_telemetry_lock() -> bool:
+    valkey = get_valkey()
+    if valkey is None:
+        return False
+    lock_value = f"telemetry-{socket.gethostname()}"
+    result = await valkey.set(LOCK_KEY, lock_value, nx=True, ex=LOCK_TTL)
+    if result:
+        return True
+    current = await valkey.get(LOCK_KEY)
+    if current == lock_value:
+        await valkey.expire(LOCK_KEY, LOCK_TTL)
+        return True
+    return False
 
 
-# --- Database persistence ---
-
-
-async def save_buckets_to_db(session: AsyncSession, buckets: TelemetryBuckets) -> None:
-    """Persist unsent buckets to the settings table."""
-    result = await session.execute(
-        select(Setting).where(Setting.key == "telemetry_pending_buckets")
-    )
-    setting = result.scalar_one_or_none()
-    data = buckets.to_json()
-
-    if setting:
-        setting.value = data
-    else:
-        session.add(Setting(key="telemetry_pending_buckets", value=data))
-    await session.commit()
-
-
-async def load_buckets_from_db(session: AsyncSession, buckets: TelemetryBuckets) -> None:
-    """Load persisted buckets from the settings table."""
-    result = await session.execute(
-        select(Setting).where(Setting.key == "telemetry_pending_buckets")
-    )
-    setting = result.scalar_one_or_none()
-    if setting and setting.value:
-        data = setting.value if isinstance(setting.value, str) else json.dumps(setting.value)
-        buckets.load_from_json(data)
-
-
-async def clear_buckets_in_db(session: AsyncSession) -> None:
-    """Clear persisted buckets after successful send."""
-    result = await session.execute(
-        select(Setting).where(Setting.key == "telemetry_pending_buckets")
-    )
-    setting = result.scalar_one_or_none()
-    if setting:
-        setting.value = "{}"
-        await session.commit()
+async def _release_telemetry_lock() -> None:
+    valkey = get_valkey()
+    if valkey is None:
+        return
+    try:
+        await valkey.delete(LOCK_KEY)
+    except Exception:
+        logger.warning("Failed to release telemetry lock", exc_info=True)
 
 
 # --- Installation ID ---
@@ -204,50 +135,125 @@ async def collect_active_integrations(session: AsyncSession) -> list[str]:
     return [row[0] for row in result.all()]
 
 
+# --- Metrics collection from database ---
+
+
+async def _get_last_report_time(session: AsyncSession) -> datetime | None:
+    result = await session.execute(
+        select(Setting).where(Setting.key == "telemetry_last_report_at")
+    )
+    setting = result.scalar_one_or_none()
+    if setting and setting.value:
+        try:
+            return datetime.fromisoformat(setting.value)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def _set_last_report_time(session: AsyncSession, dt: datetime) -> None:
+    result = await session.execute(
+        select(Setting).where(Setting.key == "telemetry_last_report_at")
+    )
+    setting = result.scalar_one_or_none()
+    val = dt.isoformat()
+    if setting:
+        setting.value = val
+    else:
+        session.add(Setting(key="telemetry_last_report_at", value=val))
+    await session.commit()
+
+
+async def collect_hourly_metrics(
+    session: AsyncSession, since: datetime | None
+) -> list[dict[str, Any]]:
+    """Query completed tasks since `since`, grouped by hour."""
+    now = datetime.now(timezone.utc)
+
+    # Count completed (and archived, since archiving implies prior completion) tasks
+    stmt = select(
+        func.count(),
+    ).select_from(Task).where(
+        Task.status.in_(["completed", "archived"]),
+    )
+    if since:
+        stmt = stmt.where(Task.updated_at >= since)
+    # We group by hour using updated_at truncated to the hour
+    # For simplicity, get all matching tasks and group in Python
+    task_stmt = select(Task.updated_at).where(
+        Task.status.in_(["completed", "archived"]),
+    )
+    if since:
+        task_stmt = task_stmt.where(Task.updated_at >= since)
+    result = await session.execute(task_stmt)
+    rows = result.all()
+
+    # Group by hour
+    hourly: dict[str, int] = {}
+    for (updated_at,) in rows:
+        if updated_at is None:
+            continue
+        hour_key = updated_at.strftime("%Y-%m-%dT%H:00:00Z")
+        hourly[hour_key] = hourly.get(hour_key, 0) + 1
+
+    # If no tasks completed, still report the current hour with zero
+    if not hourly:
+        hour_key = now.strftime("%Y-%m-%dT%H:00:00Z")
+        hourly[hour_key] = 0
+
+    # Get current pending and scheduled counts (point-in-time snapshots)
+    pending_result = await session.execute(
+        select(func.count()).select_from(Task).where(Task.status == "pending")
+    )
+    pending_count = pending_result.scalar() or 0
+
+    scheduled_result = await session.execute(
+        select(func.count()).select_from(Task).where(Task.status == "scheduled")
+    )
+    scheduled_count = scheduled_result.scalar() or 0
+
+    return [
+        {
+            "hour": hour,
+            "tasks_completed": count,
+            "tasks_scheduled": scheduled_count,
+            "pending_count": pending_count,
+        }
+        for hour, count in sorted(hourly.items())
+    ]
+
+
 # --- Telemetry reporter ---
 
 
 class TelemetryReporter:
-    """Periodic telemetry reporter that runs as an asyncio background task."""
+    """Periodic telemetry reporter that runs as an asyncio background task in the server."""
 
-    def __init__(self, buckets: TelemetryBuckets, session_factory, worker_count: int = 1) -> None:
-        self.buckets = buckets
+    def __init__(self, session_factory) -> None:
         self.session_factory = session_factory
-        self.worker_count = worker_count
         self._task = None
 
     async def start(self) -> None:
-        """Start the background reporting task. Also loads persisted buckets and syncs enabled flag."""
-        async with self.session_factory() as session:
-            self.buckets.enabled = await self._is_enabled(session)
-            await load_buckets_from_db(session, self.buckets)
-
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
-        """Stop the reporter and persist pending buckets."""
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass  # Expected during shutdown
+                pass
             except Exception:
                 logger.warning("Error while stopping telemetry reporter task", exc_info=True)
-
-        if not self.buckets.is_empty():
-            async with self.session_factory() as session:
-                await save_buckets_to_db(session, self.buckets)
+        await _release_telemetry_lock()
 
     async def _run_loop(self) -> None:
-        # Send an initial "alive" report shortly after startup
         await asyncio.sleep(STARTUP_DELAY_SECONDS)
         try:
             await self._send_report()
         except Exception:
             logger.warning("Telemetry startup report failed", exc_info=True)
 
-        # Then report every 6 hours with random jitter to spread load
         while True:
             jitter = random.randint(0, JITTER_MAX_SECONDS)
             await asyncio.sleep(REPORT_INTERVAL_SECONDS + jitter)
@@ -257,61 +263,46 @@ class TelemetryReporter:
                 logger.warning("Telemetry report failed", exc_info=True)
 
     async def _send_report(self) -> None:
+        # Check enabled before acquiring lock
         async with self.session_factory() as session:
-            # Sync the enabled flag so accumulation stops/starts between cycles
             enabled = await self._is_enabled(session)
-            self.buckets.enabled = enabled
             if not enabled:
                 return
 
-            # Persist buckets before attempting send
-            await save_buckets_to_db(session, self.buckets)
-
-            # Collect data
-            installation_id = await get_or_create_installation_id(session)
-            integrations = await collect_active_integrations(session)
-
-            # Set scheduled count on all buckets
-            from sqlalchemy import func
-            from models import Task
-
-            result = await session.execute(
-                select(func.count()).select_from(Task).where(Task.status == "scheduled")
-            )
-            scheduled_count = result.scalar() or 0
-            self.buckets.set_tasks_scheduled(scheduled_count)
-
-        system_info = collect_system_info(self.worker_count)
-        hourly_buckets = self.buckets.get_and_clear()
-
-        payload = {
-            "installation_id": installation_id,
-            "deployment_type": detect_deployment_type(),
-            "integrations": integrations,
-            "hourly_buckets": hourly_buckets,
-            **system_info,
-        }
+        # Acquire Valkey lock — only one server replica reports
+        locked = await _acquire_telemetry_lock()
+        if not locked:
+            logger.debug("Telemetry lock held by another replica, skipping cycle")
+            return
 
         try:
+            async with self.session_factory() as session:
+                installation_id = await get_or_create_installation_id(session)
+                integrations = await collect_active_integrations(session)
+                last_report = await _get_last_report_time(session)
+                hourly_buckets = await collect_hourly_metrics(session, last_report)
+
+            system_info = collect_system_info()
+            payload = {
+                "installation_id": installation_id,
+                "deployment_type": detect_deployment_type(),
+                "integrations": integrations,
+                "hourly_buckets": hourly_buckets,
+                **system_info,
+            }
+
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(TELEMETRY_URL, json=payload)
                 resp.raise_for_status()
-            # Success — clear persisted buckets
+
+            # Success — update last report time
             async with self.session_factory() as session:
-                await clear_buckets_in_db(session)
+                await _set_last_report_time(session, datetime.now(timezone.utc))
             logger.info("Telemetry report sent successfully")
         except Exception:
-            # Retain buckets for next cycle by reloading what we cleared
-            for bucket_data in hourly_buckets:
-                hour = bucket_data["hour"]
-                self.buckets._ensure_bucket(hour)
-                self.buckets._buckets[hour]["tasks_completed"] += bucket_data["tasks_completed"]
-                self.buckets._buckets[hour]["max_pending"] = max(
-                    self.buckets._buckets[hour]["max_pending"],
-                    bucket_data["max_pending"],
-                )
-                self.buckets._buckets[hour]["tasks_scheduled"] = bucket_data["tasks_scheduled"]
-            logger.warning("Telemetry report failed, buckets retained for next cycle")
+            logger.warning("Telemetry report failed, will retry next cycle")
+        finally:
+            await _release_telemetry_lock()
 
     async def _is_enabled(self, session: AsyncSession) -> bool:
         """Check if telemetry is enabled (env var takes precedence)."""
