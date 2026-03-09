@@ -27,6 +27,7 @@ SETTINGS_REGISTRY = {
     "llm_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://service.errand.cloud"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
+    "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
 }
 
 # Keys excluded from API responses

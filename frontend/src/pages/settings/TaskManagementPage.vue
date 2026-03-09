@@ -4,6 +4,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import LlmProviderSettings from '../../components/settings/LlmProviderSettings.vue'
 import LlmModelSettings from '../../components/settings/LlmModelSettings.vue'
 import TaskManagementSettings from '../../components/settings/TaskManagementSettings.vue'
+import TelemetrySettings from '../../components/settings/TelemetrySettings.vue'
 import type { LlmProviderData, ModelSetting } from '../../composables/useApi'
 
 const {
@@ -20,6 +21,7 @@ const {
 const providerRef = ref<InstanceType<typeof LlmProviderSettings> | null>(null)
 const llmModelRef = ref<InstanceType<typeof LlmModelSettings> | null>(null)
 const taskMgmtRef = ref<InstanceType<typeof TaskManagementSettings> | null>(null)
+const telemetryRef = ref<InstanceType<typeof TelemetrySettings> | null>(null)
 
 const providers = ref<LlmProviderData[]>([])
 
@@ -40,7 +42,7 @@ function toModelSetting(val: any): ModelSetting {
 }
 
 const hasUnsavedChanges = computed(() =>
-  llmModelRef.value?.isDirty || taskMgmtRef.value?.isDirty
+  llmModelRef.value?.isDirty || taskMgmtRef.value?.isDirty || telemetryRef.value?.isDirty
 )
 
 function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -95,4 +97,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @update:archive-after-days="archiveAfterDays = $event"
     @update:task-runner-log-level="taskRunnerLogLevel = $event"
   />
+
+  <TelemetrySettings ref="telemetryRef" />
 </template>
