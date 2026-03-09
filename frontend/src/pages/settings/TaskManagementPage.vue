@@ -21,6 +21,7 @@ const {
 const providerRef = ref<InstanceType<typeof LlmProviderSettings> | null>(null)
 const llmModelRef = ref<InstanceType<typeof LlmModelSettings> | null>(null)
 const taskMgmtRef = ref<InstanceType<typeof TaskManagementSettings> | null>(null)
+const telemetryRef = ref<InstanceType<typeof TelemetrySettings> | null>(null)
 
 const providers = ref<LlmProviderData[]>([])
 
@@ -41,7 +42,7 @@ function toModelSetting(val: any): ModelSetting {
 }
 
 const hasUnsavedChanges = computed(() =>
-  llmModelRef.value?.isDirty || taskMgmtRef.value?.isDirty
+  llmModelRef.value?.isDirty || taskMgmtRef.value?.isDirty || telemetryRef.value?.isDirty
 )
 
 function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -97,5 +98,5 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @update:task-runner-log-level="taskRunnerLogLevel = $event"
   />
 
-  <TelemetrySettings />
+  <TelemetrySettings ref="telemetryRef" />
 </template>

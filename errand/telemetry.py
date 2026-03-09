@@ -1,5 +1,6 @@
 """Usage telemetry: collect anonymous metrics and report to errand-cloud."""
 
+import asyncio
 import json
 import logging
 import os
@@ -217,8 +218,6 @@ class TelemetryReporter:
 
     async def start(self) -> None:
         """Start the background reporting task. Also loads persisted buckets and syncs enabled flag."""
-        import asyncio
-
         async with self.session_factory() as session:
             self.buckets.enabled = await self._is_enabled(session)
             await load_buckets_from_db(session, self.buckets)
@@ -231,16 +230,16 @@ class TelemetryReporter:
             self._task.cancel()
             try:
                 await self._task
+            except asyncio.CancelledError:
+                pass  # Expected during shutdown
             except Exception:
-                pass
+                logger.warning("Error while stopping telemetry reporter task", exc_info=True)
 
         if not self.buckets.is_empty():
             async with self.session_factory() as session:
                 await save_buckets_to_db(session, self.buckets)
 
     async def _run_loop(self) -> None:
-        import asyncio
-
         # Send an initial "alive" report shortly after startup
         await asyncio.sleep(STARTUP_DELAY_SECONDS)
         try:

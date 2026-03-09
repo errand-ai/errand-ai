@@ -1,6 +1,5 @@
 """Tests for the telemetry module."""
 
-import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,7 +19,6 @@ from telemetry import (
     load_buckets_from_db,
     save_buckets_to_db,
 )
-import telemetry as telemetry_module
 
 
 # --- Helpers ---
@@ -37,13 +35,7 @@ async def _make_session_factory():
 
 
 class TestDeploymentTypeDetection:
-    def setup_method(self):
-        # Reset cached value
-        telemetry_module._deployment_type = None
-
-    def teardown_method(self):
-        telemetry_module._deployment_type = None
-
+    @patch("telemetry._deployment_type", new=None)
     @patch("telemetry.Path")
     def test_kubernetes_deployment(self, mock_path_cls):
         mock_path_instance = MagicMock()
@@ -51,6 +43,7 @@ class TestDeploymentTypeDetection:
         mock_path_cls.return_value = mock_path_instance
         assert detect_deployment_type() == "kubernetes"
 
+    @patch("telemetry._deployment_type", new=None)
     @patch.dict(os.environ, {"APPLE_CONTAINER_RUNTIME": "apple"})
     @patch("telemetry.Path")
     def test_macos_desktop_deployment(self, mock_path_cls):
@@ -59,13 +52,13 @@ class TestDeploymentTypeDetection:
         mock_path_cls.return_value = mock_path_instance
         assert detect_deployment_type() == "macos-desktop"
 
+    @patch("telemetry._deployment_type", new=None)
     @patch.dict(os.environ, {}, clear=True)
     @patch("telemetry.Path")
     def test_docker_other_deployment(self, mock_path_cls):
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = False
         mock_path_cls.return_value = mock_path_instance
-        # Ensure APPLE_CONTAINER_RUNTIME is not set
         os.environ.pop("APPLE_CONTAINER_RUNTIME", None)
         assert detect_deployment_type() == "docker-other"
 
@@ -208,7 +201,7 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch.object(telemetry_module, "_deployment_type", "docker-other"):
+            with patch("telemetry._deployment_type", "docker-other"):
                 await reporter._send_report()
 
             mock_client.post.assert_called_once()
@@ -240,7 +233,7 @@ class TestTelemetryReporter:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            with patch.object(telemetry_module, "_deployment_type", "docker-other"):
+            with patch("telemetry._deployment_type", "docker-other"):
                 await reporter._send_report()
 
         # Buckets should be retained

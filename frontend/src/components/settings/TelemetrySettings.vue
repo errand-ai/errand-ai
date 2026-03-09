@@ -34,6 +34,14 @@ async function save() {
   saving.value = true
   try {
     await saveSettings({ telemetry_enabled: localEnabled.value })
+    // Update metadata so isDirty clears immediately
+    if (settingsMetadata.value?.telemetry_enabled) {
+      settingsMetadata.value.telemetry_enabled = {
+        ...settingsMetadata.value.telemetry_enabled,
+        value: localEnabled.value,
+        source: 'database',
+      }
+    }
     toast.success('Telemetry settings saved.')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'Failed to save settings.')
