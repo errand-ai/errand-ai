@@ -101,14 +101,28 @@ class TestReconnection:
         assert delay <= 30
 
     @pytest.mark.asyncio
-    async def test_close_4001_stops_reconnect(self):
+    async def test_close_4001_allows_reconnect(self):
+        """A single 4001 close should allow reconnection, not stop permanently."""
         client = CloudWebSocketClient()
         client._running = True
+        client._backoff_attempt = 0
 
-        with patch.object(client, "_try_refresh_token"):
-            await client._handle_close(4001, "superseded")
+        await client._handle_close(4001, "superseded")
+
+        assert client._running is True
+        assert client._consecutive_evictions == 1
+
+    @pytest.mark.asyncio
+    async def test_close_4001_consecutive_exceeds_threshold_stops(self):
+        """5 consecutive 4001 closes without successful handshake should stop permanently."""
+        client = CloudWebSocketClient()
+        client._running = True
+        client._consecutive_evictions = 4  # One away from threshold
+
+        await client._handle_close(4001, "superseded")
 
         assert client._running is False
+        assert client._consecutive_evictions == 5
 
     @pytest.mark.asyncio
     async def test_close_4003_stops_reconnect(self):
@@ -141,6 +155,102 @@ class TestReconnection:
             await client._handle_close(4002, "auth_expired")
 
         assert client._running is False
+
+    @pytest.mark.asyncio
+    async def test_successful_handshake_resets_eviction_counter(self):
+        """Consecutive eviction counter should reset to 0 after a successful register/registered handshake."""
+        client = CloudWebSocketClient()
+        client._running = True
+        client._consecutive_evictions = 3
+
+        ws = AsyncMock()
+
+        def stop_after_one(*args, **kwargs):
+            """Return one message then stop the client to exit the loop."""
+            client._running = False
+            return json.dumps({"type": "ping", "ts": 1})
+
+        ws.recv = AsyncMock(side_effect=stop_after_one)
+
+        ws_ctx = AsyncMock()
+        ws_ctx.__aenter__ = AsyncMock(return_value=ws)
+        ws_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("cloud_client.websockets.connect", return_value=ws_ctx), \
+             patch.object(client, "_load_credentials", new_callable=AsyncMock, return_value={"access_token": "tok"}), \
+             patch.object(client, "_get_cloud_ws_url", new_callable=AsyncMock, return_value="wss://cloud/ws"), \
+             patch.object(client, "_send_register", new_callable=AsyncMock), \
+             patch.object(client, "_wait_for_registered", new_callable=AsyncMock, return_value=True), \
+             patch.object(client, "_cleanup_subscriptions", new_callable=AsyncMock), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock):
+            await client._connect_and_receive()
+
+        assert client._consecutive_evictions == 0
+
+    @pytest.mark.asyncio
+    async def test_liveness_watchdog_closes_on_timeout(self):
+        """Connection should be closed and reconnect triggered when no messages received within 90s."""
+        client = CloudWebSocketClient()
+        client._running = True
+
+        ws = AsyncMock()
+        # recv blocks indefinitely → triggers TimeoutError from wait_for
+        ws.recv = AsyncMock(side_effect=asyncio.TimeoutError())
+        ws.close = AsyncMock()
+
+        # Mock the context manager for websockets.connect
+        ws_ctx = AsyncMock()
+        ws_ctx.__aenter__ = AsyncMock(return_value=ws)
+        ws_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("cloud_client.websockets.connect", return_value=ws_ctx), \
+             patch.object(client, "_load_credentials", new_callable=AsyncMock, return_value={"access_token": "tok"}), \
+             patch.object(client, "_get_cloud_ws_url", new_callable=AsyncMock, return_value="wss://cloud/ws"), \
+             patch.object(client, "_send_register", new_callable=AsyncMock), \
+             patch.object(client, "_wait_for_registered", new_callable=AsyncMock, return_value=True), \
+             patch.object(client, "_cleanup_subscriptions", new_callable=AsyncMock), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock):
+            await client._connect_and_receive()
+
+        ws.close.assert_called_once()
+        # Client should still be running (reconnect, not permanent stop)
+        assert client._running is True
+
+    @pytest.mark.asyncio
+    async def test_status_cleared_immediately_after_connection_drop(self):
+        """_ws_connected should be False and cloud_status: disconnected published before backoff."""
+        import cloud_client as cc
+
+        client = CloudWebSocketClient()
+        client._running = True
+
+        events_published = []
+        call_order = []
+
+        async def track_publish(event_type, data):
+            events_published.append((event_type, data))
+            call_order.append("publish")
+
+        async def track_sleep(secs):
+            call_order.append("sleep")
+            # Stop after first reconnect attempt
+            client._running = False
+
+        # Make _connect_and_receive raise to simulate a connection drop
+        with patch.object(client, "_connect_and_receive", new_callable=AsyncMock, side_effect=Exception("connection lost")), \
+             patch("cloud_client.publish_event", side_effect=track_publish), \
+             patch("asyncio.sleep", side_effect=track_sleep):
+            cc._ws_connected = True
+            await client.run()
+
+        # Verify _ws_connected is False
+        assert cc._ws_connected is False
+        # Verify disconnected was published before sleep
+        assert "publish" in call_order
+        assert "sleep" in call_order
+        assert call_order.index("publish") < call_order.index("sleep")
+        # Verify the event content
+        assert any(e[0] == "cloud_status" and e[1]["status"] == "disconnected" for e in events_published)
 
 
 class TestTokenRefresh:

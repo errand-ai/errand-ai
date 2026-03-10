@@ -36,8 +36,9 @@ class CloudWebSocketClient:
     """Async WebSocket client implementing the errand-client-protocol."""
 
     # Close codes that should NOT auto-reconnect
-    NO_RECONNECT_CODES = {4001, 4003}
+    NO_RECONNECT_CODES = {4003}
     AUTH_EXPIRED_CODE = 4002
+    MAX_CONSECUTIVE_EVICTIONS = 5
 
     # Channel name mapping: cloud channel → Valkey pub/sub channel
     CHANNEL_MAP = {
@@ -51,6 +52,7 @@ class CloudWebSocketClient:
         self._processed_ids: set[str] = set()
         self._running = False
         self._backoff_attempt = 0
+        self._consecutive_evictions = 0
         # Reference-counted subscriptions: channel_name → ref_count
         self._subscriptions: dict[str, int] = {}
         # Active subscription forwarding tasks
@@ -70,19 +72,24 @@ class CloudWebSocketClient:
             except asyncio.CancelledError:
                 logger.info("Cloud WebSocket client cancelled")
                 _ws_connected = False
+                self._ws = None
                 break
             except Exception:
                 logger.exception("Cloud WebSocket connection error")
+
+            # Immediately clear status after connection drops
             _ws_connected = False
+            self._ws = None
 
             if not self._running:
                 break
+
+            await publish_event("cloud_status", {"status": "disconnected"})
 
             # Exponential backoff
             delay = self._backoff_delay()
             self._backoff_attempt += 1
             logger.info("Cloud WebSocket reconnecting in %.1fs (attempt %d)", delay, self._backoff_attempt)
-            await publish_event("cloud_status", {"status": "disconnected"})
             try:
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
@@ -118,10 +125,19 @@ class CloudWebSocketClient:
                     return
 
                 await publish_event("cloud_status", {"status": "connected"})
+                self._consecutive_evictions = 0
 
-                async for raw_message in ws:
-                    if not self._running:
+                while self._running:
+                    try:
+                        raw_message = await asyncio.wait_for(ws.recv(), timeout=90.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Liveness watchdog: no message received in 90s, closing connection")
+                        await ws.close()
                         break
+                    except websockets.exceptions.ConnectionClosed as e:
+                        await self._handle_close(e.code, e.reason)
+                        break
+
                     try:
                         message = json.loads(raw_message)
                         await self._handle_message(ws, message)
@@ -357,8 +373,11 @@ class CloudWebSocketClient:
 
         if code == 4001:
             # Superseded — another instance took over
-            await publish_event("cloud_status", {"status": "disconnected", "detail": "Connection taken over by another instance"})
-            self._running = False
+            self._consecutive_evictions += 1
+            if self._consecutive_evictions >= self.MAX_CONSECUTIVE_EVICTIONS:
+                logger.warning("Exceeded %d consecutive evictions, stopping permanently", self.MAX_CONSECUTIVE_EVICTIONS)
+                await publish_event("cloud_status", {"status": "disconnected", "detail": "Repeated evictions — stopping"})
+                self._running = False
 
         elif code == self.AUTH_EXPIRED_CODE:
             # Auth expired — try refresh
@@ -368,8 +387,8 @@ class CloudWebSocketClient:
                 await publish_event("cloud_status", {"status": "error", "detail": "Authentication expired"})
                 self._running = False
 
-        elif code == 4003:
-            # Tenant disabled
+        elif code in self.NO_RECONNECT_CODES:
+            # Permanent stop (e.g. 4003 — tenant disabled)
             await self._set_credential_status("error")
             await publish_event("cloud_status", {"status": "error", "detail": "Account suspended"})
             self._running = False
