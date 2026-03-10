@@ -116,7 +116,9 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/errand:${{ needs.version.outputs.tag }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/errand:${{ needs.version.outputs.tag }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/errand:latest', github.repository_owner) || '' }}
           build-args: APP_VERSION=${{ needs.version.outputs.tag }}
           secrets: |
             npm_token=${{ secrets.GITHUB_TOKEN }}
@@ -150,7 +152,9 @@ jobs:
           context: ./task-runner
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/errand-task-runner:${{ needs.version.outputs.tag }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/errand-task-runner:${{ needs.version.outputs.tag }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/errand-task-runner:latest', github.repository_owner) || '' }}
 
   helm:
     needs: [version, build-errand, build-task-runner]
