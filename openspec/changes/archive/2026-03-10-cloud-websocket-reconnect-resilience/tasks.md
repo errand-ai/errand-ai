@@ -2,7 +2,7 @@
 
 ## Cloud WebSocket Reconnect Resilience
 
-- [x] Remove 4001 from `NO_RECONNECT_CODES` in `CloudWebSocketClient` and add a `_consecutive_evictions` counter. In `_handle_close`, when code is 4001, increment the counter and only set `self._running = False` if it exceeds 5. Allow reconnection otherwise.
+- [x] Remove 4001 from `NO_RECONNECT_CODES` in `CloudWebSocketClient` and add a `_consecutive_evictions` counter. In `_handle_close`, when code is 4001, increment the counter and only set `self._running = False` when it reaches 5. Allow reconnection otherwise.
 - [x] Reset `_consecutive_evictions` to 0 after a successful `register`/`registered` handshake in `_connect_and_receive` (after `_wait_for_registered` returns `True` and the connection is actively receiving messages).
 - [x] Add liveness watchdog: track `_last_message_time = time.monotonic()` in `__init__`, update it on every received message in `_connect_and_receive`. Replace the `async for raw_message in ws` loop with `asyncio.wait_for(ws.recv(), timeout=90.0)` in a while loop, closing the connection on `asyncio.TimeoutError`.
 - [x] Move the `_ws_connected = False` and `self._ws = None` assignments and the `cloud_status: disconnected` publish into the `run()` loop, immediately after `_connect_and_receive()` returns/raises and before the backoff sleep. Remove redundant status updates from `_handle_close`.

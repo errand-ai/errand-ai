@@ -61,8 +61,6 @@ class CloudWebSocketClient:
         self._ws = None
         # Server port for proxy requests
         self._server_port = int(os.environ.get("PORT", "8000"))
-        # Liveness watchdog
-        self._last_message_time = time.monotonic()
 
     async def run(self) -> None:
         """Main run loop with reconnection logic."""
@@ -82,10 +80,11 @@ class CloudWebSocketClient:
             # Immediately clear status after connection drops
             _ws_connected = False
             self._ws = None
-            await publish_event("cloud_status", {"status": "disconnected"})
 
             if not self._running:
                 break
+
+            await publish_event("cloud_status", {"status": "disconnected"})
 
             # Exponential backoff
             delay = self._backoff_delay()
@@ -127,7 +126,6 @@ class CloudWebSocketClient:
 
                 await publish_event("cloud_status", {"status": "connected"})
                 self._consecutive_evictions = 0
-                self._last_message_time = time.monotonic()
 
                 while self._running:
                     try:
@@ -136,7 +134,10 @@ class CloudWebSocketClient:
                         logger.warning("Liveness watchdog: no message received in 90s, closing connection")
                         await ws.close()
                         break
-                    self._last_message_time = time.monotonic()
+                    except websockets.exceptions.ConnectionClosed as e:
+                        await self._handle_close(e.code, e.reason)
+                        break
+
                     try:
                         message = json.loads(raw_message)
                         await self._handle_message(ws, message)
@@ -386,8 +387,8 @@ class CloudWebSocketClient:
                 await publish_event("cloud_status", {"status": "error", "detail": "Authentication expired"})
                 self._running = False
 
-        elif code == 4003:
-            # Tenant disabled
+        elif code in self.NO_RECONNECT_CODES:
+            # Permanent stop (e.g. 4003 — tenant disabled)
             await self._set_credential_status("error")
             await publish_event("cloud_status", {"status": "error", "detail": "Account suspended"})
             self._running = False

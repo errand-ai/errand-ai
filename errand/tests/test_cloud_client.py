@@ -240,7 +240,6 @@ class TestReconnection:
         with patch.object(client, "_connect_and_receive", new_callable=AsyncMock, side_effect=Exception("connection lost")), \
              patch("cloud_client.publish_event", side_effect=track_publish), \
              patch("asyncio.sleep", side_effect=track_sleep):
-            original_ws_connected = cc._ws_connected
             cc._ws_connected = True
             await client.run()
 
