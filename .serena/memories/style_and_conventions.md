@@ -22,4 +22,4 @@
 - No authentication/authorization in MVP
 - Immutable versioning from `VERSION` file
 - Docker Compose for local dev, Helm for Kubernetes
-- All changes tested locally via `docker compose up` before committing
+- All changes tested locally via `docker compose -f testing/docker-compose.yml up` before committing

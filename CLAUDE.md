@@ -44,6 +44,8 @@ openspec schemas --json                   # List available workflow schemas
 
 ```
 Dockerfile             # Multi-stage: node (frontend build) + python (errand)
+testing/
+  docker-compose.yml   # Local dev environment (Docker Compose)
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)
@@ -104,8 +106,8 @@ CI enforces immutable tags — if you forget to bump, the pipeline will fail on 
 Run the full stack locally with Docker Compose and verify changes **before committing**:
 
 ```bash
-docker compose up --build  # Build and start all services (postgres, migrations, errand, worker)
-docker compose down        # Stop and remove containers
+docker compose -f testing/docker-compose.yml up --build  # Build and start all services (postgres, migrations, errand, worker)
+docker compose -f testing/docker-compose.yml down        # Stop and remove containers
 ```
 
 Local URL: `http://localhost:8000` (errand serves both API and frontend static files).

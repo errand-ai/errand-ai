@@ -3,18 +3,18 @@
 ## Local Development
 ```bash
 # Start all services (postgres, migrations, backend, worker, frontend)
-docker compose up
+docker compose -f testing/docker-compose.yml up
 
 # Rebuild images after Dockerfile changes
-docker compose up --build
+docker compose -f testing/docker-compose.yml up --build
 
 # Stop and remove containers
-docker compose down
+docker compose -f testing/docker-compose.yml down
 
 # View logs for a specific service
-docker compose logs -f backend
-docker compose logs -f worker
-docker compose logs -f frontend
+docker compose -f testing/docker-compose.yml logs -f backend
+docker compose -f testing/docker-compose.yml logs -f worker
+docker compose -f testing/docker-compose.yml logs -f frontend
 ```
 
 ## Backend Development

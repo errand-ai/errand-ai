@@ -5,7 +5,7 @@ content-manager/
 ├── VERSION                    # Semver version (e.g. 0.1.0)
 ├── CLAUDE.md                  # AI assistant instructions
 ├── README.md                  # Project readme
-├── docker-compose.yml         # Local dev environment (to be created)
+├── testing/docker-compose.yml  # Local dev environment
 ├── backend/                   # Python backend + worker
 │   ├── __init__.py
 │   ├── main.py                # FastAPI application

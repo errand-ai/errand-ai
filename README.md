@@ -54,13 +54,13 @@ Requires Docker and Docker Compose.
 
 ```bash
 # Start all services (postgres, migrations, backend, worker, frontend, valkey)
-docker compose up --build
+docker compose -f testing/docker-compose.yml up --build
 
 # Frontend: http://localhost:3000
 # Backend API: http://localhost:8000/api
 
 # Stop and remove containers
-docker compose down
+docker compose -f testing/docker-compose.yml down
 ```
 
 ### Environment Variables

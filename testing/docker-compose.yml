@@ -44,12 +44,12 @@ services:
       dind:
         condition: service_healthy
     volumes:
-      - ./task-runner:/workspace
+      - ../task-runner:/workspace
     command: docker build -t errand-task-runner:latest /workspace
 
   migrate:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
       secrets:
         - npm_token
@@ -62,7 +62,7 @@ services:
 
   errand:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
       secrets:
         - npm_token
@@ -113,7 +113,7 @@ services:
 
   worker:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
       secrets:
         - npm_token
