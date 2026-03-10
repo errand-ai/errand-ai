@@ -6,7 +6,7 @@ The service SHALL collect system information for inclusion in telemetry reports,
 #### Scenario: Collect system info
 - **WHEN** the telemetry reporter initializes
 - **THEN** the service SHALL collect: OS name (e.g., `linux`, `darwin`), CPU architecture (e.g., `arm64`, `x86_64`), errand version (from the `VERSION` file), worker count, CPU count, total memory, and container resource limits
-- **AND** static values (OS, arch, version, CPU count, total memory, container limits) SHALL be cached for the process lifetime
+- **AND** resource metrics (CPU count, total memory, container limits) SHALL be cached for the process lifetime; other static values (OS, arch, version) MAY be recomputed each cycle as they are trivial to collect
 
 ### Requirement: Periodic telemetry reporting
 The errand-server process SHALL POST telemetry reports to errand-cloud at a regular interval.

@@ -54,7 +54,7 @@ The telemetry module SHALL include the model configuration for each model settin
 - **THEN** `llm.models` SHALL be an object keyed by setting name (`llm_model`, `task_processing_model`, `transcription_model`), with each value containing `category` (the provider's classified category) and `model` (the model name string)
 
 #### Scenario: Model setting not configured
-- **WHEN** a model setting has no provider or model configured
+- **WHEN** a model setting has no model configured (the model value is empty or null), regardless of provider configuration
 - **THEN** that setting key SHALL be omitted from `llm.models`
 
 #### Scenario: Model name included verbatim

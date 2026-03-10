@@ -730,6 +730,32 @@ class TestCollectLlmConfig:
 
         await engine.dispose()
 
+    @pytest.mark.asyncio
+    async def test_legacy_string_model_setting(self):
+        engine, factory = await _make_session_factory()
+
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO settings (key, value, updated_at) "
+                    "VALUES ('task_processing_model', :val, :now)"
+                ),
+                {
+                    "val": '"gpt-4o-mini"',
+                    "now": datetime.now(timezone.utc),
+                },
+            )
+            await session.commit()
+
+        async with factory() as session:
+            config = await collect_llm_config(session)
+
+        assert "task_processing_model" in config["models"]
+        assert config["models"]["task_processing_model"]["model"] == "gpt-4o-mini"
+        assert config["models"]["task_processing_model"]["category"] == "other"
+
+        await engine.dispose()
+
 
 # --- collect_health_snapshot ---
 

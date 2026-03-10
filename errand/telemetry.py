@@ -106,7 +106,7 @@ def _read_cgroup_cpu_limit() -> float | None:
         period = int(parts[1])
         return quota / period
     except (FileNotFoundError, OSError, ValueError, IndexError):
-        pass
+        pass  # v2 cgroup files not present or unreadable — try v1
 
     # Try cgroup v1
     try:
@@ -119,7 +119,7 @@ def _read_cgroup_cpu_limit() -> float | None:
             period = 100000
         return quota / period
     except (FileNotFoundError, OSError, ValueError):
-        pass
+        pass  # v1 cgroup files not present — not running in a container
 
     return None
 
@@ -244,10 +244,17 @@ async def collect_llm_config(session: AsyncSession) -> dict[str, Any]:
     models: dict[str, dict[str, str]] = {}
     for setting in settings:
         val = setting.value
-        if not isinstance(val, dict):
+        provider_id = None
+        model_name: str | None = None
+
+        if isinstance(val, dict):
+            provider_id = val.get("provider_id")
+            model_name = val.get("model")
+        elif isinstance(val, str):
+            model_name = val
+        else:
             continue
-        provider_id = val.get("provider_id")
-        model_name = val.get("model")
+
         if not model_name:
             continue
         category = provider_categories.get(str(provider_id), "other") if provider_id else "other"
@@ -268,7 +275,7 @@ async def collect_health_snapshot(
     # Count failed tasks since last report
     stmt = select(func.count()).select_from(Task).where(Task.status == "failed")
     if since is not None:
-        stmt = stmt.where(Task.updated_at >= since)
+        stmt = stmt.where(Task.updated_at > since)
     result = await session.execute(stmt)
     failure_count = result.scalar() or 0
 
