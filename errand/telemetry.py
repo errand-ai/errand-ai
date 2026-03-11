@@ -11,19 +11,23 @@ import os
 import platform
 import random
 import socket
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from events import get_valkey
-from models import PlatformCredential, Setting, Task
+from models import LlmProvider, PlatformCredential, Setting, Task
 
 logger = logging.getLogger(__name__)
+
+_process_start_time = time.monotonic()
 
 TELEMETRY_URL = "https://service.errand.cloud/api/telemetry/report"
 REPORT_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
@@ -63,6 +67,82 @@ def detect_deployment_type() -> str:
 
 # --- System info collection ---
 
+_cached_static_metrics: dict[str, Any] | None = None
+
+
+def _read_cgroup_memory_limit() -> int | None:
+    """Detect container memory limit from cgroup v2/v1 files. Returns MB or None."""
+    # Try cgroup v2
+    try:
+        value = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if value == "max":
+            return None
+        return int(value) // (1024 * 1024)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    # Try cgroup v1
+    try:
+        value = int(Path("/sys/fs/cgroup/memory/memory.limit_in_bytes").read_text().strip())
+        total = psutil.virtual_memory().total
+        if value < total:
+            return value // (1024 * 1024)
+        return None
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    return None
+
+
+def _read_cgroup_cpu_limit() -> float | None:
+    """Detect container CPU limit from cgroup v2/v1 files. Returns float or None."""
+    # Try cgroup v2
+    try:
+        content = Path("/sys/fs/cgroup/cpu.max").read_text().strip()
+        parts = content.split()
+        if parts[0] == "max":
+            return None
+        quota = int(parts[0])
+        period = int(parts[1])
+        return quota / period
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        pass  # v2 cgroup files not present or unreadable — try v1
+
+    # Try cgroup v1
+    try:
+        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text().strip())
+        if quota == -1:
+            return None
+        try:
+            period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text().strip())
+        except (FileNotFoundError, OSError, ValueError):
+            period = 100000
+        return quota / period
+    except (FileNotFoundError, OSError, ValueError):
+        pass  # v1 cgroup files not present — not running in a container
+
+    return None
+
+
+def collect_system_metrics() -> dict[str, Any]:
+    """Collect system metrics. Static values are cached after first call."""
+    global _cached_static_metrics
+
+    if _cached_static_metrics is None:
+        _cached_static_metrics = {
+            "cpu_count": psutil.cpu_count(logical=True),
+            "memory_total_mb": psutil.virtual_memory().total // (1024 * 1024),
+            "container_memory_limit_mb": _read_cgroup_memory_limit(),
+            "container_cpu_limit": _read_cgroup_cpu_limit(),
+        }
+
+    # Dynamic values — re-read each cycle
+    return {
+        **_cached_static_metrics,
+        "memory_available_mb": psutil.virtual_memory().available // (1024 * 1024),
+        "disk_available_mb": psutil.disk_usage("/").free // (1024 * 1024),
+    }
+
 
 def collect_system_info(worker_count: int = 1) -> dict[str, Any]:
     """Collect static system information for telemetry reports."""
@@ -76,6 +156,132 @@ def collect_system_info(worker_count: int = 1) -> dict[str, Any]:
         "arch": platform.machine(),
         "version": version,
         "worker_count": worker_count,
+    }
+
+
+# --- Infrastructure info collection ---
+
+
+async def collect_postgres_version(session: AsyncSession) -> str | None:
+    """Execute SELECT version() and parse the PostgreSQL version string."""
+    try:
+        from sqlalchemy import text
+        result = await session.execute(text("SELECT version()"))
+        row = result.scalar_one_or_none()
+        if row:
+            # Format: "PostgreSQL 16.2 on ..."
+            parts = row.split()
+            if len(parts) >= 2:
+                return parts[1]
+        return None
+    except Exception:
+        logger.warning("Failed to collect PostgreSQL version", exc_info=True)
+        return None
+
+
+async def collect_valkey_info() -> tuple[str | None, bool]:
+    """Query Valkey INFO server for version. Returns (version, connected)."""
+    valkey = get_valkey()
+    if valkey is None:
+        return None, False
+
+    try:
+        info = await valkey.info("server")
+        version = info.get("redis_version")
+        return version, True
+    except Exception:
+        logger.warning("Failed to query Valkey INFO", exc_info=True)
+        return None, True
+
+
+# --- LLM config collection ---
+
+
+def classify_provider_url(base_url: str, provider_type: str) -> str:
+    """Classify a provider base URL into a category without exposing the raw URL."""
+    url_lower = base_url.lower()
+
+    if "api.openai.com" in url_lower:
+        return "openai"
+    if "api.anthropic.com" in url_lower:
+        return "anthropic"
+    if "generativelanguage.googleapis.com" in url_lower:
+        return "gemini"
+    if "api.x.ai" in url_lower:
+        return "xai"
+    if "localhost:11434" in url_lower or "127.0.0.1:11434" in url_lower:
+        return "ollama"
+
+    if provider_type == "litellm":
+        return "litellm-other"
+    if provider_type == "openai_compatible":
+        return "openai-compatible-other"
+    return "other"
+
+
+async def collect_llm_config(session: AsyncSession) -> dict[str, Any]:
+    """Collect LLM provider categories and model settings for telemetry."""
+    # Collect providers
+    result = await session.execute(
+        select(LlmProvider.provider_type, LlmProvider.base_url, LlmProvider.id)
+    )
+    provider_rows = result.all()
+
+    providers = []
+    provider_categories: dict[str, str] = {}  # provider_id -> category
+    for provider_type, base_url, provider_id in provider_rows:
+        category = classify_provider_url(base_url, provider_type)
+        providers.append({"type": provider_type, "category": category})
+        provider_categories[str(provider_id)] = category
+
+    # Collect model settings
+    model_setting_keys = ["llm_model", "task_processing_model", "transcription_model"]
+    result = await session.execute(
+        select(Setting).where(Setting.key.in_(model_setting_keys))
+    )
+    settings = result.scalars().all()
+
+    models: dict[str, dict[str, str]] = {}
+    for setting in settings:
+        val = setting.value
+        provider_id = None
+        model_name: str | None = None
+
+        if isinstance(val, dict):
+            provider_id = val.get("provider_id")
+            model_name = val.get("model")
+        elif isinstance(val, str):
+            model_name = val
+        else:
+            continue
+
+        if not model_name:
+            continue
+        category = provider_categories.get(str(provider_id), "other") if provider_id else "other"
+        models[setting.key] = {"category": category, "model": model_name}
+
+    return {"providers": providers, "models": models}
+
+
+# --- Health snapshot collection ---
+
+
+async def collect_health_snapshot(
+    session: AsyncSession, since: datetime | None
+) -> dict[str, Any]:
+    """Collect health metrics: uptime and task failure count."""
+    uptime_seconds = int(time.monotonic() - _process_start_time)
+
+    # Count failed tasks since last report
+    stmt = select(func.count()).select_from(Task).where(Task.status == "failed")
+    if since is not None:
+        stmt = stmt.where(Task.updated_at > since)
+    result = await session.execute(stmt)
+    failure_count = result.scalar() or 0
+
+    return {
+        "uptime_seconds": uptime_seconds,
+        "task_failure_count": failure_count,
     }
 
 
@@ -275,14 +481,28 @@ class TelemetryReporter:
                 integrations = await collect_active_integrations(session)
                 last_report = await _get_last_report_time(session)
                 hourly_buckets = await collect_hourly_metrics(session, last_report)
+                postgres_version = await collect_postgres_version(session)
+                llm_config = await collect_llm_config(session)
+                health = await collect_health_snapshot(session, last_report)
+
+            valkey_version, valkey_connected = await collect_valkey_info()
 
             system_info = collect_system_info()
+            system_metrics = collect_system_metrics()
             payload = {
                 "installation_id": installation_id,
                 "deployment_type": detect_deployment_type(),
                 "integrations": integrations,
                 "hourly_buckets": hourly_buckets,
                 **system_info,
+                "system": system_metrics,
+                "infrastructure": {
+                    "postgres_version": postgres_version,
+                    "valkey_version": valkey_version,
+                    "valkey_connected": valkey_connected,
+                },
+                "llm": llm_config,
+                "health": health,
             }
 
             async with httpx.AsyncClient(timeout=30) as client:

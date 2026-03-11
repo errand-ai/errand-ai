@@ -24,3 +24,4 @@ aioimaplib>=1.1.0
 websockets>=13.0
 aiosmtplib>=3.0.0
 html2text>=2024.2.26
+psutil>=5.9.0
