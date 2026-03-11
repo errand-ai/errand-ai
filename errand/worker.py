@@ -1310,12 +1310,12 @@ async def run() -> None:
         logger.error("Failed to initialise container runtime: %s", e)
         raise SystemExit(1)
 
+    start_health_server()
+
     # For Docker mode, keep docker_client reference for Playwright management and pre-pull
     if isinstance(container_runtime, DockerRuntime):
         docker_client = container_runtime.client
         await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
-
-    start_health_server()
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 
     while not shutdown_requested:
