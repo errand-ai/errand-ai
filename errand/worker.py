@@ -10,7 +10,9 @@ import signal
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlparse
@@ -146,6 +148,7 @@ PLAYWRIGHT_PORT = int(os.environ.get("PLAYWRIGHT_PORT", "8931"))
 PLAYWRIGHT_STARTUP_TIMEOUT = int(os.environ.get("PLAYWRIGHT_STARTUP_TIMEOUT", "30"))
 GDRIVE_MCP_URL = os.environ.get("GDRIVE_MCP_URL", "")
 ONEDRIVE_MCP_URL = os.environ.get("ONEDRIVE_MCP_URL", "")
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8080"))
 
 shutdown_requested = False
 shutdown_event: Optional[asyncio.Event] = None
@@ -165,6 +168,33 @@ def handle_sigterm(*_args):
         loop = asyncio.get_event_loop()
         loop.call_soon_threadsafe(shutdown_event.set)
     _cleanup_active_container()
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            if shutdown_requested:
+                self.send_response(503)
+                body = b'{"status": "shutting_down"}'
+            else:
+                self.send_response(200)
+                body = b'{"status": "ok"}'
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+    def log_message(self, format, *args):
+        pass  # suppress request logs
+
+
+def start_health_server(port: int = HEALTH_PORT) -> HTTPServer:
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Health server started on port %d", port)
+    return server
 
 
 def _cleanup_active_container():
@@ -1285,6 +1315,7 @@ async def run() -> None:
         docker_client = container_runtime.client
         await asyncio.get_event_loop().run_in_executor(None, pre_pull_images)
 
+    start_health_server()
     logger.info("Worker started, polling every %ds", POLL_INTERVAL)
 
     while not shutdown_requested:

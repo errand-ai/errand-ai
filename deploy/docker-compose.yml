@@ -1,0 +1,206 @@
+services:
+  # Using pgvector's official image with PostgreSQL 16 for vector search capabilities
+  # You may want to use an existing PostgreSQL service , but ensure it has the pgvector 
+  # extension installed and configured for the hindsight and litellm databases.
+  # 
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: errand
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# Using Valkey as a Pub/Sub service. Valkey is a Redis-compatible nosql database 
+# that provides high performance and scalability.
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# LiteLLM is a LLM proxy that provides a consistent API for interacting with different 
+# LLM providers. You can configure it to use any LLM provider supported by LiteLLM, such 
+# as OpenAI, Anthropic, or Azure OpenAI, by setting the appropriate environment variables
+#  and configuration file, or through the UI. 
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.81.14-stable
+    ports:
+      - "4000:4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/litellm
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    command: --config /app/config.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+
+# Hindsight is an open-source vector database and vector search engine built on top of 
+# PostgreSQL and pgvector. It is used in Errand to store and search conversation history
+#  and other vector data.
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hindsight
+      HINDSIGHT_API_LLM_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-http://litellm:4000}
+      HINDSIGHT_API_LLM_API_KEY: ${LLM_PROVIDER_0_API_KEY:-${LITELLM_MASTER_KEY:-sk-1234}}
+      HINDSIGHT_API_LLM_MODEL: ${LLM_PROVIDER_0_MODEL:-gemini-2.5-flash}
+    volumes:
+      - hindsight-models:/home/hindsight/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dind:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+# The migrate service runs database migrations using Alembic to ensure the database 
+# schema is up to date before starting the main application. It depends on the 
+# PostgreSQL service being healthy before it runs, and the errand service depends 
+# on it completing successfully before it starts.
+  migrate:
+    image: ghcr.io/errand-ai/errand:latest
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/errand
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# The errand service is the main application that provides the API and UI for 
+# interacting with the Errand agent.
+  errand:
+    image: ghcr.io/errand-ai/errand:latest
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/errand
+      VALKEY_URL: redis://valkey:6379
+      LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-litellm}
+      LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-http://litellm:4000}
+      LLM_PROVIDER_0_API_KEY: ${LLM_PROVIDER_0_API_KEY:-${LITELLM_MASTER_KEY:-sk-1234}}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      TWITTER_API_KEY: ${TWITTER_API_KEY:-}
+      TWITTER_API_SECRET: ${TWITTER_API_SECRET:-}
+      TWITTER_ACCESS_TOKEN: ${TWITTER_ACCESS_TOKEN:-}
+      TWITTER_ACCESS_SECRET: ${TWITTER_ACCESS_SECRET:-}
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: changeme
+      MAX_TURNS: "200"
+      GDRIVE_MCP_URL: http://gdrive-mcp:8080/mcp
+      ONEDRIVE_MCP_URL: http://onedrive-mcp:8080/mcp
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+
+# The Google Drive MCP server is a microservice that provides an interface for 
+# interacting with the Google Drive API. It is used in Errand to allow agents to 
+# read and write files in Google Drive as part of their tasks and actions.
+  gdrive-mcp:
+    image: ghcr.io/devops-consultants/google-drive-mcp-server:latest
+    ports:
+      - "8081:8080"
+
+# The OneDrive MCP server is a microservice that provides an interface for 
+# interacting with the Microsoft OneDrive API. It is used in Errand to allow agents to 
+# read and write files in OneDrive as part of their tasks and actions.
+  onedrive-mcp:
+    image: ghcr.io/devops-consultants/one-drive-mcp-server:latest
+    ports:
+      - "8082:8080"
+
+# The worker service is responsible for executing tasks and actions assigned to agents.
+# To execute multiple tasks in parallel, you can scale the worker service by running
+#  `docker-compose up --scale worker=3`
+  worker:
+    image: ghcr.io/errand-ai/errand:latest
+    command: python worker.py
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/errand
+      VALKEY_URL: redis://valkey:6379
+      DOCKER_HOST: tcp://dind:2375
+      TASK_RUNNER_IMAGE: ghcr.io/errand-ai/errand-task-runner:latest
+      PLAYWRIGHT_MCP_IMAGE: mcr.microsoft.com/playwright/mcp:latest
+      LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-litellm}
+      LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-http://litellm:4000}
+      LLM_PROVIDER_0_API_KEY: ${LLM_PROVIDER_0_API_KEY:-${LITELLM_MASTER_KEY:-sk-1234}}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      ERRAND_MCP_URL: http://errand:8000/mcp/
+      HINDSIGHT_URL: http://hindsight:8888
+      MAX_TURNS: "200"
+      GDRIVE_MCP_URL: http://gdrive-mcp:8080/mcp
+      ONEDRIVE_MCP_URL: http://onedrive-mcp:8080/mcp
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      dind:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  hindsight-models:

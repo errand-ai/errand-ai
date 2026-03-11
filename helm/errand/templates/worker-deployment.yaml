@@ -23,7 +23,28 @@ spec:
           image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           command: ["python", "worker.py"]
+          ports:
+            - containerPort: {{ .Values.worker.healthPort }}
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.worker.healthPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.worker.healthPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           env:
+            - name: HEALTH_PORT
+              value: {{ .Values.worker.healthPort | quote }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
