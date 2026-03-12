@@ -25,11 +25,23 @@ logger = logging.getLogger(__name__)
 _client_task: asyncio.Task | None = None
 _refresh_task: asyncio.Task | None = None
 _ws_connected: bool = False
+_active_ws = None
+_active_client: "CloudWebSocketClient | None" = None
 
 
 def is_connected() -> bool:
     """Return whether the cloud WebSocket is currently connected."""
     return _ws_connected
+
+
+def get_ws():
+    """Return the active WebSocket connection, or None if not connected."""
+    return _active_ws
+
+
+def get_client() -> "CloudWebSocketClient | None":
+    """Return the active CloudWebSocketClient instance, or None."""
+    return _active_client
 
 
 class CloudWebSocketClient:
@@ -59,12 +71,14 @@ class CloudWebSocketClient:
         self._subscription_tasks: dict[str, asyncio.Task] = {}
         # WebSocket reference for sending push_events
         self._ws = None
+        # Pending response futures for send-and-await pattern
+        self._pending_responses: dict[str, asyncio.Future] = {}
         # Server port for proxy requests
         self._server_port = int(os.environ.get("PORT", "8000"))
 
     async def run(self) -> None:
         """Main run loop with reconnection logic."""
-        global _ws_connected
+        global _ws_connected, _active_ws
         self._running = True
         while self._running:
             try:
@@ -73,6 +87,7 @@ class CloudWebSocketClient:
                 logger.info("Cloud WebSocket client cancelled")
                 _ws_connected = False
                 self._ws = None
+                _active_ws = None
                 break
             except Exception:
                 logger.exception("Cloud WebSocket connection error")
@@ -80,6 +95,7 @@ class CloudWebSocketClient:
             # Immediately clear status after connection drops
             _ws_connected = False
             self._ws = None
+            _active_ws = None
 
             if not self._running:
                 break
@@ -110,11 +126,12 @@ class CloudWebSocketClient:
 
         try:
             async with websockets.connect(cloud_url, additional_headers=headers) as ws:
-                global _ws_connected
+                global _ws_connected, _active_ws
                 self._backoff_attempt = 0
                 self._processed_ids.clear()
                 self._subscriptions.clear()
                 self._ws = ws
+                _active_ws = ws
                 _ws_connected = True
                 logger.info("Connected to cloud WebSocket: %s", cloud_url)
 
@@ -191,11 +208,133 @@ class CloudWebSocketClient:
         elif msg_type == "proxy_request":
             await self._handle_proxy_request(ws, message)
 
+        elif msg_type == "oauth_tokens":
+            await self._handle_oauth_tokens(message)
+
+        elif msg_type == "oauth_error":
+            await self._handle_oauth_error(message)
+
+        elif msg_type == "oauth_refresh_result":
+            self._resolve_pending_response(message)
+
         elif msg_type == "subscribe":
             await self._handle_subscribe(ws, message)
 
         elif msg_type == "unsubscribe":
             await self._handle_unsubscribe(message)
+
+    # --- OAuth proxy handlers ---
+
+    async def _handle_oauth_tokens(self, message: dict) -> None:
+        """Handle oauth_tokens message — store credentials and publish SSE event."""
+        import time as _time
+        provider = message.get("provider", "")
+        access_token = message.get("access_token", "")
+        refresh_token = message.get("refresh_token", "")
+        expires_in = message.get("expires_in", 3600)
+        user_email = message.get("user_email", "")
+        user_name = message.get("user_name", "")
+
+        if not provider or not access_token:
+            logger.warning("Received oauth_tokens with missing provider or access_token")
+            return
+
+        credential_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": int(_time.time()) + expires_in,
+            "token_type": "Bearer",
+            "user_email": user_email,
+            "user_name": user_name,
+        }
+
+        try:
+            from sqlalchemy import delete as sa_delete
+            encrypted = encrypt_credentials(credential_data)
+            async with async_session() as session:
+                await session.execute(
+                    sa_delete(PlatformCredential).where(
+                        PlatformCredential.platform_id == provider
+                    )
+                )
+                session.add(PlatformCredential(
+                    platform_id=provider,
+                    encrypted_data=encrypted,
+                    status="connected",
+                ))
+                await session.commit()
+
+            logger.info("Stored OAuth credentials for %s via cloud proxy", provider)
+            await publish_event("cloud_storage_connected", {"provider": provider})
+        except Exception:
+            logger.exception("Failed to store OAuth credentials for %s", provider)
+
+    async def _handle_oauth_error(self, message: dict) -> None:
+        """Handle oauth_error message — log and publish SSE event."""
+        provider = message.get("provider", "unknown")
+        error = message.get("error", "unknown_error")
+        state = message.get("state", "")
+        logger.warning("OAuth error for %s (state=%s): %s", provider, state, error)
+        await publish_event("cloud_storage_error", {"provider": provider, "error": error})
+        # Also resolve any pending response waiters
+        self._resolve_pending_response(message)
+
+    # --- Pending response tracking (for send-and-await pattern) ---
+
+    def _resolve_pending_response(self, message: dict) -> None:
+        """Resolve a pending future for a send-and-await response."""
+        msg_type = message.get("type", "")
+        provider = message.get("provider", "")
+        key = f"{msg_type}:{provider}"
+        future = self._pending_responses.pop(key, None)
+        if future and not future.done():
+            future.set_result(message)
+
+    async def send_and_await(
+        self, message: dict, response_type: str, provider: str, timeout: float = 30.0
+    ) -> dict | None:
+        """Send a message over WebSocket and await a typed response with timeout."""
+        if not self._ws:
+            return None
+
+        key = f"{response_type}:{provider}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_responses[key] = future
+
+        # Also register the error key so oauth_error can resolve it
+        error_key = f"oauth_error:{provider}"
+        error_future: asyncio.Future = loop.create_future()
+        self._pending_responses[error_key] = error_future
+
+        try:
+            await self._ws.send(json.dumps(message))
+            # Wait for either the expected response or an error
+            done, pending = await asyncio.wait(
+                [future, error_future],
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for p in pending:
+                p.cancel()
+            # Clean up keys
+            self._pending_responses.pop(key, None)
+            self._pending_responses.pop(error_key, None)
+
+            if not done:
+                logger.warning("Timeout waiting for %s response for %s", response_type, provider)
+                return None
+
+            result = done.pop().result()
+            if result.get("type") == "oauth_error":
+                return None
+            return result
+
+        except Exception:
+            self._pending_responses.pop(key, None)
+            self._pending_responses.pop(error_key, None)
+            logger.warning("Error in send_and_await for %s", provider, exc_info=True)
+            return None
 
     # --- Registration ---
 
@@ -523,12 +662,13 @@ async def _run_token_refresh_loop() -> None:
 
 async def start_cloud_client() -> None:
     """Start the cloud WebSocket client and token refresh tasks."""
-    global _client_task, _refresh_task
+    global _client_task, _refresh_task, _active_client
 
     # Stop existing tasks if running
     await stop_cloud_client()
 
     client = CloudWebSocketClient()
+    _active_client = client
     _client_task = asyncio.create_task(client.run())
     _refresh_task = asyncio.create_task(_run_token_refresh_loop())
     logger.info("Cloud WebSocket client started")
@@ -536,7 +676,7 @@ async def start_cloud_client() -> None:
 
 async def stop_cloud_client() -> None:
     """Stop the cloud WebSocket client and token refresh tasks."""
-    global _client_task, _refresh_task, _ws_connected
+    global _client_task, _refresh_task, _ws_connected, _active_ws, _active_client
 
     if _client_task and not _client_task.done():
         _client_task.cancel()
@@ -554,4 +694,6 @@ async def stop_cloud_client() -> None:
             pass  # Expected after cancel(); ensures task is fully awaited before cleanup
     _refresh_task = None
     _ws_connected = False
+    _active_ws = None
+    _active_client = None
     logger.info("Cloud WebSocket client stopped")

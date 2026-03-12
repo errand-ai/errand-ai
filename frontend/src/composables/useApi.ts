@@ -353,6 +353,8 @@ export async function verifyPlatformCredentials(platformId: string): Promise<{ s
 export interface CloudStorageProviderStatus {
   available: boolean
   connected: boolean
+  mode: 'direct' | 'cloud' | null
+  mcp_configured: boolean
   user_email?: string
   user_name?: string
 }
@@ -365,6 +367,12 @@ export interface CloudStorageStatus {
 export async function fetchCloudStorageStatus(): Promise<CloudStorageStatus> {
   const res = await authFetch(`${BASE}/integrations/status`)
   if (!res.ok) throw new Error(`Failed to fetch integration status: ${res.status}`)
+  return res.json()
+}
+
+export async function authorizeCloudStorage(provider: string): Promise<{ redirect_url: string }> {
+  const res = await authFetch(`${BASE}/integrations/${provider}/authorize`)
+  if (!res.ok) throw new Error(`Failed to start authorization: ${res.status}`)
   return res.json()
 }
 

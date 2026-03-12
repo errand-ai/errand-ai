@@ -4,6 +4,7 @@ OAuth 2.0 Authorization Code flow for Google Drive and OneDrive.
 Credentials stored encrypted in PlatformCredential.
 """
 
+import json
 import logging
 import os
 import secrets
@@ -13,13 +14,13 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
-from sqlalchemy import delete
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from events import get_valkey
-from models import PlatformCredential
+from models import PlatformCredential, Setting
 from platforms.credentials import encrypt, load_credentials
 
 logger = logging.getLogger(__name__)
@@ -92,46 +93,132 @@ def _get_client_credentials(config: ProviderConfig) -> tuple[str, str]:
     return client_id, client_secret
 
 
-def _provider_available(provider: str) -> bool:
-    """Check if a provider's MCP URL and client credentials are configured."""
-    providers = _init_providers()
-    if provider not in providers:
-        return False
-    config = providers[provider]
+async def _cloud_available(session: AsyncSession) -> bool:
+    """Check if cloud PlatformCredential exists with status 'connected'."""
+    result = await session.execute(
+        select(PlatformCredential).where(
+            PlatformCredential.platform_id == "cloud",
+            PlatformCredential.status == "connected",
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+def _has_local_credentials(config: ProviderConfig) -> bool:
+    """Check if local OAuth client credentials are configured."""
     client_id = os.environ.get(config.client_id_env, "")
     client_secret = os.environ.get(config.client_secret_env, "")
-    if not client_id or not client_secret:
-        return False
+    return bool(client_id and client_secret)
+
+
+def _has_mcp_url(provider: str) -> bool:
+    """Check if the provider's MCP URL is configured."""
     url_env = "GDRIVE_MCP_URL" if provider == "google_drive" else "ONEDRIVE_MCP_URL"
     return bool(os.environ.get(url_env, ""))
+
+
+async def _provider_available(provider: str, session: AsyncSession) -> tuple[bool, str | None]:
+    """Check provider availability, returning (available, mode).
+
+    Mode is "direct" (local credentials), "cloud" (cloud proxy), or None.
+    """
+    providers = _init_providers()
+    if provider not in providers:
+        return False, None
+    config = providers[provider]
+    if not _has_mcp_url(provider):
+        return False, None
+    if _has_local_credentials(config):
+        return True, "direct"
+    if await _cloud_available(session):
+        return True, "cloud"
+    return False, None
+
+
+async def _get_cloud_service_url(session: AsyncSession) -> str:
+    """Get the cloud service URL from settings."""
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_service_url")
+    )
+    setting = result.scalar_one_or_none()
+    return setting.value if setting and setting.value else "https://service.errand.cloud"
 
 
 @router.get("/{provider}/authorize")
 async def authorize(
     provider: str,
     request: Request,
+    session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_user),
 ):
     config = _get_provider(provider)
-    client_id, _ = _get_client_credentials(config)
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
 
-    # Generate CSRF state token and store in Valkey
+    if _has_local_credentials(config):
+        # Direct flow — use local client credentials
+        client_id, _ = _get_client_credentials(config)
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
+
+        state = secrets.token_urlsafe(32)
+        valkey = get_valkey()
+        if valkey:
+            await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
+
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": config.scopes,
+            "state": state,
+            **config.extra_auth_params,
+        }
+        return {"redirect_url": f"{config.authorize_url}?{urlencode(params)}"}
+
+    # Cloud-proxy flow — delegate to errand-cloud
+    if not await _cloud_available(session):
+        raise HTTPException(
+            status_code=404,
+            detail="Provider not configured — configure client credentials or connect to errand cloud",
+        )
+
+    from cloud_client import get_ws, is_connected as cloud_ws_connected
+
+    if not cloud_ws_connected():
+        raise HTTPException(
+            status_code=503,
+            detail="Cloud service not connected — try again later",
+        )
+
     state = secrets.token_urlsafe(32)
     valkey = get_valkey()
     if valkey:
         await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
 
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": config.scopes,
+    # Send oauth_initiate over WebSocket
+    ws = get_ws()
+    if not ws:
+        raise HTTPException(
+            status_code=503,
+            detail="Cloud service not connected — try again later",
+        )
+    await ws.send(json.dumps({
+        "type": "oauth_initiate",
         "state": state,
-        **config.extra_auth_params,
-    }
-    return RedirectResponse(url=f"{config.authorize_url}?{urlencode(params)}")
+        "provider": provider,
+    }))
+
+    cloud_service_url = await _get_cloud_service_url(session)
+    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
+
+
+def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
+    """Return an HTML page that closes the popup window."""
+    color = "#dc2626" if error else "#16a34a"
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui">
+<p style="color:{color};font-size:1.1rem">{message}</p>
+<script>setTimeout(function(){{ window.close(); }}, 1500);</script>
+</body></html>""")
 
 
 @router.get("/{provider}/callback")
@@ -147,10 +234,10 @@ async def callback(
 
     if error:
         logger.warning("OAuth error for %s: %s", provider, error)
-        return RedirectResponse(url="/settings/integrations?error=oauth_denied")
+        return _popup_close_response("Authorization denied", error=True)
 
     if not code:
-        return RedirectResponse(url="/settings/integrations?error=missing_code")
+        return _popup_close_response("Missing authorization code", error=True)
 
     # Validate CSRF state token
     valkey = get_valkey()
@@ -158,12 +245,12 @@ async def callback(
         stored_provider = await valkey.get(f"oauth_state:{state}")
         if stored_provider != provider:
             logger.warning("OAuth state mismatch for %s", provider)
-            return RedirectResponse(url="/settings/integrations?error=invalid_state")
+            return _popup_close_response("Invalid state token", error=True)
         await valkey.delete(f"oauth_state:{state}")
     elif valkey:
         # State parameter missing — reject
         logger.warning("OAuth callback missing state for %s", provider)
-        return RedirectResponse(url="/settings/integrations?error=invalid_state")
+        return _popup_close_response("Invalid state token", error=True)
 
     client_id, client_secret = _get_client_credentials(config)
     base_url = str(request.base_url).rstrip("/")
@@ -185,7 +272,7 @@ async def callback(
 
     if token_resp.status_code != 200:
         logger.error("Token exchange failed for %s: %s", provider, token_resp.text)
-        return RedirectResponse(url="/settings/integrations?error=token_exchange_failed")
+        return _popup_close_response("Token exchange failed", error=True)
 
     tokens = token_resp.json()
     access_token = tokens.get("access_token", "")
@@ -193,7 +280,7 @@ async def callback(
     expires_in = tokens.get("expires_in", 3600)
 
     if not access_token:
-        return RedirectResponse(url="/settings/integrations?error=no_access_token")
+        return _popup_close_response("No access token received", error=True)
 
     # Fetch user info
     user_email = ""
@@ -239,7 +326,7 @@ async def callback(
     ))
     await session.commit()
 
-    return RedirectResponse(url="/settings/integrations")
+    return _popup_close_response("Connected successfully")
 
 
 @router.delete("/{provider}")
@@ -257,6 +344,73 @@ async def disconnect(
     return {"status": "ok"}
 
 
+@router.post("/{provider}/refresh")
+async def refresh_token(
+    provider: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Internal endpoint — refresh a cloud storage OAuth token via cloud proxy.
+
+    Called by the worker when it needs a fresh token but has no WebSocket
+    connection to errand-cloud.  No user auth required (cluster-internal only).
+    """
+    _get_provider(provider)  # validate provider name
+    creds = await load_credentials(provider, session)
+    if not creds:
+        raise HTTPException(status_code=404, detail=f"No credentials for {provider}")
+
+    refresh_tok = creds.get("refresh_token", "")
+    if not refresh_tok:
+        raise HTTPException(status_code=400, detail="No refresh token available")
+
+    from cloud_client import get_client, is_connected
+
+    if not is_connected():
+        raise HTTPException(status_code=503, detail="Cloud WebSocket not connected")
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="No active cloud client")
+
+    result = await client.send_and_await(
+        message={
+            "type": "oauth_refresh",
+            "provider": provider,
+            "refresh_token": refresh_tok,
+        },
+        response_type="oauth_refresh_result",
+        provider=provider,
+        timeout=30.0,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="Cloud proxy refresh failed")
+
+    new_access_token = result.get("access_token")
+    if not new_access_token:
+        raise HTTPException(status_code=502, detail="No access token in refresh response")
+
+    import time as _time
+    creds["access_token"] = new_access_token
+    creds["expires_at"] = int(_time.time()) + result.get("expires_in", 3600)
+    if "refresh_token" in result:
+        creds["refresh_token"] = result["refresh_token"]
+
+    db_result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == provider)
+    )
+    cred = db_result.scalar_one_or_none()
+    if cred:
+        cred.encrypted_data = encrypt(creds)
+        await session.commit()
+
+    logger.info("Refreshed %s access token via internal refresh endpoint", provider)
+    return {
+        "access_token": new_access_token,
+        "expires_in": result.get("expires_in", 3600),
+    }
+
+
 @router.get("/status")
 async def integration_status(
     request: Request,
@@ -265,10 +419,15 @@ async def integration_status(
 ):
     result = {}
     for provider in ("google_drive", "onedrive"):
-        available = _provider_available(provider)
+        available, mode = await _provider_available(provider, session)
         creds = await load_credentials(provider, session)
         connected = creds is not None
-        entry: dict = {"available": available, "connected": connected}
+        entry: dict = {
+            "available": available,
+            "connected": connected,
+            "mode": mode,
+            "mcp_configured": _has_mcp_url(provider),
+        }
         if connected and creds:
             entry["user_email"] = creds.get("user_email", "")
             entry["user_name"] = creds.get("user_name", "")

@@ -202,10 +202,11 @@ async def test_no_refresh_token(db_session, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_no_client_credentials(db_session):
-    """Missing client credentials returns None."""
+async def test_no_client_credentials_no_cloud(db_session):
+    """Missing client credentials and no cloud — returns None."""
     creds = _make_credentials(expired=True)
-    result = await refresh_token_if_needed("google_drive", creds, db_session)
+    with patch("cloud_client.is_connected", return_value=False):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
     assert result is None
 
 
@@ -234,3 +235,96 @@ async def test_microsoft_token_url(db_session, monkeypatch):
     # Verify the correct token URL was used
     call_args = mock_client.post.call_args
     assert "my-tenant" in call_args[0][0]
+
+
+# --- Cloud-proxy refresh ---
+
+
+@pytest.mark.anyio
+async def test_cloud_proxy_refresh_success(db_session):
+    """When no local credentials, should refresh via cloud proxy."""
+    creds = _make_credentials(expired=True)
+
+    db_session.add(PlatformCredential(
+        platform_id="google_drive",
+        encrypted_data=encrypt(creds),
+        status="connected",
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.send_and_await = AsyncMock(return_value={
+        "type": "oauth_refresh_result",
+        "provider": "google_drive",
+        "access_token": "cloud-refreshed-token",
+        "expires_in": 3600,
+    })
+
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_client", return_value=mock_client):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result is not None
+    assert result["access_token"] == "cloud-refreshed-token"
+    assert result["expires_at"] > time.time()
+
+    # Verify DB was updated
+    db_result = await db_session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "google_drive")
+    )
+    stored = decrypt(db_result.scalar_one().encrypted_data)
+    assert stored["access_token"] == "cloud-refreshed-token"
+
+
+@pytest.mark.anyio
+async def test_cloud_proxy_refresh_error(db_session):
+    """Cloud proxy refresh failure returns None."""
+    creds = _make_credentials(expired=True)
+
+    mock_client = AsyncMock()
+    mock_client.send_and_await = AsyncMock(return_value=None)
+
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_client", return_value=mock_client):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_cloud_proxy_refresh_ws_disconnected(db_session):
+    """When cloud WS is disconnected, returns None."""
+    creds = _make_credentials(expired=True)
+
+    with patch("cloud_client.is_connected", return_value=False):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_cloud_proxy_refresh_rotates_token(db_session):
+    """Cloud proxy refresh should store rotated refresh token."""
+    creds = _make_credentials(expired=True)
+
+    db_session.add(PlatformCredential(
+        platform_id="google_drive",
+        encrypted_data=encrypt(creds),
+        status="connected",
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.send_and_await = AsyncMock(return_value={
+        "type": "oauth_refresh_result",
+        "provider": "google_drive",
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_in": 3600,
+    })
+
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_client", return_value=mock_client):
+        result = await refresh_token_if_needed("google_drive", creds, db_session)
+
+    assert result["refresh_token"] == "new-refresh"

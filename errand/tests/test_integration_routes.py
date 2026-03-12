@@ -63,13 +63,14 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/authorize")
-    assert resp.status_code == 307
-    location = resp.headers["location"]
-    assert "accounts.google.com" in location
-    assert "goog-client-id" in location
-    assert "access_type=offline" in location
-    assert "drive" in location
-    assert "state=" in location
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "accounts.google.com" in url
+    assert "goog-client-id" in url
+    assert "access_type=offline" in url
+    assert "drive" in url
+    assert "state=" in url
 
 
 @pytest.mark.anyio
@@ -80,19 +81,79 @@ async def test_authorize_onedrive(integration_client, monkeypatch):
     monkeypatch.setenv("MICROSOFT_TENANT_ID", "my-tenant")
 
     resp = await client.get("/api/integrations/onedrive/authorize")
-    assert resp.status_code == 307
-    location = resp.headers["location"]
-    assert "login.microsoftonline.com/my-tenant" in location
-    assert "ms-client-id" in location
-    assert "Files.ReadWrite.All" in location
-    assert "state=" in location
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "login.microsoftonline.com/my-tenant" in url
+    assert "ms-client-id" in url
+    assert "Files.ReadWrite.All" in url
+    assert "state=" in url
 
 
 @pytest.mark.anyio
 async def test_authorize_not_configured(integration_client):
+    """No local credentials and no cloud — returns 404 with descriptive error."""
     client, _, _ = integration_client
     resp = await client.get("/api/integrations/google_drive/authorize")
     assert resp.status_code == 404
+    assert "configure client credentials or connect to errand cloud" in resp.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
+    """When no local credentials but cloud is connected, redirects to cloud service."""
+    client, session_factory, redis = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+    # No GOOGLE_CLIENT_ID/SECRET
+
+    # Create cloud PlatformCredential
+    async with session_factory() as session:
+        from models import Setting
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        session.add(Setting(key="cloud_service_url", value="https://cloud.example.com"))
+        await session.commit()
+
+    mock_ws = AsyncMock()
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_ws", return_value=mock_ws):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "cloud.example.com/oauth/google_drive/authorize" in url
+    assert "state=" in url
+
+    # Verify WS message was sent
+    mock_ws.send.assert_called_once()
+    import json
+    sent = json.loads(mock_ws.send.call_args[0][0])
+    assert sent["type"] == "oauth_initiate"
+    assert sent["provider"] == "google_drive"
+
+
+@pytest.mark.anyio
+async def test_authorize_cloud_proxy_ws_disconnected(integration_client, monkeypatch):
+    """Cloud credential exists but WS not connected — returns 503."""
+    client, session_factory, _ = integration_client
+    # No local credentials
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        await session.commit()
+
+    with patch("cloud_client.is_connected", return_value=False):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 503
 
 
 @pytest.mark.anyio
@@ -140,8 +201,8 @@ async def test_callback_google_success(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=test-state")
 
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/settings/integrations"
+    assert resp.status_code == 200
+    assert "Connected successfully" in resp.text
 
     # Verify state was consumed
     assert await redis.get("oauth_state:test-state") is None
@@ -178,8 +239,8 @@ async def test_callback_onedrive_success(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/onedrive/callback?code=AUTH_CODE&state=ms-state")
 
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/settings/integrations"
+    assert resp.status_code == 200
+    assert "Connected successfully" in resp.text
 
 
 @pytest.mark.anyio
@@ -190,8 +251,8 @@ async def test_callback_invalid_state(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=bad-state")
-    assert resp.status_code == 307
-    assert "error=invalid_state" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Invalid state token" in resp.text
 
 
 @pytest.mark.anyio
@@ -202,8 +263,8 @@ async def test_callback_missing_state(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE")
-    assert resp.status_code == 307
-    assert "error=invalid_state" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Invalid state token" in resp.text
 
 
 @pytest.mark.anyio
@@ -213,8 +274,8 @@ async def test_callback_oauth_error(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?error=access_denied")
-    assert resp.status_code == 307
-    assert "error=oauth_denied" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Authorization denied" in resp.text
 
 
 @pytest.mark.anyio
@@ -233,8 +294,8 @@ async def test_callback_token_exchange_failure(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/google_drive/callback?code=BAD_CODE&state=fail-state")
 
-    assert resp.status_code == 307
-    assert "error=token_exchange_failed" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Token exchange failed" in resp.text
 
 
 # --- Disconnect ---
@@ -317,10 +378,12 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
 
     assert data["google_drive"]["available"] is True
     assert data["google_drive"]["connected"] is True
+    assert data["google_drive"]["mode"] == "direct"
     assert data["google_drive"]["user_email"] == "user@gmail.com"
 
     assert data["onedrive"]["available"] is True
     assert data["onedrive"]["connected"] is False
+    assert data["onedrive"]["mode"] == "direct"
     assert "user_email" not in data["onedrive"]
 
 
@@ -333,8 +396,10 @@ async def test_status_not_available(integration_client):
     data = resp.json()
     assert data["google_drive"]["available"] is False
     assert data["google_drive"]["connected"] is False
+    assert data["google_drive"]["mode"] is None
     assert data["onedrive"]["available"] is False
     assert data["onedrive"]["connected"] is False
+    assert data["onedrive"]["mode"] is None
 
 
 @pytest.mark.anyio
@@ -348,3 +413,62 @@ async def test_status_partial_config(integration_client, monkeypatch):
     resp = await client.get("/api/integrations/status")
     data = resp.json()
     assert data["google_drive"]["available"] is False
+    assert data["google_drive"]["mode"] is None
+    assert data["google_drive"]["mcp_configured"] is False
+
+
+@pytest.mark.anyio
+async def test_status_cloud_mode(integration_client, monkeypatch):
+    """When no local credentials but cloud is connected, mode is 'cloud'."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+    # No GOOGLE_CLIENT_ID/SECRET
+
+    # Create cloud PlatformCredential
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["available"] is True
+    assert data["google_drive"]["mode"] == "cloud"
+    assert data["google_drive"]["connected"] is False
+    assert data["google_drive"]["mcp_configured"] is True
+
+
+@pytest.mark.anyio
+async def test_status_cloud_not_connected(integration_client, monkeypatch):
+    """MCP URL set, no local creds, cloud credential exists but not connected."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="error",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["available"] is False
+    assert data["google_drive"]["mode"] is None
+    assert data["google_drive"]["mcp_configured"] is True
+
+
+@pytest.mark.anyio
+async def test_status_mcp_configured_field(integration_client, monkeypatch):
+    """mcp_configured field reflects MCP URL presence."""
+    client, _, _ = integration_client
+    monkeypatch.setenv("ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp")
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["mcp_configured"] is False
+    assert data["onedrive"]["mcp_configured"] is True

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchCloudStorageStatus,
+  authorizeCloudStorage,
   disconnectCloudStorage,
   type CloudStorageProviderStatus,
 } from '../../composables/useApi'
+import { useTaskStore } from '../../stores/tasks'
 
 interface ProviderCard {
   id: string
@@ -40,8 +42,30 @@ async function loadStatus() {
   }
 }
 
-function connect(providerId: string) {
-  window.location.href = `/api/integrations/${providerId}/authorize`
+async function connect(providerId: string) {
+  try {
+    const data = await authorizeCloudStorage(providerId)
+    const w = 500, h = 600
+    const left = window.screenX + (window.outerWidth - w) / 2
+    const top = window.screenY + (window.outerHeight - h) / 2
+    const popup = window.open(
+      data.redirect_url,
+      'cloud-storage-auth',
+      `width=${w},height=${h},left=${left},top=${top}`,
+    )
+    if (!popup) {
+      toast.error('Popup blocked — please allow popups for this site')
+      return
+    }
+    const poll = setInterval(async () => {
+      if (popup.closed) {
+        clearInterval(poll)
+        await loadStatus()
+      }
+    }, 500)
+  } catch {
+    toast.error(`Failed to start ${PROVIDER_META[providerId]?.label ?? providerId} authorization`)
+  }
 }
 
 async function disconnect(providerId: string) {
@@ -56,6 +80,12 @@ async function disconnect(providerId: string) {
     disconnecting.value = null
   }
 }
+
+const taskStore = useTaskStore()
+
+watch(() => taskStore.cloudStorageChanged, () => {
+  loadStatus()
+})
 
 onMounted(loadStatus)
 </script>
@@ -80,7 +110,9 @@ onMounted(loadStatus)
             <div>
               <h4 class="font-medium text-gray-800">{{ provider.label }}</h4>
               <p v-if="!provider.status.available" class="text-xs text-gray-500">
-                Not configured — MCP server or client credentials not set
+                {{ provider.status.mcp_configured
+                  ? 'Configure credentials or connect to errand cloud to enable this integration'
+                  : 'Not configured — MCP server URL not set' }}
               </p>
               <p
                 v-else-if="provider.status.connected"

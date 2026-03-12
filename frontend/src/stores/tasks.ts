@@ -15,6 +15,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const cloudStatus = ref<CloudConnectionStatus>('not_configured')
+  const cloudStorageChanged = ref(0)
   const sseStatus = ref<EventStreamStatus>('disconnected')
   let pollTimer: ReturnType<typeof setInterval> | null = null
   let eventSource: EventSource | null = null
@@ -34,6 +35,11 @@ export const useTaskStore = defineStore('tasks', () => {
       const taskObj = msg.task as unknown as Record<string, unknown> | undefined
       const status = msg.status ?? taskObj?.status
       cloudStatus.value = (status as CloudConnectionStatus) ?? 'disconnected'
+      return
+    }
+
+    if (msg.event === 'cloud_storage_connected' || msg.event === 'cloud_storage_error') {
+      cloudStorageChanged.value++
       return
     }
 
@@ -73,7 +79,7 @@ export const useTaskStore = defineStore('tasks', () => {
     }
 
     // Handle named SSE events
-    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status']
+    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status', 'cloud_storage_connected', 'cloud_storage_error']
     for (const eventType of eventTypes) {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
         try {
@@ -226,5 +232,5 @@ export const useTaskStore = defineStore('tasks', () => {
     stopPolling()
   }
 
-  return { tasks, loading, error, sseStatus, cloudStatus, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, sseStatus, cloudStatus, cloudStorageChanged, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
 })

@@ -5,6 +5,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
 from cloud_client import CloudWebSocketClient, _run_token_refresh_loop
 
@@ -361,3 +362,176 @@ class TestTokenRefresh:
         call_args = mock_publish.call_args[0]
         assert call_args[0] == "cloud_status"
         assert call_args[1]["status"] == "error"
+
+
+class TestOAuthHandlers:
+    @pytest.fixture(autouse=True)
+    def _encryption_key(self, monkeypatch):
+        monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    @pytest.mark.asyncio
+    async def test_handle_oauth_tokens_stores_credentials(self):
+        """oauth_tokens message should store credentials in DB and publish SSE event."""
+        client = CloudWebSocketClient()
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        message = {
+            "type": "oauth_tokens",
+            "state": "test-state",
+            "provider": "google_drive",
+            "access_token": "ya29.test",
+            "refresh_token": "1//refresh",
+            "expires_in": 3600,
+            "user_email": "user@example.com",
+            "user_name": "Test User",
+        }
+
+        with patch("cloud_client.async_session", return_value=mock_ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_oauth_tokens(message)
+
+        mock_session.add.assert_called_once()
+        mock_session.commit.assert_called_once()
+        mock_publish.assert_called_once_with("cloud_storage_connected", {"provider": "google_drive"})
+
+    @pytest.mark.asyncio
+    async def test_handle_oauth_tokens_missing_provider(self):
+        """oauth_tokens with no provider should be ignored."""
+        client = CloudWebSocketClient()
+
+        with patch("cloud_client.async_session") as mock_session_maker, \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_oauth_tokens({"type": "oauth_tokens", "access_token": "tok"})
+
+        mock_session_maker.assert_not_called()
+        mock_publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_oauth_error_publishes_event(self):
+        """oauth_error message should log and publish SSE event."""
+        client = CloudWebSocketClient()
+
+        with patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_oauth_error({
+                "type": "oauth_error",
+                "state": "test-state",
+                "provider": "google_drive",
+                "error": "consent_denied",
+            })
+
+        mock_publish.assert_called_once_with(
+            "cloud_storage_error",
+            {"provider": "google_drive", "error": "consent_denied"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_dispatch_oauth_tokens(self):
+        """_handle_message should dispatch oauth_tokens to the handler."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+
+        with patch.object(client, "_handle_oauth_tokens", new_callable=AsyncMock) as mock_handler:
+            await client._handle_message(ws, {"type": "oauth_tokens", "provider": "google_drive"})
+
+        mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_message_dispatch_oauth_error(self):
+        """_handle_message should dispatch oauth_error to the handler."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+
+        with patch.object(client, "_handle_oauth_error", new_callable=AsyncMock) as mock_handler:
+            await client._handle_message(ws, {"type": "oauth_error", "provider": "google_drive", "error": "fail"})
+
+        mock_handler.assert_called_once()
+
+
+class TestSendAndAwait:
+    @pytest.mark.asyncio
+    async def test_send_and_await_success(self):
+        """send_and_await should return the response when it arrives."""
+        client = CloudWebSocketClient()
+        client._ws = AsyncMock()
+
+        async def deliver_response():
+            await asyncio.sleep(0.01)
+            client._resolve_pending_response({
+                "type": "oauth_refresh_result",
+                "provider": "google_drive",
+                "access_token": "new-token",
+                "expires_in": 3600,
+            })
+
+        asyncio.create_task(deliver_response())
+        result = await client.send_and_await(
+            {"type": "oauth_refresh", "provider": "google_drive", "refresh_token": "rt"},
+            response_type="oauth_refresh_result",
+            provider="google_drive",
+            timeout=5.0,
+        )
+
+        assert result is not None
+        assert result["access_token"] == "new-token"
+        client._ws.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_and_await_timeout(self):
+        """send_and_await should return None on timeout."""
+        client = CloudWebSocketClient()
+        client._ws = AsyncMock()
+
+        result = await client.send_and_await(
+            {"type": "oauth_refresh", "provider": "google_drive", "refresh_token": "rt"},
+            response_type="oauth_refresh_result",
+            provider="google_drive",
+            timeout=0.05,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_send_and_await_error_response(self):
+        """send_and_await should return None when oauth_error is received."""
+        client = CloudWebSocketClient()
+        client._ws = AsyncMock()
+
+        async def deliver_error():
+            await asyncio.sleep(0.01)
+            client._resolve_pending_response({
+                "type": "oauth_error",
+                "provider": "google_drive",
+                "error": "refresh_failed",
+            })
+
+        asyncio.create_task(deliver_error())
+        result = await client.send_and_await(
+            {"type": "oauth_refresh", "provider": "google_drive", "refresh_token": "rt"},
+            response_type="oauth_refresh_result",
+            provider="google_drive",
+            timeout=5.0,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_send_and_await_no_ws(self):
+        """send_and_await should return None when no WebSocket connection."""
+        client = CloudWebSocketClient()
+        client._ws = None
+
+        result = await client.send_and_await(
+            {"type": "oauth_refresh", "provider": "google_drive", "refresh_token": "rt"},
+            response_type="oauth_refresh_result",
+            provider="google_drive",
+        )
+
+        assert result is None
