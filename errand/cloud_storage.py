@@ -59,10 +59,22 @@ async def refresh_token_if_needed(
         return None
 
     client_creds = _get_client_credentials(provider)
-    if client_creds is None:
-        logger.warning("No client credentials for %s, cannot refresh", provider)
-        return None
+    if client_creds is not None:
+        # Direct refresh — use local client credentials
+        return await _direct_refresh(provider, credentials, refresh_token, client_creds, session)
 
+    # Cloud-proxy refresh — delegate to errand-cloud via WebSocket
+    return await _cloud_proxy_refresh(provider, credentials, refresh_token, session)
+
+
+async def _direct_refresh(
+    provider: str,
+    credentials: dict,
+    refresh_token: str,
+    client_creds: tuple[str, str],
+    session: AsyncSession,
+) -> dict | None:
+    """Refresh token directly with the provider's token endpoint."""
     client_id, client_secret = client_creds
     token_url = _get_token_url(provider)
 
@@ -93,11 +105,9 @@ async def refresh_token_if_needed(
             return None
         credentials["access_token"] = new_access_token
         credentials["expires_at"] = int(time.time()) + tokens.get("expires_in", 3600)
-        # Some providers rotate refresh tokens
         if "refresh_token" in tokens:
             credentials["refresh_token"] = tokens["refresh_token"]
 
-        # Update stored credentials
         result = await session.execute(
             select(PlatformCredential).where(
                 PlatformCredential.platform_id == provider
@@ -108,9 +118,66 @@ async def refresh_token_if_needed(
             cred.encrypted_data = encrypt(credentials)
             await session.commit()
 
-        logger.info("Refreshed %s access token", provider)
+        logger.info("Refreshed %s access token (direct)", provider)
         return credentials
 
     except Exception:
         logger.warning("Token refresh error for %s", provider, exc_info=True)
         return None
+
+
+async def _cloud_proxy_refresh(
+    provider: str,
+    credentials: dict,
+    refresh_token: str,
+    session: AsyncSession,
+) -> dict | None:
+    """Refresh token via cloud proxy over WebSocket."""
+    from cloud_client import get_client, is_connected
+
+    if not is_connected():
+        logger.warning("Cloud WebSocket not connected, cannot refresh %s token", provider)
+        return None
+
+    client = get_client()
+    if not client:
+        logger.warning("No active cloud client, cannot refresh %s token", provider)
+        return None
+
+    result = await client.send_and_await(
+        message={
+            "type": "oauth_refresh",
+            "provider": provider,
+            "refresh_token": refresh_token,
+        },
+        response_type="oauth_refresh_result",
+        provider=provider,
+        timeout=30.0,
+    )
+
+    if result is None:
+        logger.warning("Cloud proxy refresh failed for %s", provider)
+        return None
+
+    new_access_token = result.get("access_token")
+    if not new_access_token:
+        logger.warning("Cloud proxy refresh for %s returned no access_token", provider)
+        return None
+
+    credentials["access_token"] = new_access_token
+    credentials["expires_at"] = int(time.time()) + result.get("expires_in", 3600)
+    if "refresh_token" in result:
+        credentials["refresh_token"] = result["refresh_token"]
+
+    db_result = await session.execute(
+        select(PlatformCredential).where(
+            PlatformCredential.platform_id == provider
+        )
+    )
+    cred = db_result.scalar_one_or_none()
+    if cred:
+        cred.encrypted_data = encrypt(credentials)
+        await session.commit()
+
+    logger.info("Refreshed %s access token (cloud proxy)", provider)
+    return credentials

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchCloudStorageStatus,
   disconnectCloudStorage,
   type CloudStorageProviderStatus,
 } from '../../composables/useApi'
+import { useTaskStore } from '../../stores/tasks'
 
 interface ProviderCard {
   id: string
@@ -57,6 +58,12 @@ async function disconnect(providerId: string) {
   }
 }
 
+const taskStore = useTaskStore()
+
+watch(() => taskStore.cloudStorageChanged, () => {
+  loadStatus()
+})
+
 onMounted(loadStatus)
 </script>
 
@@ -80,7 +87,9 @@ onMounted(loadStatus)
             <div>
               <h4 class="font-medium text-gray-800">{{ provider.label }}</h4>
               <p v-if="!provider.status.available" class="text-xs text-gray-500">
-                Not configured — MCP server or client credentials not set
+                {{ provider.status.mcp_configured
+                  ? 'Configure credentials or connect to errand cloud to enable this integration'
+                  : 'Not configured — MCP server URL not set' }}
               </p>
               <p
                 v-else-if="provider.status.connected"

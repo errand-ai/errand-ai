@@ -353,6 +353,8 @@ export async function verifyPlatformCredentials(platformId: string): Promise<{ s
 export interface CloudStorageProviderStatus {
   available: boolean
   connected: boolean
+  mode: 'direct' | 'cloud' | null
+  mcp_configured: boolean
   user_email?: string
   user_name?: string
 }

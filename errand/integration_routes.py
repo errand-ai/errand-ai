@@ -14,12 +14,12 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
 from events import get_valkey
-from models import PlatformCredential
+from models import PlatformCredential, Setting
 from platforms.credentials import encrypt, load_credentials
 
 logger = logging.getLogger(__name__)
@@ -92,46 +92,121 @@ def _get_client_credentials(config: ProviderConfig) -> tuple[str, str]:
     return client_id, client_secret
 
 
-def _provider_available(provider: str) -> bool:
-    """Check if a provider's MCP URL and client credentials are configured."""
-    providers = _init_providers()
-    if provider not in providers:
-        return False
-    config = providers[provider]
+async def _cloud_available(session: AsyncSession) -> bool:
+    """Check if cloud PlatformCredential exists with status 'connected'."""
+    result = await session.execute(
+        select(PlatformCredential).where(
+            PlatformCredential.platform_id == "cloud",
+            PlatformCredential.status == "connected",
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+def _has_local_credentials(config: ProviderConfig) -> bool:
+    """Check if local OAuth client credentials are configured."""
     client_id = os.environ.get(config.client_id_env, "")
     client_secret = os.environ.get(config.client_secret_env, "")
-    if not client_id or not client_secret:
-        return False
+    return bool(client_id and client_secret)
+
+
+def _has_mcp_url(provider: str) -> bool:
+    """Check if the provider's MCP URL is configured."""
     url_env = "GDRIVE_MCP_URL" if provider == "google_drive" else "ONEDRIVE_MCP_URL"
     return bool(os.environ.get(url_env, ""))
+
+
+async def _provider_available(provider: str, session: AsyncSession) -> tuple[bool, str | None]:
+    """Check provider availability, returning (available, mode).
+
+    Mode is "direct" (local credentials), "cloud" (cloud proxy), or None.
+    """
+    providers = _init_providers()
+    if provider not in providers:
+        return False, None
+    config = providers[provider]
+    if not _has_mcp_url(provider):
+        return False, None
+    if _has_local_credentials(config):
+        return True, "direct"
+    if await _cloud_available(session):
+        return True, "cloud"
+    return False, None
+
+
+async def _get_cloud_service_url(session: AsyncSession) -> str:
+    """Get the cloud service URL from settings."""
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_service_url")
+    )
+    setting = result.scalar_one_or_none()
+    return setting.value if setting and setting.value else "https://service.errand.cloud"
 
 
 @router.get("/{provider}/authorize")
 async def authorize(
     provider: str,
     request: Request,
+    session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_user),
 ):
     config = _get_provider(provider)
-    client_id, _ = _get_client_credentials(config)
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
 
-    # Generate CSRF state token and store in Valkey
+    if _has_local_credentials(config):
+        # Direct flow — use local client credentials
+        client_id, _ = _get_client_credentials(config)
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
+
+        state = secrets.token_urlsafe(32)
+        valkey = get_valkey()
+        if valkey:
+            await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
+
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": config.scopes,
+            "state": state,
+            **config.extra_auth_params,
+        }
+        return RedirectResponse(url=f"{config.authorize_url}?{urlencode(params)}")
+
+    # Cloud-proxy flow — delegate to errand-cloud
+    if not await _cloud_available(session):
+        raise HTTPException(
+            status_code=404,
+            detail="Provider not configured — configure client credentials or connect to errand cloud",
+        )
+
+    from cloud_client import is_connected as cloud_ws_connected
+    if not cloud_ws_connected():
+        raise HTTPException(
+            status_code=503,
+            detail="Cloud service not connected — try again later",
+        )
+
     state = secrets.token_urlsafe(32)
     valkey = get_valkey()
     if valkey:
         await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
 
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": config.scopes,
-        "state": state,
-        **config.extra_auth_params,
-    }
-    return RedirectResponse(url=f"{config.authorize_url}?{urlencode(params)}")
+    # Send oauth_initiate over WebSocket
+    import json as _json
+    from cloud_client import get_ws
+    ws = get_ws()
+    if ws:
+        await ws.send(_json.dumps({
+            "type": "oauth_initiate",
+            "state": state,
+            "provider": provider,
+        }))
+
+    cloud_service_url = await _get_cloud_service_url(session)
+    return RedirectResponse(
+        url=f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"
+    )
 
 
 @router.get("/{provider}/callback")
@@ -265,10 +340,15 @@ async def integration_status(
 ):
     result = {}
     for provider in ("google_drive", "onedrive"):
-        available = _provider_available(provider)
+        available, mode = await _provider_available(provider, session)
         creds = await load_credentials(provider, session)
         connected = creds is not None
-        entry: dict = {"available": available, "connected": connected}
+        entry: dict = {
+            "available": available,
+            "connected": connected,
+            "mode": mode,
+            "mcp_configured": _has_mcp_url(provider),
+        }
         if connected and creds:
             entry["user_email"] = creds.get("user_email", "")
             entry["user_name"] = creds.get("user_name", "")

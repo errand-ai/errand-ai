@@ -90,9 +90,67 @@ async def test_authorize_onedrive(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_authorize_not_configured(integration_client):
+    """No local credentials and no cloud — returns 404 with descriptive error."""
     client, _, _ = integration_client
     resp = await client.get("/api/integrations/google_drive/authorize")
     assert resp.status_code == 404
+    assert "configure client credentials or connect to errand cloud" in resp.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
+    """When no local credentials but cloud is connected, redirects to cloud service."""
+    client, session_factory, redis = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+    # No GOOGLE_CLIENT_ID/SECRET
+
+    # Create cloud PlatformCredential
+    async with session_factory() as session:
+        from models import Setting
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        session.add(Setting(key="cloud_service_url", value="https://cloud.example.com"))
+        await session.commit()
+
+    mock_ws = AsyncMock()
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_ws", return_value=mock_ws):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 307
+    location = resp.headers["location"]
+    assert "cloud.example.com/oauth/google_drive/authorize" in location
+    assert "state=" in location
+
+    # Verify WS message was sent
+    mock_ws.send.assert_called_once()
+    import json
+    sent = json.loads(mock_ws.send.call_args[0][0])
+    assert sent["type"] == "oauth_initiate"
+    assert sent["provider"] == "google_drive"
+
+
+@pytest.mark.anyio
+async def test_authorize_cloud_proxy_ws_disconnected(integration_client, monkeypatch):
+    """Cloud credential exists but WS not connected — returns 503."""
+    client, session_factory, _ = integration_client
+    # No local credentials
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        await session.commit()
+
+    with patch("cloud_client.is_connected", return_value=False):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 503
 
 
 @pytest.mark.anyio
@@ -317,10 +375,12 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
 
     assert data["google_drive"]["available"] is True
     assert data["google_drive"]["connected"] is True
+    assert data["google_drive"]["mode"] == "direct"
     assert data["google_drive"]["user_email"] == "user@gmail.com"
 
     assert data["onedrive"]["available"] is True
     assert data["onedrive"]["connected"] is False
+    assert data["onedrive"]["mode"] == "direct"
     assert "user_email" not in data["onedrive"]
 
 
@@ -333,8 +393,10 @@ async def test_status_not_available(integration_client):
     data = resp.json()
     assert data["google_drive"]["available"] is False
     assert data["google_drive"]["connected"] is False
+    assert data["google_drive"]["mode"] is None
     assert data["onedrive"]["available"] is False
     assert data["onedrive"]["connected"] is False
+    assert data["onedrive"]["mode"] is None
 
 
 @pytest.mark.anyio
@@ -348,3 +410,62 @@ async def test_status_partial_config(integration_client, monkeypatch):
     resp = await client.get("/api/integrations/status")
     data = resp.json()
     assert data["google_drive"]["available"] is False
+    assert data["google_drive"]["mode"] is None
+    assert data["google_drive"]["mcp_configured"] is False
+
+
+@pytest.mark.anyio
+async def test_status_cloud_mode(integration_client, monkeypatch):
+    """When no local credentials but cloud is connected, mode is 'cloud'."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+    # No GOOGLE_CLIENT_ID/SECRET
+
+    # Create cloud PlatformCredential
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["available"] is True
+    assert data["google_drive"]["mode"] == "cloud"
+    assert data["google_drive"]["connected"] is False
+    assert data["google_drive"]["mcp_configured"] is True
+
+
+@pytest.mark.anyio
+async def test_status_cloud_not_connected(integration_client, monkeypatch):
+    """MCP URL set, no local creds, cloud credential exists but not connected."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="error",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["available"] is False
+    assert data["google_drive"]["mode"] is None
+    assert data["google_drive"]["mcp_configured"] is True
+
+
+@pytest.mark.anyio
+async def test_status_mcp_configured_field(integration_client, monkeypatch):
+    """mcp_configured field reflects MCP URL presence."""
+    client, _, _ = integration_client
+    monkeypatch.setenv("ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp")
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["mcp_configured"] is False
+    assert data["onedrive"]["mcp_configured"] is True

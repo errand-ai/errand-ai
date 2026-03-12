@@ -80,10 +80,10 @@ describe('CloudStorageIntegration', () => {
     expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(false)
   })
 
-  it('shows greyed-out state when not available', async () => {
+  it('shows "MCP server URL not set" when not available and no MCP URL', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: { available: false, connected: false },
-      onedrive: { available: false, connected: false },
+      google_drive: { available: false, connected: false, mode: null, mcp_configured: false },
+      onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
     })
 
     const wrapper = mount(CloudStorageIntegration)
@@ -91,8 +91,35 @@ describe('CloudStorageIntegration', () => {
 
     const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
     expect(card.classes()).toContain('opacity-60')
-    expect(card.text()).toContain('Not configured')
+    expect(card.text()).toContain('MCP server URL not set')
     expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(false)
+  })
+
+  it('shows "configure credentials or connect to errand cloud" when MCP configured but no auth', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: { available: false, connected: false, mode: null, mcp_configured: true },
+      onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
+    })
+
+    const wrapper = mount(CloudStorageIntegration)
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
+    expect(card.text()).toContain('Configure credentials or connect to errand cloud')
+  })
+
+  it('shows Connect button for cloud mode provider', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: { available: true, connected: false, mode: 'cloud', mcp_configured: true },
+      onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
+    })
+
+    const wrapper = mount(CloudStorageIntegration)
+    await flushPromises()
+
+    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
+    expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(true)
+    expect(card.find('[data-testid="cloud-connect-google_drive"]').text()).toBe('Connect')
   })
 
   it('disconnect calls API and refreshes status', async () => {
