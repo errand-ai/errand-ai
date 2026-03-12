@@ -3,6 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchCloudStorageStatus,
+  authorizeCloudStorage,
   disconnectCloudStorage,
   type CloudStorageProviderStatus,
 } from '../../composables/useApi'
@@ -41,8 +42,30 @@ async function loadStatus() {
   }
 }
 
-function connect(providerId: string) {
-  window.location.href = `/api/integrations/${providerId}/authorize`
+async function connect(providerId: string) {
+  try {
+    const data = await authorizeCloudStorage(providerId)
+    const w = 500, h = 600
+    const left = window.screenX + (window.outerWidth - w) / 2
+    const top = window.screenY + (window.outerHeight - h) / 2
+    const popup = window.open(
+      data.redirect_url,
+      'cloud-storage-auth',
+      `width=${w},height=${h},left=${left},top=${top}`,
+    )
+    if (!popup) {
+      toast.error('Popup blocked — please allow popups for this site')
+      return
+    }
+    const poll = setInterval(async () => {
+      if (popup.closed) {
+        clearInterval(poll)
+        await loadStatus()
+      }
+    }, 500)
+  } catch {
+    toast.error(`Failed to start ${PROVIDER_META[providerId]?.label ?? providerId} authorization`)
+  }
 }
 
 async function disconnect(providerId: string) {

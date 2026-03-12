@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,7 +172,7 @@ async def authorize(
             "state": state,
             **config.extra_auth_params,
         }
-        return RedirectResponse(url=f"{config.authorize_url}?{urlencode(params)}")
+        return {"redirect_url": f"{config.authorize_url}?{urlencode(params)}"}
 
     # Cloud-proxy flow — delegate to errand-cloud
     if not await _cloud_available(session):
@@ -208,9 +208,17 @@ async def authorize(
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return RedirectResponse(
-        url=f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"
-    )
+    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
+
+
+def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
+    """Return an HTML page that closes the popup window."""
+    color = "#dc2626" if error else "#16a34a"
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui">
+<p style="color:{color};font-size:1.1rem">{message}</p>
+<script>setTimeout(function(){{ window.close(); }}, 1500);</script>
+</body></html>""")
 
 
 @router.get("/{provider}/callback")
@@ -226,10 +234,10 @@ async def callback(
 
     if error:
         logger.warning("OAuth error for %s: %s", provider, error)
-        return RedirectResponse(url="/settings/integrations?error=oauth_denied")
+        return _popup_close_response("Authorization denied", error=True)
 
     if not code:
-        return RedirectResponse(url="/settings/integrations?error=missing_code")
+        return _popup_close_response("Missing authorization code", error=True)
 
     # Validate CSRF state token
     valkey = get_valkey()
@@ -237,12 +245,12 @@ async def callback(
         stored_provider = await valkey.get(f"oauth_state:{state}")
         if stored_provider != provider:
             logger.warning("OAuth state mismatch for %s", provider)
-            return RedirectResponse(url="/settings/integrations?error=invalid_state")
+            return _popup_close_response("Invalid state token", error=True)
         await valkey.delete(f"oauth_state:{state}")
     elif valkey:
         # State parameter missing — reject
         logger.warning("OAuth callback missing state for %s", provider)
-        return RedirectResponse(url="/settings/integrations?error=invalid_state")
+        return _popup_close_response("Invalid state token", error=True)
 
     client_id, client_secret = _get_client_credentials(config)
     base_url = str(request.base_url).rstrip("/")
@@ -264,7 +272,7 @@ async def callback(
 
     if token_resp.status_code != 200:
         logger.error("Token exchange failed for %s: %s", provider, token_resp.text)
-        return RedirectResponse(url="/settings/integrations?error=token_exchange_failed")
+        return _popup_close_response("Token exchange failed", error=True)
 
     tokens = token_resp.json()
     access_token = tokens.get("access_token", "")
@@ -272,7 +280,7 @@ async def callback(
     expires_in = tokens.get("expires_in", 3600)
 
     if not access_token:
-        return RedirectResponse(url="/settings/integrations?error=no_access_token")
+        return _popup_close_response("No access token received", error=True)
 
     # Fetch user info
     user_email = ""
@@ -318,7 +326,7 @@ async def callback(
     ))
     await session.commit()
 
-    return RedirectResponse(url="/settings/integrations")
+    return _popup_close_response("Connected successfully")
 
 
 @router.delete("/{provider}")
@@ -334,6 +342,73 @@ async def disconnect(
     )
     await session.commit()
     return {"status": "ok"}
+
+
+@router.post("/{provider}/refresh")
+async def refresh_token(
+    provider: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Internal endpoint — refresh a cloud storage OAuth token via cloud proxy.
+
+    Called by the worker when it needs a fresh token but has no WebSocket
+    connection to errand-cloud.  No user auth required (cluster-internal only).
+    """
+    _get_provider(provider)  # validate provider name
+    creds = await load_credentials(provider, session)
+    if not creds:
+        raise HTTPException(status_code=404, detail=f"No credentials for {provider}")
+
+    refresh_tok = creds.get("refresh_token", "")
+    if not refresh_tok:
+        raise HTTPException(status_code=400, detail="No refresh token available")
+
+    from cloud_client import get_client, is_connected
+
+    if not is_connected():
+        raise HTTPException(status_code=503, detail="Cloud WebSocket not connected")
+
+    client = get_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="No active cloud client")
+
+    result = await client.send_and_await(
+        message={
+            "type": "oauth_refresh",
+            "provider": provider,
+            "refresh_token": refresh_tok,
+        },
+        response_type="oauth_refresh_result",
+        provider=provider,
+        timeout=30.0,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="Cloud proxy refresh failed")
+
+    new_access_token = result.get("access_token")
+    if not new_access_token:
+        raise HTTPException(status_code=502, detail="No access token in refresh response")
+
+    import time as _time
+    creds["access_token"] = new_access_token
+    creds["expires_at"] = int(_time.time()) + result.get("expires_in", 3600)
+    if "refresh_token" in result:
+        creds["refresh_token"] = result["refresh_token"]
+
+    db_result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == provider)
+    )
+    cred = db_result.scalar_one_or_none()
+    if cred:
+        cred.encrypted_data = encrypt(creds)
+        await session.commit()
+
+    logger.info("Refreshed %s access token via internal refresh endpoint", provider)
+    return {
+        "access_token": new_access_token,
+        "expires_in": result.get("expires_in", 3600),
+    }
 
 
 @router.get("/status")

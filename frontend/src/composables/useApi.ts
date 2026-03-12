@@ -370,6 +370,12 @@ export async function fetchCloudStorageStatus(): Promise<CloudStorageStatus> {
   return res.json()
 }
 
+export async function authorizeCloudStorage(provider: string): Promise<{ redirect_url: string }> {
+  const res = await authFetch(`${BASE}/integrations/${provider}/authorize`)
+  if (!res.ok) throw new Error(`Failed to start authorization: ${res.status}`)
+  return res.json()
+}
+
 export async function disconnectCloudStorage(provider: string): Promise<void> {
   const res = await authFetch(`${BASE}/integrations/${provider}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to disconnect ${provider}: ${res.status}`)

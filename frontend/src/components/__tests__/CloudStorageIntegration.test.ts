@@ -8,10 +8,12 @@ vi.mock('vue-sonner', () => ({
 }))
 
 const mockFetchCloudStorageStatus = vi.fn()
+const mockAuthorizeCloudStorage = vi.fn()
 const mockDisconnectCloudStorage = vi.fn()
 
 vi.mock('../../composables/useApi', () => ({
   fetchCloudStorageStatus: (...args: unknown[]) => mockFetchCloudStorageStatus(...args),
+  authorizeCloudStorage: (...args: unknown[]) => mockAuthorizeCloudStorage(...args),
   disconnectCloudStorage: (...args: unknown[]) => mockDisconnectCloudStorage(...args),
 }))
 
@@ -150,30 +152,31 @@ describe('CloudStorageIntegration', () => {
     expect(mockFetchCloudStorageStatus).toHaveBeenCalledTimes(2)
   })
 
-  it('connect button navigates to authorize URL', async () => {
+  it('connect button opens OAuth popup', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
       google_drive: { available: true, connected: false },
       onedrive: { available: true, connected: false },
     })
-
-    // Mock window.location
-    const originalLocation = window.location
-    Object.defineProperty(window, 'location', {
-      writable: true,
-      value: { ...originalLocation, href: '' },
+    mockAuthorizeCloudStorage.mockResolvedValue({
+      redirect_url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
     })
+
+    const mockPopup = { closed: false }
+    vi.spyOn(window, 'open').mockReturnValue(mockPopup as unknown as Window)
 
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
     await wrapper.find('[data-testid="cloud-connect-google_drive"]').trigger('click')
+    await flushPromises()
 
-    expect(window.location.href).toBe('/api/integrations/google_drive/authorize')
+    expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('google_drive')
+    expect(window.open).toHaveBeenCalledWith(
+      'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
+      'cloud-storage-auth',
+      expect.stringContaining('width=500'),
+    )
 
-    // Restore
-    Object.defineProperty(window, 'location', {
-      writable: true,
-      value: originalLocation,
-    })
+    vi.restoreAllMocks()
   })
 })

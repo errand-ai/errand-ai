@@ -63,13 +63,14 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/authorize")
-    assert resp.status_code == 307
-    location = resp.headers["location"]
-    assert "accounts.google.com" in location
-    assert "goog-client-id" in location
-    assert "access_type=offline" in location
-    assert "drive" in location
-    assert "state=" in location
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "accounts.google.com" in url
+    assert "goog-client-id" in url
+    assert "access_type=offline" in url
+    assert "drive" in url
+    assert "state=" in url
 
 
 @pytest.mark.anyio
@@ -80,12 +81,13 @@ async def test_authorize_onedrive(integration_client, monkeypatch):
     monkeypatch.setenv("MICROSOFT_TENANT_ID", "my-tenant")
 
     resp = await client.get("/api/integrations/onedrive/authorize")
-    assert resp.status_code == 307
-    location = resp.headers["location"]
-    assert "login.microsoftonline.com/my-tenant" in location
-    assert "ms-client-id" in location
-    assert "Files.ReadWrite.All" in location
-    assert "state=" in location
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "login.microsoftonline.com/my-tenant" in url
+    assert "ms-client-id" in url
+    assert "Files.ReadWrite.All" in url
+    assert "state=" in url
 
 
 @pytest.mark.anyio
@@ -120,10 +122,11 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
          patch("cloud_client.get_ws", return_value=mock_ws):
         resp = await client.get("/api/integrations/google_drive/authorize")
 
-    assert resp.status_code == 307
-    location = resp.headers["location"]
-    assert "cloud.example.com/oauth/google_drive/authorize" in location
-    assert "state=" in location
+    assert resp.status_code == 200
+    data = resp.json()
+    url = data["redirect_url"]
+    assert "cloud.example.com/oauth/google_drive/authorize" in url
+    assert "state=" in url
 
     # Verify WS message was sent
     mock_ws.send.assert_called_once()
@@ -198,8 +201,8 @@ async def test_callback_google_success(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=test-state")
 
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/settings/integrations"
+    assert resp.status_code == 200
+    assert "Connected successfully" in resp.text
 
     # Verify state was consumed
     assert await redis.get("oauth_state:test-state") is None
@@ -236,8 +239,8 @@ async def test_callback_onedrive_success(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/onedrive/callback?code=AUTH_CODE&state=ms-state")
 
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/settings/integrations"
+    assert resp.status_code == 200
+    assert "Connected successfully" in resp.text
 
 
 @pytest.mark.anyio
@@ -248,8 +251,8 @@ async def test_callback_invalid_state(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE&state=bad-state")
-    assert resp.status_code == 307
-    assert "error=invalid_state" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Invalid state token" in resp.text
 
 
 @pytest.mark.anyio
@@ -260,8 +263,8 @@ async def test_callback_missing_state(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?code=AUTH_CODE")
-    assert resp.status_code == 307
-    assert "error=invalid_state" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Invalid state token" in resp.text
 
 
 @pytest.mark.anyio
@@ -271,8 +274,8 @@ async def test_callback_oauth_error(integration_client, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
 
     resp = await client.get("/api/integrations/google_drive/callback?error=access_denied")
-    assert resp.status_code == 307
-    assert "error=oauth_denied" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Authorization denied" in resp.text
 
 
 @pytest.mark.anyio
@@ -291,8 +294,8 @@ async def test_callback_token_exchange_failure(integration_client, monkeypatch):
     with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/integrations/google_drive/callback?code=BAD_CODE&state=fail-state")
 
-    assert resp.status_code == 307
-    assert "error=token_exchange_failed" in resp.headers["location"]
+    assert resp.status_code == 200
+    assert "Token exchange failed" in resp.text
 
 
 # --- Disconnect ---

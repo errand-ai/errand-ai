@@ -674,10 +674,12 @@ CLOUD_STORAGE_INSTRUCTIONS = """
 
 ## Cloud Storage
 
-You have access to cloud storage via MCP servers. Available tools allow you to:
-- List, read, create, update, and delete files and folders
-- Search for files by name or content
-- Use path-based file access (e.g. `/Documents/report.docx`)
+You have access to cloud storage via MCP servers. Tools are prefixed by provider:
+- `gdrive_*` tools operate on Google Drive
+- `onedrive_*` tools operate on OneDrive
+
+Available operations: list files, read, write, delete, file info, create folder, move.
+Use path-based file access (e.g. `/Documents/report.docx`).
 
 ### Concurrency (ETags)
 Some operations return an `etag` field. When updating a file, pass the etag you received from the read operation. If the file was modified by another process since you read it, the update will fail with a conflict error — re-read the file and retry.
