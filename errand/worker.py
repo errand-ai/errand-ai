@@ -1300,6 +1300,7 @@ async def run() -> None:
     shutdown_event = asyncio.Event()
 
     signal.signal(signal.SIGTERM, handle_sigterm)
+    start_health_server()
     await init_valkey()
 
     # Initialise container runtime
@@ -1309,8 +1310,6 @@ async def run() -> None:
     except ValueError as e:
         logger.error("Failed to initialise container runtime: %s", e)
         raise SystemExit(1)
-
-    start_health_server()
 
     # For Docker mode, keep docker_client reference for Playwright management and pre-pull
     if isinstance(container_runtime, DockerRuntime):
