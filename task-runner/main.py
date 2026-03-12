@@ -19,6 +19,8 @@ from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHook
 from agents.mcp import MCPServerStreamableHttp
 from agents.run import CallModelData, ModelInputData
 
+from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list
+
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
@@ -221,12 +223,14 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
             if headers:
                 params["headers"] = headers
 
-            server = MCPServerStreamableHttp(
-                name=name,
-                params=params,
-                cache_tools_list=True,
-                client_session_timeout_seconds=300,
-            )
+            kwargs = {
+                "name": name,
+                "params": params,
+                "cache_tools_list": True,
+                "client_session_timeout_seconds": 300,
+            }
+
+            server = MCPServerStreamableHttp(**kwargs)
             connected = await stack.enter_async_context(server)
             servers.append(connected)
             logger.info("Connected to MCP server '%s' at %s", name, url)
@@ -401,31 +405,46 @@ async def main():
     client = AsyncOpenAI(base_url=env["OPENAI_BASE_URL"], api_key=env["OPENAI_API_KEY"])
     set_default_openai_client(client)
 
-    # 4. Parse MCP config and connect to servers
+    # 4. Parse MCP config and connect to servers with lazy tool loading
     mcp_config = parse_mcp_config(mcp_config_raw)
+    hot_list = get_hot_list()
+    tool_filter = create_tool_filter()
 
     async with AsyncExitStack() as stack:
+        # Connect without tool_filter so list_tools() works for catalog building
         mcp_servers = await connect_mcp_servers(mcp_config, stack)
 
-        # Diagnostic: list tools from each MCP server
+        # Build compact tool catalog and collect all known tool names
+        catalog, all_known_tools = await build_tool_catalog(mcp_servers, hot_list)
+        logger.info("Tool catalog: %d known tools, catalog length=%d chars", len(all_known_tools), len(catalog))
+        if all_known_tools:
+            logger.debug("All known tools: %s", ", ".join(sorted(all_known_tools)))
+        if catalog:
+            logger.debug("Catalog content:\n%s", catalog)
+
+        # Now attach the tool filter to each server for agent runtime filtering
         for server in mcp_servers:
-            try:
-                tools = await server.list_tools()
-                tool_names = [t.name for t in tools]
-                logger.info(
-                    "MCP server '%s' provides %d tool(s): %s",
-                    server.name, len(tools), ", ".join(tool_names) if tool_names else "(none)",
-                )
-            except Exception as e:
-                logger.error("MCP server '%s' failed to list tools: %s", server.name, e)
+            server.tool_filter = tool_filter
+
+        # Build system prompt with catalog injected before output instructions
+        full_instructions = system_prompt
+        if catalog:
+            full_instructions += "\n\n" + catalog
+        full_instructions += OUTPUT_INSTRUCTIONS
+
+        # Create tool visibility context initialized with hot list
+        visibility_ctx = ToolVisibilityContext(
+            enabled_tools=set(hot_list),
+            all_known_tools=all_known_tools,
+        )
 
         # 5. Create agent with reasoning settings
         reasoning_effort = get_reasoning_effort()
         agent = Agent(
             name="TaskRunner",
-            instructions=system_prompt + OUTPUT_INSTRUCTIONS,
+            instructions=full_instructions,
             model=env["OPENAI_MODEL"],
-            tools=[execute_command],
+            tools=[execute_command, discover_tools],
             mcp_servers=mcp_servers if mcp_servers else [],
             model_settings=ModelSettings(
                 reasoning=Reasoning(effort=reasoning_effort, generate_summary="auto"),
@@ -435,7 +454,7 @@ async def main():
         try:
             max_turns = int(os.environ.get("MAX_TURNS", "30"))
             run_config = RunConfig(call_model_input_filter=filter_model_input)
-            result = Runner.run_streamed(agent, user_prompt, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
+            result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
 
             # Iterate streaming events, emitting thinking/reasoning to stderr
             async for event in result.stream_events():

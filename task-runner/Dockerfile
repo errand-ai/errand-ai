@@ -47,6 +47,7 @@ RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
 FROM gcr.io/distroless/python3-debian12:nonroot
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 COPY main.py /app/main.py
+COPY tool_registry.py /app/tool_registry.py
 
 # Copy shared libraries first (needed by all binaries below)
 COPY --from=git-builder /staged-libs/ /
