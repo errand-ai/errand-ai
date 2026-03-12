@@ -10,6 +10,7 @@ server:
 worker:
   replicaCount: 0
   maxTurns: "200"
+  healthPort: 8080
 
 taskRunner:
   image:

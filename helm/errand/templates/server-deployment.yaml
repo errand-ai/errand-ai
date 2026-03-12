@@ -111,6 +111,22 @@ spec:
                   name: {{ .Values.onedrive.existingSecret }}
                   key: MICROSOFT_TENANT_ID
             {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           {{- if .Values.twitter.existingSecret }}
           envFrom:
             - secretRef:
