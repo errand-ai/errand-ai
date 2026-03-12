@@ -6,7 +6,7 @@
 
 ## 2. Compact Tool Catalog
 
-- [x] 2.1 Implement `build_tool_catalog()` that takes a list of connected MCP servers and the hot list, calls `list_tools()` on each, and returns an XML string with server names and tool name/description pairs (excluding hot-listed tools)
+- [x] 2.1 Implement `build_tool_catalog()` that takes a list of connected MCP servers and the hot list, calls `list_tools()` on each, and returns an XML string with tool name/description pairs (excluding hot-listed tools)
 - [x] 2.2 Truncate tool descriptions to first sentence or 100 characters in catalog entries
 - [x] 2.3 Return empty string if all tools are hot-listed (no catalog needed)
 
@@ -17,7 +17,7 @@
 
 ## 4. Wire into Task Runner main.py
 
-- [x] 4.1 Update `connect_mcp_servers()` to accept a `tool_filter` callable and pass it to each `MCPServerStreamableHttp` constructor
+- [x] 4.1 Connect MCP servers without tool_filter, then attach `server.tool_filter` post-connect (SDK requires run_context for dynamic filters, which isn't available at connect time)
 - [x] 4.2 After connecting servers, call `build_tool_catalog()` and append the catalog to the system prompt (before `OUTPUT_INSTRUCTIONS`)
 - [x] 4.3 Create `ToolVisibilityContext` initialized with hot list, wrap in `RunContextWrapper`, pass to `Runner.run_streamed()`
 - [x] 4.4 Add `discover_tools` to the agent's `tools` list alongside `execute_command`
@@ -33,5 +33,5 @@
 - [x] 6.2 Test `create_tool_filter()` allows hot-listed tools through and blocks others, then allows tools after they're added to `enabled_tools`
 - [x] 6.3 Test `build_tool_catalog()` generates correct XML, excludes hot-listed tools, and returns empty string when all tools are hot-listed
 - [x] 6.4 Test `discover_tools` adds tool names to enabled set and reports unknown tools
-- [x] 6.5 Test `connect_mcp_servers()` passes `tool_filter` to `MCPServerStreamableHttp`
+- [x] 6.5 Test `connect_mcp_servers()` does not pass `tool_filter` to constructor (filter attached post-connect)
 - [x] 6.6 Integration test: agent with lazy loading can discover and call a deferred MCP tool

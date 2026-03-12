@@ -3,6 +3,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
+from xml.sax.saxutils import escape as xml_escape
 
 from agents import function_tool
 from agents.run_context import RunContextWrapper
@@ -81,8 +82,9 @@ async def build_tool_catalog(servers: list, hot_list: set[str]) -> tuple[str, se
         # Collect deferred (non-hot) tools for catalog display
         for t in tools:
             if t.name not in hot_list:
-                desc = _truncate_description(t.description or "")
-                deferred_lines.append(f"- {t.name}: {desc}")
+                desc = xml_escape(_truncate_description(t.description or ""))
+                name = xml_escape(t.name)
+                deferred_lines.append(f"- {name}: {desc}")
 
     if not deferred_lines:
         return "", all_known_tools

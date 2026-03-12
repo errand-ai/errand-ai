@@ -418,9 +418,9 @@ async def main():
         catalog, all_known_tools = await build_tool_catalog(mcp_servers, hot_list)
         logger.info("Tool catalog: %d known tools, catalog length=%d chars", len(all_known_tools), len(catalog))
         if all_known_tools:
-            logger.info("All known tools: %s", ", ".join(sorted(all_known_tools)))
+            logger.debug("All known tools: %s", ", ".join(sorted(all_known_tools)))
         if catalog:
-            logger.info("Catalog content:\n%s", catalog)
+            logger.debug("Catalog content:\n%s", catalog)
 
         # Now attach the tool filter to each server for agent runtime filtering
         for server in mcp_servers:

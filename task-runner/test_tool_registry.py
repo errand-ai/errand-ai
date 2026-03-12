@@ -3,7 +3,6 @@
 # Mocks are set up in conftest.py (shared with test_main.py)
 
 import os
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

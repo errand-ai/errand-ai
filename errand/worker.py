@@ -1012,17 +1012,19 @@ def process_task_in_container(task: Task, settings: dict, github_credentials: di
             litellm_enabled = settings.get("litellm_mcp_servers", [])
         if litellm_enabled and openai_base_url:
             mcp_servers.setdefault("mcpServers", {})
-            base = openai_base_url.rstrip("/")
-            litellm_headers = {}
-            if openai_api_key:
-                litellm_headers["Authorization"] = f"Bearer {openai_api_key}"
-            for server_name in litellm_enabled:
-                key = f"litellm_{server_name}"
-                if key not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"][key] = {
-                        "url": f"{base}/mcp/{server_name}",
-                        "headers": litellm_headers,
-                    }
+            # Skip if user has a manual "litellm" entry (legacy combined format)
+            if "litellm" not in mcp_servers["mcpServers"]:
+                base = openai_base_url.rstrip("/")
+                litellm_headers = {}
+                if openai_api_key:
+                    litellm_headers["Authorization"] = f"Bearer {openai_api_key}"
+                for server_name in litellm_enabled:
+                    key = f"litellm_{server_name}"
+                    if key not in mcp_servers["mcpServers"]:
+                        mcp_servers["mcpServers"][key] = {
+                            "url": f"{base}/mcp/{server_name}",
+                            "headers": litellm_headers,
+                        }
 
         # Inject cloud storage MCP servers (two-gate: URL set AND credentials exist)
         # Cloud storage participates in profile_mcp_servers filtering

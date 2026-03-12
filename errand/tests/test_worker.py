@@ -3428,6 +3428,41 @@ def test_litellm_mcp_manual_override_preserved():
     assert mcp_config["mcpServers"]["litellm_argocd"]["url"] == "http://custom:4000/mcp/argocd"
 
 
+def test_litellm_mcp_legacy_key_blocks_injection():
+    """When user has a legacy 'litellm' key, no litellm_* entries are auto-injected."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {"litellm": {"url": "http://custom:4000/mcp"}}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "litellm_mcp_servers": ["argocd"],
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "https://litellm.example.com",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    files = mock_runtime.prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    # Legacy key preserved, no litellm_argocd injected
+    assert mcp_config["mcpServers"]["litellm"]["url"] == "http://custom:4000/mcp"
+    assert "litellm_argocd" not in mcp_config["mcpServers"]
+
+
 # --- Cloud Storage MCP injection ---
 
 
