@@ -1,66 +1,25 @@
 """Unit tests for task runner main.py — input validation, MCP config parsing, structured events."""
 
+# Mocks are set up in conftest.py (shared with test_tool_registry.py)
+
 import json
+import logging
 import os
 import sys
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-# Add task-runner to path so we can import main
-sys.path.insert(0, os.path.dirname(__file__))
+from conftest import MockCallModelData as _MockCallModelData
 
-# Mock the agents SDK before importing main — the SDK may not be installed locally
-# or may have version conflicts. We only need the pure-Python functions from main.
-_mock_agents = MagicMock()
-_mock_agents.function_tool = lambda f: f  # passthrough decorator
-# RunHooks must be a real class so StreamEventEmitter can subclass it
-_mock_agents.RunHooks = type("RunHooks", (), {})
-# ModelSettings must be a real class
-_mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
-sys.modules.setdefault("agents", _mock_agents)
-sys.modules.setdefault("agents.mcp", MagicMock())
-
-# Mock agents.run with CallModelData and ModelInputData
-_mock_agents_run = MagicMock()
-
-
-class _MockModelData:
-    """Simulates the model_data attribute of CallModelData."""
-    def __init__(self, input_items, instructions=""):
-        self.input = input_items
-        self.instructions = instructions
-
-
-class _MockCallModelData:
-    """Simulates CallModelData passed to call_model_input_filter."""
-    def __init__(self, input_items, instructions=""):
-        self.model_data = _MockModelData(input_items, instructions)
-
-
-class _MockModelInputData:
-    """Simulates ModelInputData returned from call_model_input_filter."""
-    def __init__(self, input, instructions=""):
-        self.input = input
-        self.instructions = instructions
-
-
-_mock_agents_run.CallModelData = _MockCallModelData
-_mock_agents_run.ModelInputData = _MockModelInputData
-sys.modules.setdefault("agents.run", _mock_agents_run)
-
-sys.modules.setdefault("openai", MagicMock())
-sys.modules.setdefault("openai.types", MagicMock())
-sys.modules.setdefault("openai.types.shared", MagicMock())
-
-import logging
 from main import (
     read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
     filter_model_input, _strip_screenshots, _trim_context_window,
     _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
+    connect_mcp_servers,
 )
 
 
@@ -744,3 +703,27 @@ def test_filter_model_input_trims_context():
         output = filter_model_input(_make_call_model_data(messages))
     assert len(output.input) < len(messages)
     assert output.input[0] == messages[0]
+
+
+# --- connect_mcp_servers with tool_filter ---
+
+
+@pytest.mark.asyncio
+async def test_connect_mcp_servers_no_tool_filter_in_constructor():
+    """connect_mcp_servers does not pass tool_filter to constructor (filter is set post-connect)."""
+    from contextlib import AsyncExitStack
+
+    with patch("main.MCPServerStreamableHttp") as MockServer:
+        mock_instance = AsyncMock()
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        MockServer.return_value = mock_instance
+
+        config = {"mcpServers": {"test": {"url": "http://localhost:4000/mcp"}}}
+
+        async with AsyncExitStack() as stack:
+            await connect_mcp_servers(config, stack)
+
+        # Verify tool_filter was NOT passed to constructor
+        call_kwargs = MockServer.call_args[1]
+        assert "tool_filter" not in call_kwargs

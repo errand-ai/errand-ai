@@ -723,6 +723,7 @@ async def test_read_settings_defaults(db_session):
     assert settings["system_prompt"] == ""
     assert settings["task_runner_log_level"] == ""
     assert settings["mcp_api_key"] == ""
+    assert settings["hot_tools"] == ""
 
 
 async def test_read_settings_with_mcp(db_session):
@@ -786,6 +787,18 @@ async def test_read_settings_with_task_runner_log_level(db_session):
 
     settings = await read_settings(db_session)
     assert settings["task_runner_log_level"] == "DEBUG"
+
+
+async def test_read_settings_with_hot_tools(db_session):
+    """Reads hot_tools from settings table."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "hot_tools", "value": json.dumps("retain,recall,web_search")},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["hot_tools"] == "retain,recall,web_search"
 
 
 # --- Container environment variables ---
@@ -856,6 +869,70 @@ def test_process_task_container_passes_log_level_from_settings():
 
     env = mock_runtime.prepare.call_args.kwargs["env"]
     assert env["LOG_LEVEL"] == "DEBUG"
+
+
+def test_process_task_container_passes_hot_tools_from_settings():
+    """hot_tools from settings is forwarded as HOT_TOOLS to the container."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "hot_tools": "retain,recall,web_search",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    env = mock_runtime.prepare.call_args.kwargs["env"]
+    assert env["HOT_TOOLS"] == "retain,recall,web_search"
+
+
+def test_process_task_container_omits_hot_tools_when_empty():
+    """HOT_TOOLS env var is not set when hot_tools setting is empty."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+        "hot_tools": "",
+    }
+
+    mock_runtime = MagicMock()
+    mock_runtime.run.return_value = iter([])
+    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+
+    import worker
+    original_runtime = worker.container_runtime
+    worker.container_runtime = mock_runtime
+
+    try:
+        with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+            process_task_in_container(task, settings)
+    finally:
+        worker.container_runtime = original_runtime
+
+    env = mock_runtime.prepare.call_args.kwargs["env"]
+    assert "HOT_TOOLS" not in env
 
 
 def test_process_task_container_log_level_env_fallback():
@@ -3245,11 +3322,12 @@ def test_litellm_mcp_injected_when_enabled():
 
     files = mock_runtime.prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    assert "litellm" in mcp_config["mcpServers"]
-    litellm_entry = mcp_config["mcpServers"]["litellm"]
-    assert litellm_entry["url"] == "https://litellm.example.com/mcp"
-    assert litellm_entry["headers"]["Authorization"] == "Bearer sk-test"
-    assert litellm_entry["headers"]["x-mcp-servers"] == "argocd,perplexity"
+    # Each litellm server gets its own entry with path-based URL
+    assert "litellm_argocd" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["litellm_argocd"]["url"] == "https://litellm.example.com/mcp/argocd"
+    assert mcp_config["mcpServers"]["litellm_argocd"]["headers"]["Authorization"] == "Bearer sk-test"
+    assert "litellm_perplexity" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["litellm_perplexity"]["url"] == "https://litellm.example.com/mcp/perplexity"
 
 
 def test_litellm_mcp_not_injected_when_empty():
@@ -3282,7 +3360,7 @@ def test_litellm_mcp_not_injected_when_empty():
 
     files = mock_runtime.prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    assert "litellm" not in mcp_config.get("mcpServers", {})
+    assert not any(k.startswith("litellm_") for k in mcp_config.get("mcpServers", {}))
 
 
 def test_litellm_mcp_not_injected_when_no_base_url():
@@ -3313,14 +3391,14 @@ def test_litellm_mcp_not_injected_when_no_base_url():
 
     files = mock_runtime.prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    assert "litellm" not in mcp_config.get("mcpServers", {})
+    assert not any(k.startswith("litellm_") for k in mcp_config.get("mcpServers", {}))
 
 
 def test_litellm_mcp_manual_override_preserved():
-    """When user has manually configured a litellm key, it is preserved."""
+    """When user has manually configured a litellm_argocd key, it is preserved."""
     task = _make_mock_task(description="Test task")
     settings = {
-        "mcp_servers": {"mcpServers": {"litellm": {"url": "http://custom:4000/mcp"}}},
+        "mcp_servers": {"mcpServers": {"litellm_argocd": {"url": "http://custom:4000/mcp/argocd"}}},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "",
@@ -3347,7 +3425,7 @@ def test_litellm_mcp_manual_override_preserved():
     files = mock_runtime.prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     # Manual entry should be preserved, not overwritten
-    assert mcp_config["mcpServers"]["litellm"]["url"] == "http://custom:4000/mcp"
+    assert mcp_config["mcpServers"]["litellm_argocd"]["url"] == "http://custom:4000/mcp/argocd"
 
 
 # --- Cloud Storage MCP injection ---
