@@ -18,3 +18,14 @@ A `docker-compose.yml` at `testing/docker-compose.yml` SHALL define services for
 #### Scenario: Local dev uses Docker runtime
 - **WHEN** a developer runs `docker compose up`
 - **THEN** the worker uses DockerRuntime (default), connects to DinD, and runs task-runners as Docker containers — identical to current behaviour
+
+### Requirement: Docker Compose service health monitoring
+The errand server and worker services in both testing and deploy docker-compose files SHALL have healthcheck directives that verify the service is responsive.
+
+#### Scenario: Errand server healthcheck defined
+- **WHEN** docker-compose services are inspected
+- **THEN** the errand service SHALL have a healthcheck that queries `http://localhost:8000/api/health`
+
+#### Scenario: Worker healthcheck defined
+- **WHEN** docker-compose services are inspected
+- **THEN** the worker service SHALL have a healthcheck that queries `http://localhost:8080/health`
