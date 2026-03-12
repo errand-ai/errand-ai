@@ -71,6 +71,8 @@ class CloudWebSocketClient:
         self._subscription_tasks: dict[str, asyncio.Task] = {}
         # WebSocket reference for sending push_events
         self._ws = None
+        # Pending response futures for send-and-await pattern
+        self._pending_responses: dict[str, asyncio.Future] = {}
         # Server port for proxy requests
         self._server_port = int(os.environ.get("PORT", "8000"))
 
@@ -279,13 +281,8 @@ class CloudWebSocketClient:
 
     # --- Pending response tracking (for send-and-await pattern) ---
 
-    def __init_pending(self):
-        if not hasattr(self, "_pending_responses"):
-            self._pending_responses: dict[str, asyncio.Future] = {}
-
     def _resolve_pending_response(self, message: dict) -> None:
         """Resolve a pending future for a send-and-await response."""
-        self.__init_pending()
         msg_type = message.get("type", "")
         provider = message.get("provider", "")
         key = f"{msg_type}:{provider}"
@@ -297,12 +294,11 @@ class CloudWebSocketClient:
         self, message: dict, response_type: str, provider: str, timeout: float = 30.0
     ) -> dict | None:
         """Send a message over WebSocket and await a typed response with timeout."""
-        self.__init_pending()
         if not self._ws:
             return None
 
         key = f"{response_type}:{provider}"
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_responses[key] = future
 
@@ -315,7 +311,7 @@ class CloudWebSocketClient:
             await self._ws.send(json.dumps(message))
             # Wait for either the expected response or an error
             done, pending = await asyncio.wait(
-                [asyncio.ensure_future(future), asyncio.ensure_future(error_future)],
+                [future, error_future],
                 timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )

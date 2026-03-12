@@ -4,6 +4,7 @@ OAuth 2.0 Authorization Code flow for Google Drive and OneDrive.
 Credentials stored encrypted in PlatformCredential.
 """
 
+import json
 import logging
 import os
 import secrets
@@ -180,7 +181,8 @@ async def authorize(
             detail="Provider not configured — configure client credentials or connect to errand cloud",
         )
 
-    from cloud_client import is_connected as cloud_ws_connected
+    from cloud_client import get_ws, is_connected as cloud_ws_connected
+
     if not cloud_ws_connected():
         raise HTTPException(
             status_code=503,
@@ -193,15 +195,17 @@ async def authorize(
         await valkey.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, provider)
 
     # Send oauth_initiate over WebSocket
-    import json as _json
-    from cloud_client import get_ws
     ws = get_ws()
-    if ws:
-        await ws.send(_json.dumps({
-            "type": "oauth_initiate",
-            "state": state,
-            "provider": provider,
-        }))
+    if not ws:
+        raise HTTPException(
+            status_code=503,
+            detail="Cloud service not connected — try again later",
+        )
+    await ws.send(json.dumps({
+        "type": "oauth_initiate",
+        "state": state,
+        "provider": provider,
+    }))
 
     cloud_service_url = await _get_cloud_service_url(session)
     return RedirectResponse(
