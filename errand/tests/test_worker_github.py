@@ -1,5 +1,4 @@
 """Tests for GitHub token injection in the TaskManager."""
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
