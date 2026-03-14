@@ -51,13 +51,14 @@ openspec/
   changes/             # Active changes (created by openspec new)
 errand/
   main.py              # FastAPI app (API endpoints + static file serving)
+  task_manager.py      # Async TaskManager (runs as background task in server process)
   mcp_server.py        # MCP Streamable HTTP server (tools: new_task, task_status, etc.)
   auth.py              # OIDC config, JWT validation, role extraction
   auth_routes.py       # /auth/login, /auth/callback, /auth/logout
   models.py            # SQLAlchemy models (Task, Tag, Setting)
   database.py          # DB engine/session setup
   llm.py               # OpenAI SDK client, LLM title generation
-  worker.py            # Worker process entrypoint
+  container_runtime.py # Pluggable container runtime (Docker, K8s, Apple) with async interface
   alembic/             # Database migrations
 frontend/
   src/                 # Vue 3 app source
@@ -72,9 +73,9 @@ helm/
 
 - **Frontend**: Vue 3 + Vite + Tailwind CSS (with Pinia for state management)
 - **Backend**: Python FastAPI + SQLAlchemy + Alembic
-- **Worker**: Python (shared codebase with errand, separate entrypoint)
+- **Task Processing**: Async TaskManager runs as a background task inside the server process (no separate worker)
 - **Database**: PostgreSQL (external, app manages migrations via Alembic)
-- **Deployment**: Helm chart on Kubernetes, KEDA for worker autoscaling, ArgoCD
+- **Deployment**: Helm chart on Kubernetes, ArgoCD
 - **CI/CD**: GitHub Actions, immutable versioning from `VERSION` file
 - **Auth**: Keycloak OIDC (Authorization Code flow, confidential client)
 
@@ -106,7 +107,7 @@ CI enforces immutable tags — if you forget to bump, the pipeline will fail on 
 Run the full stack locally with Docker Compose and verify changes **before committing**:
 
 ```bash
-docker compose -f testing/docker-compose.yml up --build  # Build and start all services (postgres, migrations, errand, worker)
+docker compose -f testing/docker-compose.yml up --build  # Build and start all services (postgres, migrations, errand)
 docker compose -f testing/docker-compose.yml down        # Stop and remove containers
 ```
 
@@ -184,21 +185,25 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 - Logout requires `id_token_hint` parameter to Keycloak end-session endpoint
 - Token + id_token delivered to frontend via URL fragment from `/auth/callback`
 
-## Worker Container Runtime
+## Task Processing (TaskManager)
 
-The worker uses a pluggable `ContainerRuntime` abstraction (`errand/container_runtime.py`) to run task-runner containers:
+The `TaskManager` (`errand/task_manager.py`) runs as an asyncio background task inside the FastAPI server process. It replaces the previous standalone worker process.
 
-- **`CONTAINER_RUNTIME` env var**: `docker` (default) or `kubernetes` — selects the runtime at worker startup
+- **Leader election**: Postgres advisory lock (`pg_try_advisory_lock`) ensures only one replica processes tasks
+- **Concurrency control**: `asyncio.Semaphore` limits concurrent tasks (configurable via `max_concurrent_tasks` setting, default: 3)
+- **`TASK_MANAGER_ENABLED` env var**: Set to `false` to disable task processing (default: `true`)
+- **`CONTAINER_RUNTIME` env var**: `docker` (default) or `kubernetes` — selects the runtime
 - **DockerRuntime**: Wraps Docker SDK, used for local dev via docker-compose (DinD sidecar)
+  - `TASK_RUNNER_NETWORK` env var: when set, uses named Docker network instead of `network_mode="host"`
 - **KubernetesRuntime**: Creates K8s Jobs + ConfigMaps, used in production
   - Jobs labelled with `app.kubernetes.io/managed-by: content-manager-worker`
   - Input files injected via ConfigMap mounted at `/workspace`
   - Output read from `/output/result.json` (emptyDir volume)
-  - Orphaned Jobs cleaned up on worker startup
-  - Worker needs a ServiceAccount with RBAC for jobs, configmaps, pods, pods/log, pods/exec
-- **Playwright**: In Docker mode, started as a container in DinD; in K8s mode, pre-deployed as a worker pod sidecar
-  - K8s task-runner Jobs connect to Playwright via worker pod IP (`POD_IP` from Downward API)
-- **Local dev**: docker-compose uses `CONTAINER_RUNTIME=docker` (default) — unchanged from before
+  - Orphaned Jobs cleaned up on startup
+  - Server needs a ServiceAccount with RBAC for jobs, configmaps, pods, pods/log, pods/exec
+- **Container runtime async interface**: Both sync and async methods on `ContainerRuntime` base class; KubernetesRuntime has native async overrides
+- **Playwright**: Configured via `PLAYWRIGHT_MCP_URL` env var (standalone service, no sidecar management)
+- **Local dev**: docker-compose uses `CONTAINER_RUNTIME=docker` (default)
 
 ## Kubernetes Deployment
 

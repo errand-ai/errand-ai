@@ -281,8 +281,8 @@ class TestKubernetesRuntime:
         "PLAYWRIGHT_PORT": "3000",
         "PLAYWRIGHT_MCP_IMAGE": "playwright:latest",
     })
-    def test_prepare_injects_playwright_url(self, mock_uuid):
-        """prepare() adds PLAYWRIGHT_URL env var when POD_IP, port, and image are set."""
+    def test_prepare_no_playwright_url_from_pod_ip(self, mock_uuid):
+        """prepare() does NOT inject PLAYWRIGHT_URL from POD_IP (handled by TaskManager via MCP config)."""
         runtime = self._make_runtime()
 
         runtime.prepare(
@@ -294,8 +294,8 @@ class TestKubernetesRuntime:
         job_call = runtime.batch_v1.create_namespaced_job.call_args
         job = job_call[0][1]
         container_spec = job.spec.template.spec.containers[0]
-        env_dict = {e.name: e.value for e in container_spec.env}
-        assert env_dict["PLAYWRIGHT_URL"] == "http://10.0.0.5:3000/mcp"
+        env_names = [e.name for e in container_spec.env]
+        assert "PLAYWRIGHT_URL" not in env_names
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")

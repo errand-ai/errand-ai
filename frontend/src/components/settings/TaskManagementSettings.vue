@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner'
 const props = defineProps<{
   timezone: string
   archiveAfterDays: number
+  maxConcurrentTasks: number
   taskRunnerLogLevel: string
   saveSettings: (data: Record<string, unknown>) => Promise<void>
 }>()
@@ -12,11 +13,13 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:timezone': [value: string]
   'update:archiveAfterDays': [value: number]
+  'update:maxConcurrentTasks': [value: number]
   'update:taskRunnerLogLevel': [value: string]
 }>()
 
 const localTimezone = ref(props.timezone)
 const localArchiveDays = ref(props.archiveAfterDays)
+const localMaxConcurrentTasks = ref(props.maxConcurrentTasks)
 const localLogLevel = ref(props.taskRunnerLogLevel)
 const timezones = ref<string[]>([])
 const saving = ref(false)
@@ -24,6 +27,7 @@ const saving = ref(false)
 const isDirty = computed(() =>
   localTimezone.value !== props.timezone
   || localArchiveDays.value !== props.archiveAfterDays
+  || localMaxConcurrentTasks.value !== props.maxConcurrentTasks
   || localLogLevel.value !== props.taskRunnerLogLevel
 )
 
@@ -42,10 +46,12 @@ async function save() {
     await props.saveSettings({
       timezone: localTimezone.value,
       archive_after_days: localArchiveDays.value,
+      max_concurrent_tasks: localMaxConcurrentTasks.value,
       task_runner_log_level: localLogLevel.value,
     })
     emit('update:timezone', localTimezone.value)
     emit('update:archiveAfterDays', localArchiveDays.value)
+    emit('update:maxConcurrentTasks', localMaxConcurrentTasks.value)
     emit('update:taskRunnerLogLevel', localLogLevel.value)
     toast.success('Task management settings saved.')
   } catch (e) {
@@ -83,6 +89,20 @@ defineExpose({ isDirty })
           type="number"
           min="1"
           class="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+        />
+      </div>
+
+      <!-- Max Concurrent Tasks -->
+      <div class="py-4">
+        <label for="max-concurrent-tasks" class="block text-sm font-medium text-gray-700 mb-1">Max Concurrent Tasks</label>
+        <input
+          id="max-concurrent-tasks"
+          v-model.number="localMaxConcurrentTasks"
+          type="number"
+          min="1"
+          max="20"
+          class="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          data-testid="max-concurrent-tasks-input"
         />
       </div>
 

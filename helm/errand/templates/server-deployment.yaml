@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: server
     spec:
+      serviceAccountName: {{ include "errand.fullname" . }}-server
       containers:
         - name: server
           image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag | default .Chart.AppVersion }}"
@@ -70,9 +71,31 @@ spec:
                   name: {{ .Values.credentialEncryption.existingSecret }}
                   key: {{ .Values.credentialEncryption.secretKey }}
             {{- end }}
-            {{- if .Values.worker.maxTurns }}
+            - name: CONTAINER_RUNTIME
+              value: "kubernetes"
+            - name: TASK_RUNNER_IMAGE
+              value: "{{ .Values.taskRunner.image.repository }}:{{ .Values.taskRunner.image.tag | default .Chart.AppVersion }}"
+            - name: ERRAND_MCP_URL
+              value: "http://{{ include "errand.fullname" . }}:{{ .Values.server.service.port }}/mcp/"
+            {{- if .Values.playwright.enabled }}
+            - name: PLAYWRIGHT_MCP_URL
+              value: "http://{{ include "errand.fullname" . }}-playwright:{{ .Values.playwright.port }}/mcp"
+            {{- end }}
+            {{- if .Values.hindsight.url }}
+            - name: HINDSIGHT_URL
+              value: {{ .Values.hindsight.url | quote }}
+            {{- end }}
+            {{- if .Values.hindsight.bankId }}
+            - name: HINDSIGHT_BANK_ID
+              value: {{ .Values.hindsight.bankId | quote }}
+            {{- end }}
+            {{- if .Values.server.maxTurns }}
             - name: MAX_TURNS
-              value: {{ .Values.worker.maxTurns | quote }}
+              value: {{ .Values.server.maxTurns | quote }}
+            {{- end }}
+            {{- if .Values.server.maxConcurrentTasks }}
+            - name: MAX_CONCURRENT_TASKS
+              value: {{ .Values.server.maxConcurrentTasks | quote }}
             {{- end }}
             {{- if .Values.gdrive.enabled }}
             - name: GDRIVE_MCP_URL

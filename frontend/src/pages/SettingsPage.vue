@@ -19,6 +19,7 @@ const taskRunnerLogLevel = ref('INFO')
 const timezoneValue = ref('UTC')
 const llmTimeout = ref(30)
 const archiveAfterDays = ref(3)
+const maxConcurrentTasks = ref(3)
 const mcpApiKey = ref<string | null>(null)
 const sshPublicKey = ref<string | null>(null)
 const gitSshHosts = ref<string[]>([])
@@ -91,6 +92,7 @@ async function loadSettings() {
     taskRunnerLogLevel.value = extractValue(data, 'task_runner_log_level', 'INFO') || 'INFO'
     timezoneValue.value = extractValue(data, 'timezone', 'UTC')
     archiveAfterDays.value = extractValue(data, 'archive_after_days', 3)
+    maxConcurrentTasks.value = extractValue(data, 'max_concurrent_tasks', 3)
     skillsGitRepo.value = extractValue(data, 'skills_git_repo', null)
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
@@ -109,6 +111,7 @@ provide('settings-state', {
   taskRunnerLogLevel,
   timezoneValue,
   archiveAfterDays,
+  maxConcurrentTasks,
   mcpApiKey,
   sshPublicKey,
   gitSshHosts,

@@ -1,10 +1,11 @@
-"""Container runtime abstraction for the worker.
+"""Container runtime abstraction for the worker and task manager.
 
 Provides a pluggable interface for running task-runner containers via
 Docker (local dev), Kubernetes Jobs (production), or the macOS desktop
 app bridge API (Apple Containerization).
 """
 
+import asyncio
 import base64
 import io
 import logging
@@ -12,7 +13,7 @@ import os
 import tarfile
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,6 +78,62 @@ class ContainerRuntime(ABC):
     @abstractmethod
     def cleanup(self, handle: RuntimeHandle) -> None:
         """Remove the container/Job and any temporary resources."""
+
+    # -- Async interface (default: wrap sync methods via run_in_executor) ----
+
+    async def async_prepare(
+        self,
+        image: str,
+        env: dict[str, str],
+        files: dict[str, str],
+        output_dir: str | None = None,
+        skills_tar: bytes | None = None,
+        ssh_private_key: str | None = None,
+        ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
+    ) -> RuntimeHandle:
+        """Async version of prepare(). Default wraps sync via executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.prepare(
+                image, env, files, output_dir, skills_tar,
+                ssh_private_key, ssh_config, ssh_hosts,
+            ),
+        )
+
+    async def async_run(self, handle: RuntimeHandle) -> AsyncIterator[str]:
+        """Async version of run(). Default wraps sync iterator via executor."""
+        loop = asyncio.get_event_loop()
+        # Run the sync iterator in a thread and feed lines through a queue
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def _stream():
+            try:
+                for line in self.run(handle):
+                    loop.call_soon_threadsafe(queue.put_nowait, line)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = loop.run_in_executor(None, _stream)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            await task
+
+    async def async_result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
+        """Async version of result(). Default wraps sync via executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.result, handle)
+
+    async def async_cleanup(self, handle: RuntimeHandle) -> None:
+        """Async version of cleanup(). Default wraps sync via executor."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.cleanup, handle)
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +211,20 @@ class DockerRuntime(ContainerRuntime):
             logger.info("Image %s not found locally, pulling...", image)
             self.client.images.pull(image)
 
+        # Support named network via TASK_RUNNER_NETWORK env var;
+        # fall back to network_mode="host" for backward compat.
+        task_runner_network = os.environ.get("TASK_RUNNER_NETWORK", "")
+        net_kwargs: dict[str, Any] = {}
+        if task_runner_network:
+            net_kwargs["network"] = task_runner_network
+        else:
+            net_kwargs["network_mode"] = "host"
+
         container = self.client.containers.create(
             image=image,
             environment=env,
-            network_mode="host",
             detach=True,
+            **net_kwargs,
         )
         logger.info("Created Docker container %s", container.short_id)
 
@@ -310,18 +376,6 @@ class KubernetesRuntime(ContainerRuntime):
             for k, v in env.items()
             if not k.startswith("_")  # skip internal keys like _TASK_ID
         ]
-
-        # Playwright URL injection
-        pod_ip = os.environ.get("POD_IP", "")
-        playwright_port = os.environ.get("PLAYWRIGHT_PORT", "")
-        playwright_image = os.environ.get("PLAYWRIGHT_MCP_IMAGE", "")
-        if pod_ip and playwright_port and playwright_image:
-            env_list.append(
-                client.V1EnvVar(
-                    name="PLAYWRIGHT_URL",
-                    value=f"http://{pod_ip}:{playwright_port}/mcp",
-                )
-            )
 
         # Volume mounts for main container
         volume_mounts = [
@@ -598,6 +652,98 @@ class KubernetesRuntime(ContainerRuntime):
                 logger.info("Deleted Secret %s", secret_name)
             except ApiException:
                 logger.debug("Failed to delete Secret %s", secret_name, exc_info=True)
+
+    # -- Native async overrides (wrap sync K8s calls in executor) -----------
+
+    async def async_prepare(
+        self,
+        image: str,
+        env: dict[str, str],
+        files: dict[str, str],
+        output_dir: str | None = None,
+        skills_tar: bytes | None = None,
+        ssh_private_key: str | None = None,
+        ssh_config: str | None = None,
+        ssh_hosts: list[str] | None = None,
+    ) -> RuntimeHandle:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.prepare(
+                image, env, files, output_dir, skills_tar,
+                ssh_private_key, ssh_config, ssh_hosts,
+            ),
+        )
+
+    async def _async_wait_for_pod(self, job_name: str) -> str:
+        """Async version of _wait_for_pod — polls in executor."""
+        loop = asyncio.get_event_loop()
+        label_selector = f"job-name={job_name}"
+        deadline = time.time() + K8S_POD_START_TIMEOUT
+
+        while time.time() < deadline:
+            pods = await loop.run_in_executor(
+                None,
+                lambda: self.core_v1.list_namespaced_pod(
+                    self.namespace, label_selector=label_selector
+                ),
+            )
+            for pod in pods.items:
+                phase = pod.status.phase
+                if phase in ("Running", "Succeeded", "Failed"):
+                    return pod.metadata.name
+            await asyncio.sleep(2)
+
+        raise TimeoutError(f"Pod for job {job_name} did not start within {K8S_POD_START_TIMEOUT}s")
+
+    async def async_run(self, handle: RuntimeHandle) -> AsyncIterator[str]:
+        """Async generator yielding pod log lines."""
+        job_name = handle.runtime_data["job_name"]
+        namespace = handle.runtime_data["namespace"]
+
+        pod_name = await self._async_wait_for_pod(job_name)
+        handle.runtime_data["pod_name"] = pod_name
+        logger.info("Streaming logs from pod %s", pod_name)
+
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def _stream_logs():
+            try:
+                log_stream = self.core_v1.read_namespaced_pod_log(
+                    pod_name, namespace, follow=True, _preload_content=False,
+                )
+                buf = ""
+                for chunk in log_stream:
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8", errors="replace")
+                    buf += chunk
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        if line:
+                            loop.call_soon_threadsafe(queue.put_nowait, line)
+                if buf.strip():
+                    loop.call_soon_threadsafe(queue.put_nowait, buf.strip())
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = loop.run_in_executor(None, _stream_logs)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            await task
+
+    async def async_result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.result, handle)
+
+    async def async_cleanup(self, handle: RuntimeHandle) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.cleanup, handle)
 
 
 def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:

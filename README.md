@@ -1,46 +1,27 @@
 # Errand
 
-A Kanban-style task management application with AI-powered task execution, platform integrations, and a structured content workflow.
+Errand AI is a personal task automation platform. You describe what you need done in plain language, and an AI agent takes care of it — researching topics, drafting emails, browsing the web, managing files, interacting with APIs, and much more. It runs on your own hardware, keeping your data under your control.
+
+![Task Board](/images/task-board.png)
 
 ## Features
 
-- **5-column Kanban board**: Review, Scheduled, Pending, Running, Completed
-- **Drag-and-drop**: Move tasks between columns by dragging cards
-- **Task categories**: Immediate, Scheduled, and Repeating tasks
-- **AI task runner**: Autonomous agent executes tasks using MCP tools, with real-time log streaming
+- **5-column Kanban board**: Review, Scheduled, Pending, Running, Completed.
+- **Drag-and-drop**: Move tasks between columns by dragging cards.
+- **Task categories**: Immediate, Scheduled, and Repeating tasks.
+- **Task Profiles**: Define multiple types of tasks, each with their own settings.
+- **AI task runner**: Autonomous agent executes tasks using MCP tools, with real-time log streaming.
 - **Platform integrations**: Pluggable platform abstraction with encrypted credential storage (Twitter/X, Slack)
-- **Real-time updates**: WebSocket-driven board updates
+- **Cloud Storage**: Full support for Google Drive and OneDrive.
+- **MCP Server Integration**: Extend capabilities with MCP for connectivity to external systems.
+- **Agent Skills**: Full support for on-demand loading of Agent Skill definitions.
+- **AI Native**: Exposes services with it's own MCP server for integration with other AI Coding Tools & Agentic systems.
 - **SSO authentication**: Keycloak OIDC with role-based access control (admin/user roles)
 - **Audit metadata**: Tasks track created_by/updated_by from authenticated user
 
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Vue 3, Vite, Tailwind CSS, Pinia |
-| Backend | Python, FastAPI, SQLAlchemy, Alembic |
-| Worker | Python (shared codebase with backend), Docker-in-Docker task runner |
-| Database | PostgreSQL |
-| Cache | Valkey (Redis-compatible) |
-| Auth | Keycloak OIDC (Authorization Code flow) |
-| Deployment | Helm on Kubernetes, ArgoCD |
-| CI/CD | GitHub Actions |
-
 ## Architecture
 
-```
-┌──────────────┐     ┌──────────────┐     ┌───────────────┐
-│   Frontend   │────▶│   Backend    │────▶│  PostgreSQL   │
-│  (Vue 3 SPA) │     │  (FastAPI)   │     └───────────────┘
-└──────────────┘     │              │     ┌───────────────┐
-                     │  MCP Server  │────▶│    Valkey     │
-                     └───────┬──────┘     └───────────────┘
-                             │
-                      ┌──────▼──────┐     ┌─────────────────┐
-                      │   Worker    │────▶│  Task Runner    │
-                      │  (polling)  │     │ (DinD container)│
-                      └─────────────┘     └─────────────────┘
-```
+![Errand Architecture](/images/architecture.png)
 
 - **Frontend**: Vue 3 SPA served by nginx, communicates with backend via REST API and WebSocket
 - **Backend**: FastAPI app handling API endpoints, authentication, and an MCP server for agent tools
@@ -56,7 +37,7 @@ Requires Docker and Docker Compose.
 # Start all services (postgres, migrations, backend, worker, frontend, valkey)
 docker compose -f testing/docker-compose.yml up --build
 
-# Frontend: http://localhost:3000
+# Frontend: http://localhost:8000
 # Backend API: http://localhost:8000/api
 
 # Stop and remove containers
@@ -68,11 +49,6 @@ docker compose -f testing/docker-compose.yml down
 Create a `.env` file with the required configuration:
 
 ```bash
-# Authentication (required)
-OIDC_DISCOVERY_URL=https://your-keycloak/realms/your-realm/.well-known/openid-configuration
-OIDC_CLIENT_ID=errand
-OIDC_CLIENT_SECRET=your-secret
-
 # Credential encryption (required for platform integrations)
 CREDENTIAL_ENCRYPTION_KEY=your-fernet-key
 
@@ -105,92 +81,6 @@ kubectl create secret generic errand-credential-key \
 
 Platform credentials are configured via **Settings > Platforms** in the web UI. Credentials are encrypted at rest and verified against the platform API before saving.
 
-### Twitter/X
-
-Twitter/X integration enables posting content from tasks.
-
-#### Setting up the X Developer Portal
-
-1. Go to the [X Developer Portal](https://developer.x.com/en/portal/dashboard) and sign in
-2. Create a new **Project** and an **App** within it
-3. On the app settings page, configure:
-   - **App permissions**: Set to **Read and Write** (default is Read-only — posting requires Write)
-   - **Type of App**: Select **Web App, Automated App or Bot**
-   - **App info**: Fill in the required fields (name, description, website URL)
-4. Navigate to **Keys and tokens** and generate:
-   - **API Key and Secret** (under Consumer Keys)
-   - **Access Token and Secret** (under Authentication Tokens — generate with Read and Write permissions)
-5. In the Errand UI, go to **Settings > Platforms > Twitter** and enter the four credentials
-
-### Slack
-
-Slack integration enables managing tasks from Slack via slash commands and @mentions. Task confirmations include interactive buttons and update automatically as task status changes.
-
-- **Slash commands**: `/task new`, `/task status`, `/task list`, `/task run`, `/task output`
-- **@mentions**: Mention the bot in any channel to create a task from the message text
-- **Interactive buttons**: View Status and View Output buttons on task confirmations
-- **Live status updates**: Slack messages update automatically when task status changes (e.g. pending → running → completed)
-
-#### Creating the Slack App
-
-1. Go to the [Slack API dashboard](https://api.slack.com/apps) and click **Create New App**
-2. Choose **From scratch**, give it a name (e.g. "H.A.L."), and select your workspace
-3. Under **OAuth & Permissions**, add the following **Bot Token Scopes**:
-   - `commands` — register and receive slash commands
-   - `chat:write` — post and update messages in channels
-   - `users:read` — resolve user IDs to profile information
-   - `users:read.email` — resolve Slack users to email addresses for audit trail
-   - `app_mentions:read` — receive @mention events
-4. Under **Slash Commands**, create a new command:
-   - **Command**: `/task`
-   - **Request URL**: `https://<your-domain>/slack/commands`
-   - **Short Description**: Manage tasks
-   - **Usage Hint**: `new <title> | status <id> | list [status] | run <id> | output <id>`
-5. Under **Event Subscriptions**:
-   - Enable events and set the **Request URL** to `https://<your-domain>/slack/events`
-   - The endpoint responds to URL verification automatically
-   - Under **Subscribe to bot events**, add `app_mention`
-6. Under **Interactivity & Shortcuts**:
-   - Enable interactivity and set the **Request URL** to `https://<your-domain>/slack/interactions`
-7. Install the app to your workspace — this generates the **Bot Token**
-8. Note the **Signing Secret** from **Basic Information > App Credentials**
-
-#### Configuring credentials
-
-In the Errand UI, go to **Settings > Platforms > Slack** and enter:
-
-- **Bot Token**: starts with `xoxb-` (from OAuth & Permissions > Bot User OAuth Token)
-- **Signing Secret**: from Basic Information > App Credentials
-
-The UI verifies the bot token against the Slack API (`auth.test`) before saving.
-
-#### Slash command reference
-
-| Command | Description |
-|---------|-------------|
-| `/task new <title>` | Create a new task |
-| `/task status <id>` | View task details (accepts UUID prefix, e.g. `a1b2c3`) |
-| `/task list [status]` | List tasks, optionally filtered by status |
-| `/task run <id>` | Queue a task for execution |
-| `/task output <id>` | View task output |
-| `/task help` | Show available commands |
-
-#### @mention usage
-
-Mention the bot in any channel to create a task:
-
-```
-@H.A.L. Deploy the new version to staging
-```
-
-The bot posts a confirmation message with task details and interactive buttons. The message updates automatically as the task progresses through statuses.
-
-#### Behaviour notes
-
-- Slash command responses are **ephemeral** (visible only to you) and do not auto-update
-- @mention confirmations are **posted to the channel** and update in real-time as task status changes
-- All Slack-originated tasks are automatically tagged with `slack`
-- Tasks created via Slack record the user's email in the audit fields (`created_by`/`updated_by`)
 
 ### Google Drive
 

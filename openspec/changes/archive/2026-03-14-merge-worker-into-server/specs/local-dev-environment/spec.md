@@ -1,8 +1,4 @@
-## Purpose
-
-Docker Compose configuration for running the full application stack locally with PostgreSQL and all services.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Docker Compose runs the full application stack
 
@@ -37,12 +33,14 @@ The Playwright service SHALL run with `--isolated` flag for concurrent session s
 - **WHEN** a task-runner container needs to call LLM APIs, clone git repos, or connect to errand-cloud
 - **THEN** outbound traffic routes via Docker bridge NAT to the internet
 
-<!-- Removed: Separate worker service in Docker Compose — Worker functionality merged into the errand service's TaskManager. -->
-<!-- Removed: DinD (Docker-in-Docker) for local dev — Replaced by host Docker socket mount + named network. -->
+## REMOVED Requirements
 
-### Requirement: Docker Compose service health monitoring
-The errand server service in both testing and deploy docker-compose files SHALL have healthcheck directives that verify the service is responsive.
+### Requirement: Separate worker service in Docker Compose
 
-#### Scenario: Errand server healthcheck defined
-- **WHEN** docker-compose services are inspected
-- **THEN** the errand service SHALL have a healthcheck that queries `http://localhost:8000/api/health`
+**Reason**: Worker functionality merged into the errand service's TaskManager.
+**Migration**: Remove the `worker` service from `docker-compose.yml`. The `errand` service now handles task processing directly.
+
+### Requirement: DinD (Docker-in-Docker) for local dev
+
+**Reason**: Replaced by host Docker socket mount + named network. DinD added unnecessary complexity (privileged container, nested Docker daemon, separate image cache, task-runner-build sidecar). The host socket approach is simpler and consistent with how errand-desktop already creates containers directly on the host Docker daemon. Named network gives task-runners DNS resolution for compose services without `network_mode="host"`.
+**Migration**: Remove `dind` and `task-runner-build` services. Mount `/var/run/docker.sock` on the errand service. Add `TASK_RUNNER_NETWORK=errand-net` env var. Define explicit `errand-net` network in docker-compose.

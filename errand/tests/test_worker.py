@@ -12,18 +12,16 @@ from sqlalchemy.orm import selectinload
 
 from models import Setting, Task
 
-# Import worker functions under test
-from worker import (
-    read_settings, truncate_output, _task_to_dict,
-    _schedule_retry, process_task_in_container, DEFAULT_TASK_PROCESSING_MODEL,
-    TaskRunnerOutput, parse_interval, _reschedule_if_repeating,
+# Import task_manager functions under test
+from task_manager import (
+    _read_settings as read_settings, truncate_output, _task_to_dict,
+    TaskManager, DEFAULT_TASK_PROCESSING_MODEL,
+    TaskRunnerOutput, parse_interval,
     substitute_env_vars, extract_json, generate_ssh_config,
     build_skills_archive, build_skill_manifest,
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
-    start_playwright_container, health_check_playwright,
-    cleanup_playwright_container, pre_pull_images, PLAYWRIGHT_PORT,
     _read_callback_result,
-    REPO_CONTEXT_INSTRUCTIONS,
+    REPO_CONTEXT_INSTRUCTIONS, PLAYWRIGHT_MCP_URL,
 )
 from container_runtime import (
     _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
@@ -37,17 +35,40 @@ def _make_mock_runtime(
     stderr: str = "",
     log_lines: list[str] | None = None,
 ):
-    """Create a mock ContainerRuntime for process_task_in_container tests.
+    """Create a mock ContainerRuntime for TaskManager._process_task tests.
 
-    Returns a MagicMock with prepare/run/result/cleanup methods configured.
-    After running the test, inspect mock_runtime.prepare.call_args.kwargs
-    to check env vars, files, etc. that were passed.
+    Returns a MagicMock with async_prepare/async_run/async_result/async_cleanup
+    methods configured. After running the test, inspect
+    mock_runtime.async_prepare.call_args.kwargs to check env vars, files, etc.
     """
     mock_runtime = MagicMock()
-    mock_runtime.prepare.return_value = RuntimeHandle(runtime_data={})
-    mock_runtime.run.return_value = iter(log_lines or [])
-    mock_runtime.result.return_value = (exit_code, stdout, stderr)
+    mock_runtime.async_prepare = AsyncMock(return_value=RuntimeHandle(runtime_data={}))
+
+    lines = log_lines or []
+
+    async def _async_run(handle):
+        for line in lines:
+            yield line
+
+    mock_runtime.async_run = _async_run
+    mock_runtime.async_result = AsyncMock(return_value=(exit_code, stdout, stderr))
+    mock_runtime.async_cleanup = AsyncMock()
     return mock_runtime
+
+
+async def _run_process_task(task, settings, mock_runtime=None, github_credentials=None, cloud_storage_credentials=None, mock_valkey=None):
+    """Helper: create a TaskManager, set mock runtime, call _process_task."""
+    if mock_runtime is None:
+        mock_runtime = _make_mock_runtime()
+    tm = TaskManager()
+    tm._runtime = mock_runtime
+    with patch("task_manager.get_valkey", return_value=mock_valkey):
+        result = await tm._process_task(
+            task, settings,
+            github_credentials=github_credentials,
+            cloud_storage_credentials=cloud_storage_credentials,
+        )
+    return result
 
 
 # --- Output truncation ---
@@ -384,7 +405,7 @@ async def db_session():
 async def retry_session_factory(db_session):
     """Create a session factory for retry tests that shares the same engine."""
     # db_session is already connected to an in-memory SQLite with tables created.
-    # We need a session factory that worker._schedule_retry can use.
+    # We need a session factory that TaskManager()._schedule_retry can use.
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
 
     async with engine.begin() as conn:
@@ -468,9 +489,9 @@ async def test_schedule_retry_first_failure(retry_session_factory):
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="Docker error: not found")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="Docker error: not found")
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -490,9 +511,9 @@ async def test_schedule_retry_exponential_backoff(retry_session_factory):
     mock_task.id = task_id
     before = datetime.now(timezone.utc)
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -514,9 +535,9 @@ async def test_schedule_retry_stores_runner_logs(retry_session_factory):
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="full output", runner_logs="stderr logs here")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="full output", runner_logs="stderr logs here")
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -533,9 +554,9 @@ async def test_schedule_retry_preserves_runner_logs_when_none(retry_session_fact
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="some output")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="some output")
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -551,9 +572,9 @@ async def test_schedule_retry_preserves_output_when_none(retry_session_factory):
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -582,9 +603,9 @@ async def test_schedule_retry_adds_retry_tag(retry_session_factory):
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="error output")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="error output")
 
     tag_names = await _get_task_tag_names(factory, task_id)
     assert "Retry" in tag_names
@@ -598,9 +619,9 @@ async def test_schedule_retry_no_duplicate_tag(retry_session_factory):
     mock_task = MagicMock(spec=Task)
     mock_task.id = task_id
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="first error")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="first error")
 
     # Update status back to running for second retry
     async with factory() as session:
@@ -609,9 +630,9 @@ async def test_schedule_retry_no_duplicate_tag(retry_session_factory):
         )
         await session.commit()
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="second error")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="second error")
 
     tag_names = await _get_task_tag_names(factory, task_id)
     assert tag_names.count("Retry") == 1
@@ -626,9 +647,9 @@ async def test_success_removes_retry_tag(retry_session_factory):
     mock_task.id = task_id
 
     # First, add a Retry tag via _schedule_retry
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="error")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="error")
 
     tag_names = await _get_task_tag_names(factory, task_id)
     assert "Retry" in tag_names
@@ -675,9 +696,9 @@ async def test_review_removes_retry_tag(retry_session_factory):
     mock_task.id = task_id
 
     # First, add a Retry tag via _schedule_retry
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _schedule_retry(mock_task, output="error")
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._schedule_retry(mock_task, output="error")
 
     tag_names = await _get_task_tag_names(factory, task_id)
     assert "Retry" in tag_names
@@ -804,8 +825,9 @@ async def test_read_settings_with_hot_tools(db_session):
 # --- Container environment variables ---
 
 
-def test_process_task_container_env_vars():
-    """process_task_in_container sets correct env vars on the container."""
+@pytest.mark.asyncio
+async def test_process_task_container_env_vars():
+    """_process_task sets correct env vars on the container."""
     task = _make_mock_task(description="Do the thing")
     settings = {
         "mcp_servers": {"mcpServers": {"test": {"url": "http://localhost/mcp"}}},
@@ -814,22 +836,13 @@ def test_process_task_container_env_vars():
         "system_prompt": "Be helpful",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.object(worker, "_resolve_provider_sync", return_value={"base_url": "http://litellm:4000", "api_key": "sk-test"}):
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch("task_manager._resolve_provider_sync", return_value={"base_url": "http://litellm:4000", "api_key": "sk-test"}):
+        exit_code, stdout, stderr = await _run_process_task(task, settings, mock_runtime)
 
     # Check container was created with correct env vars
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env["OPENAI_BASE_URL"] == "http://litellm:4000"
     assert env["OPENAI_API_KEY"] == "sk-test"
     assert env["OPENAI_MODEL"] == "gpt-4o"
@@ -839,7 +852,8 @@ def test_process_task_container_env_vars():
     assert exit_code == 0
 
 
-def test_process_task_container_passes_log_level_from_settings():
+@pytest.mark.asyncio
+async def test_process_task_container_passes_log_level_from_settings():
     """task_runner_log_level from settings is forwarded as LOG_LEVEL to the container."""
     task = _make_mock_task(description="Do the thing")
     settings = {
@@ -850,28 +864,20 @@ def test_process_task_container_passes_log_level_from_settings():
         "task_runner_log_level": "DEBUG",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env["LOG_LEVEL"] == "DEBUG"
 
 
-def test_process_task_container_passes_hot_tools_from_settings():
+@pytest.mark.asyncio
+async def test_process_task_container_passes_hot_tools_from_settings():
     """hot_tools from settings is forwarded as HOT_TOOLS to the container."""
     task = _make_mock_task(description="Do the thing")
     settings = {
@@ -882,28 +888,20 @@ def test_process_task_container_passes_hot_tools_from_settings():
         "hot_tools": "retain,recall,web_search",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env["HOT_TOOLS"] == "retain,recall,web_search"
 
 
-def test_process_task_container_omits_hot_tools_when_empty():
+@pytest.mark.asyncio
+async def test_process_task_container_omits_hot_tools_when_empty():
     """HOT_TOOLS env var is not set when hot_tools setting is empty."""
     task = _make_mock_task(description="Do the thing")
     settings = {
@@ -914,28 +912,20 @@ def test_process_task_container_omits_hot_tools_when_empty():
         "hot_tools": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert "HOT_TOOLS" not in env
 
 
-def test_process_task_container_log_level_env_fallback():
+@pytest.mark.asyncio
+async def test_process_task_container_log_level_env_fallback():
     """TASK_RUNNER_LOG_LEVEL env var is used when settings value is empty."""
     task = _make_mock_task(description="Do the thing")
     settings = {
@@ -946,29 +936,21 @@ def test_process_task_container_log_level_env_fallback():
         "task_runner_log_level": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "TASK_RUNNER_LOG_LEVEL": "WARNING",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env["LOG_LEVEL"] == "WARNING"
 
 
-def test_process_task_container_omits_log_level_when_unset():
+@pytest.mark.asyncio
+async def test_process_task_container_omits_log_level_when_unset():
     """LOG_LEVEL is not set when both settings and env var are absent."""
     task = _make_mock_task(description="Do the thing")
     settings = {
@@ -979,28 +961,20 @@ def test_process_task_container_omits_log_level_when_unset():
         "task_runner_log_level": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }, clear=True):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert "LOG_LEVEL" not in env
 
 
-def test_skills_directive_appended_when_skills_exist():
+@pytest.mark.asyncio
+async def test_skills_directive_appended_when_skills_exist():
     """When skills are defined, system prompt has the skill manifest and skills archive is written."""
     task = _make_mock_task(description="Research task")
     settings = {
@@ -1014,25 +988,16 @@ def test_skills_directive_appended_when_skills_exist():
         "mcp_api_key": "test-api-key-123",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
     # Check system prompt has skill manifest (not old MCP directives)
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
     assert "You are a helpful assistant." in system_prompt_content
     assert "## Skills" in system_prompt_content
@@ -1047,13 +1012,14 @@ def test_skills_directive_appended_when_skills_exist():
 
     # Skills archive should have been passed to prepare()
     import tarfile
-    skills_tar = mock_runtime.prepare.call_args.kwargs["skills_tar"]
+    skills_tar = mock_runtime.async_prepare.call_args.kwargs["skills_tar"]
     assert skills_tar is not None
     tar = tarfile.open(fileobj=io.BytesIO(skills_tar))
     assert "skills/researcher/SKILL.md" in tar.getnames()
 
 
-def test_skills_directive_omitted_when_no_skills():
+@pytest.mark.asyncio
+async def test_skills_directive_omitted_when_no_skills():
     """When no skills are defined, system prompt has no skills directive and no skills archive is written."""
     task = _make_mock_task(description="Research task")
     settings = {
@@ -1064,25 +1030,16 @@ def test_skills_directive_omitted_when_no_skills():
         "skills": [],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
     # Check files passed to prepare()
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
     assert system_prompt_content.startswith("You are a helpful assistant.")
     assert "## Skills" not in system_prompt_content
@@ -1092,11 +1049,12 @@ def test_skills_directive_omitted_when_no_skills():
     assert "errand" not in mcp_content.get("mcpServers", {})
 
     # No skills archive should have been passed
-    skills_tar = mock_runtime.prepare.call_args.kwargs.get("skills_tar")
+    skills_tar = mock_runtime.async_prepare.call_args.kwargs.get("skills_tar")
     assert skills_tar is None
 
 
-def test_process_task_container_copies_three_files():
+@pytest.mark.asyncio
+async def test_process_task_container_copies_three_files():
     """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
     task = _make_mock_task(description="My task")
     settings = {
@@ -1106,22 +1064,13 @@ def test_process_task_container_copies_three_files():
         "system_prompt": "System instructions",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, 'output', '')
+    mock_runtime = _make_mock_runtime(stdout='output')
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime)
 
     # prepare() should have been called with the three required files
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     assert "prompt.txt" in files
     assert "system_prompt.txt" in files
     assert "mcp.json" in files
@@ -1130,7 +1079,8 @@ def test_process_task_container_copies_three_files():
 # --- Valkey unavailability during log streaming ---
 
 
-def test_process_task_completes_when_valkey_unavailable():
+@pytest.mark.asyncio
+async def test_process_task_completes_when_valkey_unavailable():
     """Task still completes when sync Redis client fails to connect for log streaming."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -1145,18 +1095,9 @@ def test_process_task_completes_when_valkey_unavailable():
         stderr="stderr line 1\nstderr line 2\n",
     )
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
-             patch("worker.sync_redis") as mock_sync_redis:
-            # Make Redis.from_url raise ConnectionError
-            mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
+         patch("redis.Redis.from_url", side_effect=ConnectionError("Valkey down")):
+        exit_code, stdout, stderr = await _run_process_task(task, settings, mock_runtime)
 
     assert exit_code == 0
     assert "completed" in stdout
@@ -1166,7 +1107,8 @@ def test_process_task_completes_when_valkey_unavailable():
 # --- Structured event parsing from stderr to Valkey ---
 
 
-def test_process_task_publishes_structured_events_to_valkey():
+@pytest.mark.asyncio
+async def test_process_task_publishes_structured_events_to_valkey():
     """Structured JSON stderr lines are published as task_event messages to Valkey."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -1180,19 +1122,10 @@ def test_process_task_publishes_structured_events_to_valkey():
 
     mock_runtime = _make_mock_runtime(log_lines=[tool_call_event])
 
-    mock_redis = MagicMock()
+    mock_redis = AsyncMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
-             patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
 
     # Find the task_event publish call (not the task_log_end)
     publish_calls = mock_redis.publish.call_args_list
@@ -1204,7 +1137,8 @@ def test_process_task_publishes_structured_events_to_valkey():
     assert published_msg["data"]["tool"] == "execute_command"
 
 
-def test_process_task_publishes_raw_event_for_non_json_stderr():
+@pytest.mark.asyncio
+async def test_process_task_publishes_raw_event_for_non_json_stderr():
     """Non-JSON stderr lines are published as raw events."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -1216,19 +1150,10 @@ def test_process_task_publishes_raw_event_for_non_json_stderr():
 
     mock_runtime = _make_mock_runtime(log_lines=["Traceback (most recent call last):"])
 
-    mock_redis = MagicMock()
+    mock_redis = AsyncMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
-             patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
 
     # Find the raw event publish call
     publish_calls = mock_redis.publish.call_args_list
@@ -1240,7 +1165,8 @@ def test_process_task_publishes_raw_event_for_non_json_stderr():
     assert "Traceback" in published_msg["data"]["line"]
 
 
-def test_process_task_buffers_chunked_stderr_lines():
+@pytest.mark.asyncio
+async def test_process_task_buffers_chunked_stderr_lines():
     """JSON lines are published as structured events when complete."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -1254,19 +1180,10 @@ def test_process_task_buffers_chunked_stderr_lines():
     full_line = json.dumps({"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "cat file.txt"}}})
     mock_runtime = _make_mock_runtime(log_lines=[full_line])
 
-    mock_redis = MagicMock()
+    mock_redis = AsyncMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
-             patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
 
     # The JSON should be parsed into a structured event
     publish_calls = mock_redis.publish.call_args_list
@@ -1278,7 +1195,8 @@ def test_process_task_buffers_chunked_stderr_lines():
     assert published_msg["data"]["tool"] == "execute_command"
 
 
-def test_process_task_publishes_end_sentinel():
+@pytest.mark.asyncio
+async def test_process_task_publishes_end_sentinel():
     """task_log_end sentinel is still published after container exit."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -1290,19 +1208,10 @@ def test_process_task_publishes_end_sentinel():
 
     mock_runtime = _make_mock_runtime()
 
-    mock_redis = MagicMock()
+    mock_redis = AsyncMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}), \
-             patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
 
     # The last publish call should be task_log_end
     last_call = mock_redis.publish.call_args_list[-1]
@@ -1488,9 +1397,9 @@ async def test_reschedule_repeating_creates_new_task(retry_session_factory):
     engine, factory = retry_session_factory
     task = _make_completed_repeating_task()
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._reschedule_if_repeating(task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.status == "scheduled"))
@@ -1509,9 +1418,9 @@ async def test_reschedule_repeating_future_repeat_until(retry_session_factory):
     future = datetime.now(timezone.utc) + timedelta(hours=24)
     task = _make_completed_repeating_task(repeat_interval="1h", repeat_until=future)
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._reschedule_if_repeating(task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.status == "scheduled"))
@@ -1526,9 +1435,9 @@ async def test_reschedule_expired_repeat_until_skips(retry_session_factory):
     past = datetime.now(timezone.utc) - timedelta(hours=1)
     task = _make_completed_repeating_task(repeat_until=past)
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._reschedule_if_repeating(task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.status == "scheduled"))
@@ -1541,9 +1450,9 @@ async def test_reschedule_non_repeating_skips(retry_session_factory):
     engine, factory = retry_session_factory
     task = _make_completed_repeating_task(category="immediate")
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._reschedule_if_repeating(task)
 
     async with factory() as session:
         result = await session.execute(select(Task).where(Task.status == "scheduled"))
@@ -1565,9 +1474,9 @@ async def test_reschedule_cloned_task_fields(retry_session_factory):
         repeat_interval="1d",
     )
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", new_callable=AsyncMock):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", new_callable=AsyncMock):
+        await TaskManager()._reschedule_if_repeating(task)
 
     async with factory() as session:
         result = await session.execute(
@@ -1590,9 +1499,9 @@ async def test_reschedule_publishes_task_created_event(retry_session_factory):
     task = _make_completed_repeating_task()
     mock_publish = AsyncMock()
 
-    with patch("worker.async_session", factory), \
-         patch("worker.publish_event", mock_publish):
-        await _reschedule_if_repeating(task)
+    with patch("task_manager.async_session", factory), \
+         patch("task_manager.publish_event", mock_publish):
+        await TaskManager()._reschedule_if_repeating(task)
 
     mock_publish.assert_called_once()
     event_type, event_data = mock_publish.call_args[0]
@@ -1602,7 +1511,8 @@ async def test_reschedule_publishes_task_created_event(retry_session_factory):
     assert event_data["category"] == "repeating"
 
 
-def test_needs_input_does_not_trigger_rescheduling():
+@pytest.mark.asyncio
+async def test_needs_input_does_not_trigger_rescheduling():
     """Repeating task reaching needs_input/review status is NOT rescheduled.
 
     In run(), target_status is derived from parsed.status:
@@ -1838,7 +1748,7 @@ async def test_read_settings_skills_empty_by_default(worker_session: AsyncSessio
 
 # --- Git-sourced skills ---
 
-from worker import (
+from task_manager import (
     refresh_git_clone, parse_skills_from_directory, merge_skills,
     GitSkillsError, MAX_GIT_RETRIES,
 )
@@ -1849,7 +1759,7 @@ class TestRefreshGitClone:
 
     def test_first_call_clones(self, tmp_path, monkeypatch):
         """First call to refresh_git_clone clones the repository."""
-        monkeypatch.setattr("worker.hashlib", __import__("hashlib"))
+        monkeypatch.setattr("task_manager.hashlib", __import__("hashlib"))
         repo_url = "git@github.com:org/skills.git"
         url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
         clone_dir = f"/tmp/errand-skills-{url_hash}"
@@ -2234,14 +2144,14 @@ class TestGitFailureRetry:
         async def mock_schedule_retry(task, output=None, runner_logs=None):
             retry_calls.append({"task_id": task.id, "output": output})
 
-        monkeypatch.setattr("worker._schedule_retry", mock_schedule_retry)
-        monkeypatch.setattr("worker.publish_event", AsyncMock())
+        monkeypatch.setattr("task_manager.TaskManager._schedule_retry", mock_schedule_retry)
+        monkeypatch.setattr("task_manager.publish_event", AsyncMock())
 
         # Mock process_task_in_container to raise GitSkillsError
         def mock_process(task, settings):
             raise GitSkillsError("Git operation failed: repository not found")
 
-        monkeypatch.setattr("worker.process_task_in_container", mock_process)
+        monkeypatch.setattr("task_manager.TaskManager._process_task", mock_process)
 
         # Simulate the error handling in run() for retry_count < MAX_GIT_RETRIES
         mock_task = MagicMock()
@@ -2300,7 +2210,7 @@ async def test_read_settings_skills_git_repo_empty_url(worker_session: AsyncSess
 
 def test_recall_from_hindsight_success():
     """recall_from_hindsight returns recalled text on successful API call."""
-    with patch("worker.httpx.post") as mock_post:
+    with patch("task_manager.httpx.post") as mock_post:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
@@ -2319,7 +2229,7 @@ def test_recall_from_hindsight_success():
 
 def test_recall_from_hindsight_api_failure():
     """recall_from_hindsight returns None and logs warning on API failure."""
-    with patch("worker.httpx.post") as mock_post:
+    with patch("task_manager.httpx.post") as mock_post:
         mock_post.side_effect = Exception("Connection refused")
 
         result = recall_from_hindsight("http://hindsight:8888", "my-bank", "Deploy frontend")
@@ -2329,7 +2239,7 @@ def test_recall_from_hindsight_api_failure():
 
 def test_recall_from_hindsight_empty_result():
     """recall_from_hindsight returns None when API returns empty content."""
-    with patch("worker.httpx.post") as mock_post:
+    with patch("task_manager.httpx.post") as mock_post:
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {"results": []}
@@ -2340,7 +2250,8 @@ def test_recall_from_hindsight_empty_result():
     assert result is None
 
 
-def test_hindsight_mcp_injected_when_configured():
+@pytest.mark.asyncio
+async def test_hindsight_mcp_injected_when_configured():
     """When HINDSIGHT_URL is set, hindsight MCP server is injected into mcp.json."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -2352,26 +2263,17 @@ def test_hindsight_mcp_injected_when_configured():
         "hindsight_bank_id": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
-        }), patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json from prepare call
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "hindsight" in mcp_config["mcpServers"]
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://hindsight-api:8888/mcp/errand-tasks/"
@@ -2379,7 +2281,8 @@ def test_hindsight_mcp_injected_when_configured():
     assert "other" in mcp_config["mcpServers"]
 
 
-def test_hindsight_mcp_skipped_when_already_in_database():
+@pytest.mark.asyncio
+async def test_hindsight_mcp_skipped_when_already_in_database():
     """When database mcp_servers already has hindsight, the database value is preserved."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -2391,31 +2294,23 @@ def test_hindsight_mcp_skipped_when_already_in_database():
         "hindsight_bank_id": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
-        }), patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — database value should be preserved
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://custom-hindsight/mcp/custom-bank/"
 
 
-def test_hindsight_memory_context_in_system_prompt():
+@pytest.mark.asyncio
+async def test_hindsight_memory_context_in_system_prompt():
     """When Hindsight recall returns content, it appears in the system prompt."""
     task = _make_mock_task(title="Deploy v2", description="Deploy frontend v2 to staging")
     settings = {
@@ -2427,26 +2322,17 @@ def test_hindsight_memory_context_in_system_prompt():
         "hindsight_bank_id": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight:8888",
-        }), patch("worker.recall_from_hindsight", return_value="Last deploy used blue-green strategy."):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("task_manager.recall_from_hindsight", return_value="Last deploy used blue-green strategy."):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract system_prompt.txt from prepare() call
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
     assert "## Relevant Context from Memory" in system_prompt_content
@@ -2458,7 +2344,8 @@ def test_hindsight_memory_context_in_system_prompt():
     assert memory_pos < instructions_pos
 
 
-def test_hindsight_skipped_when_url_not_configured():
+@pytest.mark.asyncio
+async def test_hindsight_skipped_when_url_not_configured():
     """When HINDSIGHT_URL is not set and hindsight_url setting is empty, no Hindsight integration occurs."""
     task = _make_mock_task(description="Normal task")
     original_prompt = "You are a helpful assistant."
@@ -2471,25 +2358,16 @@ def test_hindsight_skipped_when_url_not_configured():
         "hindsight_bank_id": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }, clear=True):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — should NOT have hindsight
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "hindsight" not in mcp_config.get("mcpServers", {})
 
@@ -2518,7 +2396,8 @@ async def test_read_settings_hindsight_configured(worker_session: AsyncSession):
     assert settings["hindsight_bank_id"] == "my-bank"
 
 
-def test_hindsight_env_var_takes_precedence_over_setting():
+@pytest.mark.asyncio
+async def test_hindsight_env_var_takes_precedence_over_setting():
     """HINDSIGHT_URL env var takes precedence over hindsight_url admin setting."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -2530,32 +2409,24 @@ def test_hindsight_env_var_takes_precedence_over_setting():
         "hindsight_bank_id": "setting-bank",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://env-hindsight:9999",
             "HINDSIGHT_BANK_ID": "env-bank",
-        }), patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — should use env var values, not settings
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://env-hindsight:9999/mcp/env-bank/"
 
 
-def test_hindsight_falls_back_to_admin_setting():
+@pytest.mark.asyncio
+async def test_hindsight_falls_back_to_admin_setting():
     """When HINDSIGHT_URL env var is not set, hindsight_url admin setting is used."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -2567,117 +2438,27 @@ def test_hindsight_falls_back_to_admin_setting():
         "hindsight_bank_id": "setting-bank",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-        }, clear=True), patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }, clear=True), patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — should use admin setting values
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://setting-hindsight:8888/mcp/setting-bank/"
 
 
-# --- Playwright container lifecycle ---
+# --- Playwright MCP URL injection ---
 
 
-@patch("worker.docker_client")
-@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
-def test_start_playwright_container(mock_docker):
-    """start_playwright_container creates and starts a container."""
-    mock_container = MagicMock()
-    mock_docker.containers.create.return_value = mock_container
-    result = start_playwright_container()
-    mock_docker.containers.create.assert_called_once()
-    mock_container.start.assert_called_once()
-    assert result is mock_container
-
-
-@patch("worker.docker_client")
-@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
-@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
-def test_pre_pull_images_pulls_missing(mock_docker):
-    """pre_pull_images pulls images not found locally."""
-    from docker.errors import ImageNotFound
-    mock_docker.images.get.side_effect = ImageNotFound("not found")
-    pre_pull_images()
-    assert mock_docker.images.pull.call_count == 2
-    mock_docker.images.pull.assert_any_call("task-runner:latest")
-    mock_docker.images.pull.assert_any_call("playwright-mcp:latest")
-
-
-@patch("worker.docker_client")
-@patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest")
-@patch("worker.TASK_RUNNER_IMAGE", "task-runner:latest")
-def test_pre_pull_images_skips_available(mock_docker):
-    """pre_pull_images skips images already available."""
-    pre_pull_images()
-    assert mock_docker.images.get.call_count == 2
-    mock_docker.images.pull.assert_not_called()
-
-
-@patch("worker.httpx")
-def test_health_check_playwright_success(mock_httpx):
-    """health_check_playwright returns True when server responds with 200."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_httpx.post.return_value = mock_resp
-    result = health_check_playwright(port=8931, timeout=5)
-    assert result is True
-
-
-@patch("worker.time")
-@patch("worker.httpx")
-def test_health_check_playwright_timeout(mock_httpx, mock_time):
-    """health_check_playwright returns False on timeout."""
-    mock_httpx.post.side_effect = Exception("connection refused")
-    # Simulate time advancing past deadline
-    mock_time.time.side_effect = [0, 0, 1, 2, 31]
-    mock_time.sleep = MagicMock()
-    result = health_check_playwright(port=8931, timeout=30)
-    assert result is False
-
-
-def test_cleanup_playwright_container_success():
-    """cleanup_playwright_container stops and removes container."""
-    container = MagicMock()
-    cleanup_playwright_container(container)
-    container.stop.assert_called_once_with(timeout=5)
-    container.remove.assert_called_once_with(force=True)
-
-
-def test_cleanup_playwright_container_none():
-    """cleanup_playwright_container handles None gracefully."""
-    cleanup_playwright_container(None)  # should not raise
-
-
-def test_cleanup_playwright_container_already_removed():
-    """cleanup_playwright_container handles NotFound (OOM-killed container)."""
-    from docker.errors import NotFound
-    container = MagicMock()
-    container.remove.side_effect = NotFound("gone")
-    cleanup_playwright_container(container)  # should not raise
-
-
-# --- Playwright degraded mode ---
-
-
-def test_process_task_playwright_degraded_mode():
-    """process_task_in_container proceeds without playwright when health check fails."""
+@pytest.mark.asyncio
+async def test_playwright_mcp_injected_from_env():
+    """Playwright MCP is injected when PLAYWRIGHT_MCP_URL env var is set."""
     task = _make_mock_task(description="Do the thing")
-
     settings = {
         "mcp_servers": {},
         "credentials": [],
@@ -2685,218 +2466,79 @@ def test_process_task_playwright_degraded_mode():
         "system_prompt": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    mock_pw_container = MagicMock()
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-        }, clear=True), \
-        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
-        patch("worker.start_playwright_container", return_value=mock_pw_container) as mock_start, \
-        patch("worker.health_check_playwright", return_value=False) as mock_health, \
-        patch("worker.cleanup_playwright_container") as mock_cleanup, \
-        patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), \
+        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
+        patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
-    # Playwright container started, health-checked, and cleaned up
-    mock_start.assert_called_once()
-    mock_health.assert_called_once()
-    # cleanup is called twice: once with the container (health check failure)
-    # and once with None (finally block, since playwright_container was set to None)
-    assert mock_cleanup.call_count == 2
-    mock_cleanup.assert_any_call(mock_pw_container)
-    mock_cleanup.assert_any_call(None)
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "playwright" in mcp_config["mcpServers"]
+    assert mcp_config["mcpServers"]["playwright"]["url"] == "http://playwright:8931/mcp"
 
-    # Extract mcp.json — should NOT contain playwright entry
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+
+@pytest.mark.asyncio
+async def test_playwright_mcp_not_injected_when_url_empty():
+    """Playwright MCP is not injected when PLAYWRIGHT_MCP_URL is empty."""
+    task = _make_mock_task(description="Do the thing")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }), \
+        patch("task_manager.PLAYWRIGHT_MCP_URL", ""), \
+        patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "playwright" not in mcp_config.get("mcpServers", {})
 
 
-# --- Playwright MCP config injection ---
-
-
-def test_playwright_mcp_not_overwritten_when_db_configured():
+@pytest.mark.asyncio
+async def test_playwright_mcp_not_overwritten_when_db_configured():
     """Database-configured playwright entry takes precedence over auto-injection."""
-    mcp_servers = {"mcpServers": {"playwright": {"url": "http://custom:9999/mcp"}}}
-    # Simulate the injection logic from process_task_in_container
-    mcp_servers.setdefault("mcpServers", {})
-    if "playwright" not in mcp_servers["mcpServers"]:
-        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
-    assert mcp_servers["mcpServers"]["playwright"]["url"] == "http://custom:9999/mcp"
-
-
-def test_playwright_mcp_injected_when_not_configured():
-    """Playwright MCP entry injected when not in database config."""
-    mcp_servers = {"mcpServers": {}}
-    mcp_servers.setdefault("mcpServers", {})
-    if "playwright" not in mcp_servers["mcpServers"]:
-        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
-    assert mcp_servers["mcpServers"]["playwright"]["url"] == f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
-
-
-def test_playwright_mcp_injection_creates_mcpservers_key():
-    """Playwright MCP injection creates mcpServers key if missing."""
-    mcp_servers = {}
-    mcp_servers.setdefault("mcpServers", {})
-    if "playwright" not in mcp_servers["mcpServers"]:
-        mcp_servers["mcpServers"]["playwright"] = {"url": f"http://localhost:{PLAYWRIGHT_PORT}/mcp"}
-    assert mcp_servers["mcpServers"]["playwright"]["url"] == f"http://localhost:{PLAYWRIGHT_PORT}/mcp"
-
-
-# --- K8s runtime mode for process_task_in_container ---
-
-
-def test_process_task_k8s_mode_no_playwright_container_start():
-    """In K8s mode, Playwright sidecar is used — no Docker container is started or cleaned up."""
     task = _make_mock_task(description="Do the thing")
-
     settings = {
-        "mcp_servers": {},
+        "mcp_servers": {"mcpServers": {"playwright": {"url": "http://custom:9999/mcp"}}},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }), \
-        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
-        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
-        patch("worker.health_check_playwright", return_value=True) as mock_health, \
-        patch("worker.start_playwright_container") as mock_start, \
-        patch("worker.cleanup_playwright_container") as mock_cleanup, \
-        patch("worker.recall_from_hindsight", return_value=None):
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
+        patch("task_manager.recall_from_hindsight", return_value=None):
+        await _run_process_task(task, settings, mock_runtime)
 
-    # K8s: sidecar is pre-deployed — NO Docker container start
-    mock_start.assert_not_called()
-    # K8s: health check still runs against sidecar
-    mock_health.assert_called_once()
-    # K8s: no cleanup of Docker container (sidecar is managed by K8s)
-    mock_cleanup.assert_not_called()
-    # Task should complete
-    assert exit_code == 0
-    # Runtime was used correctly
-    mock_runtime.prepare.assert_called_once()
-    mock_runtime.run.assert_called_once()
-    mock_runtime.result.assert_called_once()
-
-
-def test_process_task_k8s_mode_playwright_uses_pod_ip():
-    """In K8s mode, Playwright URL uses POD_IP env var, not localhost."""
-    task = _make_mock_task(description="Do the thing")
-
-    settings = {
-        "mcp_servers": {},
-        "credentials": [],
-        "task_processing_model": "gpt-4o",
-        "system_prompt": "",
-    }
-
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
-
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
-            "OPENAI_BASE_URL": "http://litellm:4000",
-            "OPENAI_API_KEY": "sk-test",
-            "POD_IP": "10.0.0.42",
-        }), \
-        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
-        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
-        patch("worker.PLAYWRIGHT_PORT", "8931"), \
-        patch("worker.health_check_playwright", return_value=True), \
-        patch("worker.start_playwright_container"), \
-        patch("worker.cleanup_playwright_container"), \
-        patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
-
-    # Extract mcp.json and verify Playwright URL uses POD_IP
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    pw_url = mcp_config["mcpServers"]["playwright"]["url"]
-    assert pw_url == "http://10.0.0.42:8931/mcp"
-    assert "localhost" not in pw_url
-
-
-def test_process_task_k8s_mode_playwright_sidecar_unhealthy():
-    """In K8s mode, unhealthy Playwright sidecar means no playwright in mcp.json."""
-    task = _make_mock_task(description="Do the thing")
-
-    settings = {
-        "mcp_servers": {},
-        "credentials": [],
-        "task_processing_model": "gpt-4o",
-        "system_prompt": "",
-    }
-
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
-
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
-            "OPENAI_BASE_URL": "http://litellm:4000",
-            "OPENAI_API_KEY": "sk-test",
-        }), \
-        patch("worker.CONTAINER_RUNTIME_TYPE", "kubernetes"), \
-        patch("worker.PLAYWRIGHT_MCP_IMAGE", "playwright-mcp:latest"), \
-        patch("worker.health_check_playwright", return_value=False), \
-        patch("worker.start_playwright_container") as mock_start, \
-        patch("worker.cleanup_playwright_container") as mock_cleanup, \
-        patch("worker.recall_from_hindsight", return_value=None):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
-
-    # No Docker container start or cleanup in K8s mode
-    mock_start.assert_not_called()
-    mock_cleanup.assert_not_called()
-    # mcp.json should NOT contain playwright
-    files = mock_runtime.prepare.call_args.kwargs["files"]
-    mcp_config = json.loads(files["mcp.json"])
-    assert "playwright" not in mcp_config.get("mcpServers", {})
+    assert mcp_config["mcpServers"]["playwright"]["url"] == "http://custom:9999/mcp"
 
 
 # --- Callback token generation ---
 
 
-def test_callback_token_stored_in_valkey():
+@pytest.mark.asyncio
+async def test_callback_token_stored_in_valkey():
     """Worker generates callback token and stores it in Valkey with correct key and TTL."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -2909,19 +2551,11 @@ def test_callback_token_stored_in_valkey():
     mock_runtime = _make_mock_runtime()
     mock_redis = MagicMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", return_value=mock_redis):
+        await _run_process_task(task, settings, mock_runtime)
 
     # Token was stored with correct key pattern and 30-min TTL
     set_calls = [c for c in mock_redis.set.call_args_list if "task_result_token:" in str(c)]
@@ -2932,7 +2566,8 @@ def test_callback_token_stored_in_valkey():
     assert kwargs.get("ex") == 1800
 
 
-def test_callback_url_derived_from_errand_mcp_url():
+@pytest.mark.asyncio
+async def test_callback_url_derived_from_errand_mcp_url():
     """Callback URL is derived by stripping /mcp and appending internal endpoint."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -2945,27 +2580,20 @@ def test_callback_url_derived_from_errand_mcp_url():
     mock_runtime = _make_mock_runtime()
     mock_redis = MagicMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", return_value=mock_redis):
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env["RESULT_CALLBACK_URL"] == f"http://errand:8000/api/internal/task-result/{task.id}"
     assert "RESULT_CALLBACK_TOKEN" in env
     assert len(env["RESULT_CALLBACK_TOKEN"]) == 64
 
 
-def test_callback_env_vars_passed_to_container():
+@pytest.mark.asyncio
+async def test_callback_env_vars_passed_to_container():
     """Both RESULT_CALLBACK_URL and RESULT_CALLBACK_TOKEN are in container env vars."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -2978,26 +2606,19 @@ def test_callback_env_vars_passed_to_container():
     mock_runtime = _make_mock_runtime()
     mock_redis = MagicMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.return_value = mock_redis
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", return_value=mock_redis):
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert "RESULT_CALLBACK_URL" in env
     assert "RESULT_CALLBACK_TOKEN" in env
 
 
-def test_callback_env_vars_skipped_on_valkey_failure():
+@pytest.mark.asyncio
+async def test_callback_env_vars_skipped_on_valkey_failure():
     """When Valkey is unavailable, callback env vars are not set."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -3009,22 +2630,13 @@ def test_callback_env_vars_skipped_on_valkey_failure():
 
     mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            # All Redis operations fail
-            mock_sync_redis.Redis.from_url.side_effect = ConnectionError("Valkey down")
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", side_effect=ConnectionError("Valkey down")):
+        await _run_process_task(task, settings, mock_runtime)
 
-    env = mock_runtime.prepare.call_args.kwargs["env"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert "RESULT_CALLBACK_URL" not in env
     assert "RESULT_CALLBACK_TOKEN" not in env
 
@@ -3032,7 +2644,8 @@ def test_callback_env_vars_skipped_on_valkey_failure():
 # --- Callback result reading ---
 
 
-def test_callback_result_overrides_runtime_stdout():
+@pytest.mark.asyncio
+async def test_callback_result_overrides_runtime_stdout():
     """When callback result exists in Valkey, it overrides runtime.result() stdout."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -3045,31 +2658,21 @@ def test_callback_result_overrides_runtime_stdout():
     runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
 
     mock_runtime = _make_mock_runtime(stdout=runtime_output)
-    mock_redis = MagicMock()
-    # First call: token storage (returns mock), Second call: log streaming, Third call: result reading
+    mock_token_redis = MagicMock()
     mock_result_redis = MagicMock()
     mock_result_redis.get.return_value = callback_output
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            # Return different mocks for each Redis.from_url call:
-            # 1st: callback token storage, 2nd: log streaming, 3rd: result reading
-            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", side_effect=[mock_token_redis, mock_result_redis]):
+        exit_code, stdout, stderr = await _run_process_task(task, settings, mock_runtime)
 
     assert stdout == callback_output
 
 
-def test_missing_callback_falls_back_to_runtime_stdout():
+@pytest.mark.asyncio
+async def test_missing_callback_falls_back_to_runtime_stdout():
     """When no callback result in Valkey, runtime.result() stdout is used."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -3081,28 +2684,21 @@ def test_missing_callback_falls_back_to_runtime_stdout():
     runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
 
     mock_runtime = _make_mock_runtime(stdout=runtime_output)
-    mock_redis = MagicMock()
+    mock_token_redis = MagicMock()
     mock_result_redis = MagicMock()
     mock_result_redis.get.return_value = None  # No callback result
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", side_effect=[mock_token_redis, mock_result_redis]):
+        exit_code, stdout, stderr = await _run_process_task(task, settings, mock_runtime)
 
     assert stdout == runtime_output
 
 
-def test_callback_result_valkey_keys_deleted():
+@pytest.mark.asyncio
+async def test_callback_result_valkey_keys_deleted():
     """Both task_result and task_result_token keys are deleted after reading."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -3113,30 +2709,23 @@ def test_callback_result_valkey_keys_deleted():
     }
 
     mock_runtime = _make_mock_runtime()
-    mock_redis = MagicMock()
+    mock_token_redis = MagicMock()
     mock_result_redis = MagicMock()
     mock_result_redis.get.return_value = '{"status":"completed","result":"done","questions":[]}'
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            mock_sync_redis.Redis.from_url.side_effect = [mock_redis, mock_redis, mock_result_redis]
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", side_effect=[mock_token_redis, mock_result_redis]):
+        await _run_process_task(task, settings, mock_runtime)
 
     mock_result_redis.delete.assert_called_once_with(
         f"task_result:{task.id}", f"task_result_token:{task.id}"
     )
 
 
-def test_callback_result_valkey_error_swallowed():
+@pytest.mark.asyncio
+async def test_callback_result_valkey_error_swallowed():
     """Valkey errors during callback result reading are swallowed gracefully."""
     task = _make_mock_task(description="Run a job")
     settings = {
@@ -3148,30 +2737,20 @@ def test_callback_result_valkey_error_swallowed():
     runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
 
     mock_runtime = _make_mock_runtime(stdout=runtime_output)
-    mock_redis = MagicMock()
+    mock_token_redis = MagicMock()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "",
             "ERRAND_MCP_URL": "http://errand:8000/mcp/",
-        }), patch("worker.sync_redis") as mock_sync_redis:
-            # Token storage + log streaming succeed, result reading fails
-            mock_sync_redis.Redis.from_url.side_effect = [
-                mock_redis, mock_redis, ConnectionError("Valkey down"),
-            ]
-            exit_code, stdout, stderr = process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        }), patch("redis.Redis.from_url", side_effect=[mock_token_redis, ConnectionError("Valkey down")]):
+        exit_code, stdout, stderr = await _run_process_task(task, settings, mock_runtime)
 
     # Falls back to runtime stdout
     assert stdout == runtime_output
 
 
-def test_nonzero_exit_code_with_valid_json_treated_as_success():
+@pytest.mark.asyncio
+async def test_nonzero_exit_code_with_valid_json_treated_as_success():
     """When exit_code != 0 but stdout contains valid TaskRunnerOutput JSON,
     extract_json should still return the JSON (enabling the success path).
 
@@ -3195,14 +2774,16 @@ def test_nonzero_exit_code_with_valid_json_treated_as_success():
     assert parsed.result == "done"
 
 
-def test_nonzero_exit_code_without_json_still_retries():
+@pytest.mark.asyncio
+async def test_nonzero_exit_code_without_json_still_retries():
     """When exit_code != 0 and stdout has no valid JSON, the retry path is taken."""
     stdout = ""
     clean_stdout = extract_json(stdout) if stdout else None
     assert clean_stdout is None, "Empty stdout should not produce JSON"
 
 
-def test_nonzero_exit_code_with_invalid_json_still_retries():
+@pytest.mark.asyncio
+async def test_nonzero_exit_code_with_invalid_json_still_retries():
     """When exit_code != 0 and stdout has invalid JSON, the retry path is taken."""
     stdout = '{"not_a_task_runner_output": true}'
     clean_stdout = extract_json(stdout) if stdout else None
@@ -3212,7 +2793,8 @@ def test_nonzero_exit_code_with_invalid_json_still_retries():
 # --- Repo context discovery instructions ---
 
 
-def test_repo_context_instructions_in_system_prompt():
+@pytest.mark.asyncio
+async def test_repo_context_instructions_in_system_prompt():
     """System prompt always includes repo context discovery instructions."""
     task = _make_mock_task(description="Clone and fix a repo")
     settings = {
@@ -3222,24 +2804,15 @@ def test_repo_context_instructions_in_system_prompt():
         "system_prompt": "You are a helpful assistant.",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }, clear=True):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
     assert "## Repo Context Discovery" in system_prompt_content
@@ -3248,7 +2821,8 @@ def test_repo_context_instructions_in_system_prompt():
     assert ".claude/skills/" in system_prompt_content
 
 
-def test_repo_context_instructions_after_skill_manifest():
+@pytest.mark.asyncio
+async def test_repo_context_instructions_after_skill_manifest():
     """Repo context instructions appear after the skill manifest when skills are present."""
     task = _make_mock_task(description="Research task")
     settings = {
@@ -3262,24 +2836,15 @@ def test_repo_context_instructions_after_skill_manifest():
         "mcp_api_key": "test-api-key-123",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }, clear=True):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
     # Both sections present
@@ -3295,7 +2860,8 @@ def test_repo_context_instructions_after_skill_manifest():
 # --- LiteLLM MCP injection ---
 
 
-def test_litellm_mcp_injected_when_enabled():
+@pytest.mark.asyncio
+async def test_litellm_mcp_injected_when_enabled():
     """When litellm_mcp_servers has entries and provider resolves, litellm is injected."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3306,21 +2872,12 @@ def test_litellm_mcp_injected_when_enabled():
         "litellm_mcp_servers": ["argocd", "perplexity"],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager._resolve_provider_sync", return_value={"base_url": "https://litellm.example.com", "api_key": "sk-test"}):
+        await _run_process_task(task, settings, mock_runtime)
 
-    try:
-        with patch.object(worker, "_resolve_provider_sync", return_value={"base_url": "https://litellm.example.com", "api_key": "sk-test"}):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     # Each litellm server gets its own entry with path-based URL
     assert "litellm_argocd" in mcp_config["mcpServers"]
@@ -3330,7 +2887,8 @@ def test_litellm_mcp_injected_when_enabled():
     assert mcp_config["mcpServers"]["litellm_perplexity"]["url"] == "https://litellm.example.com/mcp/perplexity"
 
 
-def test_litellm_mcp_not_injected_when_empty():
+@pytest.mark.asyncio
+async def test_litellm_mcp_not_injected_when_empty():
     """When litellm_mcp_servers is empty, no litellm entry is added."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3341,29 +2899,21 @@ def test_litellm_mcp_not_injected_when_empty():
         "litellm_mcp_servers": [],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "https://litellm.example.com",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert not any(k.startswith("litellm_") for k in mcp_config.get("mcpServers", {}))
 
 
-def test_litellm_mcp_not_injected_when_no_base_url():
+@pytest.mark.asyncio
+async def test_litellm_mcp_not_injected_when_no_base_url():
     """When openai_base_url is not set, no litellm entry is added."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3374,27 +2924,19 @@ def test_litellm_mcp_not_injected_when_no_base_url():
         "litellm_mcp_servers": ["argocd"],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch.dict("os.environ", {}, clear=True):
+        # Ensure no OPENAI_BASE_URL in env
+        await _run_process_task(task, settings, mock_runtime)
 
-    try:
-        with patch.dict("os.environ", {}, clear=True):
-            # Ensure no OPENAI_BASE_URL in env
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert not any(k.startswith("litellm_") for k in mcp_config.get("mcpServers", {}))
 
 
-def test_litellm_mcp_manual_override_preserved():
+@pytest.mark.asyncio
+async def test_litellm_mcp_manual_override_preserved():
     """When user has manually configured a litellm_argocd key, it is preserved."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3405,30 +2947,22 @@ def test_litellm_mcp_manual_override_preserved():
         "litellm_mcp_servers": ["argocd"],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "https://litellm.example.com",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     # Manual entry should be preserved, not overwritten
     assert mcp_config["mcpServers"]["litellm_argocd"]["url"] == "http://custom:4000/mcp/argocd"
 
 
-def test_litellm_mcp_legacy_key_blocks_injection():
+@pytest.mark.asyncio
+async def test_litellm_mcp_legacy_key_blocks_injection():
     """When user has a legacy 'litellm' key, no litellm_* entries are auto-injected."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3439,24 +2973,15 @@ def test_litellm_mcp_legacy_key_blocks_injection():
         "litellm_mcp_servers": ["argocd"],
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
-
-    try:
-        with patch.dict("os.environ", {
+    with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "https://litellm.example.com",
             "OPENAI_API_KEY": "sk-test",
         }):
-            process_task_in_container(task, settings)
-    finally:
-        worker.container_runtime = original_runtime
+        await _run_process_task(task, settings, mock_runtime)
 
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     # Legacy key preserved, no litellm_argocd injected
     assert mcp_config["mcpServers"]["litellm"]["url"] == "http://custom:4000/mcp"
@@ -3466,7 +2991,8 @@ def test_litellm_mcp_legacy_key_blocks_injection():
 # --- Cloud Storage MCP injection ---
 
 
-def test_cloud_storage_mcp_injected_both_gates():
+@pytest.mark.asyncio
+async def test_cloud_storage_mcp_injected_both_gates():
     """When URL is set and credentials exist, cloud storage MCP is injected."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3480,33 +3006,13 @@ def test_cloud_storage_mcp_injected_both_gates():
         "onedrive": {"access_token": "eyJ.test", "refresh_token": "rt2", "expires_at": 9999999999},
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"), \
+         patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    try:
-        with patch.dict("os.environ", {
-            "GDRIVE_MCP_URL": "http://gdrive:8080/mcp",
-            "ONEDRIVE_MCP_URL": "http://onedrive:8080/mcp",
-        }):
-            # Force env var re-reads
-            original_gdrive = worker.GDRIVE_MCP_URL
-            original_onedrive = worker.ONEDRIVE_MCP_URL
-            worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
-            worker.ONEDRIVE_MCP_URL = "http://onedrive:8080/mcp"
-            try:
-                process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
-            finally:
-                worker.GDRIVE_MCP_URL = original_gdrive
-                worker.ONEDRIVE_MCP_URL = original_onedrive
-    finally:
-        worker.container_runtime = original_runtime
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "google_drive" in mcp_config["mcpServers"]
     assert mcp_config["mcpServers"]["google_drive"]["url"] == "http://gdrive:8080/mcp"
@@ -3520,7 +3026,8 @@ def test_cloud_storage_mcp_injected_both_gates():
     assert "ETag" in system_prompt
 
 
-def test_cloud_storage_not_injected_no_url():
+@pytest.mark.asyncio
+async def test_cloud_storage_not_injected_no_url():
     """When MCP URL not set, cloud storage is not injected even with credentials."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3533,34 +3040,21 @@ def test_cloud_storage_not_injected_no_url():
         "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager.GDRIVE_MCP_URL", ""), \
+         patch("task_manager.ONEDRIVE_MCP_URL", ""):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    original_gdrive = worker.GDRIVE_MCP_URL
-    original_onedrive = worker.ONEDRIVE_MCP_URL
-    worker.GDRIVE_MCP_URL = ""
-    worker.ONEDRIVE_MCP_URL = ""
-
-    try:
-        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
-    finally:
-        worker.container_runtime = original_runtime
-        worker.GDRIVE_MCP_URL = original_gdrive
-        worker.ONEDRIVE_MCP_URL = original_onedrive
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "google_drive" not in mcp_config.get("mcpServers", {})
     # No cloud storage instructions
     assert "Cloud Storage" not in files["system_prompt.txt"]
 
 
-def test_cloud_storage_not_injected_no_credentials():
+@pytest.mark.asyncio
+async def test_cloud_storage_not_injected_no_credentials():
     """When no credentials exist, cloud storage is not injected."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3570,29 +3064,18 @@ def test_cloud_storage_not_injected_no_credentials():
         "system_prompt": "Be helpful.",
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=None)
 
-    original_gdrive = worker.GDRIVE_MCP_URL
-    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
-
-    try:
-        process_task_in_container(task, settings, cloud_storage_credentials=None)
-    finally:
-        worker.container_runtime = original_runtime
-        worker.GDRIVE_MCP_URL = original_gdrive
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "google_drive" not in mcp_config.get("mcpServers", {})
 
 
-def test_cloud_storage_profile_filter():
+@pytest.mark.asyncio
+async def test_cloud_storage_profile_filter():
     """Cloud storage respects profile_mcp_servers filter."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3606,29 +3089,18 @@ def test_cloud_storage_profile_filter():
         "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    original_gdrive = worker.GDRIVE_MCP_URL
-    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
-
-    try:
-        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
-    finally:
-        worker.container_runtime = original_runtime
-        worker.GDRIVE_MCP_URL = original_gdrive
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "google_drive" not in mcp_config.get("mcpServers", {})
 
 
-def test_cloud_storage_profile_filter_includes():
+@pytest.mark.asyncio
+async def test_cloud_storage_profile_filter_includes():
     """Cloud storage is injected when profile filter includes it."""
     task = _make_mock_task(description="Test task")
     settings = {
@@ -3642,23 +3114,11 @@ def test_cloud_storage_profile_filter_includes():
         "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
     }
 
-    mock_runtime = MagicMock()
-    mock_runtime.run.return_value = iter([])
-    mock_runtime.result.return_value = (0, '{"status":"completed","result":"done","questions":[]}', '')
+    mock_runtime = _make_mock_runtime()
 
-    import worker
-    original_runtime = worker.container_runtime
-    worker.container_runtime = mock_runtime
+    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    original_gdrive = worker.GDRIVE_MCP_URL
-    worker.GDRIVE_MCP_URL = "http://gdrive:8080/mcp"
-
-    try:
-        process_task_in_container(task, settings, cloud_storage_credentials=cloud_creds)
-    finally:
-        worker.container_runtime = original_runtime
-        worker.GDRIVE_MCP_URL = original_gdrive
-
-    files = mock_runtime.prepare.call_args.kwargs["files"]
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert "google_drive" in mcp_config["mcpServers"]

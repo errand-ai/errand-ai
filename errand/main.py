@@ -54,6 +54,7 @@ from cloud_auth import exchange_code
 from integration_routes import router as integration_router
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
+from task_manager import TaskManager
 from telemetry import TelemetryReporter
 from version_checker import run_version_checker, get_version_info
 from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
@@ -204,6 +205,17 @@ async def lifespan(app: FastAPI):
     telemetry_reporter = TelemetryReporter(async_session)
     await telemetry_reporter.start()
 
+    # Start TaskManager if enabled (default: true)
+    task_manager_enabled = os.environ.get("TASK_MANAGER_ENABLED", "true").lower() in ("1", "true", "yes")
+    task_manager: TaskManager | None = None
+    task_manager_task: asyncio.Task | None = None
+    if task_manager_enabled:
+        task_manager = TaskManager()
+        task_manager_task = asyncio.create_task(task_manager.run())
+        logger.info("TaskManager background task started")
+    else:
+        logger.info("TaskManager disabled via TASK_MANAGER_ENABLED=false")
+
     # Start cloud WebSocket client and register endpoints if credentials exist
     async with async_session() as session:
         result = await session.execute(
@@ -226,6 +238,16 @@ async def lifespan(app: FastAPI):
 
     async with mcp_server.session_manager.run():
         yield
+
+    # Stop TaskManager first (allows in-flight tasks to complete)
+    if task_manager is not None:
+        await task_manager.stop()
+    if task_manager_task is not None:
+        try:
+            await asyncio.wait_for(task_manager_task, timeout=310)
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+
     scheduler_task.cancel()
     zombie_cleanup_task.cancel()
     slack_updater_task.cancel()

@@ -14,6 +14,7 @@ const {
   llmTimeout,
   timezoneValue,
   archiveAfterDays,
+  maxConcurrentTasks,
   taskRunnerLogLevel,
   saveSettings,
 } = inject<any>('settings-state')
@@ -91,10 +92,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     ref="taskMgmtRef"
     :timezone="timezoneValue"
     :archive-after-days="archiveAfterDays"
+    :max-concurrent-tasks="maxConcurrentTasks"
     :task-runner-log-level="taskRunnerLogLevel"
     :save-settings="saveSettings"
     @update:timezone="timezoneValue = $event"
     @update:archive-after-days="archiveAfterDays = $event"
+    @update:max-concurrent-tasks="maxConcurrentTasks = $event"
     @update:task-runner-log-level="taskRunnerLogLevel = $event"
   />
 
