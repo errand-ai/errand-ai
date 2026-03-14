@@ -193,7 +193,7 @@ The `TaskManager` (`errand/task_manager.py`) runs as an asyncio background task 
 - **Concurrency control**: `asyncio.Semaphore` limits concurrent tasks (configurable via `max_concurrent_tasks` setting, default: 3)
 - **`TASK_MANAGER_ENABLED` env var**: Set to `false` to disable task processing (default: `true`)
 - **`CONTAINER_RUNTIME` env var**: `docker` (default) or `kubernetes` — selects the runtime
-- **DockerRuntime**: Wraps Docker SDK, used for local dev via docker-compose (DinD sidecar)
+- **DockerRuntime**: Wraps Docker SDK, used for local dev via docker-compose (host Docker socket)
   - `TASK_RUNNER_NETWORK` env var: when set, uses named Docker network instead of `network_mode="host"`
 - **KubernetesRuntime**: Creates K8s Jobs + ConfigMaps, used in production
   - Jobs labelled with `app.kubernetes.io/managed-by: content-manager-worker`

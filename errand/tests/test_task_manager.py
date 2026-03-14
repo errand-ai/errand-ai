@@ -6,17 +6,12 @@ Covers tasks: 1.4, 9.1–9.7 from the merge-worker-into-server change.
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-from sqlalchemy import text
 
 from container_runtime import RuntimeHandle
 from task_manager import (
     HEARTBEAT_INTERVAL,
     LEADER_LOCK_ID,
-    PLAYWRIGHT_MCP_URL,
     TaskManager,
 )
 

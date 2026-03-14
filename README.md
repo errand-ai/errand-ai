@@ -15,7 +15,7 @@ Errand AI is a personal task automation platform. You describe what you need don
 - **Cloud Storage**: Full support for Google Drive and OneDrive.
 - **MCP Server Integration**: Extend capabilities with MCP for connectivity to external systems.
 - **Agent Skills**: Full support for on-demand loading of Agent Skill definitions.
-- **AI Native**: Exposes services with it's own MCP server for integration with other AI Coding Tools & Agentic systems.
+- **AI Native**: Exposes services with its own MCP server for integration with other AI Coding Tools & Agentic systems.
 - **SSO authentication**: Keycloak OIDC with role-based access control (admin/user roles)
 - **Audit metadata**: Tasks track created_by/updated_by from authenticated user
 

@@ -653,7 +653,7 @@ class KubernetesRuntime(ContainerRuntime):
             except ApiException:
                 logger.debug("Failed to delete Secret %s", secret_name, exc_info=True)
 
-    # -- Native async overrides (wrap sync K8s calls in executor) -----------
+    # -- Async overrides (delegate sync K8s SDK calls to thread executor) ---
 
     async def async_prepare(
         self,

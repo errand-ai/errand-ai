@@ -17,7 +17,6 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlparse
@@ -28,10 +27,10 @@ from sqlalchemy import create_engine as create_sync_engine, func, select, text a
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from container_runtime import ContainerRuntime, DockerRuntime, KubernetesRuntime, create_runtime, RuntimeHandle
+from container_runtime import ContainerRuntime, DockerRuntime, create_runtime
 from database import async_session, engine
-from events import init_valkey, close_valkey, get_valkey, publish_event, VALKEY_URL
-from models import PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
+from events import get_valkey, publish_event, VALKEY_URL
+from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, task_tags
 
 logger = logging.getLogger(__name__)
 
