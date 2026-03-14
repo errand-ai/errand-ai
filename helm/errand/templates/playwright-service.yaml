@@ -1,0 +1,16 @@
+{{- if .Values.playwright.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "errand.fullname" . }}-playwright
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: playwright
+spec:
+  ports:
+    - port: {{ .Values.playwright.port }}
+      targetPort: {{ .Values.playwright.port }}
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: playwright
+{{- end }}

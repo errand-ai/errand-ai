@@ -1,15 +1,15 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "errand.fullname" . }}-worker
+  name: {{ include "errand.fullname" . }}-server
   labels:
     {{- include "errand.labels" . | nindent 4 }}
-    app.kubernetes.io/component: worker
+    app.kubernetes.io/component: server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "errand.fullname" . }}-worker
+  name: {{ include "errand.fullname" . }}-server
 subjects:
   - kind: ServiceAccount
-    name: {{ include "errand.fullname" . }}-worker
+    name: {{ include "errand.fullname" . }}-server
     namespace: {{ .Release.Namespace }}

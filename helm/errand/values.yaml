@@ -6,11 +6,8 @@ server:
     pullPolicy: IfNotPresent
   service:
     port: 8000
-
-worker:
-  replicaCount: 0
+  maxConcurrentTasks: 3
   maxTurns: "200"
-  healthPort: 8080
 
 taskRunner:
   image:
@@ -19,6 +16,7 @@ taskRunner:
     pullPolicy: IfNotPresent
 
 playwright:
+  enabled: true
   image:
     repository: mcr.microsoft.com/playwright/mcp
     tag: "latest"
@@ -30,14 +28,6 @@ playwright:
 database:
   existingSecret: content-manager-db
   secretKey: DATABASE_URL
-
-keda:
-  enabled: true
-  pollingInterval: 10
-  cooldownPeriod: 60
-  minReplicaCount: 0
-  maxReplicaCount: 5
-  threshold: "1"
 
 keycloak:
   existingSecret: content-manager-keycloak

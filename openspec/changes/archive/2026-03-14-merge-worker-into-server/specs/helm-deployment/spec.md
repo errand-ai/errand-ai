@@ -25,21 +25,12 @@ The server and worker deployments SHALL render LLM provider environment variable
 - **WHEN** the server Deployment runs
 - **THEN** it can create, get, list, and delete K8s Jobs and ConfigMaps in its namespace
 
-### Requirement: Server deployment template
-The server deployment template SHALL include Kubernetes liveness and readiness probes for the server container, using httpGet against the `/api/health` endpoint.
+## REMOVED Requirements
 
-#### Scenario: Probes rendered in server deployment
-- **WHEN** the Helm chart is rendered with default values
-- **THEN** the server container spec SHALL include `livenessProbe` and `readinessProbe` blocks with httpGet configuration
+### Requirement: Worker Deployment
 
-<!-- Removed: Worker deployment template — Worker functionality merged into the server's TaskManager. -->
-
-### Requirement: Helm values defaults
-The values.yaml SHALL include default probe configuration for the server.
-
-#### Scenario: Default health values present
-- **WHEN** values.yaml is read
-- **THEN** server probe configuration SHALL be present with defaults
+**Reason**: Worker functionality merged into the server's TaskManager.
+**Migration**: Remove `worker-deployment.yaml`, worker ServiceAccount, and worker RBAC templates from the Helm chart. All task processing is handled by the server.
 
 ## ADDED Requirements
 

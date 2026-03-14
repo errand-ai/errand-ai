@@ -28,6 +28,7 @@ SETTINGS_REGISTRY = {
     "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://service.errand.cloud"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
     "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
+    "max_concurrent_tasks": {"env_var": "MAX_CONCURRENT_TASKS", "sensitive": False, "default": 3},
 }
 
 # Keys excluded from API responses

@@ -14,6 +14,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - errand-net
 
   valkey:
     image: valkey/valkey:8-alpine
@@ -24,28 +26,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
-  dind:
-    image: docker:27-dind
-    privileged: true
-    environment:
-      DOCKER_TLS_CERTDIR: ""
-    healthcheck:
-      test: ["CMD", "docker", "info"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  task-runner-build:
-    image: docker:27
-    environment:
-      DOCKER_HOST: tcp://dind:2375
-    depends_on:
-      dind:
-        condition: service_healthy
-    volumes:
-      - ../task-runner:/workspace
-    command: docker build -t errand-task-runner:latest /workspace
+    networks:
+      - errand-net
 
   migrate:
     build:
@@ -59,6 +41,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - errand-net
+
+  task-runner-build:
+    build:
+      context: ../task-runner
+      dockerfile: Dockerfile
+    image: errand-task-runner:latest
+    entrypoint: ["true"]
 
   errand:
     build:
@@ -70,6 +61,8 @@ services:
         APP_VERSION: ${APP_VERSION:-dev}
     ports:
       - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
       # OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL}
@@ -77,6 +70,12 @@ services:
       # OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
       # OIDC_ROLES_CLAIM: resource_access.content-manager.roles
       VALKEY_URL: redis://valkey:6379
+      CONTAINER_RUNTIME: docker
+      TASK_RUNNER_IMAGE: errand-task-runner:latest
+      TASK_RUNNER_NETWORK: errand-net
+      ERRAND_MCP_URL: http://errand:8000/mcp/
+      HINDSIGHT_URL: http://hindsight:8888
+      PLAYWRIGHT_MCP_URL: http://playwright:3000/mcp
       LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-}
       LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-}
       LLM_PROVIDER_0_API_KEY: ${LLM_PROVIDER_0_API_KEY:-}
@@ -105,58 +104,32 @@ services:
         condition: service_completed_successfully
       valkey:
         condition: service_healthy
+      task-runner-build:
+        condition: service_completed_successfully
+    networks:
+      - errand-net
 
   gdrive-mcp:
     image: ghcr.io/devops-consultants/google-drive-mcp-server:latest
     ports:
       - "8081:8080"
+    networks:
+      - errand-net
 
   onedrive-mcp:
     image: ghcr.io/devops-consultants/one-drive-mcp-server:latest
     ports:
       - "8082:8080"
+    networks:
+      - errand-net
 
-  worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      secrets:
-        - npm_token
-    command: python worker.py
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
-      VALKEY_URL: redis://valkey:6379
-      DOCKER_HOST: tcp://dind:2375
-      TASK_RUNNER_IMAGE: errand-task-runner:latest
-      PLAYWRIGHT_MCP_IMAGE: mcr.microsoft.com/playwright/mcp:latest
-      LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-}
-      LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-}
-      LLM_PROVIDER_0_API_KEY: ${LLM_PROVIDER_0_API_KEY:-}
-      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
-      ERRAND_MCP_URL: http://errand:8000/mcp/
-      HINDSIGHT_URL: http://hindsight:8888
-      MAX_TURNS: "200"
-      GDRIVE_MCP_URL: http://gdrive-mcp:8080/mcp
-      ONEDRIVE_MCP_URL: http://onedrive-mcp:8080/mcp
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
-      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
-      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      valkey:
-        condition: service_healthy
-      dind:
-        condition: service_healthy
-      task-runner-build:
-        condition: service_completed_successfully
+  playwright:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    command: ["--isolated", "--port", "3000", "--host", "0.0.0.0", "--allowed-hosts", "*"]
+    ports:
+      - "3000:3000"
+    networks:
+      - errand-net
 
   hindsight-init:
     image: ghcr.io/vectorize-io/hindsight:latest
@@ -165,6 +138,8 @@ services:
       - hindsight-data:/home/hindsight/.pg0
       - hindsight-models:/home/hindsight/.cache
     command: chown -R hindsight:hindsight /home/hindsight/.pg0 /home/hindsight/.cache
+    networks:
+      - errand-net
 
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:latest
@@ -186,6 +161,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - errand-net
 
 secrets:
   npm_token:
@@ -195,3 +172,7 @@ volumes:
   postgres-data:
   hindsight-data:
   hindsight-models:
+
+networks:
+  errand-net:
+    name: errand-net

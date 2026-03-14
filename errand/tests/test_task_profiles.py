@@ -530,7 +530,7 @@ async def worker_db_session():
 @pytest.mark.asyncio
 async def test_resolve_profile_with_profile(worker_db_session):
     """Task with profile overrides settings with profile values."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -560,7 +560,7 @@ async def test_resolve_profile_with_profile(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_without_profile(worker_db_session):
     """Task without profile returns settings unchanged."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -580,7 +580,7 @@ async def test_resolve_profile_without_profile(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_deleted_profile(worker_db_session):
     """Task referencing a deleted profile returns settings unchanged with warning."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -602,7 +602,7 @@ async def test_resolve_profile_deleted_profile(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_override_model(worker_db_session):
     """Profile model overrides task_processing_model setting."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -625,7 +625,7 @@ async def test_resolve_profile_override_model(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_override_system_prompt(worker_db_session):
     """Profile system_prompt overrides the system_prompt setting."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -648,7 +648,7 @@ async def test_resolve_profile_override_system_prompt(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_override_max_turns(worker_db_session):
     """Profile max_turns is stored as _profile_max_turns string."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -671,7 +671,7 @@ async def test_resolve_profile_override_max_turns(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_override_reasoning_effort(worker_db_session):
     """Profile reasoning_effort is stored as _profile_reasoning_effort."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -694,7 +694,7 @@ async def test_resolve_profile_override_reasoning_effort(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_mcp_servers_null_inherits(worker_db_session):
     """Profile with null mcp_servers does not add _profile_mcp_servers key (inherit)."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -717,7 +717,7 @@ async def test_resolve_profile_mcp_servers_null_inherits(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_mcp_servers_empty_list(worker_db_session):
     """Profile with [] mcp_servers sets _profile_mcp_servers to empty list."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -740,7 +740,7 @@ async def test_resolve_profile_mcp_servers_empty_list(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_mcp_servers_explicit(worker_db_session):
     """Profile with explicit mcp_servers sets _profile_mcp_servers to that list."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -763,7 +763,7 @@ async def test_resolve_profile_mcp_servers_explicit(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_litellm_mcp_servers(worker_db_session):
     """Profile litellm_mcp_servers is stored as _profile_litellm_mcp_servers."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
@@ -786,7 +786,7 @@ async def test_resolve_profile_litellm_mcp_servers(worker_db_session):
 @pytest.mark.asyncio
 async def test_resolve_profile_skill_ids(worker_db_session):
     """Profile skill_ids is stored as _profile_skill_ids."""
-    from worker import resolve_profile
+    from task_manager import _resolve_profile as resolve_profile
 
     session = worker_db_session
 
