@@ -1,47 +1,10 @@
-## Purpose
-
-First-run setup wizard for creating an admin account and configuring initial application settings.
-
-## Requirements
-
-### Requirement: Setup wizard route
-The frontend SHALL define a `/setup` route that renders the setup wizard. The route SHALL NOT require authentication. The wizard SHALL only be accessible when `/api/auth/status` returns `mode: "setup"`. If the mode is not `"setup"`, navigating to `/setup` SHALL redirect to `/`.
-
-#### Scenario: Wizard accessible in setup mode
-- **WHEN** the auth status is `"setup"` and a user navigates to `/setup`
-- **THEN** the setup wizard is rendered
-
-#### Scenario: Wizard blocked when not in setup mode
-- **WHEN** the auth status is `"local"` and a user navigates to `/setup`
-- **THEN** the user is redirected to `/`
-
-### Requirement: Step 1 — Create admin account
-The first wizard step SHALL display a form with `username` and `password` fields (with password confirmation). Submitting the form SHALL call `POST /api/setup/create-user`. On success, the returned JWT SHALL be stored in the auth store and the wizard SHALL advance to step 2.
-
-#### Scenario: Account created successfully
-- **WHEN** the user submits valid username and password
-- **THEN** the backend creates the admin user, returns a JWT, and the wizard advances to step 2
-
-#### Scenario: Passwords don't match
-- **WHEN** the user submits mismatched password and confirmation
-- **THEN** a client-side validation error is shown and no API call is made
-
-### Requirement: Create first user endpoint
-The backend SHALL expose `POST /api/setup/create-user` with NO authentication required. The endpoint SHALL accept `{"username": "...", "password": "..."}`, create a local admin user, and return a JWT. The endpoint SHALL return HTTP 403 if any local user already exists.
-
-#### Scenario: First user created
-- **WHEN** no local users exist and valid credentials are submitted
-- **THEN** the backend creates the user and returns `{"access_token": "<jwt>", "token_type": "bearer"}`
-
-#### Scenario: Setup already completed
-- **WHEN** a local user already exists and the endpoint is called
-- **THEN** the backend returns HTTP 403 with `{"detail": "Setup already completed"}`
+## MODIFIED Requirements
 
 ### Requirement: Step 2 — LLM provider configuration
-The second wizard step SHALL display fields for Provider Name, Provider URL, and API Key. On entering Step 2, the wizard SHALL fetch `GET /api/llm/providers`. If an env-sourced provider exists (any provider with `source: "env"`), the corresponding fields SHALL be pre-filled from the first env-sourced provider's `base_url` and masked `api_key`, and marked as read-only. If no providers exist, both fields SHALL be editable.
+The second wizard step SHALL display fields for LLM Provider URL and API Key. On entering Step 2, the wizard SHALL fetch `GET /api/llm/providers`. If an env-sourced provider exists (any provider with `source: "env"`), the corresponding fields SHALL be pre-filled from the first env-sourced provider's `base_url` and masked `api_key`, and marked as read-only. If no providers exist, both fields SHALL be editable.
 
 A "Test Connection" button SHALL:
-1. If no env-sourced provider exists, create a provider via `POST /api/llm/providers` with the entered `name`, `base_url`, and `api_key`.
+1. If no env-sourced provider exists, create a provider via `POST /api/llm/providers` with `name: "default"`, the entered `base_url`, and `api_key`.
 2. Fetch models from `GET /api/llm/providers/{id}/models` using the provider's ID.
 3. If the model fetch succeeds, store the provider ID for use in Step 3 and show a success message.
 4. If the model fetch fails and the provider was just created (not env-sourced), delete it via `DELETE /api/llm/providers/{id}` and show an error.
