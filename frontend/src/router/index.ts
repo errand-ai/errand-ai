@@ -96,6 +96,7 @@ router.beforeEach((to) => {
   if (!auth.isAuthenticated) {
     if (auth.authMode === 'local') return { name: 'login' }
     if (auth.authMode === 'setup') return { name: 'setup' }
+    if (auth.authMode === null) return // Still booting — allow navigation, App.vue will redirect after fetching auth status
     return false // SSO handles redirect in App.vue
   }
 

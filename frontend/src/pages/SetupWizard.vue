@@ -18,6 +18,7 @@ const step1Error = ref('')
 const step1Loading = ref(false)
 
 // Step 2: LLM Provider
+const providerName = ref('default')
 const providerUrl = ref('')
 const apiKey = ref('')
 const step2Error = ref('')
@@ -27,6 +28,7 @@ const connectionTested = ref(false)
 const step2Success = ref('')
 const providerUrlReadonly = ref(false)
 const apiKeyReadonly = ref(false)
+const providerId = ref<string | null>(null)
 
 // Step 3: Model Selection
 const models = ref<string[]>([])
@@ -39,9 +41,13 @@ const passwordMismatch = computed(() =>
   confirmPassword.value !== '' && adminPassword.value !== confirmPassword.value
 )
 
-watch([providerUrl, apiKey], () => {
+watch([providerName, providerUrl, apiKey], () => {
   connectionTested.value = false
   step2Success.value = ''
+  // Reset provider if user changes fields (will be re-created on next test)
+  if (!providerUrlReadonly.value) {
+    providerId.value = null
+  }
 })
 
 async function createAdmin() {
@@ -80,18 +86,21 @@ async function createAdmin() {
 
 async function loadLlmMetadata() {
   try {
-    const resp = await fetch('/api/settings', {
+    const resp = await fetch('/api/llm/providers', {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     if (resp.ok) {
-      const data = await resp.json()
-      if (data.openai_base_url?.value) {
-        providerUrl.value = data.openai_base_url.value
-        providerUrlReadonly.value = data.openai_base_url.readonly === true
-      }
-      if (data.openai_api_key?.value) {
-        apiKey.value = data.openai_api_key.value
-        apiKeyReadonly.value = data.openai_api_key.readonly === true
+      const providers = await resp.json()
+      if (providers.length > 0) {
+        const provider = providers[0]
+        providerId.value = provider.id
+        providerName.value = provider.name
+        providerUrl.value = provider.base_url
+        apiKey.value = provider.api_key
+        // Lock all fields when an existing provider is found (env or database).
+        // The wizard creates a new provider; editing belongs in the settings page.
+        providerUrlReadonly.value = true
+        apiKeyReadonly.value = true
       }
     }
   } catch {
@@ -103,28 +112,45 @@ async function testConnection() {
   step2Error.value = ''
   step2Success.value = ''
   testingConnection.value = true
+  let createdProviderId: string | null = null
   try {
-    // Save settings first
-    const saveResp = await fetch('/api/settings', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${auth.token}`,
-      },
-      body: JSON.stringify({
-        openai_base_url: providerUrl.value,
-        openai_api_key: apiKey.value,
-      }),
-    })
-    if (!saveResp.ok) {
-      step2Error.value = 'Failed to save provider settings.'
-      return
+    // If no existing provider, create one
+    if (!providerId.value) {
+      const createResp = await fetch('/api/llm/providers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: JSON.stringify({
+          name: providerName.value,
+          base_url: providerUrl.value,
+          api_key: apiKey.value,
+        }),
+      })
+      if (!createResp.ok) {
+        const data = await createResp.json().catch(() => ({}))
+        step2Error.value = data.detail || 'Failed to create provider.'
+        return
+      }
+      const provider = await createResp.json()
+      createdProviderId = provider.id
+      providerId.value = provider.id
     }
-    // Test by fetching models
-    const resp = await fetch('/api/llm/models', {
+    // Test by fetching models from the provider
+    const pid = providerId.value
+    const resp = await fetch(`/api/llm/providers/${pid}/models`, {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     if (!resp.ok) {
+      // Clean up newly created provider on failure
+      if (createdProviderId) {
+        await fetch(`/api/llm/providers/${createdProviderId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${auth.token}` },
+        }).catch(() => {})
+        providerId.value = null
+      }
       step2Error.value = 'Connection failed. Check your URL and API key.'
       return
     }
@@ -134,6 +160,14 @@ async function testConnection() {
     step2Success.value = 'Connection successful'
     toast.success('Connection successful!')
   } catch {
+    // Clean up newly created provider on failure
+    if (createdProviderId) {
+      await fetch(`/api/llm/providers/${createdProviderId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${auth.token}` },
+      }).catch(() => {})
+      providerId.value = null
+    }
     step2Error.value = 'Connection failed. Check your URL and API key.'
   } finally {
     testingConnection.value = false
@@ -147,9 +181,9 @@ async function advanceToStep3() {
   }
   currentStep.value = 3
   // If models haven't been loaded, try again
-  if (models.value.length === 0) {
+  if (models.value.length === 0 && providerId.value) {
     try {
-      const resp = await fetch('/api/llm/models', {
+      const resp = await fetch(`/api/llm/providers/${providerId.value}/models`, {
         headers: { Authorization: `Bearer ${auth.token}` },
       })
       if (resp.ok) {
@@ -172,8 +206,8 @@ async function completeSetup() {
         Authorization: `Bearer ${auth.token}`,
       },
       body: JSON.stringify({
-        llm_model: titleModel.value,
-        task_processing_model: taskModel.value,
+        llm_model: { provider_id: providerId.value, model: titleModel.value },
+        task_processing_model: { provider_id: providerId.value, model: taskModel.value },
       }),
     })
     if (!resp.ok) {
@@ -274,6 +308,17 @@ async function completeSetup() {
         <h2 class="text-lg font-semibold text-gray-900 mb-1">LLM Provider Configuration</h2>
         <p class="text-sm text-gray-500 mb-6">Configure your LLM provider (OpenAI-compatible API).</p>
         <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700">Provider Name</label>
+            <input
+              v-model="providerName"
+              type="text"
+              placeholder="default"
+              :disabled="providerUrlReadonly"
+              data-testid="setup-provider-name"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+            />
+          </div>
           <div>
             <label class="block text-sm font-medium text-gray-700">Provider URL</label>
             <div class="relative">
