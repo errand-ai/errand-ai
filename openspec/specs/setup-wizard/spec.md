@@ -38,7 +38,7 @@ The backend SHALL expose `POST /api/setup/create-user` with NO authentication re
 - **THEN** the backend returns HTTP 403 with `{"detail": "Setup already completed"}`
 
 ### Requirement: Step 2 — LLM provider configuration
-The second wizard step SHALL display fields for Provider Name, Provider URL, and API Key. On entering Step 2, the wizard SHALL fetch `GET /api/llm/providers`. If an env-sourced provider exists (any provider with `source: "env"`), the corresponding fields SHALL be pre-filled from the first env-sourced provider's `base_url` and masked `api_key`, and marked as read-only. If no providers exist, both fields SHALL be editable.
+The second wizard step SHALL display fields for Provider Name, Provider URL, and API Key. On entering Step 2, the wizard SHALL fetch `GET /api/llm/providers`. If any provider already exists (env-sourced or database-sourced), all three fields SHALL be pre-filled from the first provider's `name`, `base_url`, and masked `api_key`, and marked as read-only. If no providers exist, all three fields SHALL be editable with Provider Name defaulting to `"default"`.
 
 A "Test Connection" button SHALL:
 1. If no env-sourced provider exists, create a provider via `POST /api/llm/providers` with the entered `name`, `base_url`, and `api_key`.

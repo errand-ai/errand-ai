@@ -29,7 +29,6 @@ const step2Success = ref('')
 const providerUrlReadonly = ref(false)
 const apiKeyReadonly = ref(false)
 const providerId = ref<string | null>(null)
-const envSourcedProvider = ref(false)
 
 // Step 3: Model Selection
 const models = ref<string[]>([])
@@ -42,11 +41,11 @@ const passwordMismatch = computed(() =>
   confirmPassword.value !== '' && adminPassword.value !== confirmPassword.value
 )
 
-watch([providerUrl, apiKey], () => {
+watch([providerName, providerUrl, apiKey], () => {
   connectionTested.value = false
   step2Success.value = ''
   // Reset provider if user changes fields (will be re-created on next test)
-  if (!envSourcedProvider.value) {
+  if (!providerUrlReadonly.value) {
     providerId.value = null
   }
 })
@@ -98,11 +97,10 @@ async function loadLlmMetadata() {
         providerName.value = provider.name
         providerUrl.value = provider.base_url
         apiKey.value = provider.api_key
-        if (provider.source === 'env') {
-          envSourcedProvider.value = true
-          providerUrlReadonly.value = true
-          apiKeyReadonly.value = true
-        }
+        // Lock all fields when an existing provider is found (env or database).
+        // The wizard creates a new provider; editing belongs in the settings page.
+        providerUrlReadonly.value = true
+        apiKeyReadonly.value = true
       }
     }
   } catch {
@@ -116,8 +114,8 @@ async function testConnection() {
   testingConnection.value = true
   let createdProviderId: string | null = null
   try {
-    // If no env-sourced provider exists, create one
-    if (!envSourcedProvider.value && !providerId.value) {
+    // If no existing provider, create one
+    if (!providerId.value) {
       const createResp = await fetch('/api/llm/providers', {
         method: 'POST',
         headers: {
@@ -316,7 +314,7 @@ async function completeSetup() {
               v-model="providerName"
               type="text"
               placeholder="default"
-              :disabled="envSourcedProvider"
+              :disabled="providerUrlReadonly"
               data-testid="setup-provider-name"
               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />

@@ -302,12 +302,15 @@ describe('SetupWizard', () => {
     await completeStep1(wrapper)
 
     // Fields should be pre-filled
+    const nameInput = wrapper.find('[data-testid="setup-provider-name"]').element as HTMLInputElement
     const urlInput = wrapper.find('[data-testid="setup-provider-url"]').element as HTMLInputElement
     const keyInput = wrapper.find('[data-testid="setup-api-key"]').element as HTMLInputElement
+    expect(nameInput.value).toBe('litellm')
     expect(urlInput.value).toBe('https://litellm.example.com/v1')
     expect(keyInput.value).toBe('sk-t****')
 
-    // Fields should be readonly (disabled)
+    // All fields should be readonly (disabled) when a provider exists
+    expect(nameInput.disabled).toBe(true)
     expect(urlInput.disabled).toBe(true)
     expect(keyInput.disabled).toBe(true)
   })
