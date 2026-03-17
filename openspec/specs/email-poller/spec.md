@@ -1,22 +1,27 @@
 ## Purpose
 
-Background email poller that monitors a dedicated mailbox using IMAP IDLE (with polling fallback), creates tasks from unread emails, and marks them as read.
+Background email poller that monitors a dedicated mailbox using IMAP IDLE (with polling fallback), creates tasks from unread emails, and marks them as read. Task generation settings (profile, poll interval, task prompt) are read from the task_generator table.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Email poller background task
 
-The system SHALL run an email poller as an `asyncio.create_task()` in the main server lifespan. The poller SHALL load email platform credentials on each cycle. If no credentials are configured, the poller SHALL sleep and retry. The poller SHALL run continuously until the application shuts down.
+The system SHALL run an email poller as an `asyncio.create_task()` in the main server lifespan. The poller SHALL load email platform credentials on each cycle for IMAP connection details. The poller SHALL load task generation settings (profile, poll interval, task prompt) from the `task_generator` record with `type="email"`. If no email credentials are configured or the email task generator is not enabled, the poller SHALL sleep and retry. The poller SHALL run continuously until the application shuts down.
 
 #### Scenario: Poller starts with application
 
-- **WHEN** the FastAPI application starts and email platform credentials are configured
+- **WHEN** the FastAPI application starts, email platform credentials are configured, and the email task generator is enabled
 - **THEN** the email poller begins monitoring the configured mailbox
 
-#### Scenario: Poller waits when unconfigured
+#### Scenario: Poller waits when email unconfigured
 
 - **WHEN** the FastAPI application starts and no email platform credentials are configured
 - **THEN** the email poller sleeps and periodically checks for credentials
+
+#### Scenario: Poller waits when trigger disabled
+
+- **WHEN** the FastAPI application starts, email credentials exist, but the email task generator is disabled
+- **THEN** the email poller sleeps and periodically checks for the generator to be enabled
 
 #### Scenario: Poller stops on shutdown
 
@@ -44,12 +49,12 @@ The poller SHALL check the IMAP server's CAPABILITY response for IDLE support. W
 
 ### Requirement: Polling fallback
 
-When the IMAP server does not support IDLE, the poller SHALL fall back to periodic polling. The poll interval SHALL be configurable via the `poll_interval` credential field. The minimum poll interval SHALL be 60 seconds; values below 60 SHALL be clamped to 60.
+When the IMAP server does not support IDLE, the poller SHALL fall back to periodic polling. The poll interval SHALL be read from the email task generator's config. The minimum poll interval SHALL be 60 seconds; values below 60 SHALL be clamped to 60.
 
 #### Scenario: Server does not support IDLE
 
 - **WHEN** the IMAP server does not advertise IDLE in its CAPABILITY response
-- **THEN** the poller uses periodic polling at the configured interval
+- **THEN** the poller uses periodic polling at the interval from the task generator config
 
 #### Scenario: Poll interval minimum enforcement
 
@@ -58,7 +63,7 @@ When the IMAP server does not support IDLE, the poller SHALL fall back to period
 
 #### Scenario: Default poll interval
 
-- **WHEN** no poll interval is configured
+- **WHEN** no poll interval is configured in the task generator
 - **THEN** the poller uses 60 seconds as the default
 
 ### Requirement: Unread message processing
@@ -96,12 +101,27 @@ The poller SHALL convert email bodies to markdown. For multipart messages, the p
 
 ### Requirement: Task creation from email
 
-For each unread message, the poller SHALL create a task with: `title` derived from the email subject, `description` containing email metadata (from, to, date, subject) and the markdown body, `profile_id` set to the configured email profile, `created_by` set to `"email_poller"`, and `status` set to `"pending"`. The poller SHALL publish a `task_created` WebSocket event for each created task.
+For each unread message, the poller SHALL create a task with: `title` derived from the email subject, `description` containing email metadata (from, to, date, subject), the markdown body, and the task prompt (if configured) appended as additional instructions. The `profile_id` SHALL be set to the task generator's configured profile (or null for Default). The `created_by` SHALL be set to `"email_poller"`. The `status` SHALL be `"pending"`. The poller SHALL publish a `task_created` WebSocket event for each created task.
 
-#### Scenario: Task created from email
+#### Scenario: Task created from email with task prompt
 
-- **WHEN** a new unread email arrives with subject "Invoice #1234 from Acme Corp"
-- **THEN** a task is created with title "Invoice #1234 from Acme Corp", description containing email metadata and markdown body, the configured email profile, and `created_by="email_poller"`
+- **WHEN** a new unread email arrives and the email task generator has a task prompt configured
+- **THEN** a task is created with the email content in the description followed by the task prompt as additional instructions
+
+#### Scenario: Task created from email without task prompt
+
+- **WHEN** a new unread email arrives and the email task generator has no task prompt
+- **THEN** a task is created with only the email content in the description (existing behavior)
+
+#### Scenario: Task uses configured profile
+
+- **WHEN** a task is created from email and the email task generator has a profile selected
+- **THEN** the task's `profile_id` is set to the generator's configured profile
+
+#### Scenario: Task uses Default profile
+
+- **WHEN** a task is created from email and the email task generator has no profile selected
+- **THEN** the task's `profile_id` is null (uses Default profile behavior)
 
 #### Scenario: Task event published
 
