@@ -18,6 +18,7 @@ from main import (
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
     filter_model_input, _strip_screenshots, _trim_context_window,
+    _sanitize_tool_calls, _repair_truncated_json, _classify_error,
     _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
     connect_mcp_servers,
 )
@@ -727,3 +728,215 @@ async def test_connect_mcp_servers_no_tool_filter_in_constructor():
         # Verify tool_filter was NOT passed to constructor
         call_kwargs = MockServer.call_args[1]
         assert "tool_filter" not in call_kwargs
+
+
+# --- _repair_truncated_json ---
+
+
+def test_repair_truncated_json_valid_passthrough():
+    """Already-valid JSON is returned unchanged."""
+    s = '{"key": "value"}'
+    assert _repair_truncated_json(s) == s
+
+
+def test_repair_truncated_json_missing_closing_brace():
+    """Missing closing brace is repaired."""
+    result = _repair_truncated_json('{"key": "value"')
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed["key"] == "value"
+
+
+def test_repair_truncated_json_missing_quote_and_brace():
+    """Missing closing quote and brace are repaired."""
+    result = _repair_truncated_json('{"path": "/file.md", "content": "some text')
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed["path"] == "/file.md"
+
+
+def test_repair_truncated_json_nested_structure():
+    """Nested unclosed structure is repaired."""
+    result = _repair_truncated_json('{"data": [{"a": 1}, {"b": 2')
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed["data"][0]["a"] == 1
+
+
+def test_repair_truncated_json_irreparable_returns_none():
+    """Non-JSON input returns None."""
+    assert _repair_truncated_json("not json at all") is None
+    assert _repair_truncated_json("") is None
+    assert _repair_truncated_json("   ") is None
+
+
+def test_repair_truncated_json_array():
+    """Truncated array is repaired."""
+    result = _repair_truncated_json('[1, 2, 3')
+    assert result is not None
+    parsed = json.loads(result)
+    assert parsed == [1, 2, 3]
+
+
+# --- _sanitize_tool_calls ---
+
+
+def test_sanitize_tool_calls_valid_passthrough():
+    """Valid tool calls pass through unchanged."""
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"key": "value"}'}}
+        ]}
+    ]
+    result = _sanitize_tool_calls(messages)
+    assert result[0]["tool_calls"][0]["function"]["arguments"] == '{"key": "value"}'
+
+
+def test_sanitize_tool_calls_repairs_truncated():
+    """Truncated tool call arguments are repaired."""
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "gdrive_write_file", "arguments": '{"path": "/file.md"'}}
+        ]}
+    ]
+    result = _sanitize_tool_calls(messages)
+    repaired = result[0]["tool_calls"][0]["function"]["arguments"]
+    parsed = json.loads(repaired)
+    assert parsed["path"] == "/file.md"
+
+
+def test_sanitize_tool_calls_replaces_unrepairable():
+    """Unrepairable tool call arguments are replaced with error placeholder."""
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "bad_tool", "arguments": "<<<not json>>>"}}
+        ]}
+    ]
+    result = _sanitize_tool_calls(messages)
+    repaired = result[0]["tool_calls"][0]["function"]["arguments"]
+    parsed = json.loads(repaired)
+    assert parsed["error"] == "malformed_arguments"
+    assert "<<<not json>>>" in parsed["original_fragment"]
+
+
+def test_sanitize_tool_calls_non_assistant_unaffected():
+    """Non-assistant messages are not modified."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "system", "content": "You are helpful"},
+    ]
+    result = _sanitize_tool_calls(messages)
+    assert result == messages
+
+
+def test_sanitize_tool_calls_does_not_mutate_original():
+    """Sanitization returns a new list when mutations occur."""
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"path": "/file.md"'}}
+        ]}
+    ]
+    original_args = messages[0]["tool_calls"][0]["function"]["arguments"]
+    _sanitize_tool_calls(messages)
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == original_args
+
+
+# --- _classify_error ---
+
+
+def test_classify_error_rate_limit():
+    """RateLimitError is classified as transient."""
+    import openai
+    exc = openai.RateLimitError("rate limited", response=MagicMock(status_code=429), body=None)
+    assert _classify_error(exc) == "transient"
+
+
+def test_classify_error_timeout():
+    """APITimeoutError is classified as transient."""
+    import openai
+    exc = openai.APITimeoutError(request=MagicMock())
+    assert _classify_error(exc) == "transient"
+
+
+def test_classify_error_connection():
+    """APIConnectionError is classified as transient."""
+    import openai
+    exc = openai.APIConnectionError(request=MagicMock())
+    assert _classify_error(exc) == "transient"
+
+
+def test_classify_error_bad_request():
+    """BadRequestError is classified as non_retryable."""
+    import openai
+    exc = openai.BadRequestError("bad request", response=MagicMock(status_code=400), body=None)
+    assert _classify_error(exc) == "non_retryable"
+
+
+def test_classify_error_authentication():
+    """AuthenticationError is classified as non_retryable."""
+    import openai
+    exc = openai.AuthenticationError("auth failed", response=MagicMock(status_code=401), body=None)
+    assert _classify_error(exc) == "non_retryable"
+
+
+def test_classify_error_500_tool_conversion():
+    """HTTP 500 with tool conversion message is classified as non_retryable."""
+    import openai
+    exc = openai.InternalServerError(
+        "Unable to convert openai tool calls to bedrock",
+        response=MagicMock(status_code=500),
+        body=None,
+    )
+    assert _classify_error(exc) == "non_retryable"
+
+
+def test_classify_error_500_generic():
+    """Generic HTTP 500 (without tool conversion message) is classified as transient."""
+    import openai
+    exc = openai.InternalServerError(
+        "Internal server error",
+        response=MagicMock(status_code=500),
+        body=None,
+    )
+    assert _classify_error(exc) == "transient"
+
+
+def test_classify_error_unknown():
+    """Generic Exception is classified as unknown."""
+    assert _classify_error(ValueError("something broke")) == "unknown"
+    assert _classify_error(KeyError("missing")) == "unknown"
+
+
+# --- filter_model_input sanitization ordering ---
+
+
+def test_filter_model_input_sanitizes_before_screenshots():
+    """Sanitization runs before screenshot stripping in the filter chain."""
+    # Message with both a malformed tool call and screenshots
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"key": "value"'}}
+        ]},
+    ]
+    # Add screenshots beyond retention limit
+    for i in range(5):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,img{i}"}},
+            ]
+        })
+    with patch("main.MAX_RETAINED_SCREENSHOTS", 2):
+        output = filter_model_input(_make_call_model_data(messages))
+
+    # Tool call should be repaired (sanitization ran)
+    repaired = output.input[0]["tool_calls"][0]["function"]["arguments"]
+    parsed = json.loads(repaired)
+    assert parsed["key"] == "value"
+
+    # Screenshots should also be stripped (screenshot filter ran after)
+    image_count = sum(
+        1 for msg in output.input for part in msg.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+    assert image_count == 2
