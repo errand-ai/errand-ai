@@ -251,6 +251,24 @@ class TestCreateTaskFromEmail:
             assert str(task.profile_id) == "00000000-0000-0000-0000-000000000001"
 
     @pytest.mark.asyncio
+    async def test_publishes_task_created_event(self, db_session):
+        from email_poller import create_task_from_email
+
+        with patch("email_poller.publish_event", new_callable=AsyncMock) as mock_publish:
+            await create_task_from_email(
+                subject="Event Email",
+                description="Description",
+                profile_id=None,
+            )
+            mock_publish.assert_awaited_once()
+            args = mock_publish.call_args
+            assert args[0][0] == "task_created"
+            event_data = args[0][1]
+            assert event_data["title"] == "Event Email"
+            assert event_data["created_by"] == "email_poller"
+            assert event_data["status"] == "pending"
+
+    @pytest.mark.asyncio
     async def test_creates_task_without_profile(self, db_session):
         _, session_factory = db_session
         from email_poller import create_task_from_email

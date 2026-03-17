@@ -130,6 +130,10 @@ onMounted(loadData)
     <div v-else-if="error" class="text-sm text-red-600">{{ error }}</div>
 
     <div v-else>
+      <p class="text-sm text-gray-500 mb-4" data-testid="task-generators-intro">
+        Configure triggers that automatically create tasks from external sources.
+      </p>
+
       <!-- Email Trigger Card -->
       <div class="rounded-lg bg-white p-6 shadow" data-testid="email-trigger-card">
         <div class="flex items-center justify-between mb-4">

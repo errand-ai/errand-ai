@@ -1,6 +1,7 @@
 """Tests for task generator API routes."""
 
 import pytest
+from sqlalchemy import text
 
 
 # --- List ---
@@ -105,6 +106,22 @@ async def test_non_admin_rejected(client):
     """Non-admin user should get 403."""
     resp = await client.get("/api/task-generators")
     assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_upsert_enforces_single_email_generator(admin_client):
+    """Multiple PUTs should update the same record, not create duplicates."""
+    await admin_client.put("/api/task-generators/email", json={
+        "enabled": False, "config": {"poll_interval": 60},
+    })
+    await admin_client.put("/api/task-generators/email", json={
+        "enabled": True, "config": {"poll_interval": 120},
+    })
+    resp = await admin_client.get("/api/task-generators")
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["enabled"] is True
+    assert data[0]["config"]["poll_interval"] == 120
 
 
 @pytest.mark.anyio
