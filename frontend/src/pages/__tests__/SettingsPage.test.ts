@@ -130,14 +130,15 @@ describe('SettingsPage', () => {
       expect(sidebar.exists()).toBe(true)
 
       const links = sidebar.findAll('a')
-      expect(links).toHaveLength(7)
+      expect(links).toHaveLength(8)
       expect(links[0].text()).toBe('Agent Configuration')
       expect(links[1].text()).toBe('Task Management')
       expect(links[2].text()).toBe('Security')
       expect(links[3].text()).toBe('Task Profiles')
       expect(links[4].text()).toBe('Integrations')
-      expect(links[5].text()).toBe('Cloud Service')
-      expect(links[6].text()).toBe('User Management')
+      expect(links[5].text()).toBe('Task Generators')
+      expect(links[6].text()).toBe('Cloud Service')
+      expect(links[7].text()).toBe('User Management')
     })
 
     it('highlights active sidebar link', async () => {

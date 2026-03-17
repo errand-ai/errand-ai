@@ -30,15 +30,6 @@ class EmailPlatform(Platform):
                 },
                 {"key": "username", "label": "Email Address", "type": "text", "required": True},
                 {"key": "password", "label": "Password / App Password", "type": "password", "required": True},
-                {"key": "email_profile", "label": "Task Profile", "type": "profile_select", "required": True, "editable": True},
-                {
-                    "key": "poll_interval",
-                    "label": "Poll Interval (seconds)",
-                    "type": "text",
-                    "required": False,
-                    "help_text": "Minimum 60. Reduced when IMAP IDLE is supported.",
-                    "editable": True,
-                },
                 {
                     "key": "authorized_recipients",
                     "label": "Authorised Recipients",

@@ -58,6 +58,11 @@ const router = createRouter({
           component: () => import('../pages/settings/IntegrationsPage.vue'),
         },
         {
+          path: 'task-generators',
+          name: 'settings-task-generators',
+          component: () => import('../pages/settings/TaskGeneratorsPage.vue'),
+        },
+        {
           path: 'profiles',
           name: 'settings-profiles',
           component: () => import('../pages/settings/TaskProfilesPage.vue'),

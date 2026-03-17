@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from database import async_session
 from events import publish_event
 from llm import generate_title
-from models import Task
+from models import Task, TaskGenerator
 from platforms.credentials import load_credentials
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,9 @@ def extract_body(raw_bytes: bytes) -> str:
     return body[:MAX_BODY_LENGTH]
 
 
-def build_description(sender: str, to: str, date: str, subject: str, uid: str, body: str) -> str:
-    """Build task description with email metadata and markdown body."""
-    return (
+def build_description(sender: str, to: str, date: str, subject: str, uid: str, body: str, task_prompt: str | None = None) -> str:
+    """Build task description with email metadata, markdown body, and optional task prompt."""
+    desc = (
         f"**From:** {sender}\n"
         f"**To:** {to}\n"
         f"**Date:** {date}\n"
@@ -108,10 +108,13 @@ def build_description(sender: str, to: str, date: str, subject: str, uid: str, b
         "\n---\n\n"
         f"{body}"
     )
+    if task_prompt:
+        desc += "\n\n---\n\n**Additional Instructions:**\n\n" + task_prompt
+    return desc
 
 
 async def create_task_from_email(
-    subject: str, description: str, profile_id: str,
+    subject: str, description: str, profile_id: str | None,
 ) -> bool:
     """Create a task from an email. Returns True on success."""
     async with async_session() as session:
@@ -179,7 +182,16 @@ async def create_task_from_email(
         return True
 
 
-async def process_messages(imap) -> int:
+async def _load_email_generator() -> TaskGenerator | None:
+    """Load the email task generator record from the database."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(TaskGenerator).where(TaskGenerator.type == "email")
+        )
+        return result.scalar_one_or_none()
+
+
+async def process_messages(imap, generator: TaskGenerator) -> int:
     """Fetch and process UNSEEN messages. Returns count of tasks created."""
     response = await imap.search("UNSEEN")
     if response.result != "OK":
@@ -197,6 +209,10 @@ async def process_messages(imap) -> int:
         u.decode() if isinstance(u, bytes) else str(u) for u in uids[:10]
     ))
     created = 0
+
+    profile_id = str(generator.profile_id) if generator.profile_id else None
+    config = generator.config or {}
+    task_prompt = config.get("task_prompt")
 
     for uid in uids:
         uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
@@ -229,19 +245,7 @@ async def process_messages(imap) -> int:
             subject = str(msg.get("Subject", ""))
 
             body = extract_body(raw_email)
-            description = build_description(sender, to, date, subject, uid_str, body)
-
-            # Load credentials to get profile_id (fresh each time in case it changed)
-            async with async_session() as session:
-                credentials = await load_credentials("email", session)
-            if not credentials:
-                logger.warning("Email credentials disappeared during processing")
-                break
-
-            profile_id = credentials.get("email_profile")
-            if not profile_id:
-                logger.warning("No email_profile configured, skipping task creation")
-                continue
+            description = build_description(sender, to, date, subject, uid_str, body, task_prompt)
 
             success = await create_task_from_email(subject, description, profile_id)
             if success:
@@ -262,7 +266,7 @@ async def run_email_poller():
 
     while True:
         try:
-            # Load credentials
+            # Check for email credentials (IMAP connection details)
             async with async_session() as session:
                 credentials = await load_credentials("email", session)
 
@@ -271,14 +275,21 @@ async def run_email_poller():
                 await asyncio.sleep(CREDENTIAL_CHECK_INTERVAL)
                 continue
 
+            # Check for enabled email task generator
+            generator = await _load_email_generator()
+            if not generator or not generator.enabled:
+                logger.debug("Email task generator not enabled, waiting...")
+                await asyncio.sleep(CREDENTIAL_CHECK_INTERVAL)
+                continue
+
             imap, idle_supported = await connect_imap(credentials)
             backoff = BACKOFF_INITIAL  # reset on successful connection
 
             try:
                 if idle_supported:
-                    await _run_idle_loop(imap, credentials)
+                    await _run_idle_loop(imap, generator)
                 else:
-                    await _run_poll_loop(imap, credentials)
+                    await _run_poll_loop(imap, generator)
             finally:
                 try:
                     await imap.logout()
@@ -294,15 +305,27 @@ async def run_email_poller():
             backoff = min(backoff * BACKOFF_FACTOR, BACKOFF_MAX)
 
 
-async def _run_idle_loop(imap, credentials: dict):
+async def _run_idle_loop(imap, generator: TaskGenerator):
     """IMAP IDLE loop with safety polls."""
     cycle = 0
 
     while True:
+        # Re-read generator config and verify credentials still exist
+        fresh_generator = await _load_email_generator()
+        if not fresh_generator or not fresh_generator.enabled:
+            logger.info("Email task generator disabled, exiting IDLE loop")
+            return
+
+        async with async_session() as session:
+            credentials = await load_credentials("email", session)
+        if not credentials:
+            logger.info("Email credentials removed, exiting IDLE loop")
+            return
+
         # Safety poll every N cycles
         if cycle % SAFETY_POLL_CYCLES == 0:
             logger.info("Safety poll (cycle %d)", cycle)
-            count = await process_messages(imap)
+            count = await process_messages(imap, fresh_generator)
             if count:
                 logger.info("Safety poll: created %d tasks", count)
             else:
@@ -316,28 +339,43 @@ async def _run_idle_loop(imap, credentials: dict):
         await asyncio.wait_for(idle_task, timeout=10)
 
         # Process any new messages after IDLE notification/timeout
-        count = await process_messages(imap)
-        if count:
-            logger.info("IDLE notification: created %d tasks", count)
+        fresh_generator = await _load_email_generator()
+        if fresh_generator and fresh_generator.enabled:
+            count = await process_messages(imap, fresh_generator)
+            if count:
+                logger.info("IDLE notification: created %d tasks", count)
 
         cycle += 1
 
 
-async def _run_poll_loop(imap, credentials: dict):
+async def _run_poll_loop(imap, generator: TaskGenerator):
     """Polling fallback when IDLE is not supported."""
-    poll_interval = _get_poll_interval(credentials)
-
     while True:
-        count = await process_messages(imap)
+        # Re-read generator config and verify credentials still exist
+        fresh_generator = await _load_email_generator()
+        if not fresh_generator or not fresh_generator.enabled:
+            logger.info("Email task generator disabled, exiting poll loop")
+            return
+
+        async with async_session() as session:
+            credentials = await load_credentials("email", session)
+        if not credentials:
+            logger.info("Email credentials removed, exiting poll loop")
+            return
+
+        count = await process_messages(imap, fresh_generator)
         if count:
             logger.info("Poll: created %d tasks", count)
+
+        poll_interval = _get_poll_interval(fresh_generator)
         await asyncio.sleep(poll_interval)
 
 
-def _get_poll_interval(credentials: dict) -> int:
-    """Get poll interval from credentials, enforcing minimum of 60 seconds."""
+def _get_poll_interval(generator: TaskGenerator) -> int:
+    """Get poll interval from task generator config, enforcing minimum of 60 seconds."""
+    config = generator.config or {}
     try:
-        interval = int(credentials.get("poll_interval", MIN_POLL_INTERVAL))
+        interval = int(config.get("poll_interval", MIN_POLL_INTERVAL))
     except (ValueError, TypeError):
         interval = MIN_POLL_INTERVAL
     return max(interval, MIN_POLL_INTERVAL)
