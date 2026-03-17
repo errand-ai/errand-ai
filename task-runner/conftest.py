@@ -66,7 +66,58 @@ _mock_run_context = MagicMock()
 _mock_run_context.RunContextWrapper = MockRunContextWrapper
 sys.modules.setdefault("agents.run_context", _mock_run_context)
 
-# Mock openai
-sys.modules.setdefault("openai", MagicMock())
+# Mock openai — expose real exception classes so isinstance() works in _classify_error
+_mock_openai = MagicMock()
+
+
+class _MockAPIError(Exception):
+    """Base for mock OpenAI API errors."""
+    pass
+
+
+class _MockAPIStatusError(_MockAPIError):
+    """Mock APIStatusError with status_code attribute."""
+    def __init__(self, message="", response=None, body=None):
+        super().__init__(message)
+        self.status_code = getattr(response, "status_code", 0) if response else 0
+
+
+class _MockAPIConnectionError(_MockAPIError):
+    def __init__(self, message="", request=None):
+        super().__init__(message)
+
+
+class _MockAPITimeoutError(_MockAPIError):
+    def __init__(self, message="", request=None):
+        super().__init__(message)
+
+
+class _MockRateLimitError(_MockAPIStatusError):
+    pass
+
+
+class _MockBadRequestError(_MockAPIStatusError):
+    pass
+
+
+class _MockAuthenticationError(_MockAPIStatusError):
+    pass
+
+
+class _MockInternalServerError(_MockAPIStatusError):
+    pass
+
+
+_mock_openai.APIError = _MockAPIError
+_mock_openai.APIStatusError = _MockAPIStatusError
+_mock_openai.APIConnectionError = _MockAPIConnectionError
+_mock_openai.APITimeoutError = _MockAPITimeoutError
+_mock_openai.RateLimitError = _MockRateLimitError
+_mock_openai.BadRequestError = _MockBadRequestError
+_mock_openai.AuthenticationError = _MockAuthenticationError
+_mock_openai.InternalServerError = _MockInternalServerError
+_mock_openai.AsyncOpenAI = MagicMock()
+
+sys.modules.setdefault("openai", _mock_openai)
 sys.modules.setdefault("openai.types", MagicMock())
 sys.modules.setdefault("openai.types.shared", MagicMock())

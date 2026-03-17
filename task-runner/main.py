@@ -11,7 +11,7 @@ import sys
 from contextlib import AsyncExitStack
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, RateLimitError, BadRequestError, AuthenticationError, APIStatusError
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
@@ -293,6 +293,105 @@ def _estimate_tokens(messages: list) -> int:
     return len(json.dumps(messages, default=str)) // CHARS_PER_TOKEN
 
 
+def _repair_truncated_json(s: str) -> str | None:
+    """Attempt to repair truncated JSON by closing unclosed strings and delimiters.
+
+    Returns the repaired string if valid JSON, or None if repair fails.
+    """
+    if not s or not s.strip():
+        return None
+    # Already valid?
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        pass
+
+    repaired = s
+    # Close unclosed string literal: track quote parity (ignoring escaped quotes)
+    in_string = False
+    i = 0
+    while i < len(repaired):
+        ch = repaired[i]
+        if ch == '\\' and in_string:
+            i += 2  # skip escaped character
+            continue
+        if ch == '"':
+            in_string = not in_string
+        i += 1
+    if in_string:
+        repaired += '"'
+
+    # Close unclosed brackets/braces using a delimiter stack
+    stack = []
+    in_str = False
+    i = 0
+    while i < len(repaired):
+        ch = repaired[i]
+        if ch == '\\' and in_str:
+            i += 2
+            continue
+        if ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch in ('{', '['):
+                stack.append('}' if ch == '{' else ']')
+            elif ch in ('}', ']'):
+                if stack and stack[-1] == ch:
+                    stack.pop()
+        i += 1
+
+    # Append closing delimiters in reverse order
+    repaired += ''.join(reversed(stack))
+
+    try:
+        json.loads(repaired)
+        return repaired
+    except json.JSONDecodeError:
+        return None
+
+
+def _sanitize_tool_calls(messages: list) -> list:
+    """Sanitize malformed tool call arguments in assistant messages.
+
+    Scans for tool calls with invalid JSON arguments and either repairs them
+    or replaces with an error placeholder so LiteLLM can serialize the history.
+    """
+    result = messages
+    mutated = False
+    for msg_idx, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc_idx, tc in enumerate(tool_calls):
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            args_str = func.get("arguments")
+            if not isinstance(args_str, str) or not args_str:
+                continue
+            try:
+                json.loads(args_str)
+                continue  # valid JSON, skip
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Need to mutate — deep copy on first mutation
+            if not mutated:
+                result = copy.deepcopy(messages)
+                mutated = True
+            tool_name = func.get("name", "unknown")
+            repaired = _repair_truncated_json(args_str)
+            if repaired is not None:
+                result[msg_idx]["tool_calls"][tc_idx]["function"]["arguments"] = repaired
+                logger.warning("Sanitized malformed tool call '%s': repaired truncated JSON", tool_name)
+            else:
+                fragment = args_str[:200]
+                placeholder = json.dumps({"error": "malformed_arguments", "original_fragment": fragment})
+                result[msg_idx]["tool_calls"][tc_idx]["function"]["arguments"] = placeholder
+                logger.warning("Sanitized malformed tool call '%s': replaced with error placeholder", tool_name)
+    return result
+
+
 def _strip_screenshots(messages: list) -> list:
     """Replace old screenshots beyond retention limit with placeholders."""
     image_locations = []
@@ -346,8 +445,9 @@ def _trim_context_window(messages: list) -> list:
 
 
 def filter_model_input(data: CallModelData) -> ModelInputData:
-    """Pre-model filter: strip old screenshots and trim context window."""
+    """Pre-model filter: sanitize tool calls, strip old screenshots, and trim context window."""
     messages = list(data.model_data.input)
+    messages = _sanitize_tool_calls(messages)
     messages = _strip_screenshots(messages)
     messages = _trim_context_window(messages)
     return ModelInputData(input=messages, instructions=data.model_data.instructions)
@@ -387,6 +487,32 @@ def post_result_callback(output: str) -> None:
             logger.warning("Callback POST returned %d from %s", resp.status_code, callback_url)
     except Exception:
         logger.warning("Callback POST failed to %s", callback_url, exc_info=True)
+
+
+def _classify_error(exc: Exception) -> str:
+    """Classify an exception as transient, non_retryable, or unknown."""
+    # Transient: connection, timeout, rate limit
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return "transient"
+    # APIStatusError covers HTTP status-based errors
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", 0)
+        if status in (429, 502, 503, 504):
+            return "transient"
+        if isinstance(exc, (BadRequestError, AuthenticationError)):
+            return "non_retryable"
+        # HTTP 500 with tool conversion message — non-retryable (poisoned history)
+        if status == 500:
+            msg = str(exc)
+            if "Unable to convert openai tool calls" in msg:
+                return "non_retryable"
+            return "transient"  # other 500s may be transient
+        return "non_retryable"
+    return "unknown"
+
+
+MAX_AGENT_RETRIES = 3
+AGENT_RETRY_BASE_DELAY = 2  # seconds
 
 
 async def main():
@@ -451,77 +577,95 @@ async def main():
             ),
         )
 
-        try:
-            max_turns = int(os.environ.get("MAX_TURNS", "30"))
-            run_config = RunConfig(call_model_input_filter=filter_model_input)
-            result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
+        max_turns = int(os.environ.get("MAX_TURNS", "30"))
+        run_config = RunConfig(call_model_input_filter=filter_model_input)
 
-            # Iterate streaming events, emitting thinking/reasoning to stderr
-            async for event in result.stream_events():
-                if event.type == "raw_response_event":
+        for attempt in range(1, MAX_AGENT_RETRIES + 1):
+            try:
+                result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
+
+                # Iterate streaming events, emitting thinking/reasoning to stderr
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event":
+                        continue
+                    elif event.type == "run_item_stream_event":
+                        if event.item.type == "message_output_item":
+                            text = ItemHelpers.text_message_output(event.item)
+                            if text:
+                                emit_event("thinking", {"text": text})
+                        elif event.item.type == "reasoning_item":
+                            summary = getattr(event.item, "summary", None)
+                            if summary:
+                                texts = []
+                                for part in summary:
+                                    t = getattr(part, "text", None)
+                                    if t:
+                                        texts.append(t)
+                                if texts:
+                                    emit_event("reasoning", {"text": "\n".join(texts)})
+                        elif event.name == "tool_called" and event.item.type == "tool_call_item":
+                            raw = event.item.raw_item
+                            tool_name = getattr(raw, "name", "unknown")
+                            args_str = getattr(raw, "arguments", "{}")
+                            try:
+                                args = json.loads(args_str)
+                            except (json.JSONDecodeError, TypeError):
+                                args = {"raw": args_str}
+                            emit_event("tool_call", {"tool": tool_name, "args": args})
+
+                # Log summary of tool calls from run items
+                tool_call_count = sum(
+                    1 for item in result.new_items
+                    if getattr(item, "type", None) == "tool_call_output_item"
+                )
+                if tool_call_count:
+                    logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
+
+                # Parse structured output from agent's final text response
+                final_output = result.final_output
+                raw_text = str(final_output) if final_output else ""
+                parsed = extract_json(raw_text)
+                if parsed:
+                    output = TaskRunnerOutput(**parsed).model_dump_json()
+                else:
+                    # Fallback: wrap raw output as completed
+                    output = json.dumps({
+                        "status": "completed",
+                        "result": raw_text,
+                        "questions": [],
+                    })
+
+                # Output to stdout
+                print(output)
+
+                # Push result to backend via callback if configured
+                post_result_callback(output)
+
+                # Write output to /output/result.json if the directory exists
+                write_output_file(output)
+
+                sys.exit(0)
+
+            except Exception as e:
+                error_type = _classify_error(e)
+                error_class = type(e).__name__
+
+                if error_type == "transient" and attempt < MAX_AGENT_RETRIES:
+                    delay = AGENT_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.info("Transient error (attempt %d/%d, %s), retrying in %ds: %s",
+                                attempt, MAX_AGENT_RETRIES, error_class, delay, e)
+                    await asyncio.sleep(delay)
                     continue
-                elif event.type == "run_item_stream_event":
-                    if event.item.type == "message_output_item":
-                        text = ItemHelpers.text_message_output(event.item)
-                        if text:
-                            emit_event("thinking", {"text": text})
-                    elif event.item.type == "reasoning_item":
-                        summary = getattr(event.item, "summary", None)
-                        if summary:
-                            texts = []
-                            for part in summary:
-                                t = getattr(part, "text", None)
-                                if t:
-                                    texts.append(t)
-                            if texts:
-                                emit_event("reasoning", {"text": "\n".join(texts)})
-                    elif event.name == "tool_called" and event.item.type == "tool_call_item":
-                        raw = event.item.raw_item
-                        tool_name = getattr(raw, "name", "unknown")
-                        args_str = getattr(raw, "arguments", "{}")
-                        try:
-                            args = json.loads(args_str)
-                        except (json.JSONDecodeError, TypeError):
-                            args = {"raw": args_str}
-                        emit_event("tool_call", {"tool": tool_name, "args": args})
 
-            # Log summary of tool calls from run items
-            tool_call_count = sum(
-                1 for item in result.new_items
-                if getattr(item, "type", None) == "tool_call_output_item"
-            )
-            if tool_call_count:
-                logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
-
-            # Parse structured output from agent's final text response
-            final_output = result.final_output
-            raw_text = str(final_output) if final_output else ""
-            parsed = extract_json(raw_text)
-            if parsed:
-                output = TaskRunnerOutput(**parsed).model_dump_json()
-            else:
-                # Fallback: wrap raw output as completed
-                output = json.dumps({
-                    "status": "completed",
-                    "result": raw_text,
-                    "questions": [],
+                # Non-retryable, unknown, or final attempt — fail
+                emit_event("error", {
+                    "message": str(e),
+                    "error_type": error_type,
+                    "error_class": error_class,
                 })
-
-            # Output to stdout
-            print(output)
-
-            # Push result to backend via callback if configured
-            post_result_callback(output)
-
-            # Write output to /output/result.json if the directory exists
-            write_output_file(output)
-
-            sys.exit(0)
-
-        except Exception as e:
-            emit_event("error", {"message": str(e)})
-            logger.error("Agent execution failed: %s", e)
-            sys.exit(1)
+                logger.error("Agent execution failed (attempt %d/%d, %s, %s): %s",
+                             attempt, MAX_AGENT_RETRIES, error_type, error_class, e)
+                sys.exit(1)
 
 
 if __name__ == "__main__":
