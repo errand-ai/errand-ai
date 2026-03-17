@@ -123,9 +123,53 @@ def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     return truncated + "\n\n--- OUTPUT TRUNCATED (exceeded %d bytes) ---" % max_bytes
 
 
+_UNIT_WORD_MAP = {
+    "minutes": "m", "minute": "m", "mins": "m", "min": "m",
+    "hours": "h", "hour": "h", "hrs": "h", "hr": "h",
+    "days": "d", "day": "d",
+    "weeks": "w", "week": "w",
+}
+_NAMED_INTERVALS = {"daily": "1d", "weekly": "1w", "hourly": "1h"}
+
+
+def normalize_interval(interval_str: str) -> str | None:
+    """Normalise a human-readable duration string to compact format (e.g. '7 days' → '7d').
+
+    Returns the compact string if normalisation succeeds, or None if unparseable.
+    """
+    s = interval_str.strip().lower()
+    if not s:
+        return None
+
+    # Named intervals
+    if s in _NAMED_INTERVALS:
+        return _NAMED_INTERVALS[s]
+
+    # Already compact (e.g. "7d")
+    if re.fullmatch(r"\d+[mhdw]", s):
+        return s
+
+    # Human-readable with optional space: "7 days", "30 minutes", "1hour"
+    match = re.fullmatch(r"(\d+)\s*([a-z]+)", s)
+    if match:
+        value, word = match.group(1), match.group(2)
+        unit = _UNIT_WORD_MAP.get(word)
+        if unit:
+            return f"{value}{unit}"
+
+    return None
+
+
 def parse_interval(interval_str: str) -> timedelta | None:
-    """Parse simple duration strings (15m, 1h, 1d, 1w) into timedelta objects."""
-    match = re.fullmatch(r"(\d+)([mhdw])", interval_str.strip())
+    """Parse duration strings into timedelta objects.
+
+    Accepts compact format (15m, 1h, 1d, 1w) and human-readable variants
+    (7 days, 2 hours, daily, weekly).
+    """
+    compact = normalize_interval(interval_str)
+    if compact is None:
+        return None
+    match = re.fullmatch(r"(\d+)([mhdw])", compact)
     if not match:
         return None
     value, unit = int(match.group(1)), match.group(2)

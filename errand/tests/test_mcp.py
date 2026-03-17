@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import database as database_module
@@ -598,6 +598,43 @@ async def test_schedule_task_long_description_uses_llm(db_session):
         assert task.title == "Weekly Report"
         # Category should be "scheduled" (from parameters), not LLM's "scheduled"
         assert task.category == "scheduled"
+
+
+async def test_schedule_task_human_readable_interval_normalised(db_session):
+    """schedule_task normalises human-readable repeat_interval to compact form."""
+    _, session_factory = db_session
+
+    from mcp_server import schedule_task
+    task_uuid = await schedule_task(
+        description="Weekly check",
+        execute_at="2026-03-01T09:00:00Z",
+        repeat_interval="7 days",
+    )
+
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.category == "repeating"
+        assert task.repeat_interval == "7d"
+
+
+async def test_schedule_task_invalid_repeat_interval_rejected(db_session):
+    """schedule_task returns error for unparseable repeat_interval and does not create a task."""
+    _, session_factory = db_session
+
+    from mcp_server import schedule_task
+    result = await schedule_task(
+        description="Bad interval",
+        execute_at="2026-03-01T09:00:00Z",
+        repeat_interval="every other tuesday",
+    )
+    assert "Error" in result
+    assert "repeat_interval" in result
+
+    # Verify no task was created
+    async with session_factory() as session:
+        count = await session.execute(select(func.count()).select_from(Task))
+        assert count.scalar() == 0
 
 
 # --- post_tweet MCP tool ---
