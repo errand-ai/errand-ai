@@ -16,7 +16,7 @@ from models import Setting, Task
 from task_manager import (
     _read_settings as read_settings, truncate_output, _task_to_dict,
     TaskManager, DEFAULT_TASK_PROCESSING_MODEL,
-    TaskRunnerOutput, parse_interval,
+    TaskRunnerOutput, parse_interval, normalize_interval,
     substitute_env_vars, extract_json, generate_ssh_config,
     build_skills_archive, build_skill_manifest,
     recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
@@ -1351,6 +1351,83 @@ def test_parse_interval_unparseable_empty():
 
 def test_parse_interval_unparseable_no_unit():
     assert parse_interval("30") is None
+
+
+# --- parse_interval: human-readable formats ---
+
+
+def test_parse_interval_human_days():
+    assert parse_interval("7 days") == timedelta(days=7)
+
+
+def test_parse_interval_human_day_singular():
+    assert parse_interval("1 day") == timedelta(days=1)
+
+
+def test_parse_interval_human_hours():
+    assert parse_interval("2 hours") == timedelta(hours=2)
+
+
+def test_parse_interval_human_hour_singular():
+    assert parse_interval("1 hour") == timedelta(hours=1)
+
+
+def test_parse_interval_human_minutes():
+    assert parse_interval("30 minutes") == timedelta(minutes=30)
+
+
+def test_parse_interval_human_weeks():
+    assert parse_interval("2 weeks") == timedelta(weeks=2)
+
+
+def test_parse_interval_named_daily():
+    assert parse_interval("daily") == timedelta(days=1)
+
+
+def test_parse_interval_named_weekly():
+    assert parse_interval("weekly") == timedelta(weeks=1)
+
+
+def test_parse_interval_named_hourly():
+    assert parse_interval("hourly") == timedelta(hours=1)
+
+
+def test_parse_interval_case_insensitive():
+    assert parse_interval("7 Days") == timedelta(days=7)
+    assert parse_interval("WEEKLY") == timedelta(weeks=1)
+    assert parse_interval("2 Hours") == timedelta(hours=2)
+
+
+def test_parse_interval_no_space():
+    """Human-readable without space (e.g. '7days') also works."""
+    assert parse_interval("7days") == timedelta(days=7)
+
+
+# --- normalize_interval ---
+
+
+def test_normalize_interval_compact_passthrough():
+    assert normalize_interval("7d") == "7d"
+    assert normalize_interval("15m") == "15m"
+
+
+def test_normalize_interval_human_readable():
+    assert normalize_interval("7 days") == "7d"
+    assert normalize_interval("30 minutes") == "30m"
+    assert normalize_interval("2 hours") == "2h"
+    assert normalize_interval("1 week") == "1w"
+
+
+def test_normalize_interval_named():
+    assert normalize_interval("daily") == "1d"
+    assert normalize_interval("weekly") == "1w"
+    assert normalize_interval("hourly") == "1h"
+
+
+def test_normalize_interval_unparseable():
+    assert normalize_interval("every other tuesday") is None
+    assert normalize_interval("0 9 * * MON-FRI") is None
+    assert normalize_interval("") is None
 
 
 # --- _reschedule_if_repeating ---

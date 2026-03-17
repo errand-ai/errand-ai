@@ -21,6 +21,7 @@ from database import async_session
 from events import publish_event
 from llm import generate_title, ProfileInfo
 from models import Setting, Task, TaskProfile
+from task_manager import normalize_interval, parse_interval
 
 logger = logging.getLogger(__name__)
 
@@ -195,11 +196,30 @@ async def schedule_task(
     repeat_until: str | None = None,
     profile: str | None = None,
 ) -> str:
-    """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID."""
+    """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID.
+
+    Args:
+        description: The task description.
+        execute_at: ISO 8601 datetime for when to first execute (e.g. '2026-03-01T09:00:00Z').
+        repeat_interval: How often to repeat. Accepts compact format (15m, 1h, 1d, 1w) or
+            human-readable (30 minutes, 2 hours, 7 days, 1 week, daily, weekly, hourly).
+        repeat_until: ISO 8601 datetime for when to stop repeating (e.g. '2026-06-01T00:00:00Z').
+        profile: Name of a task profile to assign.
+    """
     try:
         parsed_execute_at = datetime.fromisoformat(execute_at)
     except ValueError:
         return f"Error: Invalid execute_at datetime format: '{execute_at}'. Use ISO 8601 format (e.g. '2026-03-01T09:00:00Z')."
+
+    # Validate and normalise repeat_interval before storing
+    normalised_interval = None
+    if repeat_interval is not None:
+        normalised_interval = normalize_interval(repeat_interval)
+        if normalised_interval is None or parse_interval(repeat_interval) is None:
+            return (
+                f"Error: Invalid repeat_interval '{repeat_interval}'. "
+                "Accepted formats: 15m, 1h, 1d, 1w, 7 days, 2 hours, daily, weekly, hourly."
+            )
 
     parsed_repeat_until = None
     if repeat_until is not None:
@@ -226,7 +246,7 @@ async def schedule_task(
         else:
             title = description.strip()
 
-        category = "repeating" if repeat_interval else "scheduled"
+        category = "repeating" if normalised_interval else "scheduled"
         status = "scheduled"
 
         result = await session.execute(
@@ -242,7 +262,7 @@ async def schedule_task(
             status=status,
             position=position,
             execute_at=parsed_execute_at,
-            repeat_interval=repeat_interval,
+            repeat_interval=normalised_interval,
             repeat_until=parsed_repeat_until,
             profile_id=resolved_profile_id,
             created_by="mcp",
