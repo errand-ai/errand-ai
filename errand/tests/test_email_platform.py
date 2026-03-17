@@ -17,11 +17,11 @@ class TestEmailPlatformInfo:
         assert info.label == "Email"
         assert info.capabilities == {PlatformCapability.EMAIL}
 
-    def test_info_has_ten_credential_fields(self):
+    def test_info_has_eight_credential_fields(self):
         platform = EmailPlatform()
         info = platform.info()
 
-        assert len(info.credential_schema) == 10
+        assert len(info.credential_schema) == 8
 
     def test_info_credential_keys(self):
         platform = EmailPlatform()
@@ -30,8 +30,8 @@ class TestEmailPlatformInfo:
         keys = [f["key"] for f in info.credential_schema]
         assert keys == [
             "imap_host", "imap_port", "smtp_host", "smtp_port",
-            "security", "username", "password", "email_profile",
-            "poll_interval", "authorized_recipients",
+            "security", "username", "password",
+            "authorized_recipients",
         ]
 
     def test_info_security_field_has_options(self):
@@ -44,13 +44,21 @@ class TestEmailPlatformInfo:
         assert "ssl" in values
         assert "starttls" in values
 
-    def test_info_email_profile_is_profile_select(self):
+    def test_info_no_email_profile_field(self):
+        """email_profile moved to task generators settings."""
         platform = EmailPlatform()
         info = platform.info()
 
-        profile_field = next(f for f in info.credential_schema if f["key"] == "email_profile")
-        assert profile_field["type"] == "profile_select"
-        assert profile_field["required"] is True
+        keys = [f["key"] for f in info.credential_schema]
+        assert "email_profile" not in keys
+        assert "poll_interval" not in keys
+
+    def test_info_authorized_recipients_present(self):
+        platform = EmailPlatform()
+        info = platform.info()
+
+        keys = [f["key"] for f in info.credential_schema]
+        assert "authorized_recipients" in keys
 
 
 class TestEmailPlatformVerifyCredentials:

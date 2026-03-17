@@ -182,6 +182,13 @@ onMounted(() => {
             Integrations
           </router-link>
           <router-link
+            to="/settings/task-generators"
+            class="block px-3 py-2 text-sm rounded-md"
+            :class="route.path === '/settings/task-generators' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+          >
+            Task Generators
+          </router-link>
+          <router-link
             to="/settings/cloud"
             class="block px-3 py-2 text-sm rounded-md"
             :class="route.path === '/settings/cloud' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"

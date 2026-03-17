@@ -10,6 +10,7 @@ import events as events_module
 from models import Base, PlatformCredential, Task
 from main import app, get_current_user, require_editor, require_admin
 from database import get_session
+from task_generator_routes import _require_admin as _tg_require_admin
 
 FAKE_USER_CLAIMS = {
     "sub": "test-user-id",
@@ -155,6 +156,18 @@ CREATE TABLE IF NOT EXISTS local_users (
 )
 """
 
+_TASK_GENERATORS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_generators (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 0 NOT NULL,
+    profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
+    config TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 _LLM_PROVIDERS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS llm_providers (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -181,6 +194,7 @@ async def _create_tables(engine):
         await conn.execute(text(_SKILLS_TABLE_SQL))
         await conn.execute(text(_SKILL_FILES_TABLE_SQL))
         await conn.execute(text(_LOCAL_USERS_TABLE_SQL))
+        await conn.execute(text(_TASK_GENERATORS_TABLE_SQL))
         await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
 
 
@@ -221,6 +235,7 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
         raise HTTPException(status_code=403, detail="Admin role required")
 
     app.dependency_overrides[require_admin] = override_require_admin_reject
+    app.dependency_overrides[_tg_require_admin] = override_require_admin_reject
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -255,6 +270,7 @@ async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[require_editor] = override_require_editor
     app.dependency_overrides[require_admin] = override_require_admin
+    app.dependency_overrides[_tg_require_admin] = override_require_admin
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

@@ -1,4 +1,5 @@
 """Tests for the email poller module."""
+import uuid
 import email
 from email import policy
 from email.message import EmailMessage
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import database as database_module
 import email_poller as email_poller_module
 import events as events_module
-from models import Task
+from models import Task, TaskGenerator
 
 
 _TASK_PROFILES_TABLE_SQL = """
@@ -68,6 +69,18 @@ CREATE TABLE IF NOT EXISTS platform_credentials (
 )
 """
 
+_TASK_GENERATORS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_generators (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 0 NOT NULL,
+    profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
+    config TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 @pytest.fixture()
 async def fake_valkey() -> AsyncGenerator[FakeRedis, None]:
@@ -85,6 +98,7 @@ async def db_session(fake_valkey):
         await conn.execute(text(_TASK_PROFILES_TABLE_SQL))
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
+        await conn.execute(text(_TASK_GENERATORS_TABLE_SQL))
 
     test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -98,6 +112,18 @@ async def db_session(fake_valkey):
     database_module.async_session = original_db
     email_poller_module.async_session = original_poller
     await engine.dispose()
+
+
+def _make_generator(profile_id=None, config=None, enabled=True):
+    """Create a TaskGenerator instance for testing."""
+    gen = TaskGenerator(
+        id=uuid.uuid4(),
+        type="email",
+        enabled=enabled,
+        profile_id=uuid.UUID(profile_id) if profile_id else None,
+        config=config or {},
+    )
+    return gen
 
 
 def _make_plain_email(subject="Test Subject", sender="alice@example.com",
@@ -171,6 +197,36 @@ class TestBuildDescription:
         assert "**Email UID:** 123" in result
         assert "Message body" in result
 
+    def test_format_with_task_prompt(self):
+        from email_poller import build_description
+
+        result = build_description(
+            sender="alice@example.com",
+            to="bob@example.com",
+            date="Mon, 1 Jan 2024",
+            subject="Test",
+            uid="123",
+            body="Message body",
+            task_prompt="Process this email carefully",
+        )
+        assert "Message body" in result
+        assert "**Additional Instructions:**" in result
+        assert "Process this email carefully" in result
+
+    def test_format_without_task_prompt(self):
+        from email_poller import build_description
+
+        result = build_description(
+            sender="alice@example.com",
+            to="bob@example.com",
+            date="Mon, 1 Jan 2024",
+            subject="Test",
+            uid="123",
+            body="Message body",
+            task_prompt=None,
+        )
+        assert "Additional Instructions" not in result
+
 
 class TestCreateTaskFromEmail:
     @pytest.mark.asyncio
@@ -195,6 +251,23 @@ class TestCreateTaskFromEmail:
             assert str(task.profile_id) == "00000000-0000-0000-0000-000000000001"
 
     @pytest.mark.asyncio
+    async def test_creates_task_without_profile(self, db_session):
+        _, session_factory = db_session
+        from email_poller import create_task_from_email
+
+        success = await create_task_from_email(
+            subject="No Profile Email",
+            description="Description",
+            profile_id=None,
+        )
+        assert success is True
+
+        async with session_factory() as session:
+            result = await session.execute(select(Task))
+            task = result.scalar_one()
+            assert task.profile_id is None
+
+    @pytest.mark.asyncio
     async def test_no_subject_uses_placeholder(self, db_session):
         _, session_factory = db_session
         from email_poller import create_task_from_email
@@ -215,27 +288,32 @@ class TestCreateTaskFromEmail:
 class TestGetPollInterval:
     def test_default_interval(self):
         from email_poller import _get_poll_interval, MIN_POLL_INTERVAL
-        result = _get_poll_interval({})
+        gen = _make_generator(config={})
+        result = _get_poll_interval(gen)
         assert result == MIN_POLL_INTERVAL
 
     def test_below_minimum(self):
         from email_poller import _get_poll_interval, MIN_POLL_INTERVAL
-        result = _get_poll_interval({"poll_interval": "10"})
+        gen = _make_generator(config={"poll_interval": 10})
+        result = _get_poll_interval(gen)
         assert result == MIN_POLL_INTERVAL
 
     def test_valid_interval(self):
         from email_poller import _get_poll_interval
-        result = _get_poll_interval({"poll_interval": "300"})
+        gen = _make_generator(config={"poll_interval": 300})
+        result = _get_poll_interval(gen)
         assert result == 300
 
     def test_invalid_string(self):
         from email_poller import _get_poll_interval, MIN_POLL_INTERVAL
-        result = _get_poll_interval({"poll_interval": "abc"})
+        gen = _make_generator(config={"poll_interval": "abc"})
+        result = _get_poll_interval(gen)
         assert result == MIN_POLL_INTERVAL
 
     def test_none_value(self):
         from email_poller import _get_poll_interval, MIN_POLL_INTERVAL
-        result = _get_poll_interval({"poll_interval": None})
+        gen = _make_generator(config={"poll_interval": None})
+        result = _get_poll_interval(gen)
         assert result == MIN_POLL_INTERVAL
 
 
@@ -246,6 +324,9 @@ class TestProcessMessages:
         from email_poller import process_messages
 
         raw_email = _make_plain_email(subject="New Email", body="Test body")
+        generator = _make_generator(
+            profile_id="00000000-0000-0000-0000-000000000003",
+        )
 
         mock_imap = AsyncMock()
         # search returns UIDs
@@ -263,17 +344,7 @@ class TestProcessMessages:
         # store (mark as read)
         mock_imap.store.return_value = MagicMock()
 
-        # Mock load_credentials to return valid credentials with profile
-        mock_creds = {
-            "imap_host": "imap.example.com",
-            "imap_port": "993",
-            "username": "user@example.com",
-            "password": "pass",
-            "email_profile": "00000000-0000-0000-0000-000000000003",
-        }
-
-        with patch("email_poller.load_credentials", return_value=mock_creds):
-            count = await process_messages(mock_imap)
+        count = await process_messages(mock_imap, generator)
 
         assert count == 1
 
@@ -288,27 +359,116 @@ class TestProcessMessages:
         mock_imap.store.assert_awaited_once_with("1", "+FLAGS", "\\Seen")
 
     @pytest.mark.asyncio
+    async def test_process_with_task_prompt(self, db_session):
+        _, session_factory = db_session
+        from email_poller import process_messages
+
+        raw_email = _make_plain_email(subject="Prompted Email", body="Email body")
+        generator = _make_generator(
+            config={"task_prompt": "Handle this urgently"},
+        )
+
+        mock_imap = AsyncMock()
+        search_response = MagicMock()
+        search_response.result = "OK"
+        search_response.lines = [b"1"]
+        mock_imap.search.return_value = search_response
+
+        fetch_response = MagicMock()
+        fetch_response.result = "OK"
+        fetch_response.lines = [raw_email]
+        mock_imap.fetch.return_value = fetch_response
+        mock_imap.store.return_value = MagicMock()
+
+        count = await process_messages(mock_imap, generator)
+        assert count == 1
+
+        async with session_factory() as session:
+            result = await session.execute(select(Task))
+            task = result.scalar_one()
+            assert "Handle this urgently" in task.description
+            assert "Additional Instructions" in task.description
+
+    @pytest.mark.asyncio
+    async def test_process_without_profile(self, db_session):
+        _, session_factory = db_session
+        from email_poller import process_messages
+
+        raw_email = _make_plain_email(subject="No Profile", body="Body")
+        generator = _make_generator(profile_id=None)
+
+        mock_imap = AsyncMock()
+        search_response = MagicMock()
+        search_response.result = "OK"
+        search_response.lines = [b"1"]
+        mock_imap.search.return_value = search_response
+
+        fetch_response = MagicMock()
+        fetch_response.result = "OK"
+        fetch_response.lines = [raw_email]
+        mock_imap.fetch.return_value = fetch_response
+        mock_imap.store.return_value = MagicMock()
+
+        count = await process_messages(mock_imap, generator)
+        assert count == 1
+
+        async with session_factory() as session:
+            result = await session.execute(select(Task))
+            task = result.scalar_one()
+            assert task.profile_id is None
+
+    @pytest.mark.asyncio
     async def test_process_no_unseen(self, db_session):
         from email_poller import process_messages
 
+        generator = _make_generator()
         mock_imap = AsyncMock()
         search_response = MagicMock()
         search_response.result = "OK"
         search_response.lines = [b""]
         mock_imap.search.return_value = search_response
 
-        count = await process_messages(mock_imap)
+        count = await process_messages(mock_imap, generator)
         assert count == 0
 
     @pytest.mark.asyncio
     async def test_process_search_failure(self, db_session):
         from email_poller import process_messages
 
+        generator = _make_generator()
         mock_imap = AsyncMock()
         search_response = MagicMock()
         search_response.result = "NO"
         search_response.lines = ["search failed"]
         mock_imap.search.return_value = search_response
 
-        count = await process_messages(mock_imap)
+        count = await process_messages(mock_imap, generator)
         assert count == 0
+
+
+class TestLoadEmailGenerator:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_generator(self, db_session):
+        from email_poller import _load_email_generator
+        result = await _load_email_generator()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_generator(self, db_session):
+        _, session_factory = db_session
+        from email_poller import _load_email_generator
+
+        # Insert a generator record
+        async with session_factory() as session:
+            gen = TaskGenerator(
+                type="email",
+                enabled=True,
+                config={"poll_interval": 120},
+            )
+            session.add(gen)
+            await session.commit()
+
+        result = await _load_email_generator()
+        assert result is not None
+        assert result.type == "email"
+        assert result.enabled is True

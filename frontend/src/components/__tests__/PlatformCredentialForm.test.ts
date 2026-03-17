@@ -30,10 +30,10 @@ const simpleSchema = [
   { key: 'api_secret', label: 'API Secret', type: 'password', required: true },
 ]
 
-const emailSchema = [
-  { key: 'imap_host', label: 'IMAP Server', type: 'text', required: true },
-  { key: 'email_profile', label: 'Task Profile', type: 'profile_select', required: true },
-  { key: 'poll_interval', label: 'Poll Interval (seconds)', type: 'text', required: false, help_text: 'Minimum 60. Reduced when IMAP IDLE is supported.' },
+const profileSelectSchema = [
+  { key: 'server', label: 'Server', type: 'text', required: true },
+  { key: 'profile', label: 'Task Profile', type: 'profile_select', required: true },
+  { key: 'interval', label: 'Interval (seconds)', type: 'text', required: false, help_text: 'Minimum 60 seconds.' },
 ]
 
 beforeEach(() => {
@@ -205,11 +205,11 @@ describe('PlatformCredentialForm', () => {
     vi.mocked(fetchTaskProfiles).mockResolvedValue([])
 
     const wrapper = mount(PlatformCredentialForm, {
-      props: { schema: emailSchema, saving: false },
+      props: { schema: profileSelectSchema, saving: false },
     })
     await flushPromises()
 
-    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const select = wrapper.find('[data-testid="cred-input-profile"]')
     expect(select.exists()).toBe(true)
     expect(select.element.tagName).toBe('SELECT')
   })
@@ -218,11 +218,11 @@ describe('PlatformCredentialForm', () => {
     vi.mocked(fetchTaskProfiles).mockResolvedValue([])
 
     const wrapper = mount(PlatformCredentialForm, {
-      props: { schema: emailSchema, saving: false },
+      props: { schema: profileSelectSchema, saving: false },
     })
     await flushPromises()
 
-    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const select = wrapper.find('[data-testid="cred-input-profile"]')
     const options = select.findAll('option')
     expect(options).toHaveLength(1)
     expect(options[0].text()).toContain('No task profiles configured')
@@ -235,11 +235,11 @@ describe('PlatformCredentialForm', () => {
     ])
 
     const wrapper = mount(PlatformCredentialForm, {
-      props: { schema: emailSchema, saving: false },
+      props: { schema: profileSelectSchema, saving: false },
     })
     await flushPromises()
 
-    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const select = wrapper.find('[data-testid="cred-input-profile"]')
     const options = select.findAll('option')
     // "Select a profile" + 2 profiles
     expect(options).toHaveLength(3)
@@ -252,20 +252,20 @@ describe('PlatformCredentialForm', () => {
     vi.mocked(fetchTaskProfiles).mockResolvedValue([])
 
     const wrapper = mount(PlatformCredentialForm, {
-      props: { schema: emailSchema, saving: false },
+      props: { schema: profileSelectSchema, saving: false },
     })
     await flushPromises()
 
-    // poll_interval field has help_text
+    // interval field has help_text
     const helpText = wrapper.text()
-    expect(helpText).toContain('Minimum 60')
+    expect(helpText).toContain('Minimum 60 seconds')
   })
 
   it('profile_select is not treated as a modeField (toggle)', async () => {
     vi.mocked(fetchTaskProfiles).mockResolvedValue([])
 
     const wrapper = mount(PlatformCredentialForm, {
-      props: { schema: emailSchema, saving: false },
+      props: { schema: profileSelectSchema, saving: false },
     })
     await flushPromises()
 
@@ -275,7 +275,7 @@ describe('PlatformCredentialForm', () => {
     expect(buttons).toHaveLength(0)
 
     // The profile_select should still be visible as a regular field
-    const select = wrapper.find('[data-testid="cred-input-email_profile"]')
+    const select = wrapper.find('[data-testid="cred-input-profile"]')
     expect(select.exists()).toBe(true)
   })
 
