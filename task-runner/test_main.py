@@ -1027,6 +1027,22 @@ def test_sanitize_injects_truncation_message_into_matching_output():
     assert "An error occurred while parsing tool arguments." in output_text
 
 
+def test_sanitize_unrepairable_does_not_inject_truncation_message():
+    """Unrepairable (non-truncation) arguments do not trigger truncation recovery message."""
+    messages = [
+        {"type": "function_call", "call_id": "abc123", "name": "bad_tool",
+         "arguments": "<<<not json>>>", "id": "1"},
+        {"type": "function_call_output", "call_id": "abc123",
+         "output": "Some tool error"},
+    ]
+    result = _sanitize_tool_calls(messages)
+    # Arguments replaced with placeholder
+    parsed = json.loads(result[0]["arguments"])
+    assert parsed["error"] == "malformed_arguments"
+    # Output NOT replaced with truncation message — left as-is
+    assert result[1]["output"] == "Some tool error"
+
+
 def test_sanitize_no_matching_output_leaves_other_items():
     """When no matching function_call_output exists, only the arguments are repaired."""
     messages = [

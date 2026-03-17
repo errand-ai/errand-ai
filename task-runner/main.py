@@ -439,14 +439,16 @@ def _sanitize_tool_calls(messages: list) -> list:
         if repaired is not None:
             result[idx]["arguments"] = repaired
             logger.warning("Sanitized malformed tool call '%s': repaired truncated JSON", tool_name)
+            # Only inject truncation recovery message when repair succeeded —
+            # a successful repair indicates truncated output (valid JSON prefix),
+            # not completely garbled arguments from a different failure mode.
+            if call_id:
+                sanitized_call_ids[call_id] = tool_name
         else:
             fragment = args_str[:200]
             placeholder = json.dumps({"error": "malformed_arguments", "original_fragment": fragment})
             result[idx]["arguments"] = placeholder
             logger.warning("Sanitized malformed tool call '%s': replaced with error placeholder", tool_name)
-
-        if call_id:
-            sanitized_call_ids[call_id] = tool_name
 
     # Inject truncation recovery messages into matching function_call_output items
     if sanitized_call_ids:
