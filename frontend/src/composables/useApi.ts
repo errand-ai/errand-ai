@@ -436,3 +436,36 @@ export async function deleteTaskProfile(id: string): Promise<void> {
   const res = await authFetch(`${BASE}/task-profiles/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete profile: ${res.status}`)
 }
+
+// --- Task Generators ---
+
+export interface TaskGeneratorData {
+  id: string
+  type: string
+  enabled: boolean
+  profile_id: string | null
+  config: Record<string, any> | null
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchEmailGenerator(): Promise<TaskGeneratorData | null> {
+  const res = await authFetch(`${BASE}/task-generators/email`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Failed to fetch email generator: ${res.status}`)
+  return res.json()
+}
+
+export async function upsertEmailGenerator(data: {
+  enabled: boolean
+  profile_id: string | null
+  config: Record<string, any>
+}): Promise<TaskGeneratorData> {
+  const res = await authFetch(`${BASE}/task-generators/email`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(`Failed to save email generator: ${res.status}`)
+  return res.json()
+}

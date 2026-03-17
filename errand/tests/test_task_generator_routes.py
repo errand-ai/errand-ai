@@ -1,7 +1,6 @@
 """Tests for task generator API routes."""
 
 import pytest
-from sqlalchemy import text
 
 
 # --- List ---

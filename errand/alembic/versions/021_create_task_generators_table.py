@@ -81,5 +81,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Note: downgrade doesn't attempt to move data back to credentials
+    # Destructive: email_profile and poll_interval values migrated out of
+    # platform_credentials during upgrade are NOT restored.  Rolling back
+    # requires manually re-entering those settings in the email credential form.
     op.drop_table("task_generators")

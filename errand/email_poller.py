@@ -310,10 +310,16 @@ async def _run_idle_loop(imap, generator: TaskGenerator):
     cycle = 0
 
     while True:
-        # Re-read generator config each cycle for fresh settings
+        # Re-read generator config and verify credentials still exist
         fresh_generator = await _load_email_generator()
         if not fresh_generator or not fresh_generator.enabled:
             logger.info("Email task generator disabled, exiting IDLE loop")
+            return
+
+        async with async_session() as session:
+            credentials = await load_credentials("email", session)
+        if not credentials:
+            logger.info("Email credentials removed, exiting IDLE loop")
             return
 
         # Safety poll every N cycles
@@ -345,10 +351,16 @@ async def _run_idle_loop(imap, generator: TaskGenerator):
 async def _run_poll_loop(imap, generator: TaskGenerator):
     """Polling fallback when IDLE is not supported."""
     while True:
-        # Re-read generator config each cycle for fresh settings
+        # Re-read generator config and verify credentials still exist
         fresh_generator = await _load_email_generator()
         if not fresh_generator or not fresh_generator.enabled:
             logger.info("Email task generator disabled, exiting poll loop")
+            return
+
+        async with async_session() as session:
+            credentials = await load_credentials("email", session)
+        if not credentials:
+            logger.info("Email credentials removed, exiting poll loop")
             return
 
         count = await process_messages(imap, fresh_generator)

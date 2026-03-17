@@ -1,20 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
-import { fetchTaskProfiles, type TaskProfile } from '../../composables/useApi'
-import { useAuthStore } from '../../stores/auth'
-
-const auth = useAuthStore()
-
-interface TaskGeneratorData {
-  id: string
-  type: string
-  enabled: boolean
-  profile_id: string | null
-  config: Record<string, any> | null
-  created_at: string
-  updated_at: string
-}
+import {
+  fetchTaskProfiles,
+  fetchPlatforms,
+  fetchEmailGenerator,
+  upsertEmailGenerator,
+  type TaskProfile,
+  type TaskGeneratorData,
+} from '../../composables/useApi'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -34,32 +28,22 @@ const profiles = ref<TaskProfile[]>([])
 // Validation
 const pollIntervalError = ref<string | null>(null)
 
-async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
-  }
-  if (auth.token) {
-    headers['Authorization'] = `Bearer ${auth.token}`
-  }
-  return fetch(url, { ...options, headers })
-}
-
 async function loadData() {
   loading.value = true
   error.value = null
   try {
-    // Load profiles and email generator in parallel
+    // Load profiles, email generator, and platforms in parallel
     const [profilesResult, generatorResult, platformsResult] = await Promise.all([
       fetchTaskProfiles().catch(() => [] as TaskProfile[]),
-      authFetch('/api/task-generators/email').then(r => r.ok ? r.json() : null).catch(() => null),
-      authFetch('/api/platforms').then(r => r.ok ? r.json() : []).catch(() => []),
+      fetchEmailGenerator().catch(() => null),
+      fetchPlatforms().catch(() => []),
     ])
 
     profiles.value = profilesResult
     emailGenerator.value = generatorResult
 
     // Check if email credentials are configured
-    const emailPlatform = platformsResult.find((p: any) => p.id === 'email')
+    const emailPlatform = platformsResult.find((p) => p.id === 'email')
     emailCredentialsConfigured.value = emailPlatform?.status === 'connected'
 
     // Populate form from loaded data
@@ -97,21 +81,11 @@ async function saveEmailGenerator() {
     if (!isNaN(pollVal)) config.poll_interval = pollVal
     if (emailTaskPrompt.value.trim()) config.task_prompt = emailTaskPrompt.value.trim()
 
-    const body: Record<string, any> = {
+    emailGenerator.value = await upsertEmailGenerator({
       enabled: emailEnabled.value,
       profile_id: emailProfileId.value || null,
       config,
-    }
-
-    const res = await authFetch('/api/task-generators/email', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
     })
-
-    if (!res.ok) throw new Error(`Failed to save (HTTP ${res.status})`)
-
-    emailGenerator.value = await res.json()
     toast.success('Email trigger settings saved.')
   } catch {
     toast.error('Failed to save email trigger settings.')

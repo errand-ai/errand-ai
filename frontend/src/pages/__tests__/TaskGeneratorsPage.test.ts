@@ -18,7 +18,27 @@ vi.mock('../../composables/useApi', () => ({
     { id: 'profile-1', name: 'Profile A' },
     { id: 'profile-2', name: 'Profile B' },
   ]),
+  fetchPlatforms: vi.fn().mockResolvedValue([
+    { id: 'email', label: 'Email', status: 'connected' },
+  ]),
+  fetchEmailGenerator: vi.fn().mockResolvedValue(null),
+  upsertEmailGenerator: vi.fn().mockResolvedValue({
+    id: 'gen-1',
+    type: 'email',
+    enabled: false,
+    profile_id: null,
+    config: { poll_interval: 60 },
+    created_at: '2024-01-01T00:00:00',
+    updated_at: '2024-01-01T00:00:00',
+  }),
 }))
+
+import {
+  fetchTaskProfiles,
+  fetchPlatforms,
+  fetchEmailGenerator,
+  upsertEmailGenerator,
+} from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -41,45 +61,6 @@ function createTestRouter() {
   })
 }
 
-// Default fetch mock: email credentials configured, no generator
-function setupFetch(overrides: Record<string, any> = {}) {
-  const defaults = {
-    generatorStatus: 404,
-    generatorData: null,
-    platforms: [{ id: 'email', label: 'Email', status: 'connected' }],
-  }
-  const config = { ...defaults, ...overrides }
-
-  return vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
-    if (url === '/api/task-generators/email' && (!opts || opts.method !== 'PUT')) {
-      if (config.generatorStatus === 404) {
-        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) })
-      }
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(config.generatorData) })
-    }
-    if (url === '/api/task-generators/email' && opts?.method === 'PUT') {
-      const body = JSON.parse(opts.body as string)
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({
-          id: 'gen-1',
-          type: 'email',
-          enabled: body.enabled,
-          profile_id: body.profile_id,
-          config: body.config,
-          created_at: '2024-01-01T00:00:00',
-          updated_at: '2024-01-01T00:00:00',
-        }),
-      })
-    }
-    if (url === '/api/platforms') {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(config.platforms) })
-    }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-  })
-}
-
 describe('TaskGeneratorsPage', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -87,10 +68,22 @@ describe('TaskGeneratorsPage', () => {
     auth.token = adminToken
     toastMock.success.mockClear()
     toastMock.error.mockClear()
+    vi.mocked(upsertEmailGenerator).mockClear()
+    vi.mocked(fetchTaskProfiles).mockResolvedValue([
+      { id: 'profile-1', name: 'Profile A', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+      { id: 'profile-2', name: 'Profile B', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+    ])
+    vi.mocked(fetchPlatforms).mockResolvedValue([
+      { id: 'email', label: 'Email', capabilities: ['email'], credential_schema: [], status: 'connected', last_verified_at: null },
+    ])
+    vi.mocked(fetchEmailGenerator).mockResolvedValue(null)
+    vi.mocked(upsertEmailGenerator).mockResolvedValue({
+      id: 'gen-1', type: 'email', enabled: false, profile_id: null,
+      config: { poll_interval: 60 }, created_at: '2024-01-01T00:00:00', updated_at: '2024-01-01T00:00:00',
+    })
   })
 
   it('renders email trigger card', async () => {
-    vi.stubGlobal('fetch', setupFetch())
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -100,7 +93,9 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('shows no-credentials warning when email not configured', async () => {
-    vi.stubGlobal('fetch', setupFetch({ platforms: [{ id: 'email', status: 'disconnected' }] }))
+    vi.mocked(fetchPlatforms).mockResolvedValue([
+      { id: 'email', label: 'Email', capabilities: ['email'], credential_schema: [], status: 'disconnected', last_verified_at: null },
+    ])
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -110,7 +105,6 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('shows form fields when email credentials exist', async () => {
-    vi.stubGlobal('fetch', setupFetch())
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -122,7 +116,6 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('populates profiles dropdown', async () => {
-    vi.stubGlobal('fetch', setupFetch())
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -137,18 +130,11 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('populates form from existing generator', async () => {
-    vi.stubGlobal('fetch', setupFetch({
-      generatorStatus: 200,
-      generatorData: {
-        id: 'gen-1',
-        type: 'email',
-        enabled: true,
-        profile_id: 'profile-1',
-        config: { poll_interval: 120, task_prompt: 'Handle this' },
-        created_at: '2024-01-01T00:00:00',
-        updated_at: '2024-01-01T00:00:00',
-      },
-    }))
+    vi.mocked(fetchEmailGenerator).mockResolvedValue({
+      id: 'gen-1', type: 'email', enabled: true, profile_id: 'profile-1',
+      config: { poll_interval: 120, task_prompt: 'Handle this' },
+      created_at: '2024-01-01T00:00:00', updated_at: '2024-01-01T00:00:00',
+    })
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -164,7 +150,6 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('validates poll interval minimum', async () => {
-    vi.stubGlobal('fetch', setupFetch())
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -178,8 +163,6 @@ describe('TaskGeneratorsPage', () => {
   })
 
   it('saves email generator on submit', async () => {
-    const fetchMock = setupFetch()
-    vi.stubGlobal('fetch', fetchMock)
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -187,17 +170,11 @@ describe('TaskGeneratorsPage', () => {
     await wrapper.find('[data-testid="email-save"]').trigger('click')
     await flushPromises()
 
-    // Verify PUT was called
-    const putCalls = fetchMock.mock.calls.filter(
-      (call: any[]) => call[1]?.method === 'PUT'
-    )
-    expect(putCalls.length).toBe(1)
+    expect(upsertEmailGenerator).toHaveBeenCalledOnce()
     expect(toastMock.success).toHaveBeenCalledWith('Email trigger settings saved.')
   })
 
   it('does not save when poll interval validation fails', async () => {
-    const fetchMock = setupFetch()
-    vi.stubGlobal('fetch', fetchMock)
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
@@ -208,14 +185,13 @@ describe('TaskGeneratorsPage', () => {
     await wrapper.find('[data-testid="email-save"]').trigger('click')
     await flushPromises()
 
-    const putCalls = fetchMock.mock.calls.filter(
-      (call: any[]) => call[1]?.method === 'PUT'
-    )
-    expect(putCalls.length).toBe(0)
+    expect(upsertEmailGenerator).not.toHaveBeenCalled()
   })
 
   it('disables toggle when email credentials not configured', async () => {
-    vi.stubGlobal('fetch', setupFetch({ platforms: [{ id: 'email', status: 'disconnected' }] }))
+    vi.mocked(fetchPlatforms).mockResolvedValue([
+      { id: 'email', label: 'Email', capabilities: ['email'], credential_schema: [], status: 'disconnected', last_verified_at: null },
+    ])
     const router = createTestRouter()
     const wrapper = mount(TaskGeneratorsPage, { global: { plugins: [router] } })
     await flushPromises()
