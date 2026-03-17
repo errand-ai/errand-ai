@@ -31,6 +31,49 @@ set_tracing_disabled(True)
 
 TOOL_RESULT_MAX_LENGTH = 500
 
+# Pattern-based lookup for max output tokens by model.
+# Patterns are checked in order — first substring match wins.
+# Covers Claude (Anthropic/Bedrock/Vertex), OpenAI, and Google model families.
+_MAX_OUTPUT_TOKENS_PATTERNS = [
+    ("opus-4-6",      128000),
+    ("opus-4-5",       64000),
+    ("opus-4-1",       32000),
+    ("opus-4",         32000),
+    ("sonnet-4",       64000),
+    ("haiku-4",        64000),
+    ("claude-3",        4096),
+    ("gpt-4.1",        32768),
+    ("gpt-4o",         16384),
+    ("gpt-5",         100000),
+    ("gemini-2.5",     65535),
+    ("gemini-2",       65535),
+]
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
+
+
+def resolve_max_output_tokens(model: str) -> int:
+    """Resolve max output tokens for a model using pattern matching.
+
+    Checks MAX_OUTPUT_TOKENS env var first (overrides lookup).
+    Then matches model name substrings in priority order.
+    Falls back to DEFAULT_MAX_OUTPUT_TOKENS if no pattern matches.
+    """
+    env_override = os.environ.get("MAX_OUTPUT_TOKENS", "")
+    if env_override:
+        try:
+            value = int(env_override)
+            if value > 0:
+                return value
+            logger.warning("Invalid MAX_OUTPUT_TOKENS value '%s' (must be positive), using lookup", env_override)
+        except ValueError:
+            logger.warning("Invalid MAX_OUTPUT_TOKENS value '%s' (not an integer), using lookup", env_override)
+
+    model_lower = model.lower()
+    for pattern, max_tokens in _MAX_OUTPUT_TOKENS_PATTERNS:
+        if pattern in model_lower:
+            return max_tokens
+    return DEFAULT_MAX_OUTPUT_TOKENS
+
 
 def _truncate(text: str, max_length: int = TOOL_RESULT_MAX_LENGTH) -> str:
     """Truncate text to max_length, appending '...' if truncated."""
@@ -351,46 +394,82 @@ def _repair_truncated_json(s: str) -> str | None:
         return None
 
 
-def _sanitize_tool_calls(messages: list) -> list:
-    """Sanitize malformed tool call arguments in assistant messages.
+_TRUNCATION_RECOVERY_MESSAGE = (
+    "OUTPUT TRUNCATED: Your previous tool call for '{tool_name}' was truncated because "
+    "your response exceeded the output token limit. The arguments were cut off mid-generation, "
+    "producing invalid JSON. The tool call failed.\n\n"
+    "To avoid this, split large content into multiple smaller tool calls. For example, "
+    "write files in sections or use append mode instead of writing everything at once.\n\n"
+    "Original error: {original_output}"
+)
 
-    Scans for tool calls with invalid JSON arguments and either repairs them
-    or replaces with an error placeholder so LiteLLM can serialize the history.
+
+def _sanitize_tool_calls(messages: list) -> list:
+    """Sanitize malformed tool call arguments in Responses API input items.
+
+    Scans for function_call items with invalid JSON arguments and either repairs
+    them or replaces with an error placeholder so LiteLLM can serialize the history.
+    When a malformed function_call is found, also searches for the matching
+    function_call_output to inject a truncation recovery message.
     """
     result = messages
     mutated = False
-    for msg_idx, msg in enumerate(messages):
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+    # Track call_ids that were sanitized so we can update their outputs
+    sanitized_call_ids: dict[str, str] = {}  # call_id -> tool_name
+
+    for idx, item in enumerate(messages):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
             continue
-        tool_calls = msg.get("tool_calls")
-        if not isinstance(tool_calls, list):
+        args_str = item.get("arguments")
+        if not isinstance(args_str, str) or not args_str:
             continue
-        for tc_idx, tc in enumerate(tool_calls):
-            func = tc.get("function", {}) if isinstance(tc, dict) else {}
-            if not isinstance(func, dict):
+        try:
+            json.loads(args_str)
+            continue  # valid JSON, no repair needed
+        except (json.JSONDecodeError, TypeError):
+            pass  # invalid JSON — proceed to repair/replace below
+
+        if not mutated:
+            result = copy.deepcopy(messages)
+            mutated = True
+
+        tool_name = item.get("name", "unknown")
+        call_id = item.get("call_id", "")
+        repaired = _repair_truncated_json(args_str)
+        if repaired is not None:
+            result[idx]["arguments"] = repaired
+            logger.warning("Sanitized malformed tool call '%s': repaired truncated JSON", tool_name)
+        else:
+            fragment = args_str[:200]
+            placeholder = json.dumps({"error": "malformed_arguments", "original_fragment": fragment})
+            result[idx]["arguments"] = placeholder
+            logger.warning("Sanitized malformed tool call '%s': replaced with error placeholder", tool_name)
+
+        if call_id:
+            sanitized_call_ids[call_id] = tool_name
+
+    # Inject truncation recovery messages into matching function_call_output items
+    if sanitized_call_ids:
+        for idx, item in enumerate(result):
+            if not isinstance(item, dict) or item.get("type") != "function_call_output":
                 continue
-            args_str = func.get("arguments")
-            if not isinstance(args_str, str) or not args_str:
+            call_id = item.get("call_id", "")
+            if call_id not in sanitized_call_ids:
                 continue
-            try:
-                json.loads(args_str)
-                continue  # valid JSON, no repair needed
-            except (json.JSONDecodeError, TypeError):
-                pass  # invalid JSON — proceed to repair/replace below
-            # Need to mutate — deep copy on first mutation
-            if not mutated:
-                result = copy.deepcopy(messages)
-                mutated = True
-            tool_name = func.get("name", "unknown")
-            repaired = _repair_truncated_json(args_str)
-            if repaired is not None:
-                result[msg_idx]["tool_calls"][tc_idx]["function"]["arguments"] = repaired
-                logger.warning("Sanitized malformed tool call '%s': repaired truncated JSON", tool_name)
-            else:
-                fragment = args_str[:200]
-                placeholder = json.dumps({"error": "malformed_arguments", "original_fragment": fragment})
-                result[msg_idx]["tool_calls"][tc_idx]["function"]["arguments"] = placeholder
-                logger.warning("Sanitized malformed tool call '%s': replaced with error placeholder", tool_name)
+            tool_name = sanitized_call_ids[call_id]
+            original_output = item.get("output", "")
+            if isinstance(original_output, list):
+                # Extract text from content parts
+                original_output = " ".join(
+                    p.get("text", "") for p in original_output
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            result[idx]["output"] = _TRUNCATION_RECOVERY_MESSAGE.format(
+                tool_name=tool_name,
+                original_output=str(original_output),
+            )
+            logger.warning("Injected truncation recovery message for tool call '%s' (call_id=%s)", tool_name, call_id)
+
     return result
 
 
@@ -566,8 +645,10 @@ async def main():
             all_known_tools=all_known_tools,
         )
 
-        # 5. Create agent with reasoning settings
+        # 5. Create agent with reasoning settings and model-aware max output tokens
         reasoning_effort = get_reasoning_effort()
+        max_output_tokens = resolve_max_output_tokens(env["OPENAI_MODEL"])
+        logger.info("Max output tokens: %d (model=%s)", max_output_tokens, env["OPENAI_MODEL"])
         agent = Agent(
             name="TaskRunner",
             instructions=full_instructions,
@@ -575,6 +656,7 @@ async def main():
             tools=[execute_command, discover_tools],
             mcp_servers=mcp_servers if mcp_servers else [],
             model_settings=ModelSettings(
+                max_tokens=max_output_tokens,
                 reasoning=Reasoning(effort=reasoning_effort, generate_summary="auto"),
             ),
         )
