@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
 from agents.mcp import MCPServerStreamableHttp
+from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
 from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list
@@ -672,7 +673,13 @@ async def main():
                 "error_class": "ValueError",
             })
             sys.exit(1)
-        run_config = RunConfig(call_model_input_filter=filter_model_input)
+        # Use OpenAIProvider directly to bypass MultiProvider's slash-based prefix
+        # parsing. This ensures model names containing slashes (e.g. "bedrock/gpt-oss:20b")
+        # are passed through to the configured OpenAI client (pointing at LiteLLM) as-is.
+        run_config = RunConfig(
+            model_provider=OpenAIProvider(),
+            call_model_input_filter=filter_model_input,
+        )
 
         for attempt in range(1, MAX_AGENT_RETRIES + 1):
             try:

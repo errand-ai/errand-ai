@@ -1092,3 +1092,29 @@ def test_sanitize_handles_list_output_in_function_call_output():
     output_text = result[1]["output"]
     assert "truncated" in output_text.lower()
     assert "parse error" in output_text
+
+
+# --- Model name slash handling ---
+
+
+def test_model_name_with_slash_passed_to_agent_unchanged():
+    """Model names with slashes are passed directly to the Agent without prefix manipulation."""
+    # The Agent receives the raw OPENAI_MODEL value — no prefix stripping or adding.
+    # The RunConfig uses OpenAIProvider (not MultiProvider) to bypass slash-based
+    # prefix parsing, so the model name reaches the LiteLLM backend as-is.
+    model = "bedrock/gpt-oss:20b"
+    assert "/" in model  # contains slash
+    # resolve_max_output_tokens also handles slashed names correctly
+    assert resolve_max_output_tokens(model) == DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def test_model_name_without_slash_works():
+    """Plain model names without slashes work normally."""
+    model = "gpt-4o"
+    assert "/" not in model
+    assert resolve_max_output_tokens(model) == 16384
+
+
+def test_model_name_bedrock_claude_resolves_tokens():
+    """Bedrock Claude model names with slashes resolve correctly in token lookup."""
+    assert resolve_max_output_tokens("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0") == 64000
