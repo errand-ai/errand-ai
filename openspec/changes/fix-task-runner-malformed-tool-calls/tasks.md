@@ -7,7 +7,7 @@
 ## 2. Error Classification and Retry Logic
 
 - [x] 2.1 Implement `_classify_error(exc: Exception) -> str` function in `task-runner/main.py`: return `"transient"` for `APIConnectionError`, `APITimeoutError`, `RateLimitError`, HTTP 429/502/503/504; return `"non_retryable"` for `BadRequestError`, `AuthenticationError`, HTTP 500 with tool-conversion messages; return `"unknown"` for everything else
-- [x] 2.2 Replace the catch-all `except Exception: sys.exit(1)` block with retry logic: wrap the `Runner.run_streamed()` call and streaming iteration in a retry loop with max 3 attempts and exponential backoff (2s, 4s, 8s) for transient errors; exit immediately for non-retryable and unknown errors
+- [x] 2.2 Replace the catch-all `except Exception: sys.exit(1)` block with retry logic: wrap the `Runner.run_streamed()` call and streaming iteration in a retry loop with max 3 total attempts (1 initial + 2 retries) and exponential backoff (2s, 4s) for transient errors; exit immediately for non-retryable and unknown errors
 - [x] 2.3 Update `emit_event("error", ...)` calls to include `error_type` and `error_class` fields in the error event data
 
 ## 3. Tests

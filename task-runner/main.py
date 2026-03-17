@@ -367,14 +367,16 @@ def _sanitize_tool_calls(messages: list) -> list:
             continue
         for tc_idx, tc in enumerate(tool_calls):
             func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            if not isinstance(func, dict):
+                continue
             args_str = func.get("arguments")
             if not isinstance(args_str, str) or not args_str:
                 continue
             try:
                 json.loads(args_str)
-                continue  # valid JSON, skip
+                continue  # valid JSON, no repair needed
             except (json.JSONDecodeError, TypeError):
-                pass
+                pass  # invalid JSON — proceed to repair/replace below
             # Need to mutate — deep copy on first mutation
             if not mutated:
                 result = copy.deepcopy(messages)
@@ -577,7 +579,15 @@ async def main():
             ),
         )
 
-        max_turns = int(os.environ.get("MAX_TURNS", "30"))
+        try:
+            max_turns = int(os.environ.get("MAX_TURNS", "30"))
+        except ValueError:
+            emit_event("error", {
+                "message": f"Invalid MAX_TURNS value: {os.environ.get('MAX_TURNS')}",
+                "error_type": "non_retryable",
+                "error_class": "ValueError",
+            })
+            sys.exit(1)
         run_config = RunConfig(call_model_input_filter=filter_model_input)
 
         for attempt in range(1, MAX_AGENT_RETRIES + 1):
