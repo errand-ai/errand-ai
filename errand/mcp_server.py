@@ -21,7 +21,7 @@ from database import async_session
 from events import publish_event
 from llm import generate_title, ProfileInfo
 from models import Setting, Task, TaskProfile
-from task_manager import normalize_interval, parse_interval
+from task_manager import normalize_interval
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ async def schedule_task(
     normalised_interval = None
     if repeat_interval is not None:
         normalised_interval = normalize_interval(repeat_interval)
-        if normalised_interval is None or parse_interval(repeat_interval) is None:
+        if normalised_interval is None:
             return (
                 f"Error: Invalid repeat_interval '{repeat_interval}'. "
                 "Accepted formats: 15m, 1h, 1d, 1w, 7 days, 2 hours, daily, weekly, hourly."
