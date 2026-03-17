@@ -21,6 +21,10 @@ _mock_agents.RunHooks = type("RunHooks", (), {})
 _mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
+sys.modules.setdefault("agents.models", MagicMock())
+_mock_openai_provider = MagicMock()
+_mock_openai_provider.OpenAIProvider = MagicMock()
+sys.modules.setdefault("agents.models.openai_provider", _mock_openai_provider)
 
 # Mock agents.run with CallModelData and ModelInputData
 

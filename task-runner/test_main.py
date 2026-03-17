@@ -20,7 +20,8 @@ from main import (
     filter_model_input, _strip_screenshots, _trim_context_window,
     _sanitize_tool_calls, _repair_truncated_json, _classify_error,
     _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
-    connect_mcp_servers,
+    connect_mcp_servers, resolve_max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS,
+    _TRUNCATION_RECOVERY_MESSAGE,
 )
 
 
@@ -778,52 +779,44 @@ def test_repair_truncated_json_array():
     assert parsed == [1, 2, 3]
 
 
-# --- _sanitize_tool_calls ---
+# --- _sanitize_tool_calls (Responses API format) ---
 
 
-def test_sanitize_tool_calls_valid_passthrough():
-    """Valid tool calls pass through unchanged."""
+def test_sanitize_tool_calls_valid_function_call_passthrough():
+    """Valid function_call items pass through unchanged."""
     messages = [
-        {"role": "assistant", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"key": "value"}'}}
-        ]}
+        {"type": "function_call", "call_id": "abc", "name": "test", "arguments": '{"key": "value"}', "id": "1"},
     ]
     result = _sanitize_tool_calls(messages)
-    assert result[0]["tool_calls"][0]["function"]["arguments"] == '{"key": "value"}'
+    assert result[0]["arguments"] == '{"key": "value"}'
 
 
-def test_sanitize_tool_calls_repairs_truncated():
-    """Truncated tool call arguments are repaired."""
+def test_sanitize_tool_calls_repairs_truncated_function_call():
+    """Truncated function_call arguments are repaired."""
     messages = [
-        {"role": "assistant", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "gdrive_write_file", "arguments": '{"path": "/file.md"'}}
-        ]}
+        {"type": "function_call", "call_id": "abc", "name": "gdrive_write_file", "arguments": '{"path": "/file.md"', "id": "1"},
     ]
     result = _sanitize_tool_calls(messages)
-    repaired = result[0]["tool_calls"][0]["function"]["arguments"]
-    parsed = json.loads(repaired)
+    parsed = json.loads(result[0]["arguments"])
     assert parsed["path"] == "/file.md"
 
 
-def test_sanitize_tool_calls_replaces_unrepairable():
-    """Unrepairable tool call arguments are replaced with error placeholder."""
+def test_sanitize_tool_calls_replaces_unrepairable_function_call():
+    """Unrepairable function_call arguments get error placeholder."""
     messages = [
-        {"role": "assistant", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "bad_tool", "arguments": "<<<not json>>>"}}
-        ]}
+        {"type": "function_call", "call_id": "abc", "name": "bad_tool", "arguments": "<<<not json>>>", "id": "1"},
     ]
     result = _sanitize_tool_calls(messages)
-    repaired = result[0]["tool_calls"][0]["function"]["arguments"]
-    parsed = json.loads(repaired)
+    parsed = json.loads(result[0]["arguments"])
     assert parsed["error"] == "malformed_arguments"
     assert "<<<not json>>>" in parsed["original_fragment"]
 
 
-def test_sanitize_tool_calls_non_assistant_unaffected():
-    """Non-assistant messages are not modified."""
+def test_sanitize_tool_calls_non_function_call_unaffected():
+    """Non-function_call items are not modified."""
     messages = [
-        {"role": "user", "content": "Hello"},
-        {"role": "system", "content": "You are helpful"},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+        {"type": "function_call_output", "call_id": "abc", "output": "result"},
     ]
     result = _sanitize_tool_calls(messages)
     assert result == messages
@@ -832,13 +825,11 @@ def test_sanitize_tool_calls_non_assistant_unaffected():
 def test_sanitize_tool_calls_does_not_mutate_original():
     """Sanitization returns a new list when mutations occur."""
     messages = [
-        {"role": "assistant", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"path": "/file.md"'}}
-        ]}
+        {"type": "function_call", "call_id": "abc", "name": "test", "arguments": '{"path": "/file.md"', "id": "1"},
     ]
-    original_args = messages[0]["tool_calls"][0]["function"]["arguments"]
+    original_args = messages[0]["arguments"]
     _sanitize_tool_calls(messages)
-    assert messages[0]["tool_calls"][0]["function"]["arguments"] == original_args
+    assert messages[0]["arguments"] == original_args
 
 
 # --- _classify_error ---
@@ -912,11 +903,9 @@ def test_classify_error_unknown():
 
 def test_filter_model_input_sanitizes_before_screenshots():
     """Sanitization runs before screenshot stripping in the filter chain."""
-    # Message with both a malformed tool call and screenshots
+    # Message with a malformed function_call (Responses API format) and screenshots
     messages = [
-        {"role": "assistant", "tool_calls": [
-            {"id": "1", "type": "function", "function": {"name": "test", "arguments": '{"key": "value"'}}
-        ]},
+        {"type": "function_call", "call_id": "abc", "name": "test", "arguments": '{"key": "value"', "id": "1"},
     ]
     # Add screenshots beyond retention limit
     for i in range(5):
@@ -930,8 +919,9 @@ def test_filter_model_input_sanitizes_before_screenshots():
         output = filter_model_input(_make_call_model_data(messages))
 
     # Tool call should be repaired (sanitization ran)
-    repaired = output.input[0]["tool_calls"][0]["function"]["arguments"]
-    parsed = json.loads(repaired)
+    fc_items = [m for m in output.input if isinstance(m, dict) and m.get("type") == "function_call"]
+    assert len(fc_items) == 1
+    parsed = json.loads(fc_items[0]["arguments"])
     assert parsed["key"] == "value"
 
     # Screenshots should also be stripped (screenshot filter ran after)
@@ -940,3 +930,191 @@ def test_filter_model_input_sanitizes_before_screenshots():
         if isinstance(part, dict) and part.get("type") == "image_url"
     )
     assert image_count == 2
+
+
+# --- resolve_max_output_tokens ---
+
+
+def test_resolve_max_output_tokens_claude_sonnet_45():
+    """Claude Sonnet 4.5 resolves to 64000."""
+    assert resolve_max_output_tokens("claude-sonnet-4-5-20250929") == 64000
+
+
+def test_resolve_max_output_tokens_claude_opus_46():
+    """Claude Opus 4.6 resolves to 128000."""
+    assert resolve_max_output_tokens("claude-opus-4-6") == 128000
+
+
+def test_resolve_max_output_tokens_claude_opus_41():
+    """Claude Opus 4.1 resolves to 32000."""
+    assert resolve_max_output_tokens("claude-opus-4-1-20250805") == 32000
+
+
+def test_resolve_max_output_tokens_claude_haiku_45():
+    """Claude Haiku 4.5 resolves to 64000."""
+    assert resolve_max_output_tokens("claude-haiku-4-5-20251001") == 64000
+
+
+def test_resolve_max_output_tokens_claude_3():
+    """Claude 3 models resolve to 4096."""
+    assert resolve_max_output_tokens("claude-3-haiku-20240307") == 4096
+
+
+def test_resolve_max_output_tokens_gpt41():
+    """GPT-4.1 resolves to 32768."""
+    assert resolve_max_output_tokens("gpt-4.1") == 32768
+
+
+def test_resolve_max_output_tokens_gpt4o():
+    """GPT-4o resolves to 16384."""
+    assert resolve_max_output_tokens("gpt-4o") == 16384
+
+
+def test_resolve_max_output_tokens_gemini():
+    """Gemini 2.5 models resolve to 65535."""
+    assert resolve_max_output_tokens("gemini-2.5-pro") == 65535
+    assert resolve_max_output_tokens("gemini-2.5-flash") == 65535
+
+
+def test_resolve_max_output_tokens_unknown_model():
+    """Unknown model resolves to default."""
+    assert resolve_max_output_tokens("my-custom-model") == DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def test_resolve_max_output_tokens_bedrock_prefix():
+    """Bedrock-prefixed model name still matches."""
+    assert resolve_max_output_tokens("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0") == 64000
+
+
+def test_resolve_max_output_tokens_case_insensitive():
+    """Model matching is case-insensitive."""
+    assert resolve_max_output_tokens("Claude-Sonnet-4-5") == 64000
+
+
+def test_resolve_max_output_tokens_env_override():
+    """MAX_OUTPUT_TOKENS env var overrides lookup."""
+    with patch.dict(os.environ, {"MAX_OUTPUT_TOKENS": "32000"}):
+        assert resolve_max_output_tokens("claude-sonnet-4-5-20250929") == 32000
+
+
+def test_resolve_max_output_tokens_env_invalid_ignored():
+    """Invalid MAX_OUTPUT_TOKENS is ignored with warning."""
+    with patch.dict(os.environ, {"MAX_OUTPUT_TOKENS": "abc"}):
+        assert resolve_max_output_tokens("claude-sonnet-4-5-20250929") == 64000
+
+
+def test_resolve_max_output_tokens_env_zero_ignored():
+    """Zero MAX_OUTPUT_TOKENS is ignored."""
+    with patch.dict(os.environ, {"MAX_OUTPUT_TOKENS": "0"}):
+        assert resolve_max_output_tokens("claude-sonnet-4-5-20250929") == 64000
+
+
+# --- Truncation recovery message injection ---
+
+
+def test_sanitize_injects_truncation_message_into_matching_output():
+    """Matching function_call_output gets truncation recovery message."""
+    messages = [
+        {"type": "function_call", "call_id": "abc123", "name": "gdrive_write_file",
+         "arguments": '{"path": "/file.md"', "id": "1"},
+        {"type": "function_call_output", "call_id": "abc123",
+         "output": "An error occurred while parsing tool arguments."},
+    ]
+    result = _sanitize_tool_calls(messages)
+    output_text = result[1]["output"]
+    assert "truncated" in output_text.lower()
+    assert "split" in output_text.lower()
+    assert "An error occurred while parsing tool arguments." in output_text
+
+
+def test_sanitize_unrepairable_does_not_inject_truncation_message():
+    """Unrepairable (non-truncation) arguments do not trigger truncation recovery message."""
+    messages = [
+        {"type": "function_call", "call_id": "abc123", "name": "bad_tool",
+         "arguments": "<<<not json>>>", "id": "1"},
+        {"type": "function_call_output", "call_id": "abc123",
+         "output": "Some tool error"},
+    ]
+    result = _sanitize_tool_calls(messages)
+    # Arguments replaced with placeholder
+    parsed = json.loads(result[0]["arguments"])
+    assert parsed["error"] == "malformed_arguments"
+    # Output NOT replaced with truncation message — left as-is
+    assert result[1]["output"] == "Some tool error"
+
+
+def test_sanitize_no_matching_output_leaves_other_items():
+    """When no matching function_call_output exists, only the arguments are repaired."""
+    messages = [
+        {"type": "function_call", "call_id": "abc123", "name": "test",
+         "arguments": '{"path": "/file.md"', "id": "1"},
+        {"type": "function_call_output", "call_id": "different_id",
+         "output": "some result"},
+    ]
+    result = _sanitize_tool_calls(messages)
+    # function_call repaired
+    parsed = json.loads(result[0]["arguments"])
+    assert parsed["path"] == "/file.md"
+    # Non-matching output unchanged
+    assert result[1]["output"] == "some result"
+
+
+def test_sanitize_multiple_truncated_calls_handled_independently():
+    """Multiple truncated function_calls are each repaired with their own output updated."""
+    messages = [
+        {"type": "function_call", "call_id": "call1", "name": "tool_a",
+         "arguments": '{"a": 1', "id": "1"},
+        {"type": "function_call_output", "call_id": "call1", "output": "error1"},
+        {"type": "function_call", "call_id": "call2", "name": "tool_b",
+         "arguments": '{"b": 2', "id": "2"},
+        {"type": "function_call_output", "call_id": "call2", "output": "error2"},
+    ]
+    result = _sanitize_tool_calls(messages)
+    # Both function_calls repaired
+    assert json.loads(result[0]["arguments"])["a"] == 1
+    assert json.loads(result[2]["arguments"])["b"] == 2
+    # Both outputs updated with recovery messages
+    assert "truncated" in result[1]["output"].lower()
+    assert "error1" in result[1]["output"]
+    assert "truncated" in result[3]["output"].lower()
+    assert "error2" in result[3]["output"]
+
+
+def test_sanitize_handles_list_output_in_function_call_output():
+    """function_call_output with list content is handled correctly."""
+    messages = [
+        {"type": "function_call", "call_id": "abc", "name": "test",
+         "arguments": '{"key": "val', "id": "1"},
+        {"type": "function_call_output", "call_id": "abc",
+         "output": [{"type": "text", "text": "parse error"}]},
+    ]
+    result = _sanitize_tool_calls(messages)
+    output_text = result[1]["output"]
+    assert "truncated" in output_text.lower()
+    assert "parse error" in output_text
+
+
+# --- Model name slash handling ---
+
+
+def test_model_name_with_slash_passed_to_agent_unchanged():
+    """Model names with slashes are passed directly to the Agent without prefix manipulation."""
+    # The Agent receives the raw OPENAI_MODEL value — no prefix stripping or adding.
+    # The RunConfig uses OpenAIProvider (not MultiProvider) to bypass slash-based
+    # prefix parsing, so the model name reaches the LiteLLM backend as-is.
+    model = "bedrock/gpt-oss:20b"
+    assert "/" in model  # contains slash
+    # resolve_max_output_tokens also handles slashed names correctly
+    assert resolve_max_output_tokens(model) == DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def test_model_name_without_slash_works():
+    """Plain model names without slashes work normally."""
+    model = "gpt-4o"
+    assert "/" not in model
+    assert resolve_max_output_tokens(model) == 16384
+
+
+def test_model_name_bedrock_claude_resolves_tokens():
+    """Bedrock Claude model names with slashes resolve correctly in token lookup."""
+    assert resolve_max_output_tokens("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0") == 64000
