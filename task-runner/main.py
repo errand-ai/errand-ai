@@ -725,6 +725,26 @@ async def main():
                 # Parse structured output from agent's final text response
                 final_output = result.final_output
                 raw_text = str(final_output) if final_output else ""
+
+                # Detect empty LLM response (content lost in translation, model misconfiguration, etc.)
+                if not raw_text.strip():
+                    emit_event("error", {
+                        "message": "LLM returned empty response",
+                        "error_type": "empty_response",
+                        "error_class": "EmptyResponseError",
+                    })
+                    logger.error("Agent produced empty output — treating as failure")
+                    failed_output = json.dumps({
+                        "status": "failed",
+                        "result": "",
+                        "error": "LLM returned empty response",
+                        "questions": [],
+                    })
+                    print(failed_output)
+                    post_result_callback(failed_output)
+                    write_output_file(failed_output)
+                    sys.exit(1)
+
                 parsed = extract_json(raw_text)
                 if parsed:
                     output = TaskRunnerOutput(**parsed).model_dump_json()

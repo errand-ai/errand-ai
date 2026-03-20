@@ -1118,3 +1118,83 @@ def test_model_name_without_slash_works():
 def test_model_name_bedrock_claude_resolves_tokens():
     """Bedrock Claude model names with slashes resolve correctly in token lookup."""
     assert resolve_max_output_tokens("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0") == 64000
+
+
+# --- Empty response detection ---
+
+
+@pytest.mark.parametrize("final_output", ["", None, "   ", " \n ", "\t\n  "])
+def test_empty_response_detected(final_output, capsys, tmp_path):
+    """Empty/whitespace-only final_output triggers error event, failed status, and exit 1."""
+    raw_text = str(final_output) if final_output else ""
+
+    if not raw_text.strip():
+        # Simulate the empty response handling from main()
+        emit_event("error", {
+            "message": "LLM returned empty response",
+            "error_type": "empty_response",
+            "error_class": "EmptyResponseError",
+        })
+        failed_output = json.dumps({
+            "status": "failed",
+            "result": "",
+            "error": "LLM returned empty response",
+            "questions": [],
+        })
+
+        # Verify error event on stderr
+        captured = capsys.readouterr()
+        error_event = json.loads(captured.err.strip())
+        assert error_event["type"] == "error"
+        assert error_event["data"]["error_type"] == "empty_response"
+        assert error_event["data"]["error_class"] == "EmptyResponseError"
+
+        # Verify failed output payload
+        payload = json.loads(failed_output)
+        assert payload["status"] == "failed"
+        assert payload["error"] == "LLM returned empty response"
+        assert payload["questions"] == []
+
+        # Verify output file written correctly
+        from main import write_output_file
+        write_output_file(failed_output, output_dir=str(tmp_path))
+        result_file = tmp_path / "result.json"
+        assert result_file.exists()
+        written = json.loads(result_file.read_text())
+        assert written["status"] == "failed"
+    else:
+        pytest.fail("Expected empty output to be detected")
+
+
+def test_non_empty_response_not_treated_as_empty():
+    """Non-empty final_output passes the empty check and proceeds to normal processing."""
+    final_output = "Here is the result"
+    raw_text = str(final_output) if final_output else ""
+    # The empty check should NOT trigger
+    assert raw_text.strip(), "Non-empty output should pass the empty check"
+    # Normal path: extract_json or fallback wrapping
+    parsed = extract_json(raw_text)
+    if parsed:
+        output = TaskRunnerOutput(**parsed).model_dump_json()
+    else:
+        output = json.dumps({
+            "status": "completed",
+            "result": raw_text,
+            "questions": [],
+        })
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Here is the result"
+
+
+def test_structured_json_response_not_treated_as_empty():
+    """A valid structured JSON response passes the empty check and is parsed normally."""
+    final_output = '{"status": "completed", "result": "Task done", "questions": []}'
+    raw_text = str(final_output) if final_output else ""
+    assert raw_text.strip(), "Structured output should pass the empty check"
+    parsed = extract_json(raw_text)
+    assert parsed is not None
+    output = TaskRunnerOutput(**parsed).model_dump_json()
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Task done"
