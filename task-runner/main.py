@@ -175,7 +175,7 @@ class StreamEventEmitter(RunHooks):
         self._current_turn_id = str(uuid4())[:8]
         emit_event("llm_turn_start", {
             "turn_id": self._current_turn_id,
-            "model": os.environ.get("MODEL", "unknown"),
+            "model": os.environ.get("OPENAI_MODEL") or os.environ.get("MODEL", "unknown"),
         })
 
     async def on_llm_end(self, context, agent, *args, **kwargs) -> None:
@@ -711,11 +711,14 @@ async def main():
                     if event.type == "raw_response_event":
                         continue
                     elif event.type == "run_item_stream_event":
-                        turn_id = hooks._current_turn_id or ""
+                        turn_id = hooks._current_turn_id
                         if event.item.type == "message_output_item":
                             text = ItemHelpers.text_message_output(event.item)
                             if text:
-                                emit_event("thinking", {"text": text, "turn_id": turn_id})
+                                data: dict = {"text": text}
+                                if turn_id:
+                                    data["turn_id"] = turn_id
+                                emit_event("thinking", data)
                         elif event.item.type == "reasoning_item":
                             summary = getattr(event.item, "summary", None)
                             if summary:
@@ -725,7 +728,10 @@ async def main():
                                     if t:
                                         texts.append(t)
                                 if texts:
-                                    emit_event("reasoning", {"text": "\n".join(texts), "turn_id": turn_id})
+                                    data = {"text": "\n".join(texts)}
+                                    if turn_id:
+                                        data["turn_id"] = turn_id
+                                    emit_event("reasoning", data)
                         elif event.name == "tool_called" and event.item.type == "tool_call_item":
                             raw = event.item.raw_item
                             tool_name = getattr(raw, "name", "unknown")
@@ -734,7 +740,10 @@ async def main():
                                 args = json.loads(args_str)
                             except (json.JSONDecodeError, TypeError):
                                 args = {"raw": args_str}
-                            emit_event("tool_call", {"tool": tool_name, "args": args, "turn_id": turn_id})
+                            tc_data: dict = {"tool": tool_name, "args": args}
+                            if turn_id:
+                                tc_data["turn_id"] = turn_id
+                            emit_event("tool_call", tc_data)
 
                 # Log summary of tool calls from run items
                 tool_call_count = sum(

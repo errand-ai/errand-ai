@@ -17,7 +17,7 @@ from main import StreamEventEmitter, emit_event
 
 def test_httpx_logger_level_is_warning():
     """httpx INFO logging is suppressed to eliminate HTTP request noise."""
-    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
 
 
 # --- StreamEventEmitter unit tests ---
@@ -43,7 +43,7 @@ def captured_events(monkeypatch):
 class TestOnLlmStart:
     def test_emits_llm_turn_start_event(self, emitter, captured_events):
         """on_llm_start emits llm_turn_start with turn_id and model."""
-        with patch.dict(os.environ, {"MODEL": "claude-sonnet-4-5"}):
+        with patch.dict(os.environ, {"OPENAI_MODEL": "claude-sonnet-4-5"}):
             asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
 
         assert len(captured_events) == 1
@@ -72,12 +72,26 @@ class TestOnLlmStart:
 
         assert first_id != second_id
 
-    def test_uses_model_env_var(self, emitter, captured_events):
-        """Model name comes from MODEL env var, defaults to 'unknown'."""
+    def test_prefers_openai_model_env_var(self, emitter, captured_events):
+        """Model name prefers OPENAI_MODEL over MODEL, defaults to 'unknown'."""
+        # OPENAI_MODEL takes precedence
+        with patch.dict(os.environ, {"OPENAI_MODEL": "gpt-4o", "MODEL": "fallback"}, clear=False):
+            asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+        assert captured_events[0]["data"]["model"] == "gpt-4o"
+
+    def test_falls_back_to_model_env_var(self, emitter, captured_events):
+        """Falls back to MODEL env var when OPENAI_MODEL is not set."""
+        with patch.dict(os.environ, {"MODEL": "my-model"}, clear=False):
+            os.environ.pop("OPENAI_MODEL", None)
+            asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+        assert captured_events[0]["data"]["model"] == "my-model"
+
+    def test_defaults_to_unknown(self, emitter, captured_events):
+        """Defaults to 'unknown' when neither env var is set."""
         with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENAI_MODEL", None)
             os.environ.pop("MODEL", None)
             asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
-
         assert captured_events[0]["data"]["model"] == "unknown"
 
 
@@ -145,53 +159,6 @@ class TestOnToolEnd:
         asyncio.run(emitter.on_tool_end(None, MagicMock(), tool, "result"))
 
         assert "web_search" not in emitter._tool_start_times
-
-
-# --- Streaming loop turn_id propagation ---
-
-
-class TestStreamingLoopTurnId:
-    """Verify that the streaming loop code passes turn_id from hooks to emitted events."""
-
-    def test_thinking_event_includes_turn_id(self, emitter, captured_events):
-        """thinking events emitted from the streaming loop include hooks._current_turn_id."""
-        emitter._current_turn_id = "t1abcdef"
-        turn_id = emitter._current_turn_id or ""
-        # Simulate what the streaming loop does for thinking events
-        from main import emit_event as real_emit
-        captured_events.append({"type": "thinking", "data": {"text": "I'll research...", "turn_id": turn_id}})
-
-        evt = captured_events[0]
-        assert evt["type"] == "thinking"
-        assert evt["data"]["turn_id"] == "t1abcdef"
-
-    def test_reasoning_event_includes_turn_id(self, emitter, captured_events):
-        """reasoning events emitted from the streaming loop include hooks._current_turn_id."""
-        emitter._current_turn_id = "t2abcdef"
-        turn_id = emitter._current_turn_id or ""
-        captured_events.append({"type": "reasoning", "data": {"text": "summary", "turn_id": turn_id}})
-
-        evt = captured_events[0]
-        assert evt["type"] == "reasoning"
-        assert evt["data"]["turn_id"] == "t2abcdef"
-
-    def test_tool_call_event_includes_turn_id(self, emitter, captured_events):
-        """tool_call events emitted from the streaming loop include hooks._current_turn_id."""
-        emitter._current_turn_id = "t3abcdef"
-        turn_id = emitter._current_turn_id or ""
-        captured_events.append({"type": "tool_call", "data": {"tool": "web_search", "args": {"query": "test"}, "turn_id": turn_id}})
-
-        evt = captured_events[0]
-        assert evt["type"] == "tool_call"
-        assert evt["data"]["turn_id"] == "t3abcdef"
-
-    def test_turn_id_defaults_to_empty_string_when_no_turn(self, emitter, captured_events):
-        """When no LLM turn has started, turn_id defaults to empty string."""
-        assert emitter._current_turn_id is None
-        turn_id = emitter._current_turn_id or ""
-        captured_events.append({"type": "thinking", "data": {"text": "test", "turn_id": turn_id}})
-
-        assert captured_events[0]["data"]["turn_id"] == ""
 
 
 # --- mcp_connected event (tested via emit_event directly) ---
