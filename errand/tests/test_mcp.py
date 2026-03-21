@@ -310,6 +310,7 @@ async def test_new_task_tool(db_session):
             "execute_at": None,
             "repeat_interval": None,
             "repeat_until": None,
+            "description": "Research the latest Python web frameworks for building APIs",
             "profile": None,
         })()
         mock_gen.return_value = mock_result
@@ -581,6 +582,7 @@ async def test_schedule_task_long_description_uses_llm(db_session):
             "execute_at": None,
             "repeat_interval": None,
             "repeat_until": None,
+            "description": "Send the weekly status report to the team every Monday morning",
             "profile": None,
         })()
         mock_gen.return_value = mock_result

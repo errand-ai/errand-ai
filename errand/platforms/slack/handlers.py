@@ -69,14 +69,14 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
     if len(words) > 5:
         llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
         title = llm_result.title
-        description = input_text
+        description = llm_result.description
         category = llm_result.category or "immediate"
         if llm_result.execute_at:
             try:
                 execute_at = datetime.fromisoformat(llm_result.execute_at)
             except (ValueError, TypeError):
                 pass  # LLM returned unparseable date; fall back to default scheduling
-        if not llm_result.success:
+        if not llm_result.success or description is None:
             tag_names.append("Needs Info")
     else:
         tag_names.append("Needs Info")

@@ -497,6 +497,7 @@ class TestTitleGeneration:
             from llm import LLMResult
             mock_gen.return_value = LLMResult(
                 title="Deploy Staging App", category="immediate", success=True,
+                description="Deploy the new version of the app to staging",
             )
             response = await _post_command(
                 slack_client, text="new Deploy the new version of the app to staging"
@@ -526,6 +527,7 @@ class TestTitleGeneration:
             mock_gen.return_value = LLMResult(
                 title="Weekly Report", category="scheduled", success=True,
                 execute_at="2026-03-01T09:00:00Z",
+                description="Generate the weekly status report and send it to the team",
             )
             response = await _post_command(
                 slack_client, text="new Generate the weekly status report and send it to the team"

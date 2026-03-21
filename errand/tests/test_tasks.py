@@ -17,9 +17,9 @@ async def create_task(client: AsyncClient, input_text: str = "Test task") -> dic
     return resp.json()
 
 
-def _mock_json_response(title: str, category: str = "immediate", execute_at=None, repeat_interval=None, repeat_until=None) -> MagicMock:
+def _mock_json_response(title: str, category: str = "immediate", execute_at=None, repeat_interval=None, repeat_until=None, description=None) -> MagicMock:
     """Create a mock LLM response with JSON content."""
-    data = {"title": title, "category": category, "execute_at": execute_at, "repeat_interval": repeat_interval, "repeat_until": repeat_until}
+    data = {"title": title, "category": category, "execute_at": execute_at, "repeat_interval": repeat_interval, "repeat_until": repeat_until, "description": description}
     choice = MagicMock()
     choice.message.content = json.dumps(data)
     response = MagicMock()
@@ -129,7 +129,7 @@ async def test_auto_route_immediate_to_pending(client: AsyncClient):
     """Immediate task without Needs Info moves to pending."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Fix Bug", "immediate")
+        return_value=_mock_json_response("Fix Bug", "immediate", description="Fix the critical authentication bug in production")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
@@ -146,7 +146,7 @@ async def test_auto_route_scheduled_to_scheduled(client: AsyncClient):
     """Scheduled task without Needs Info moves to scheduled."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-15T17:00:00Z")
+        return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-15T17:00:00Z", description="Send the quarterly financial report to the board")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):

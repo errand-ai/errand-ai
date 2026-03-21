@@ -28,9 +28,9 @@ def _mock_llm_response(content: str) -> MagicMock:
     return response
 
 
-def _mock_json_response(title: str, category: str = "immediate", execute_at=None, repeat_interval=None, repeat_until=None) -> MagicMock:
+def _mock_json_response(title: str, category: str = "immediate", execute_at=None, repeat_interval=None, repeat_until=None, description=None) -> MagicMock:
     """Create a mock response with JSON content."""
-    data = {"title": title, "category": category, "execute_at": execute_at, "repeat_interval": repeat_interval, "repeat_until": repeat_until}
+    data = {"title": title, "category": category, "execute_at": execute_at, "repeat_interval": repeat_interval, "repeat_until": repeat_until, "description": description}
     return _mock_llm_response(json.dumps(data))
 
 
@@ -114,6 +114,44 @@ def test_parse_llm_response_with_markdown_fences():
     assert result.execute_at == "2026-02-10T17:00:00Z"
 
 
+# --- Description field parsing ---
+
+
+def test_parse_llm_response_extracts_description():
+    raw = json.dumps({"title": "Publish Tweet", "category": "scheduled", "execute_at": "2026-03-21T18:00:00Z", "repeat_interval": None, "repeat_until": None, "description": "Publish one of the approved tweets"})
+    result = _parse_llm_response(raw)
+    assert result is not None
+    assert result.description == "Publish one of the approved tweets"
+
+
+def test_parse_llm_response_missing_description_returns_none():
+    raw = json.dumps({"title": "Fix Bug", "category": "immediate", "execute_at": None, "repeat_interval": None, "repeat_until": None})
+    result = _parse_llm_response(raw)
+    assert result is not None
+    assert result.description is None
+
+
+def test_parse_llm_response_non_string_description_returns_none():
+    raw = json.dumps({"title": "Fix Bug", "category": "immediate", "execute_at": None, "repeat_interval": None, "repeat_until": None, "description": 123})
+    result = _parse_llm_response(raw)
+    assert result is not None
+    assert result.description is None
+
+
+def test_parse_llm_response_empty_string_description_returns_none():
+    raw = json.dumps({"title": "Reminder", "category": "scheduled", "execute_at": "2026-03-21T18:00:00Z", "repeat_interval": None, "repeat_until": None, "description": ""})
+    result = _parse_llm_response(raw)
+    assert result is not None
+    assert result.description is None
+
+
+def test_parse_llm_response_whitespace_description_returns_none():
+    raw = json.dumps({"title": "Reminder", "category": "scheduled", "execute_at": "2026-03-21T18:00:00Z", "repeat_interval": None, "repeat_until": None, "description": "   "})
+    result = _parse_llm_response(raw)
+    assert result is not None
+    assert result.description is None
+
+
 # --- Task creation with LLM JSON categorisation ---
 
 
@@ -121,7 +159,7 @@ async def test_create_task_long_input_calls_llm(client: AsyncClient):
     """Long input (>5 words) triggers LLM title + categorisation."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Fix Auth Bug", "immediate")
+        return_value=_mock_json_response("Fix Auth Bug", "immediate", description="Fix the authentication bug that prevents login on mobile devices")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
@@ -133,7 +171,7 @@ async def test_create_task_long_input_calls_llm(client: AsyncClient):
     assert resp.status_code == 201
     data = resp.json()
     assert data["title"] == "Fix Auth Bug"
-    assert data["description"] == "We need to fix the authentication bug that prevents login on mobile devices"
+    assert data["description"] == "Fix the authentication bug that prevents login on mobile devices"
     assert data["category"] == "immediate"
     assert "Needs Info" not in data["tags"]
     mock_client.chat.completions.create.assert_called_once()
@@ -143,7 +181,7 @@ async def test_create_task_scheduled_categorisation(client: AsyncClient):
     """LLM categorises task as scheduled with execute_at."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-10T17:00:00Z")
+        return_value=_mock_json_response("Send Report", "scheduled", execute_at="2026-02-10T17:00:00Z", description="Send the quarterly financial report to the board")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
@@ -169,6 +207,7 @@ async def test_create_task_repeating_categorisation(client: AsyncClient):
             execute_at="2026-02-11T09:00:00Z",
             repeat_interval="1d",
             repeat_until="2026-03-31T00:00:00Z",
+            description="Run the daily sales report",
         )
     )
 
@@ -271,7 +310,7 @@ async def test_create_task_six_words_triggers_llm(client: AsyncClient):
     """Six words triggers LLM title generation."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Generated Title")
+        return_value=_mock_json_response("Generated Title", description="one two three four five six")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
@@ -375,7 +414,7 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
     """Task creation with category immediate sets execute_at to approximately now."""
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(
-        return_value=_mock_json_response("Fix Auth Bug", "immediate")
+        return_value=_mock_json_response("Fix Auth Bug", "immediate", description="Fix the authentication bug that prevents login on mobile devices")
     )
 
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
@@ -422,3 +461,75 @@ async def test_generate_title_uses_default_timeout(db_session: AsyncSession):
 
     call_args = mock_client.chat.completions.create.call_args
     assert call_args.kwargs["timeout"] == DEFAULT_LLM_TIMEOUT
+
+
+# --- generate_title returns cleaned description ---
+
+
+async def test_generate_title_returns_cleaned_description(db_session: AsyncSession):
+    """generate_title returns the description field from the LLM response."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Publish Tweet", "scheduled", execute_at="2026-03-21T18:00:00Z", description="Publish one of the approved tweets")
+    )
+
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
+        result = await generate_title("In two hours, publish one of the approved tweets", db_session)
+
+    assert result.success is True
+    assert result.description == "Publish one of the approved tweets"
+    assert result.category == "scheduled"
+
+
+# --- Integration: task created with cleaned description ---
+
+
+async def test_create_task_uses_cleaned_description(client: AsyncClient):
+    """Task creation uses the LLM-cleaned description, not the raw input."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response(
+            "Publish Tweet", "scheduled",
+            execute_at="2026-03-21T18:00:00Z",
+            description="Publish one of the approved tweets",
+        )
+    )
+
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
+        resp = await client.post(
+            "/api/tasks",
+            json={"input": "In two hours, publish one of the approved tweets"},
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["description"] == "Publish one of the approved tweets"
+    assert data["category"] == "scheduled"
+    assert data["status"] == "scheduled"
+    assert "Needs Info" not in data["tags"]
+
+
+async def test_create_task_empty_description_routes_to_review(client: AsyncClient):
+    """When LLM returns null description, task gets Needs Info and routes to review."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response(
+            "Reminder", "scheduled",
+            execute_at="2026-03-21T18:00:00Z",
+            description=None,
+        )
+    )
+
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "test-model"))):
+        resp = await client.post(
+            "/api/tasks",
+            json={"input": "Remind me in two hours about the thing"},
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["description"] is None
+    assert data["category"] == "scheduled"
+    assert data["execute_at"] is not None
+    assert data["status"] == "review"
+    assert "Needs Info" in data["tags"]
