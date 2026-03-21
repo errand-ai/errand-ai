@@ -78,6 +78,10 @@ async def new_task(description: str) -> str:
             llm_result = await generate_title(description, session, profiles=profile_infos)
             title = llm_result.title
             category = llm_result.category or "immediate"
+            if not llm_result.success:
+                cleaned_description = description.strip()
+            else:
+                cleaned_description = llm_result.description
 
             # Resolve profile name to ID
             if llm_result.profile and db_profiles:
@@ -85,6 +89,7 @@ async def new_task(description: str) -> str:
                 resolved_profile_id = profile_map.get(llm_result.profile)
         else:
             title = description.strip()
+            cleaned_description = None
 
         # Auto-route based on category (same logic as main task creation)
         if category in ("scheduled", "repeating"):
@@ -101,7 +106,7 @@ async def new_task(description: str) -> str:
 
         task = Task(
             title=title,
-            description=description,
+            description=cleaned_description,
             category=category,
             status=status,
             position=position,
@@ -243,8 +248,10 @@ async def schedule_task(
         if len(words) > 5:
             llm_result = await generate_title(description, session)
             title = llm_result.title
+            cleaned_desc = llm_result.description
         else:
             title = description.strip()
+            cleaned_desc = None
 
         category = "repeating" if normalised_interval else "scheduled"
         status = "scheduled"
@@ -257,7 +264,7 @@ async def schedule_task(
 
         task = Task(
             title=title,
-            description=description,
+            description=cleaned_desc,
             category=category,
             status=status,
             position=position,

@@ -1,8 +1,4 @@
-## Purpose
-
-Auto-routing logic that sets task status based on category and tags after creation, with profile assignment.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Auto-routing after task creation
 After a task is created and categorised, the backend SHALL automatically set the task's status based on its category and tags. If the task has a "Needs Info" tag, the task SHALL be set to status `review`. Otherwise: `immediate` tasks SHALL be moved to `pending`, and `scheduled` or `repeating` tasks SHALL be moved to `scheduled`. The task's `profile_id` SHALL be set based on the LLM classification result: if the LLM selected a valid profile name, `profile_id` is set to that profile's UUID; otherwise `profile_id` is null.

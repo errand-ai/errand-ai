@@ -184,6 +184,7 @@ async def test_create_task_sets_created_by(audit_env):
         from llm import LLMResult
         mock_title.return_value = LLMResult(
             title="Audit test task", category="immediate", success=True,
+            description="A longer description to trigger LLM path for audit testing",
         )
         resp = await client.post(
             "/api/tasks",
@@ -210,6 +211,7 @@ async def test_update_task_sets_updated_by(audit_env):
         from llm import LLMResult
         mock_title.return_value = LLMResult(
             title="Task to update", category="immediate", success=True,
+            description="A task that needs updating for audit test purposes",
         )
         resp = await client.post(
             "/api/tasks",
@@ -244,6 +246,7 @@ async def test_mcp_new_task_sets_created_by_mcp():
         from llm import LLMResult
         mock_title.return_value = LLMResult(
             title="MCP task", category="immediate", success=True,
+            description="A task created via MCP tool for testing audit fields",
         )
         from mcp_server import new_task
         task_id_str = await new_task(description="A task created via MCP tool for testing audit fields")

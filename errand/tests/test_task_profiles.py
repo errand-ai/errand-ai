@@ -221,6 +221,7 @@ async def test_llm_classification_matching_profile(admin_client):
         title="Process Inbox Emails",
         success=True,
         category="immediate",
+        description="Go through all unread emails in my inbox and categorize them by priority",
         profile="email-handler",
     )
 
@@ -246,6 +247,7 @@ async def test_llm_classification_unknown_profile(admin_client):
         title="Deploy Application",
         success=True,
         category="immediate",
+        description="Deploy the latest version of the application to the staging environment",
         profile="nonexistent-profile",
     )
 
@@ -268,6 +270,7 @@ async def test_llm_classification_no_profiles_exist(admin_client):
         title="Update Dependencies",
         success=True,
         category="immediate",
+        description="Update all npm dependencies in the frontend project to their latest versions",
         profile=None,
     )
 
