@@ -521,7 +521,7 @@ class TestTitleGeneration:
 
     @pytest.mark.asyncio
     async def test_long_input_sets_description(self, slack_client):
-        """For long inputs, the original text becomes the description."""
+        """For long inputs, the LLM-cleaned text becomes the description."""
         with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
             from llm import LLMResult
             mock_gen.return_value = LLMResult(

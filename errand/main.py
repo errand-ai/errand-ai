@@ -634,13 +634,18 @@ async def create_task(
 
         llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc), profiles=profile_infos)
         title = llm_result.title
-        description = llm_result.description
         category = llm_result.category
         execute_at_str = llm_result.execute_at
         repeat_interval = llm_result.repeat_interval
         repeat_until_str = llm_result.repeat_until
-        if not llm_result.success or description is None:
+        if not llm_result.success:
+            description = input_text
             tag_names.append("Needs Info")
+        elif llm_result.description is None:
+            description = None
+            tag_names.append("Needs Info")
+        else:
+            description = llm_result.description
 
         # Resolve profile name to ID
         if llm_result.profile and db_profiles:

@@ -77,8 +77,11 @@ async def new_task(description: str) -> str:
 
             llm_result = await generate_title(description, session, profiles=profile_infos)
             title = llm_result.title
-            cleaned_description = llm_result.description
             category = llm_result.category or "immediate"
+            if not llm_result.success:
+                cleaned_description = description.strip()
+            else:
+                cleaned_description = llm_result.description
 
             # Resolve profile name to ID
             if llm_result.profile and db_profiles:
@@ -245,7 +248,7 @@ async def schedule_task(
         if len(words) > 5:
             llm_result = await generate_title(description, session)
             title = llm_result.title
-            cleaned_desc = llm_result.description or description.strip()
+            cleaned_desc = llm_result.description
         else:
             title = description.strip()
             cleaned_desc = None
