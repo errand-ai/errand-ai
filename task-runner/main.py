@@ -8,7 +8,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 from contextlib import AsyncExitStack
+from uuid import uuid4
 
 import httpx
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, RateLimitError, BadRequestError, AuthenticationError, APIStatusError
@@ -26,6 +28,7 @@ from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Disable tracing (no OpenAI tracing endpoint in sandboxed container)
 set_tracing_disabled(True)
@@ -135,21 +138,31 @@ def emit_event(event_type: str, data: dict) -> None:
 class StreamEventEmitter(RunHooks):
     """Emits structured JSON events to stderr for agent lifecycle callbacks."""
 
+    def __init__(self):
+        self._current_turn_id: str | None = None
+        self._tool_start_times: dict[str, float] = {}
+
     async def on_agent_start(self, context, agent) -> None:
         emit_event("agent_start", {"agent": agent.name})
 
     async def on_tool_start(self, context, agent, tool) -> None:
-        # tool_call event is emitted from the streaming loop (tool_called) with full arguments
-        pass
+        self._tool_start_times[tool.name] = time.monotonic()
 
     async def on_tool_end(self, context, agent, tool, result) -> None:
+        start = self._tool_start_times.pop(tool.name, None)
+        duration_ms = int((time.monotonic() - start) * 1000) if start is not None else None
         result_str = str(result)
         original_length = len(result_str)
-        emit_event("tool_result", {
+        data: dict = {
             "tool": tool.name,
             "output": _truncate(result_str),
             "length": original_length,
-        })
+        }
+        if duration_ms is not None:
+            data["duration_ms"] = duration_ms
+        if self._current_turn_id:
+            data["turn_id"] = self._current_turn_id
+        emit_event("tool_result", data)
 
     async def on_agent_end(self, context, agent, output) -> None:
         try:
@@ -159,10 +172,14 @@ class StreamEventEmitter(RunHooks):
         emit_event("agent_end", {"output": output_data})
 
     async def on_llm_start(self, context, agent, *args, **kwargs) -> None:
-        logger.debug("LLM call starting for agent %s", agent.name)
+        self._current_turn_id = str(uuid4())[:8]
+        emit_event("llm_turn_start", {
+            "turn_id": self._current_turn_id,
+            "model": os.environ.get("OPENAI_MODEL") or os.environ.get("MODEL", "unknown"),
+        })
 
     async def on_llm_end(self, context, agent, *args, **kwargs) -> None:
-        logger.debug("LLM call completed for agent %s", agent.name)
+        pass
 
 
 class TaskRunnerOutput(BaseModel):
@@ -623,6 +640,9 @@ async def main():
     async with AsyncExitStack() as stack:
         # Connect without tool_filter so list_tools() works for catalog building
         mcp_servers = await connect_mcp_servers(mcp_config, stack)
+        if mcp_servers:
+            server_names = [s.name for s in mcp_servers]
+            emit_event("mcp_connected", {"servers": server_names, "count": len(server_names)})
 
         # Build compact tool catalog and collect all known tool names
         catalog, all_known_tools = await build_tool_catalog(mcp_servers, hot_list)
@@ -683,17 +703,22 @@ async def main():
 
         for attempt in range(1, MAX_AGENT_RETRIES + 1):
             try:
-                result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=StreamEventEmitter(), run_config=run_config)
+                hooks = StreamEventEmitter()
+                result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=hooks, run_config=run_config)
 
                 # Iterate streaming events, emitting thinking/reasoning to stderr
                 async for event in result.stream_events():
                     if event.type == "raw_response_event":
                         continue
                     elif event.type == "run_item_stream_event":
+                        turn_id = hooks._current_turn_id
                         if event.item.type == "message_output_item":
                             text = ItemHelpers.text_message_output(event.item)
                             if text:
-                                emit_event("thinking", {"text": text})
+                                data: dict = {"text": text}
+                                if turn_id:
+                                    data["turn_id"] = turn_id
+                                emit_event("thinking", data)
                         elif event.item.type == "reasoning_item":
                             summary = getattr(event.item, "summary", None)
                             if summary:
@@ -703,7 +728,10 @@ async def main():
                                     if t:
                                         texts.append(t)
                                 if texts:
-                                    emit_event("reasoning", {"text": "\n".join(texts)})
+                                    data = {"text": "\n".join(texts)}
+                                    if turn_id:
+                                        data["turn_id"] = turn_id
+                                    emit_event("reasoning", data)
                         elif event.name == "tool_called" and event.item.type == "tool_call_item":
                             raw = event.item.raw_item
                             tool_name = getattr(raw, "name", "unknown")
@@ -712,7 +740,10 @@ async def main():
                                 args = json.loads(args_str)
                             except (json.JSONDecodeError, TypeError):
                                 args = {"raw": args_str}
-                            emit_event("tool_call", {"tool": tool_name, "args": args})
+                            tc_data: dict = {"tool": tool_name, "args": args}
+                            if turn_id:
+                                tc_data["turn_id"] = turn_id
+                            emit_event("tool_call", tc_data)
 
                 # Log summary of tool calls from run items
                 tool_call_count = sum(
