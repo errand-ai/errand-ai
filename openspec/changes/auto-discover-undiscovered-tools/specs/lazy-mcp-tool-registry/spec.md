@@ -1,30 +1,20 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Tool filter callable
+### Requirement: Auto-enable undiscovered tools on ModelBehaviorError
 
-The task-runner SHALL define a `ToolFilterCallable` that receives `ToolFilterContext` and an `MCPTool`, and returns `True` if the tool's name is in the `enabled_tools` set on the run context, `False` otherwise. If the tool's name is not in `enabled_tools` but IS in `all_known_tools`, the filter SHALL auto-add the tool name to `enabled_tools`, log a warning message including the tool name, and return `True`. This filter SHALL be passed as the `tool_filter` parameter to each `MCPServerStreamableHttp` constructor.
+The task-runner retry loop SHALL catch `ModelBehaviorError` exceptions and parse the tool name from the error message format "Tool {name} not found in agent {agent}". If the tool name exists in `all_known_tools` on the `ToolVisibilityContext` and the retry limit has not been reached, the tool SHALL be auto-added to `enabled_tools` and the agent run SHALL be retried. A warning SHALL be logged including the tool name and attempt number. If the tool name is not in `all_known_tools` or the retry limit is reached, the error SHALL be treated as fatal.
 
-#### Scenario: Hot-listed tool passes filter
+#### Scenario: Known but undiscovered tool is auto-enabled on retry
 
-- **WHEN** the filter evaluates tool "retain" and "retain" is in `enabled_tools`
-- **THEN** the filter returns `True` and the tool is visible to the agent
+- **WHEN** the agent calls tool "gdrive_read_file" without discovering it, causing `ModelBehaviorError("Tool gdrive_read_file not found in agent TaskRunner")`, and "gdrive_read_file" is in `all_known_tools`, and attempts remain
+- **THEN** the retry loop adds "gdrive_read_file" to `enabled_tools`, logs a warning, and retries the agent run
 
-#### Scenario: Non-enabled tool blocked by filter
+#### Scenario: Unknown tool causes fatal error
 
-- **WHEN** the filter evaluates tool "nonexistent_tool" and "nonexistent_tool" is not in `enabled_tools` and not in `all_known_tools`
-- **THEN** the filter returns `False` and the tool is hidden from the agent
+- **WHEN** the agent calls tool "nonexistent_tool" causing `ModelBehaviorError("Tool nonexistent_tool not found in agent TaskRunner")`, and "nonexistent_tool" is NOT in `all_known_tools`
+- **THEN** the error is treated as fatal and the task-runner exits with code 1
 
-#### Scenario: Tool enabled after discovery
+#### Scenario: Retry limit reached
 
-- **WHEN** the agent previously called `discover_tools(["sync_application"])` and the filter evaluates "sync_application" on the next turn
-- **THEN** the filter returns `True` because "sync_application" was added to `enabled_tools`
-
-#### Scenario: Known but undiscovered tool is auto-enabled
-
-- **WHEN** the filter evaluates tool "gdrive_read_file" and "gdrive_read_file" is not in `enabled_tools` but IS in `all_known_tools`
-- **THEN** the filter adds "gdrive_read_file" to `enabled_tools`, logs a warning "Auto-enabled undiscovered tool: gdrive_read_file", and returns `True`
-
-#### Scenario: Auto-enabled tool remains enabled on subsequent calls
-
-- **WHEN** tool "gdrive_read_file" was auto-enabled by the filter on a previous turn and the filter evaluates it again
-- **THEN** the filter returns `True` immediately (the tool is now in `enabled_tools`) with no additional warning log
+- **WHEN** the agent repeatedly fails with `ModelBehaviorError` and has exhausted all retry attempts
+- **THEN** the error is treated as fatal and the task-runner exits with code 1

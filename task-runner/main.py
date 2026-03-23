@@ -18,6 +18,7 @@ from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
 from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
+from agents.exceptions import ModelBehaviorError
 from agents.mcp import MCPServerStreamableHttp
 from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
@@ -797,6 +798,26 @@ async def main():
                 write_output_file(output)
 
                 sys.exit(0)
+
+            except ModelBehaviorError as e:
+                # Auto-enable undiscovered tools: if the model called a known MCP tool
+                # without discover_tools first, enable it and retry instead of failing.
+                match = re.search(r"Tool (\S+) not found in agent", str(e))
+                tool_name = match.group(1) if match else None
+                if tool_name and tool_name in visibility_ctx.all_known_tools and attempt < MAX_AGENT_RETRIES:
+                    visibility_ctx.enabled_tools.add(tool_name)
+                    logger.warning("Auto-enabled undiscovered tool '%s', retrying (attempt %d/%d)",
+                                   tool_name, attempt, MAX_AGENT_RETRIES)
+                    continue
+                # Unknown tool or final attempt — fail
+                emit_event("error", {
+                    "message": str(e),
+                    "error_type": "unknown",
+                    "error_class": "ModelBehaviorError",
+                })
+                logger.error("Agent execution failed (attempt %d/%d, unknown, ModelBehaviorError): %s",
+                             attempt, MAX_AGENT_RETRIES, e)
+                sys.exit(1)
 
             except Exception as e:
                 error_type = _classify_error(e)

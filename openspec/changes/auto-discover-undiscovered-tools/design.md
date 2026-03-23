@@ -18,13 +18,13 @@ Currently, if a model calls an undiscovered tool, the OpenAI Agents SDK raises `
 
 ## Decisions
 
-### Decision: Auto-enable in the tool filter
+### Decision: Catch ModelBehaviorError in the retry loop
 
-Modify `create_tool_filter()` so the returned filter checks `all_known_tools` when a tool is not in `enabled_tools`. If the tool exists in `all_known_tools`, auto-add it to `enabled_tools` and return `True`.
+Add a specific `except ModelBehaviorError` handler in the agent retry loop that parses the tool name from the error message ("Tool X not found in agent Y"), auto-enables it in the `ToolVisibilityContext`, and retries.
 
-**Why:** The filter already has access to the `ToolVisibilityContext` via `RunContextWrapper`, which contains both `enabled_tools` and `all_known_tools`. This is the natural interception point — no changes needed anywhere else.
+**Why:** The tool filter is called when the SDK lists tools for the LLM (every turn), not just when a tool is called. Auto-enabling in the filter causes ALL known tools to be enabled at once, defeating lazy loading entirely and bloating the LLM context with ~45 tool schemas.
 
-**Alternative considered:** Catching `ModelBehaviorError` in the retry loop and auto-discovering before retry. Rejected because: (a) the error message doesn't always include the tool name in a parseable format, (b) it requires changes to the retry logic, and (c) it still wastes one full agent run.
+**Alternative considered (and reverted):** Auto-enabling in the `tool_filter` function. This caused all tools to auto-enable on the first turn of any retry, defeating the lazy loading optimization completely. The filter cannot distinguish "listing tools" from "calling a tool."
 
 ### Decision: Warning-level log, not info
 
@@ -32,5 +32,5 @@ Log at WARNING level when auto-discovery happens. This makes it visible in dashb
 
 ## Risks / Trade-offs
 
-- **Trade-off: Models may learn to skip discovery entirely** → Acceptable. The lazy loading optimization saves prompt tokens but isn't required for correctness. Models that skip it just load all tool schemas they use, which is the non-lazy default behavior anyway.
-- **Risk: Filter is called per-tool per-turn** → The `all_known_tools` lookup is an O(1) set check, so negligible performance impact. The warning log only fires once per tool (subsequent calls find it in `enabled_tools`).
+- **Trade-off: Costs one failed agent run per undiscovered tool** → Acceptable. The retry catches the error and auto-enables only the specific tool the model tried to use, preserving lazy loading for all other tools. This is much better than enabling all tools at once.
+- **Risk: Error message format changes** → The regex `r"Tool (\S+) not found in agent"` depends on the OpenAI Agents SDK error format. If it changes, the fallback is the existing behavior (fail and exit).

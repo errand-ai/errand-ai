@@ -34,22 +34,11 @@ def get_hot_list() -> set[str]:
 
 
 def create_tool_filter():
-    """Return a ToolFilterCallable that checks enabled_tools on the run context.
-
-    If a tool is not in enabled_tools but IS in all_known_tools, it is
-    auto-enabled with a warning log. This prevents ModelBehaviorError when
-    weaker models skip the discover_tools ceremony.
-    """
+    """Return a ToolFilterCallable that checks enabled_tools on the run context."""
 
     def tool_filter(filter_context, tool) -> bool:
         ctx: ToolVisibilityContext = filter_context.run_context.context
-        if tool.name in ctx.enabled_tools:
-            return True
-        if tool.name in ctx.all_known_tools:
-            logger.warning("Auto-enabled undiscovered tool: %s", tool.name)
-            ctx.enabled_tools.add(tool.name)
-            return True
-        return False
+        return tool.name in ctx.enabled_tools
 
     return tool_filter
 

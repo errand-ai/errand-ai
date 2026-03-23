@@ -1,10 +1,12 @@
 ## 1. Core Implementation
 
-- [x] 1.1 Modify `create_tool_filter()` in `task-runner/tool_registry.py` to check `all_known_tools` when a tool is not in `enabled_tools`, auto-add it, log a warning, and return `True`
+- [x] 1.1 Import `ModelBehaviorError` from `agents.exceptions` in `main.py`
+- [x] 1.2 Add `except ModelBehaviorError` handler in retry loop that parses tool name, auto-enables in `visibility_ctx`, and retries
+- [x] 1.3 Add `agents.exceptions` mock with real `ModelBehaviorError` class in `conftest.py`
 
 ## 2. Tests
 
-- [x] 2.1 Update `test_tool_filter_blocks_non_enabled` in `task-runner/test_tool_registry.py` to verify that truly unknown tools (not in `all_known_tools`) are still blocked
-- [x] 2.2 Add test `test_tool_filter_auto_enables_known_undiscovered` verifying that a tool in `all_known_tools` but not `enabled_tools` is auto-added and the filter returns `True`
-- [x] 2.3 Add test `test_tool_filter_auto_enable_logs_warning` verifying that a warning is logged when auto-enabling
-- [x] 2.4 Add test `test_tool_filter_auto_enabled_no_repeat_warning` verifying that subsequent calls for the same tool do not log additional warnings
+- [x] 2.1 Add test for regex parsing of tool name from ModelBehaviorError message
+- [x] 2.2 Add test verifying known tool is auto-enabled in visibility context
+- [x] 2.3 Add test verifying unknown tool is not auto-enabled
+- [x] 2.4 Fix stale `on_llm_start`/`on_llm_end` tests (expected debug logs, now emit stderr JSON)
