@@ -89,7 +89,7 @@ async def build_tool_catalog(servers: list, hot_list: set[str]) -> tuple[str, se
     if not deferred_lines:
         return "", all_known_tools
 
-    header = "These MCP tools are available but not yet enabled. Call discover_tools with the exact tool name(s) listed below to enable them before use. Only discover tools you actually need for the current task."
+    header = "IMPORTANT: The tools listed below are NOT yet enabled. You MUST call discover_tools with the tool name(s) BEFORE you can use them. Calling a tool without discovering it first will cause an error. Discover all tools you need in a single call."
     catalog = "<available_mcp_tools>\n" + header + "\n" + "\n".join(deferred_lines) + "\n</available_mcp_tools>"
     return catalog, all_known_tools
 

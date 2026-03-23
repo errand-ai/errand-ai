@@ -22,6 +22,10 @@ _mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self,
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
 sys.modules.setdefault("agents.models", MagicMock())
+# ModelBehaviorError must be a real exception class for isinstance checks
+_mock_exceptions = MagicMock()
+_mock_exceptions.ModelBehaviorError = type("ModelBehaviorError", (Exception,), {})
+sys.modules.setdefault("agents.exceptions", _mock_exceptions)
 _mock_openai_provider = MagicMock()
 _mock_openai_provider.OpenAIProvider = MagicMock()
 sys.modules.setdefault("agents.models.openai_provider", _mock_openai_provider)

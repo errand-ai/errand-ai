@@ -69,7 +69,7 @@ def test_tool_filter_allows_hot_listed():
 
 
 def test_tool_filter_blocks_non_enabled():
-    """Non-enabled tools are blocked."""
+    """Non-enabled tools are blocked by the filter."""
     ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "sync_application"})
     filter_fn = create_tool_filter()
 

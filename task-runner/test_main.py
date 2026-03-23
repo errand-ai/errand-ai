@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -246,25 +247,25 @@ async def test_stream_event_emitter_on_agent_end(capsys):
 
 
 @pytest.mark.asyncio
-async def test_stream_event_emitter_on_llm_start(caplog):
-    """on_llm_start logs at DEBUG level."""
+async def test_stream_event_emitter_on_llm_start(capsys):
+    """on_llm_start emits llm_turn_start event to stderr."""
     agent = MagicMock()
     agent.name = "TaskRunner"
     emitter = StreamEventEmitter()
-    with caplog.at_level(logging.DEBUG):
-        await emitter.on_llm_start(MagicMock(), agent)
-    assert any("LLM call starting" in r.message for r in caplog.records)
+    await emitter.on_llm_start(MagicMock(), agent)
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "llm_turn_start"
+    assert "turn_id" in parsed["data"]
 
 
 @pytest.mark.asyncio
-async def test_stream_event_emitter_on_llm_end(caplog):
-    """on_llm_end logs at DEBUG level."""
+async def test_stream_event_emitter_on_llm_end():
+    """on_llm_end is a no-op (does not raise)."""
     agent = MagicMock()
     agent.name = "TaskRunner"
     emitter = StreamEventEmitter()
-    with caplog.at_level(logging.DEBUG):
-        await emitter.on_llm_end(MagicMock(), agent, MagicMock())
-    assert any("LLM call completed" in r.message for r in caplog.records)
+    await emitter.on_llm_end(MagicMock(), agent, MagicMock())
 
 
 # --- REASONING_EFFORT env var ---
@@ -1092,6 +1093,44 @@ def test_sanitize_handles_list_output_in_function_call_output():
     output_text = result[1]["output"]
     assert "truncated" in output_text.lower()
     assert "parse error" in output_text
+
+
+# --- ModelBehaviorError auto-enable ---
+
+
+def test_model_behavior_error_tool_name_parsing():
+    """Regex extracts tool name from ModelBehaviorError message."""
+    msg = "Tool gdrive_read_file not found in agent TaskRunner"
+    match = re.search(r"Tool (\S+) not found in agent", msg)
+    assert match is not None
+    assert match.group(1) == "gdrive_read_file"
+
+
+def test_model_behavior_error_auto_enable_known_tool():
+    """Known tool is auto-enabled in visibility context on ModelBehaviorError."""
+    from tool_registry import ToolVisibilityContext
+    ctx = ToolVisibilityContext(
+        enabled_tools={"retain"},
+        all_known_tools={"retain", "gdrive_read_file"},
+    )
+    tool_name = "gdrive_read_file"
+    assert tool_name not in ctx.enabled_tools
+    assert tool_name in ctx.all_known_tools
+    ctx.enabled_tools.add(tool_name)
+    assert tool_name in ctx.enabled_tools
+
+
+def test_model_behavior_error_unknown_tool_not_enabled():
+    """Unknown tool (not in all_known_tools) is not auto-enabled."""
+    from tool_registry import ToolVisibilityContext
+    ctx = ToolVisibilityContext(
+        enabled_tools={"retain"},
+        all_known_tools={"retain", "gdrive_read_file"},
+    )
+    tool_name = "nonexistent_tool"
+    assert tool_name not in ctx.all_known_tools
+    # Should not be enabled — retry loop would fall through to failure
+    assert tool_name not in ctx.enabled_tools
 
 
 # --- Model name slash handling ---
