@@ -702,7 +702,9 @@ async def main():
             call_model_input_filter=filter_model_input,
         )
 
-        for attempt in range(1, MAX_AGENT_RETRIES + 1):
+        attempt = 0
+        while attempt < MAX_AGENT_RETRIES:
+            attempt += 1
             try:
                 hooks = StreamEventEmitter()
                 result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=hooks, run_config=run_config)
@@ -802,14 +804,16 @@ async def main():
             except ModelBehaviorError as e:
                 # Auto-enable undiscovered tools: if the model called a known MCP tool
                 # without discover_tools first, enable it and retry instead of failing.
+                # This does NOT count toward the retry limit since it's a recoverable
+                # protocol issue, not a real error. The finite set of tools bounds retries.
                 match = re.search(r"Tool (\S+) not found in agent", str(e))
                 tool_name = match.group(1) if match else None
-                if tool_name and tool_name in visibility_ctx.all_known_tools and attempt < MAX_AGENT_RETRIES:
+                if tool_name and tool_name in visibility_ctx.all_known_tools:
                     visibility_ctx.enabled_tools.add(tool_name)
-                    logger.warning("Auto-enabled undiscovered tool '%s', retrying (attempt %d/%d)",
-                                   tool_name, attempt, MAX_AGENT_RETRIES)
+                    logger.warning("Auto-enabled undiscovered tool '%s', retrying", tool_name)
+                    attempt -= 1  # Don't count toward retry limit
                     continue
-                # Unknown tool or final attempt — fail
+                # Unknown tool or unparseable error — fail
                 emit_event("error", {
                     "message": str(e),
                     "error_type": "unknown",
