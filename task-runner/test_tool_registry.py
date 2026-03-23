@@ -2,6 +2,7 @@
 
 # Mocks are set up in conftest.py (shared with test_main.py)
 
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -68,8 +69,8 @@ def test_tool_filter_allows_hot_listed():
     assert filter_fn(filter_context, tool) is True
 
 
-def test_tool_filter_blocks_non_enabled():
-    """Non-enabled tools are blocked."""
+def test_tool_filter_blocks_unknown():
+    """Truly unknown tools (not in all_known_tools) are blocked."""
     ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "sync_application"})
     filter_fn = create_tool_filter()
 
@@ -77,25 +78,74 @@ def test_tool_filter_blocks_non_enabled():
     filter_context.run_context.context = ctx
 
     tool = MagicMock()
-    tool.name = "sync_application"
+    tool.name = "nonexistent_tool"
     assert filter_fn(filter_context, tool) is False
 
 
-def test_tool_filter_allows_after_enable():
-    """Tools are allowed after being added to enabled_tools."""
+def test_tool_filter_allows_after_explicit_enable():
+    """Tools explicitly added to enabled_tools pass the filter."""
     ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "sync_application"})
     filter_fn = create_tool_filter()
 
     filter_context = MagicMock()
     filter_context.run_context.context = ctx
 
-    tool = MagicMock()
-    tool.name = "sync_application"
-    assert filter_fn(filter_context, tool) is False
-
-    # Enable the tool
+    # Explicitly enable the tool (as discover_tools would)
     ctx.enabled_tools.add("sync_application")
+
+    tool = MagicMock()
+    tool.name = "sync_application"
     assert filter_fn(filter_context, tool) is True
+
+
+def test_tool_filter_auto_enables_known_undiscovered():
+    """Known but undiscovered tools are auto-enabled by the filter."""
+    ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "gdrive_read_file"})
+    filter_fn = create_tool_filter()
+
+    filter_context = MagicMock()
+    filter_context.run_context.context = ctx
+
+    tool = MagicMock()
+    tool.name = "gdrive_read_file"
+    assert filter_fn(filter_context, tool) is True
+    assert "gdrive_read_file" in ctx.enabled_tools
+
+
+def test_tool_filter_auto_enable_logs_warning(caplog):
+    """Auto-enabling a known undiscovered tool logs a warning."""
+    ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "gdrive_read_file"})
+    filter_fn = create_tool_filter()
+
+    filter_context = MagicMock()
+    filter_context.run_context.context = ctx
+
+    tool = MagicMock()
+    tool.name = "gdrive_read_file"
+
+    with caplog.at_level(logging.WARNING, logger="tool_registry"):
+        filter_fn(filter_context, tool)
+
+    assert any("Auto-enabled undiscovered tool: gdrive_read_file" in msg for msg in caplog.messages)
+
+
+def test_tool_filter_auto_enabled_no_repeat_warning(caplog):
+    """Once auto-enabled, subsequent calls do not log additional warnings."""
+    ctx = ToolVisibilityContext(enabled_tools={"retain"}, all_known_tools={"retain", "gdrive_read_file"})
+    filter_fn = create_tool_filter()
+
+    filter_context = MagicMock()
+    filter_context.run_context.context = ctx
+
+    tool = MagicMock()
+    tool.name = "gdrive_read_file"
+
+    with caplog.at_level(logging.WARNING, logger="tool_registry"):
+        filter_fn(filter_context, tool)  # First call — auto-enables + warns
+        caplog.clear()
+        filter_fn(filter_context, tool)  # Second call — already enabled, no warn
+
+    assert not any("Auto-enabled" in msg for msg in caplog.messages)
 
 
 # --- build_tool_catalog() ---
@@ -291,7 +341,7 @@ def test_discover_tools_empty_list():
 
 @pytest.mark.asyncio
 async def test_lazy_loading_integration():
-    """Integration: agent with lazy loading can discover and then use a deferred MCP tool."""
+    """Integration: agent with lazy loading — discover_tools and auto-enable both work."""
     # Set up hot list and visibility context
     hot_list = {"retain", "recall"}
     ctx = ToolVisibilityContext(
@@ -306,23 +356,27 @@ async def test_lazy_loading_integration():
     filter_context = MagicMock()
     filter_context.run_context.context = ctx
 
-    # Initially, deferred tools are blocked
-    deferred_tool = MagicMock()
-    deferred_tool.name = "list_applications"
-    assert filter_fn(filter_context, deferred_tool) is False
-
     # Hot-listed tools pass through
     hot_tool = MagicMock()
     hot_tool.name = "retain"
     assert filter_fn(filter_context, hot_tool) is True
 
-    # Agent calls discover_tools
-    wrapper = _MockRunContextWrapper(ctx)
-    result = discover_tools(wrapper, ["list_applications", "sync_application"])
-    assert "Enabled: list_applications, sync_application" in result
+    # Unknown tools are blocked
+    unknown_tool = MagicMock()
+    unknown_tool.name = "totally_unknown"
+    assert filter_fn(filter_context, unknown_tool) is False
 
-    # Now deferred tools pass through the filter
+    # Known but undiscovered tools are auto-enabled
+    deferred_tool = MagicMock()
+    deferred_tool.name = "list_applications"
     assert filter_fn(filter_context, deferred_tool) is True
+    assert "list_applications" in ctx.enabled_tools
+
+    # Agent can also explicitly discover tools
+    wrapper = _MockRunContextWrapper(ctx)
+    result = discover_tools(wrapper, ["sync_application"])
+    assert "Enabled: sync_application" in result
+
     sync_tool = MagicMock()
     sync_tool.name = "sync_application"
     assert filter_fn(filter_context, sync_tool) is True

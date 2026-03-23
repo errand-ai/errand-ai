@@ -246,25 +246,25 @@ async def test_stream_event_emitter_on_agent_end(capsys):
 
 
 @pytest.mark.asyncio
-async def test_stream_event_emitter_on_llm_start(caplog):
-    """on_llm_start logs at DEBUG level."""
+async def test_stream_event_emitter_on_llm_start(capsys):
+    """on_llm_start emits llm_turn_start event to stderr."""
     agent = MagicMock()
     agent.name = "TaskRunner"
     emitter = StreamEventEmitter()
-    with caplog.at_level(logging.DEBUG):
-        await emitter.on_llm_start(MagicMock(), agent)
-    assert any("LLM call starting" in r.message for r in caplog.records)
+    await emitter.on_llm_start(MagicMock(), agent)
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.err.strip())
+    assert parsed["type"] == "llm_turn_start"
+    assert "turn_id" in parsed["data"]
 
 
 @pytest.mark.asyncio
-async def test_stream_event_emitter_on_llm_end(caplog):
-    """on_llm_end logs at DEBUG level."""
+async def test_stream_event_emitter_on_llm_end():
+    """on_llm_end is a no-op (does not raise)."""
     agent = MagicMock()
     agent.name = "TaskRunner"
     emitter = StreamEventEmitter()
-    with caplog.at_level(logging.DEBUG):
-        await emitter.on_llm_end(MagicMock(), agent, MagicMock())
-    assert any("LLM call completed" in r.message for r in caplog.records)
+    await emitter.on_llm_end(MagicMock(), agent, MagicMock())
 
 
 # --- REASONING_EFFORT env var ---
