@@ -125,7 +125,14 @@ services:
 
   playwright:
     image: mcr.microsoft.com/playwright/mcp:latest
-    command: ["--isolated", "--port", "3000", "--host", "0.0.0.0", "--allowed-hosts", "*"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        Xvfb :99 -screen 0 1920x1080x24 -ac -nolisten tcp &
+        sleep 1 &&
+        DISPLAY=:99 exec node /app/cli.js --browser chromium --no-sandbox
+        --isolated --port 3000 --host 0.0.0.0 --allowed-hosts '*'
+    shm_size: '2gb'
     ports:
       - "3000:3000"
     networks:

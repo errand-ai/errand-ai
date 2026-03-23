@@ -22,10 +22,24 @@ spec:
         - name: playwright
           image: "{{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}"
           imagePullPolicy: {{ .Values.playwright.image.pullPolicy | default "IfNotPresent" }}
-          args: ["--isolated", "--port", "{{ .Values.playwright.port }}", "--host", "0.0.0.0", "--allowed-hosts", "*"]
+          command: ["sh", "-c"]
+          args:
+            - >-
+              Xvfb :99 -screen 0 1920x1080x24 -ac -nolisten tcp &
+              sleep 1 &&
+              DISPLAY=:99 exec node /app/cli.js --browser chromium --no-sandbox
+              --isolated --port {{ .Values.playwright.port }} --host 0.0.0.0 --allowed-hosts '*'
           ports:
             - containerPort: {{ .Values.playwright.port }}
           resources:
             limits:
               memory: {{ .Values.playwright.memoryLimit }}
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
 {{- end }}
