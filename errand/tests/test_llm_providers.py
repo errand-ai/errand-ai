@@ -268,7 +268,49 @@ async def test_list_provider_models_openai_compatible(admin_client: AsyncClient)
         resp = await admin_client.get(f"/api/llm/providers/{provider['id']}/models")
 
     assert resp.status_code == 200
-    assert resp.json() == ["gpt-4"]
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == "gpt-4"
+    assert data[0]["supports_reasoning"] is None
+    assert data[0]["max_output_tokens"] is None
+
+
+async def test_list_provider_models_enriched_with_metadata(admin_client: AsyncClient):
+    """Model list returns enriched objects with metadata from cache."""
+    provider = await _create_test_provider(admin_client)
+
+    mock_model = MagicMock()
+    mock_model.id = "deepseek-r1:8b"
+    mock_models = MagicMock()
+    mock_models.data = [mock_model]
+
+    # Seed the metadata cache via the test's overridden session
+    from database import get_session
+    from main import app
+    from models import ModelMetadataCache
+    override_fn = app.dependency_overrides[get_session]
+    async for session in override_fn():
+        session.add(ModelMetadataCache(
+            normalized_name="deepseek-r1",
+            supports_reasoning=True,
+            max_output_tokens=8192,
+            source_keys=["deepseek/deepseek-r1"],
+        ))
+        await session.commit()
+
+    with patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        mock_client = AsyncMock()
+        mock_client.models.list = AsyncMock(return_value=mock_models)
+        MockOpenAI.return_value = mock_client
+        _clients.clear()
+        resp = await admin_client.get(f"/api/llm/providers/{provider['id']}/models")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == "deepseek-r1:8b"
+    assert data[0]["supports_reasoning"] is True
+    assert data[0]["max_output_tokens"] == 8192
 
 
 # --- Env var scanning ---
