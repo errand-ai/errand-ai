@@ -1,22 +1,4 @@
-## Purpose
-
-Standalone Playwright MCP deployment with `--isolated` mode for concurrent multi-session support, replacing the per-worker sidecar pattern.
-
-## Requirements
-
-### Requirement: Playwright runs with --isolated flag
-
-The Playwright MCP server SHALL be started with the `--isolated` flag in all deployment modes (K8s and Docker Compose). This enables shared browser mode where each Streamable HTTP session gets its own isolated `BrowserContext` with separate cookies, localStorage, and navigation state. The persistent profile mode (default without `--isolated`) SHALL NOT be used.
-
-#### Scenario: Two concurrent task-runners connect
-
-- **WHEN** two task-runner containers connect to the same Playwright MCP instance simultaneously
-- **THEN** each gets its own `BrowserContext` with fully isolated browser state
-
-#### Scenario: Sessions do not interfere
-
-- **WHEN** task-runner A navigates to page X and task-runner B navigates to page Y on the same Playwright instance
-- **THEN** each task-runner sees only its own page; navigation and cookies are isolated
+## MODIFIED Requirements
 
 ### Requirement: Standalone Playwright K8s Deployment
 
@@ -42,17 +24,3 @@ The docker-compose configuration SHALL include a standalone Playwright service o
 
 - **WHEN** a developer runs `docker compose up`
 - **THEN** Playwright starts as a standalone service with Xvfb and task-runners connect to it via Compose DNS
-
-### Requirement: Task-runner Playwright URL from environment
-
-The TaskManager SHALL pass the Playwright MCP URL to task-runner containers via the `PLAYWRIGHT_MCP_URL` environment variable (or equivalent MCP config injection). The URL SHALL be derived from: (1) K8s Service DNS in production, (2) Docker Compose service DNS in local dev. The `POD_IP`-based Playwright URL construction SHALL be removed.
-
-#### Scenario: K8s task-runner receives Playwright URL
-
-- **WHEN** the TaskManager creates a K8s Job for a task and Playwright is enabled
-- **THEN** the Playwright MCP entry in `mcp.json` uses the K8s Service URL
-
-#### Scenario: Playwright not configured
-
-- **WHEN** the Playwright Deployment is not enabled in Helm values
-- **THEN** no Playwright MCP entry is injected into `mcp.json`
