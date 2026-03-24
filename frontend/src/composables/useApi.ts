@@ -212,7 +212,13 @@ export async function setDefaultProvider(id: string): Promise<LlmProviderData> {
   return res.json()
 }
 
-export async function fetchProviderModels(id: string, mode?: string): Promise<string[]> {
+export interface ModelInfo {
+  id: string
+  supports_reasoning: boolean | null
+  max_output_tokens: number | null
+}
+
+export async function fetchProviderModels(id: string, mode?: string): Promise<ModelInfo[]> {
   const url = mode
     ? `${BASE}/llm/providers/${id}/models?mode=${encodeURIComponent(mode)}`
     : `${BASE}/llm/providers/${id}/models`

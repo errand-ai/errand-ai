@@ -777,12 +777,16 @@ describe('SettingsPage', () => {
       updated_at: null,
     }
 
+    function toModelInfos(names: string[], reasoning = false) {
+      return names.map(id => ({ id, supports_reasoning: reasoning, max_output_tokens: 4096 }))
+    }
+
     function setupProviderMocks(
       providers = [testProvider],
       models = ['claude-haiku-4-5-20251001', 'gpt-4o'],
     ) {
       vi.mocked(fetchProviders).mockResolvedValue(providers)
-      vi.mocked(fetchProviderModels).mockResolvedValue(models)
+      vi.mocked(fetchProviderModels).mockResolvedValue(toModelInfos(models))
     }
 
     it('renders LLM Models section with provider and model dropdowns', async () => {
@@ -1032,6 +1036,56 @@ describe('SettingsPage', () => {
 
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
       expect((transcriptionSelect.element as HTMLSelectElement).disabled).toBe(true)
+    })
+
+    // --- Reasoning model warnings ---
+
+    it('shows reasoning warning when reasoning model selected for title generation', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'deepseek-r1:8b', supports_reasoning: true, max_output_tokens: 8192 },
+        { id: 'llama3:8b', supports_reasoning: false, max_output_tokens: 4096 },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: 'prov-1', model: 'deepseek-r1:8b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const warning = wrapper.find('[data-testid="llm-reasoning-warning"]')
+      expect(warning.exists()).toBe(true)
+      expect(warning.text()).toContain('reasoning model')
+    })
+
+    it('does not show reasoning warning for non-reasoning model', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'llama3:8b', supports_reasoning: false, max_output_tokens: 4096 },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: 'prov-1', model: 'llama3:8b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      expect(wrapper.find('[data-testid="llm-reasoning-warning"]').exists()).toBe(false)
+    })
+
+    it('does not show reasoning warning for unknown model (null supports_reasoning)', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'custom-model:7b', supports_reasoning: null, max_output_tokens: null },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        llm_model: { provider_id: 'prov-1', model: 'custom-model:7b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      expect(wrapper.find('[data-testid="llm-reasoning-warning"]').exists()).toBe(false)
     })
 
     // --- LLM Timeout ---

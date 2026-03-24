@@ -182,6 +182,17 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 )
 """
 
+_MODEL_METADATA_CACHE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS model_metadata_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    normalized_name TEXT NOT NULL UNIQUE,
+    supports_reasoning BOOLEAN NOT NULL,
+    max_output_tokens INTEGER,
+    source_keys TEXT NOT NULL DEFAULT '[]',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 async def _create_tables(engine):
     async with engine.begin() as conn:
@@ -196,6 +207,7 @@ async def _create_tables(engine):
         await conn.execute(text(_LOCAL_USERS_TABLE_SQL))
         await conn.execute(text(_TASK_GENERATORS_TABLE_SQL))
         await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
+        await conn.execute(text(_MODEL_METADATA_CACHE_TABLE_SQL))
 
 
 @pytest.fixture()

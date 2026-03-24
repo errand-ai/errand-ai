@@ -8,6 +8,7 @@ import {
   saveTaskProcessingModel,
   saveTranscriptionModel,
   type LlmProviderData,
+  type ModelInfo,
   type ModelSetting,
 } from '../../composables/useApi'
 
@@ -36,11 +37,16 @@ const transcriptionModelName = ref(props.transcriptionModel.model || '')
 const localLlmTimeout = ref(props.llmTimeout)
 
 // Models lists per role
-const llmModels = ref<string[]>([])
-const taskModels = ref<string[]>([])
-const transcriptionModels = ref<string[]>([])
+const llmModels = ref<ModelInfo[]>([])
+const taskModels = ref<ModelInfo[]>([])
+const transcriptionModels = ref<ModelInfo[]>([])
 
 const saving = ref(false)
+
+function isReasoningModel(modelName: string, models: ModelInfo[]): boolean {
+  const m = models.find(item => item.id === modelName)
+  return m?.supports_reasoning === true
+}
 
 function getProvider(id: string): LlmProviderData | undefined {
   return props.providers.find(p => p.id === id)
@@ -166,9 +172,16 @@ defineExpose({ isDirty })
           class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
         >
           <option value="">{{ llmModels.length === 0 ? 'Loading models...' : 'Select model' }}</option>
-          <option v-for="m in llmModels" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in llmModels" :key="m.id" :value="m.id">{{ m.id }}</option>
         </select>
       </div>
+      <p
+        v-if="isReasoningModel(llmModelName, llmModels)"
+        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+        data-testid="llm-reasoning-warning"
+      >
+        This is a reasoning model. It may be slower and less reliable for structured output tasks like title generation. Consider using a non-reasoning model.
+      </p>
     </div>
 
     <!-- Default Model (Task Processing) -->
@@ -196,9 +209,16 @@ defineExpose({ isDirty })
           class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
         >
           <option value="">{{ taskModels.length === 0 ? 'Loading models...' : 'Select model' }}</option>
-          <option v-for="m in taskModels" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in taskModels" :key="m.id" :value="m.id">{{ m.id }}</option>
         </select>
       </div>
+      <p
+        v-if="isReasoningModel(taskModelName, taskModels)"
+        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+        data-testid="task-reasoning-warning"
+      >
+        This is a reasoning model. It may be slower and less reliable for structured output tasks like title generation. Consider using a non-reasoning model.
+      </p>
     </div>
 
     <!-- Transcription Model -->
@@ -227,7 +247,7 @@ defineExpose({ isDirty })
           data-testid="transcription-model-select"
         >
           <option value="">{{ transcriptionModels.length === 0 ? 'Select a model to enable voice input' : 'Select model' }}</option>
-          <option v-for="m in transcriptionModels" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in transcriptionModels" :key="m.id" :value="m.id">{{ m.id }}</option>
         </select>
       </div>
     </div>

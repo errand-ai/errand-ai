@@ -147,6 +147,11 @@ async def generate_title(
     timeout = await _get_llm_timeout(session)
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Look up model metadata for dynamic max_tokens
+    from model_metadata import lookup_model_metadata
+    meta = await lookup_model_metadata(model, session)
+    max_tokens = meta.max_output_tokens if meta.max_output_tokens is not None else 300
+
     # Build profile selection section if profiles exist
     profile_section = ""
     profile_json_field = ""
@@ -200,11 +205,21 @@ async def generate_title(
                 },
                 {"role": "user", "content": f"Classify this task:\n\n{description}"},
             ],
-            max_tokens=300,
+            max_tokens=max_tokens,
             timeout=timeout,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content
+        raw = raw.strip() if raw else ""
         if not raw:
+            # Check for reasoning model response
+            reasoning = getattr(response.choices[0].message, "reasoning_content", None)
+            if reasoning:
+                logger.warning(
+                    "Model '%s' returned reasoning_content but empty content — "
+                    "model may not be suitable for structured output tasks. "
+                    "Consider using a non-reasoning model for title generation.",
+                    model,
+                )
             return LLMResult(title=_fallback_title(description), success=False)
 
         result = _parse_llm_response(raw)

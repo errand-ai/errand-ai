@@ -118,6 +118,13 @@ async def lifespan(app: FastAPI):
     async with async_session() as provider_session:
         await scan_env_providers(provider_session)
 
+    # Refresh model metadata cache if empty or stale
+    from model_metadata import is_cache_stale, refresh_model_metadata_cache
+    async with async_session() as meta_session:
+        if await is_cache_stale(meta_session):
+            logger.info("Model metadata cache is empty or stale — refreshing")
+            await refresh_model_metadata_cache(meta_session)
+
     # Credential encryption key — required for persistent credential storage
     if not os.environ.get("CREDENTIAL_ENCRYPTION_KEY"):
         logger.warning(
@@ -196,6 +203,9 @@ async def lifespan(app: FastAPI):
                 await session.commit()
                 logger.info("Auto-provisioned local admin user '%s'", admin_username)
 
+    from model_metadata import run_periodic_refresh
+    model_metadata_task = asyncio.create_task(run_periodic_refresh(async_session))
+
     scheduler_task = asyncio.create_task(run_scheduler())
     zombie_cleanup_task = asyncio.create_task(run_zombie_cleanup())
     slack_updater_task = asyncio.create_task(
@@ -249,6 +259,7 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, TimeoutError):
             pass
 
+    model_metadata_task.cancel()
     scheduler_task.cancel()
     zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
@@ -1005,6 +1016,8 @@ async def list_provider_models(
     _user: dict = Depends(require_admin),
     mode: str | None = Query(default=None),
 ):
+    from model_metadata import lookup_model_metadata, is_cache_stale, maybe_trigger_refresh
+
     result = await session.execute(
         select(LlmProvider).where(LlmProvider.id == provider_id)
     )
@@ -1033,21 +1046,39 @@ async def list_provider_models(
                 )
                 resp.raise_for_status()
                 data = resp.json()
-            models = [
+            model_names = sorted([
                 entry["model_name"]
                 for entry in data.get("data", [])
                 if entry.get("model_info", {}).get("mode") == mode
-            ]
-            return sorted(models)
+            ])
         except Exception:
             raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
+    else:
+        # Standard models.list() for litellm and openai_compatible
+        try:
+            models_resp = await client.models.list()
+            model_names = sorted([m.id for m in models_resp.data])
+        except Exception:
+            raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
 
-    # Standard models.list() for litellm and openai_compatible
-    try:
-        models = await client.models.list()
-        return sorted([m.id for m in models.data])
-    except Exception:
-        raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+    # Enrich with metadata from cache
+    has_unmatched = False
+    enriched = []
+    for name in model_names:
+        meta = await lookup_model_metadata(name, session)
+        if meta.supports_reasoning is None and meta.max_output_tokens is None:
+            has_unmatched = True
+        enriched.append({
+            "id": name,
+            "supports_reasoning": meta.supports_reasoning,
+            "max_output_tokens": meta.max_output_tokens,
+        })
+
+    # Trigger background refresh if unmatched models and cache is stale (>1h)
+    if has_unmatched and await is_cache_stale(session, max_age_seconds=3600):
+        await maybe_trigger_refresh(async_session)
+
+    return enriched
 
 
 # --- Transcription endpoints ---

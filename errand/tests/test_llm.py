@@ -335,11 +335,24 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
+_MODEL_METADATA_CACHE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS model_metadata_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    normalized_name TEXT NOT NULL UNIQUE,
+    supports_reasoning BOOLEAN NOT NULL,
+    max_output_tokens INTEGER,
+    source_keys TEXT NOT NULL DEFAULT '[]',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+
 @pytest.fixture()
 async def db_session():
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     async with engine.begin() as conn:
         await conn.execute(text(_SETTINGS_TABLE_SQL))
+        await conn.execute(text(_MODEL_METADATA_CACHE_TABLE_SQL))
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         yield session
@@ -533,3 +546,93 @@ async def test_create_task_empty_description_routes_to_review(client: AsyncClien
     assert data["execute_at"] is not None
     assert data["status"] == "review"
     assert "Needs Info" in data["tags"]
+
+
+# --- 6. Dynamic max_tokens and reasoning detection ---
+
+
+async def test_generate_title_uses_cached_max_output_tokens(db_session: AsyncSession):
+    """generate_title uses max_output_tokens from metadata cache."""
+    from models import ModelMetadataCache
+
+    db_session.add(ModelMetadataCache(
+        normalized_name="deepseek-r1",
+        supports_reasoning=True,
+        max_output_tokens=8192,
+        source_keys=["deepseek/deepseek-r1"],
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Weather Forecast")
+    )
+
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "deepseek-r1:8b"))):
+        await generate_title("some long enough description for the test", db_session)
+
+    call_args = mock_client.chat.completions.create.call_args
+    assert call_args.kwargs["max_tokens"] == 8192
+
+
+async def test_generate_title_uses_default_max_tokens_when_no_match(db_session: AsyncSession):
+    """generate_title falls back to 300 max_tokens when model is not in cache."""
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_json_response("Test Title")
+    )
+
+    with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "unknown-model:7b"))):
+        await generate_title("some long enough description for the test", db_session)
+
+    call_args = mock_client.chat.completions.create.call_args
+    assert call_args.kwargs["max_tokens"] == 300
+
+
+async def test_generate_title_logs_warning_for_reasoning_model(db_session: AsyncSession):
+    """generate_title logs a warning when content is empty but reasoning_content exists."""
+    choice = MagicMock()
+    choice.message.content = ""
+    choice.message.reasoning_content = "First, I need to think about this..."
+    response = MagicMock()
+    response.choices = [choice]
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=response)
+
+    with (
+        patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "deepseek-r1:8b"))),
+        patch.object(llm_module, "logger") as mock_logger,
+    ):
+        result = await generate_title("some long enough description for the test", db_session)
+
+    assert result.success is False
+    mock_logger.warning.assert_any_call(
+        "Model '%s' returned reasoning_content but empty content — "
+        "model may not be suitable for structured output tasks. "
+        "Consider using a non-reasoning model for title generation.",
+        "deepseek-r1:8b",
+    )
+
+
+async def test_generate_title_no_warning_without_reasoning_content(db_session: AsyncSession):
+    """No reasoning warning when content is empty and no reasoning_content."""
+    choice = MagicMock()
+    choice.message.content = ""
+    choice.message.reasoning_content = None
+    response = MagicMock()
+    response.choices = [choice]
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=response)
+
+    with (
+        patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(mock_client, "llama3:8b"))),
+        patch.object(llm_module, "logger") as mock_logger,
+    ):
+        result = await generate_title("some long enough description for the test", db_session)
+
+    assert result.success is False
+    # Should not have the reasoning-specific warning
+    for call in mock_logger.warning.call_args_list:
+        assert "reasoning_content" not in str(call)

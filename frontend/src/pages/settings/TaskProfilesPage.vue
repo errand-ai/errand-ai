@@ -9,6 +9,7 @@ import {
   fetchLitellmMcpServers,
   fetchProviders,
   fetchProviderModels,
+  type ModelInfo,
   type TaskProfile,
   type LlmProviderData,
 } from '../../composables/useApi'
@@ -25,7 +26,7 @@ const editingId = ref<string | null>(null)
 
 // Available options for dropdowns and three-state selectors
 const providers = ref<LlmProviderData[]>([])
-const availableModels = ref<string[]>([])
+const availableModels = ref<ModelInfo[]>([])
 const defaultModel = ref('')
 const defaultMaxTurns = ref<string>('')
 const defaultReasoningEffort = ref('')
@@ -478,8 +479,8 @@ onMounted(() => {
                 data-testid="profile-model-input"
               >
                 <option value="">Select model</option>
-                <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
-                <option v-if="formModelName && !availableModels.includes(formModelName)" :value="formModelName">{{ formModelName }}</option>
+                <option v-for="m in availableModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+                <option v-if="formModelName && !availableModels.some(m => m.id === formModelName)" :value="formModelName">{{ formModelName }}</option>
               </select>
               <input
                 v-else
