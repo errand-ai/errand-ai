@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import ModelMetadataCache
@@ -180,15 +181,31 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
             existing.source_keys = agg["source_keys"]
             existing.updated_at = now
         else:
-            session.add(
-                ModelMetadataCache(
-                    normalized_name=normalized,
-                    supports_reasoning=supports_reasoning,
-                    max_output_tokens=max_output,
-                    source_keys=agg["source_keys"],
-                    updated_at=now,
+            try:
+                session.add(
+                    ModelMetadataCache(
+                        normalized_name=normalized,
+                        supports_reasoning=supports_reasoning,
+                        max_output_tokens=max_output,
+                        source_keys=agg["source_keys"],
+                        updated_at=now,
+                    )
                 )
-            )
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                # Another refresh already inserted this row — update it
+                result = await session.execute(
+                    select(ModelMetadataCache).where(
+                        ModelMetadataCache.normalized_name == normalized
+                    )
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    existing.supports_reasoning = supports_reasoning
+                    existing.max_output_tokens = max_output
+                    existing.source_keys = agg["source_keys"]
+                    existing.updated_at = now
         count += 1
 
     await session.commit()
@@ -214,20 +231,81 @@ async def is_cache_stale(session: AsyncSession, max_age_seconds: int | None = No
     return age > max_age_seconds
 
 
+async def batch_lookup_model_metadata(
+    model_names: list[str], session: AsyncSession
+) -> dict[str, ModelMetadata]:
+    """Look up metadata for multiple models using a single DB query.
+
+    Pre-loads all cache entries into memory, then matches each model name
+    using the same multi-pass logic as lookup_model_metadata.
+    """
+    # Load all cache entries in one query
+    result = await session.execute(select(ModelMetadataCache))
+    all_entries = result.scalars().all()
+
+    # Build index by normalized name
+    by_name: dict[str, ModelMetadataCache] = {}
+    for entry in all_entries:
+        by_name[entry.normalized_name] = entry
+
+    def _match(normalized: str) -> ModelMetadata | None:
+        # Exact match
+        exact = by_name.get(normalized)
+        if exact is not None:
+            return ModelMetadata(
+                supports_reasoning=exact.supports_reasoning,
+                max_output_tokens=exact.max_output_tokens,
+            )
+        # Prefix match
+        prefix_matches = [
+            e for name, e in by_name.items()
+            if name.startswith(f"{normalized}-") or name.startswith(f"{normalized}.")
+        ]
+        if prefix_matches:
+            any_reasoning = any(m.supports_reasoning for m in prefix_matches)
+            output_tokens = [
+                m.max_output_tokens for m in prefix_matches
+                if m.max_output_tokens is not None
+            ]
+            return ModelMetadata(
+                supports_reasoning=any_reasoning,
+                max_output_tokens=min(output_tokens) if output_tokens else None,
+            )
+        return None
+
+    results: dict[str, ModelMetadata] = {}
+    for model_name in model_names:
+        normalized = normalize_model_name(model_name)
+        meta = _match(normalized)
+        if meta is None:
+            alt = _alt_normalize(normalized)
+            if alt is not None:
+                meta = _match(alt)
+        if meta is None:
+            meta = ModelMetadata(supports_reasoning=None, max_output_tokens=None)
+        results[model_name] = meta
+
+    return results
+
+
 async def run_periodic_refresh(session_factory) -> None:
-    """Background loop that refreshes the cache weekly."""
-    interval = REFRESH_INTERVAL_DAYS * 86400
+    """Background loop that checks staleness hourly and refreshes when needed."""
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(3600)  # check every hour
         try:
             async with session_factory() as session:
-                await refresh_model_metadata_cache(session)
+                if await is_cache_stale(session):
+                    await refresh_model_metadata_cache(session)
         except Exception:
             logger.exception("Periodic model metadata refresh failed")
 
 
-# Track last refresh attempt to debounce on-demand refreshes
-_last_refresh_attempt: datetime | None = None
+# Track last refresh attempt to debounce on-demand refreshes (mutable container
+# avoids the need for a `global` statement that confuses linters).
+_refresh_state: dict[str, datetime | None] = {"last_attempt": None}
+
+# Lock to protect the debounce check against concurrent callers
+_refresh_lock = asyncio.Lock()
 
 
 async def maybe_trigger_refresh(session_factory) -> None:
@@ -235,15 +313,16 @@ async def maybe_trigger_refresh(session_factory) -> None:
 
     Intended to be called fire-and-forget from the model list endpoint.
     """
-    global _last_refresh_attempt
-    now = datetime.now(timezone.utc)
-    if (
-        _last_refresh_attempt is not None
-        and (now - _last_refresh_attempt).total_seconds() < REFRESH_DEBOUNCE_SECONDS
-    ):
-        return
+    async with _refresh_lock:
+        now = datetime.now(timezone.utc)
+        last = _refresh_state["last_attempt"]
+        if (
+            last is not None
+            and (now - last).total_seconds() < REFRESH_DEBOUNCE_SECONDS
+        ):
+            return
 
-    _last_refresh_attempt = now
+        _refresh_state["last_attempt"] = now
 
     async def _refresh():
         try:

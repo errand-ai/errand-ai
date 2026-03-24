@@ -18,7 +18,7 @@ def upgrade() -> None:
         sa.Column("normalized_name", sa.Text(), nullable=False),
         sa.Column("supports_reasoning", sa.Boolean(), nullable=False),
         sa.Column("max_output_tokens", sa.Integer(), nullable=True),
-        sa.Column("source_keys", sa.JSON(), nullable=False),
+        sa.Column("source_keys", sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("normalized_name"),

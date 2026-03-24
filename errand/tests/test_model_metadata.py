@@ -8,7 +8,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from model_metadata import (
-    ModelMetadata,
     _alt_normalize,
     is_cache_stale,
     lookup_model_metadata,

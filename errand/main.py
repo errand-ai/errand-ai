@@ -118,12 +118,19 @@ async def lifespan(app: FastAPI):
     async with async_session() as provider_session:
         await scan_env_providers(provider_session)
 
-    # Refresh model metadata cache if empty or stale
+    # Refresh model metadata cache if empty or stale (non-blocking)
     from model_metadata import is_cache_stale, refresh_model_metadata_cache
-    async with async_session() as meta_session:
-        if await is_cache_stale(meta_session):
-            logger.info("Model metadata cache is empty or stale — refreshing")
-            await refresh_model_metadata_cache(meta_session)
+
+    async def _refresh_metadata_if_stale():
+        try:
+            async with async_session() as meta_session:
+                if await is_cache_stale(meta_session):
+                    logger.info("Model metadata cache is empty or stale — refreshing")
+                    await refresh_model_metadata_cache(meta_session)
+        except Exception:
+            logger.exception("Startup model metadata refresh failed")
+
+    asyncio.create_task(_refresh_metadata_if_stale())
 
     # Credential encryption key — required for persistent credential storage
     if not os.environ.get("CREDENTIAL_ENCRYPTION_KEY"):
@@ -1016,7 +1023,7 @@ async def list_provider_models(
     _user: dict = Depends(require_admin),
     mode: str | None = Query(default=None),
 ):
-    from model_metadata import lookup_model_metadata, is_cache_stale, maybe_trigger_refresh
+    from model_metadata import batch_lookup_model_metadata, is_cache_stale, maybe_trigger_refresh
 
     result = await session.execute(
         select(LlmProvider).where(LlmProvider.id == provider_id)
@@ -1061,11 +1068,12 @@ async def list_provider_models(
         except Exception:
             raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
 
-    # Enrich with metadata from cache
+    # Enrich with metadata from cache (single query for all models)
+    metadata_map = await batch_lookup_model_metadata(model_names, session)
     has_unmatched = False
     enriched = []
     for name in model_names:
-        meta = await lookup_model_metadata(name, session)
+        meta = metadata_map[name]
         if meta.supports_reasoning is None and meta.max_output_tokens is None:
             has_unmatched = True
         enriched.append({
