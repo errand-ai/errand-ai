@@ -4,7 +4,7 @@ The TaskManager's leader election uses a Postgres advisory lock held via a sync 
 
 ## What Changes
 
-- Add TCP keepalive options (`keepalives=1`, `keepalives_idle`, `keepalives_interval`, `keepalives_count`) to the sync engine connection used for the advisory lock in `TaskManager._acquire_leader_lock`, so Postgres detects dead connections within ~30 seconds instead of hours.
+- Add TCP keepalive options (`keepalives=1`, `keepalives_idle`, `keepalives_interval`, `keepalives_count`) to the sync engine connection used for the advisory lock in `TaskManager._acquire_leader_lock`, so Postgres detects dead connections within ~40 seconds instead of hours.
 - Raise the log level of the "Another replica holds the leader lock" message from `DEBUG` to `INFO` so lock contention is visible in production logs without enabling debug logging.
 
 ## Capabilities
@@ -20,6 +20,6 @@ _(none)_
 ## Impact
 
 - **Code**: `errand/task_manager.py` — `_acquire_leader_lock` method (sync engine creation and logging)
-- **No new dependencies**: TCP keepalive is configured via libpq connection parameters already supported by psycopg2/asyncpg
+- **No new dependencies**: TCP keepalive is configured via libpq connection parameters already supported by the existing sync psycopg2 engine used for the advisory lock
 - **No API changes**: Internal background task behavior only
 - **No migrations**: No database schema changes

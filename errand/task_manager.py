@@ -48,6 +48,12 @@ ONEDRIVE_MCP_URL = os.environ.get("ONEDRIVE_MCP_URL", "")
 
 # Advisory lock ID for leader election (must fit in int4)
 LEADER_LOCK_ID = hash("errand_task_manager") & 0x7FFFFFFF
+LEADER_LOCK_CONNECT_ARGS = {
+    "keepalives": 1,
+    "keepalives_idle": 10,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+}
 
 DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 MAX_GIT_RETRIES = 5
@@ -678,6 +684,7 @@ class TaskManager:
         self._max_concurrent_tasks = 3
         self._runtime: ContainerRuntime | None = None
         self._leader_connection = None
+        self._leader_lock_contended = False
 
     async def run(self):
         """Main loop: acquire leader lock, poll and dispatch tasks."""
@@ -703,13 +710,18 @@ class TaskManager:
             try:
                 has_lock = await self._acquire_leader_lock()
                 if not has_lock:
-                    logger.info("Another replica holds the leader lock, waiting...")
+                    if not self._leader_lock_contended:
+                        logger.info("Another replica holds the leader lock, waiting...")
+                        self._leader_lock_contended = True
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=POLL_INTERVAL)
                     except TimeoutError:
                         pass
                     continue
 
+                if self._leader_lock_contended:
+                    logger.info("Acquired leader lock")
+                    self._leader_lock_contended = False
                 await self._poll_and_dispatch()
 
             except Exception:
@@ -763,12 +775,7 @@ class TaskManager:
                     return True
                 eng = create_sync_engine(
                     sync_url,
-                    connect_args={
-                        "keepalives": 1,
-                        "keepalives_idle": 10,
-                        "keepalives_interval": 10,
-                        "keepalives_count": 3,
-                    },
+                    connect_args=LEADER_LOCK_CONNECT_ARGS,
                 )
                 self._leader_connection = eng.raw_connection()
 

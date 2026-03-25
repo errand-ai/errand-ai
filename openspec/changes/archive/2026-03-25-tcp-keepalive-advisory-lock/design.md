@@ -5,7 +5,7 @@ The TaskManager holds a Postgres advisory lock via a sync `raw_connection()` for
 ## Goals / Non-Goals
 
 **Goals:**
-- Ensure stale advisory lock connections are detected by Postgres within ~30 seconds of pod death
+- Ensure stale advisory lock connections are detected by Postgres within ~40 seconds of pod death
 - Make lock contention visible in production logs at INFO level
 
 **Non-Goals:**

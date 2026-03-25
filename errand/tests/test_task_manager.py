@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from container_runtime import RuntimeHandle
 from task_manager import (
     HEARTBEAT_INTERVAL,
+    LEADER_LOCK_CONNECT_ARGS,
     LEADER_LOCK_ID,
     TaskManager,
 )
@@ -184,7 +185,7 @@ class TestLeaderElection:
         mock_conn.close.assert_called_once()
 
     async def test_acquire_leader_lock_sets_tcp_keepalive(self):
-        """Sync engine is created with TCP keepalive connect_args."""
+        """Sync engine is created with LEADER_LOCK_CONNECT_ARGS."""
         tm = TaskManager()
         mock_engine = MagicMock()
         mock_conn = MagicMock()
@@ -201,15 +202,10 @@ class TestLeaderElection:
         mock_create.assert_called_once()
         call_kwargs = mock_create.call_args
         connect_args = call_kwargs.kwargs.get("connect_args") or call_kwargs[1].get("connect_args")
-        assert connect_args == {
-            "keepalives": 1,
-            "keepalives_idle": 10,
-            "keepalives_interval": 10,
-            "keepalives_count": 3,
-        }
+        assert connect_args is LEADER_LOCK_CONNECT_ARGS
 
-    async def test_lock_wait_logs_at_info_level(self, caplog):
-        """Lock contention is logged at INFO level, not DEBUG."""
+    async def test_lock_wait_logs_info_only_on_transition(self, caplog):
+        """Lock contention logs INFO once on transition, not every poll."""
         import logging
 
         tm = TaskManager()
@@ -220,19 +216,20 @@ class TestLeaderElection:
              patch("task_manager.create_runtime", return_value=mock_runtime), \
              patch("task_manager.POLL_INTERVAL", 0.01), \
              caplog.at_level(logging.INFO, logger="task_manager"):
-            # Run one iteration then stop
             async def stop_soon():
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)
                 await tm.stop()
             stop_task = asyncio.create_task(stop_soon())
             await asyncio.wait_for(tm.run(), timeout=5.0)
             await stop_task
 
-        assert any(
-            "Another replica holds the leader lock" in record.message
-            and record.levelno == logging.INFO
-            for record in caplog.records
-        )
+        lock_msgs = [
+            r for r in caplog.records
+            if "Another replica holds the leader lock" in r.message
+        ]
+        # Should log exactly once (on transition), not every poll cycle
+        assert len(lock_msgs) == 1
+        assert lock_msgs[0].levelno == logging.INFO
 
 
 # ---------------------------------------------------------------------------
