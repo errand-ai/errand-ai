@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from container_runtime import RuntimeHandle
 from task_manager import (
     HEARTBEAT_INTERVAL,
+    LEADER_LOCK_CONNECT_ARGS,
     LEADER_LOCK_ID,
     TaskManager,
 )
@@ -182,6 +183,53 @@ class TestLeaderElection:
         assert result is False
         assert tm._leader_connection is None
         mock_conn.close.assert_called_once()
+
+    async def test_acquire_leader_lock_sets_tcp_keepalive(self):
+        """Sync engine is created with LEADER_LOCK_CONNECT_ARGS."""
+        tm = TaskManager()
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (True,)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_engine.raw_connection.return_value = mock_conn
+
+        with patch.dict("os.environ", {"DATABASE_URL": "postgresql+asyncpg://user:pass@host/db"}), \
+             patch("task_manager.create_sync_engine", return_value=mock_engine) as mock_create:
+            result = await tm._acquire_leader_lock()
+
+        assert result is True
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args
+        connect_args = call_kwargs.kwargs.get("connect_args") or call_kwargs[1].get("connect_args")
+        assert connect_args is LEADER_LOCK_CONNECT_ARGS
+
+    async def test_lock_wait_logs_info_only_on_transition(self, caplog):
+        """Lock contention logs INFO once on transition, not every poll."""
+        import logging
+
+        tm = TaskManager()
+        mock_runtime = MagicMock()
+        tm._runtime = mock_runtime
+
+        with patch.object(tm, "_acquire_leader_lock", AsyncMock(return_value=False)), \
+             patch("task_manager.create_runtime", return_value=mock_runtime), \
+             patch("task_manager.POLL_INTERVAL", 0.01), \
+             caplog.at_level(logging.INFO, logger="task_manager"):
+            async def stop_soon():
+                await asyncio.sleep(0.1)
+                await tm.stop()
+            stop_task = asyncio.create_task(stop_soon())
+            await asyncio.wait_for(tm.run(), timeout=5.0)
+            await stop_task
+
+        lock_msgs = [
+            r for r in caplog.records
+            if "Another replica holds the leader lock" in r.message
+        ]
+        # Should log exactly once (on transition), not every poll cycle
+        assert len(lock_msgs) == 1
+        assert lock_msgs[0].levelno == logging.INFO
 
 
 # ---------------------------------------------------------------------------
