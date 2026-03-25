@@ -703,7 +703,7 @@ class TaskManager:
             try:
                 has_lock = await self._acquire_leader_lock()
                 if not has_lock:
-                    logger.debug("Another replica holds the leader lock, waiting...")
+                    logger.info("Another replica holds the leader lock, waiting...")
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=POLL_INTERVAL)
                     except TimeoutError:
@@ -761,7 +761,15 @@ class TaskManager:
                 # For SQLite (testing), skip advisory locks
                 if "sqlite" in sync_url:
                     return True
-                eng = create_sync_engine(sync_url)
+                eng = create_sync_engine(
+                    sync_url,
+                    connect_args={
+                        "keepalives": 1,
+                        "keepalives_idle": 10,
+                        "keepalives_interval": 10,
+                        "keepalives_count": 3,
+                    },
+                )
                 self._leader_connection = eng.raw_connection()
 
             try:

@@ -183,6 +183,57 @@ class TestLeaderElection:
         assert tm._leader_connection is None
         mock_conn.close.assert_called_once()
 
+    async def test_acquire_leader_lock_sets_tcp_keepalive(self):
+        """Sync engine is created with TCP keepalive connect_args."""
+        tm = TaskManager()
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (True,)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_engine.raw_connection.return_value = mock_conn
+
+        with patch.dict("os.environ", {"DATABASE_URL": "postgresql+asyncpg://user:pass@host/db"}), \
+             patch("task_manager.create_sync_engine", return_value=mock_engine) as mock_create:
+            result = await tm._acquire_leader_lock()
+
+        assert result is True
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args
+        connect_args = call_kwargs.kwargs.get("connect_args") or call_kwargs[1].get("connect_args")
+        assert connect_args == {
+            "keepalives": 1,
+            "keepalives_idle": 10,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        }
+
+    async def test_lock_wait_logs_at_info_level(self, caplog):
+        """Lock contention is logged at INFO level, not DEBUG."""
+        import logging
+
+        tm = TaskManager()
+        mock_runtime = MagicMock()
+        tm._runtime = mock_runtime
+
+        with patch.object(tm, "_acquire_leader_lock", AsyncMock(return_value=False)), \
+             patch("task_manager.create_runtime", return_value=mock_runtime), \
+             patch("task_manager.POLL_INTERVAL", 0.01), \
+             caplog.at_level(logging.INFO, logger="task_manager"):
+            # Run one iteration then stop
+            async def stop_soon():
+                await asyncio.sleep(0.05)
+                await tm.stop()
+            stop_task = asyncio.create_task(stop_soon())
+            await asyncio.wait_for(tm.run(), timeout=5.0)
+            await stop_task
+
+        assert any(
+            "Another replica holds the leader lock" in record.message
+            and record.levelno == logging.INFO
+            for record in caplog.records
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task 9.2 — Concurrency control
