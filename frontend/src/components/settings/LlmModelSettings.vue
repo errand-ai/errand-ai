@@ -48,6 +48,11 @@ function isReasoningModel(modelName: string, models: ModelInfo[]): boolean {
   return m?.supports_reasoning === true
 }
 
+function isNonReasoningModel(modelName: string, models: ModelInfo[]): boolean {
+  const m = models.find(item => item.id === modelName)
+  return m?.supports_reasoning === false
+}
+
 function getProvider(id: string): LlmProviderData | undefined {
   return props.providers.find(p => p.id === id)
 }
@@ -213,11 +218,11 @@ defineExpose({ isDirty })
         </select>
       </div>
       <p
-        v-if="isReasoningModel(taskModelName, taskModels)"
+        v-if="isNonReasoningModel(taskModelName, taskModels)"
         class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1"
-        data-testid="task-reasoning-warning"
+        data-testid="task-non-reasoning-warning"
       >
-        This is a reasoning model. It may be slower and less reliable for structured output tasks like title generation. Consider using a non-reasoning model.
+        This is not a reasoning model. Reasoning models are recommended for task processing to support complex workflows and tool calling. Consider using a reasoning model.
       </p>
     </div>
 

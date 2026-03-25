@@ -1088,6 +1088,56 @@ describe('SettingsPage', () => {
       expect(wrapper.find('[data-testid="llm-reasoning-warning"]').exists()).toBe(false)
     })
 
+    // --- Default Model non-reasoning warnings ---
+
+    it('shows non-reasoning warning when non-reasoning model selected for default model', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'llama3:8b', supports_reasoning: false, max_output_tokens: 4096 },
+        { id: 'deepseek-r1:8b', supports_reasoning: true, max_output_tokens: 8192 },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        task_processing_model: { provider_id: 'prov-1', model: 'llama3:8b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      const warning = wrapper.find('[data-testid="task-non-reasoning-warning"]')
+      expect(warning.exists()).toBe(true)
+      expect(warning.text()).toContain('not a reasoning model')
+    })
+
+    it('does not show non-reasoning warning when reasoning model selected for default model', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'deepseek-r1:8b', supports_reasoning: true, max_output_tokens: 8192 },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        task_processing_model: { provider_id: 'prov-1', model: 'deepseek-r1:8b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      expect(wrapper.find('[data-testid="task-non-reasoning-warning"]').exists()).toBe(false)
+    })
+
+    it('does not show non-reasoning warning for unknown model on default model', async () => {
+      vi.mocked(fetchProviders).mockResolvedValue([testProvider])
+      vi.mocked(fetchProviderModels).mockResolvedValue([
+        { id: 'custom-model:7b', supports_reasoning: null, max_output_tokens: null },
+      ])
+      fetchMock = mockSettingsAndSkills({
+        task_processing_model: { provider_id: 'prov-1', model: 'custom-model:7b' },
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/tasks')
+
+      expect(wrapper.find('[data-testid="task-non-reasoning-warning"]').exists()).toBe(false)
+    })
+
     // --- LLM Timeout ---
 
     it('renders LLM Timeout input with default value of 30', async () => {
