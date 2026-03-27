@@ -4,7 +4,7 @@ The MCP server exposes tools for creating tasks, checking individual task status
 
 ## What Changes
 
-- Add a `list_tasks` MCP tool that returns tasks currently visible on the board (i.e. not deleted or archived)
+- Add a `list_tasks` MCP tool that returns tasks currently visible on the board (i.e. excluding `new`, `deleted`, and `archived` statuses)
 - Support an optional `status` filter parameter to narrow results by task status (e.g. `scheduled`, `completed`, `running`)
 - Return a concise summary per task: UUID, title, and status (no description, to keep responses lightweight)
 

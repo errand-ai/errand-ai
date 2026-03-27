@@ -1,6 +1,6 @@
 ## Context
 
-The MCP server (`errand/mcp_server.py`) exposes task tools (`new_task`, `task_status`, `task_output`, `task_logs`, `schedule_task`) but has no way to list tasks. The REST API (`GET /api/tasks` in `main.py`) already provides this for the frontend Kanban board — it returns all non-deleted, non-archived tasks ordered by position/created_at, with completed tasks sorted by updated_at descending.
+The MCP server (`errand/mcp_server.py`) exposes task tools (`new_task`, `task_status`, `task_output`, `task_logs`, `schedule_task`) but has no way to list tasks. The REST API (`GET /api/tasks` in `main.py`) already provides this for the frontend Kanban board — it returns all board-visible tasks (excluding `new`, `deleted`, and `archived`) ordered by position/created_at, with completed tasks sorted by updated_at descending.
 
 All existing MCP tools follow the same pattern: `@mcp.tool()` async functions that open an `async_session()`, query the `Task` model, and return plain text strings (or JSON where structured data is needed).
 
@@ -20,7 +20,7 @@ All existing MCP tools follow the same pattern: `@mcp.tool()` async functions th
 
 1. **Return JSON, not plain text.** Other MCP tools return formatted strings, but a list of tasks is better served as JSON for machine consumption. This matches the `schedule_task` tool which already returns structured data.
 
-2. **Reuse the board query logic.** The default (no filter) should match what the board shows: all tasks except deleted and archived. When a status filter is provided, query only that status.
+2. **Reuse the board query logic.** The default (no filter) should match what the board shows: all tasks except `new`, `deleted`, and `archived`. When a status filter is provided, query only that status.
 
 3. **Single optional `status` parameter.** Accepts any valid task status string. Invalid values return an error message listing valid options. Valid board-visible statuses: `scheduled`, `pending`, `running`, `review`, `completed`.
 

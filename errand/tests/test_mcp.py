@@ -419,13 +419,14 @@ async def test_task_output_not_found(db_session):
 
 
 async def test_list_tasks_no_filter(db_session):
-    """list_tasks with no filter returns board-visible tasks (not deleted/archived)."""
+    """list_tasks with no filter returns board-visible tasks, excluding new/deleted/archived."""
     _, session_factory = db_session
 
     async with session_factory() as session:
-        session.add(Task(title="Pending task", status="pending", category="immediate"))
-        session.add(Task(title="Running task", status="running", category="immediate"))
+        session.add(Task(title="Pending task", status="pending", category="immediate", position=1))
+        session.add(Task(title="Running task", status="running", category="immediate", position=0))
         session.add(Task(title="Completed task", status="completed", category="immediate"))
+        session.add(Task(title="New task", status="new", category="immediate"))
         session.add(Task(title="Deleted task", status="deleted", category="immediate"))
         session.add(Task(title="Archived task", status="archived", category="immediate"))
         await session.commit()
@@ -434,13 +435,17 @@ async def test_list_tasks_no_filter(db_session):
     result = await list_tasks()
     tasks = json.loads(result)
     titles = [t["title"] for t in tasks]
-    assert "Pending task" in titles
     assert "Running task" in titles
+    assert "Pending task" in titles
     assert "Completed task" in titles
+    assert "New task" not in titles
     assert "Deleted task" not in titles
     assert "Archived task" not in titles
     for t in tasks:
         assert set(t.keys()) == {"id", "title", "status"}
+    # Active tasks ordered by position ASC, completed tasks at end
+    assert titles.index("Running task") < titles.index("Pending task")  # position 0 < 1
+    assert titles.index("Pending task") < titles.index("Completed task")  # active before completed
 
 
 async def test_list_tasks_filter_by_status(db_session):

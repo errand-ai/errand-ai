@@ -5,7 +5,7 @@ The MCP server must expose a `list_tasks` tool that returns tasks visible on the
 
 #### Scenario: List all board-visible tasks (no filter)
 - **WHEN** `list_tasks` is called with no parameters
-- **THEN** it returns a JSON string containing all tasks that are not deleted or archived
+- **THEN** it returns a JSON string containing all board-visible tasks (excluding `new`, `deleted`, and `archived` statuses)
 - **AND** each entry includes `id` (UUID string), `title`, and `status`
 - **AND** active tasks (non-completed) are ordered by position ASC, then created_at ASC
 - **AND** completed tasks appear after active tasks, ordered by updated_at DESC
