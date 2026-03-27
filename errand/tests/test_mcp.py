@@ -282,13 +282,13 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_fourteen_tools():
-    """The MCP server exposes exactly fourteen tools (6 original + 6 email + 2 search)."""
+async def test_mcp_server_has_fifteen_tools():
+    """The MCP server exposes exactly fifteen tools (7 task + 6 email + 2 search)."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
     assert tool_names == {
-        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "post_tweet",
+        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks", "post_tweet",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
     }
@@ -413,6 +413,68 @@ async def test_task_output_not_found(db_session):
     from mcp_server import task_output
     result = await task_output("00000000-0000-0000-0000-000000000000")
     assert "not found" in result.lower()
+
+
+# --- list_tasks MCP tool ---
+
+
+async def test_list_tasks_no_filter(db_session):
+    """list_tasks with no filter returns board-visible tasks (not deleted/archived)."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        session.add(Task(title="Pending task", status="pending", category="immediate"))
+        session.add(Task(title="Running task", status="running", category="immediate"))
+        session.add(Task(title="Completed task", status="completed", category="immediate"))
+        session.add(Task(title="Deleted task", status="deleted", category="immediate"))
+        session.add(Task(title="Archived task", status="archived", category="immediate"))
+        await session.commit()
+
+    from mcp_server import list_tasks
+    result = await list_tasks()
+    tasks = json.loads(result)
+    titles = [t["title"] for t in tasks]
+    assert "Pending task" in titles
+    assert "Running task" in titles
+    assert "Completed task" in titles
+    assert "Deleted task" not in titles
+    assert "Archived task" not in titles
+    for t in tasks:
+        assert set(t.keys()) == {"id", "title", "status"}
+
+
+async def test_list_tasks_filter_by_status(db_session):
+    """list_tasks with status filter returns only matching tasks."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        session.add(Task(title="Scheduled one", status="scheduled", category="immediate"))
+        session.add(Task(title="Scheduled two", status="scheduled", category="immediate"))
+        session.add(Task(title="Running one", status="running", category="immediate"))
+        await session.commit()
+
+    from mcp_server import list_tasks
+    result = await list_tasks(status="scheduled")
+    tasks = json.loads(result)
+    assert len(tasks) == 2
+    assert all(t["status"] == "scheduled" for t in tasks)
+
+
+async def test_list_tasks_invalid_status(db_session):
+    """list_tasks with invalid status returns an error message."""
+    from mcp_server import list_tasks
+    result = await list_tasks(status="bogus")
+    assert "Error" in result
+    assert "bogus" in result
+    assert "scheduled" in result  # lists valid options
+
+
+async def test_list_tasks_empty_result(db_session):
+    """list_tasks returns empty JSON array when no tasks match."""
+    from mcp_server import list_tasks
+    result = await list_tasks()
+    tasks = json.loads(result)
+    assert tasks == []
 
 
 # --- task_logs MCP tool ---

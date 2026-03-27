@@ -193,6 +193,44 @@ async def task_logs(task_id: str) -> str:
         return task.runner_logs
 
 
+BOARD_STATUSES = ["scheduled", "pending", "running", "review", "completed"]
+
+
+@mcp.tool()
+async def list_tasks(status: str | None = None) -> str:
+    """List tasks visible on the board. Returns JSON array of {id, title, status}.
+
+    Args:
+        status: Optional filter by task status (e.g. 'scheduled', 'completed').
+    """
+    if status is not None and status not in BOARD_STATUSES:
+        return f"Error: Invalid status '{status}'. Must be one of: {', '.join(BOARD_STATUSES)}"
+
+    async with async_session() as session:
+        if status is not None:
+            if status == "completed":
+                result = await session.execute(
+                    select(Task).where(Task.status == status).order_by(Task.updated_at.desc())
+                )
+            else:
+                result = await session.execute(
+                    select(Task).where(Task.status == status).order_by(Task.position.asc(), Task.created_at.asc())
+                )
+            tasks = list(result.scalars().all())
+        else:
+            active = await session.execute(
+                select(Task)
+                .where(Task.status.not_in(["new", "deleted", "archived"]), Task.status != "completed")
+                .order_by(Task.position.asc(), Task.created_at.asc())
+            )
+            completed = await session.execute(
+                select(Task).where(Task.status == "completed").order_by(Task.updated_at.desc())
+            )
+            tasks = list(active.scalars().all()) + list(completed.scalars().all())
+
+        return json.dumps([{"id": str(t.id), "title": t.title, "status": t.status} for t in tasks])
+
+
 @mcp.tool()
 async def schedule_task(
     description: str,
