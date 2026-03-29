@@ -384,3 +384,14 @@ def test_submit_result_last_call_wins():
     submit_result(wrapper, result="Final version")
 
     assert ctx.submitted_result["result"] == "Final version"
+
+
+def test_submit_result_rejects_invalid_status():
+    """submit_result returns error message for invalid status values."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = submit_result(wrapper, result="Some output", status="invalid")
+
+    assert "Invalid status" in result
+    assert ctx.submitted_result is None  # not stored

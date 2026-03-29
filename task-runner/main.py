@@ -628,6 +628,43 @@ def _classify_error(exc: Exception) -> str:
 MAX_AGENT_RETRIES = 3
 AGENT_RETRY_BASE_DELAY = 2  # seconds
 
+# Return type tags for extract_output
+_OUTPUT = "output"        # got a result
+_NUDGE = "nudge"          # should nudge and retry
+_EMPTY_FAIL = "empty_fail"  # empty output, should fail
+
+
+def extract_output(submitted_result: dict | None, raw_text: str, new_items: list, nudge_attempted: bool) -> tuple[str, str | None]:
+    """Extract task output using priority: submit_result > text JSON > raw text > nudge > fail.
+
+    Returns (tag, output_json) where tag is one of _OUTPUT, _NUDGE, _EMPTY_FAIL.
+    For _OUTPUT, output_json is the JSON string to emit.
+    For _NUDGE and _EMPTY_FAIL, output_json is None.
+    """
+    # Priority 1: submit_result tool call
+    if submitted_result is not None:
+        return _OUTPUT, json.dumps(submitted_result)
+
+    # Priority 2: text-based JSON fallback (backward compat)
+    if raw_text.strip():
+        parsed = extract_json(raw_text)
+        if parsed:
+            return _OUTPUT, TaskRunnerOutput(**parsed).model_dump_json()
+
+    # Priority 3: raw text fallback
+    if raw_text.strip():
+        return _OUTPUT, json.dumps({"status": "completed", "result": raw_text, "questions": []})
+
+    # Priority 4: empty response — check for nudge opportunity
+    tool_call_items = [
+        item for item in new_items
+        if getattr(item, "type", None) == "tool_call_output_item"
+    ]
+    if tool_call_items and not nudge_attempted:
+        return _NUDGE, None
+
+    return _EMPTY_FAIL, None
+
 
 async def main():
     # 1. Read and validate environment variables
@@ -716,6 +753,7 @@ async def main():
 
         attempt = 0
         nudge_attempted = False
+        original_user_prompt = user_prompt
         while attempt < MAX_AGENT_RETRIES:
             attempt += 1
             try:
@@ -769,52 +807,27 @@ async def main():
                 if tool_call_count:
                     logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
 
-                # Extract output using priority: submit_result > text JSON > raw text > empty
+                # Extract output using priority: submit_result > text JSON > raw text > nudge > fail
                 final_output = result.final_output
                 raw_text = str(final_output) if final_output else ""
-                output = None
 
-                # Priority 1: submit_result tool call
-                if visibility_ctx.submitted_result is not None:
-                    output = json.dumps(visibility_ctx.submitted_result)
-                    logger.info("Output from submit_result tool call")
+                tag, output = extract_output(
+                    visibility_ctx.submitted_result, raw_text, result.new_items, nudge_attempted,
+                )
 
-                # Priority 2: text-based JSON fallback (backward compat)
-                if output is None and raw_text.strip():
-                    parsed = extract_json(raw_text)
-                    if parsed:
-                        output = TaskRunnerOutput(**parsed).model_dump_json()
-                        logger.info("Output from text JSON extraction")
+                if tag == _NUDGE:
+                    nudge_attempted = True
+                    logger.info("Empty output after tool calls — nudging agent to call submit_result")
+                    nudge_msg = (
+                        "You completed your work but didn't deliver the result to the user. "
+                        "Call submit_result now with a comprehensive summary of what you found or accomplished."
+                    )
+                    user_prompt = original_user_prompt + "\n\n" + nudge_msg
+                    visibility_ctx.submitted_result = None
+                    attempt -= 1  # nudge does not count toward retry limit
+                    continue
 
-                # Priority 3: raw text fallback
-                if output is None and raw_text.strip():
-                    output = json.dumps({
-                        "status": "completed",
-                        "result": raw_text,
-                        "questions": [],
-                    })
-                    logger.info("Output from raw text fallback")
-
-                # Priority 4: empty response — try nudge
-                if output is None:
-                    # Check if agent called any tools during the run
-                    tool_call_items = [
-                        item for item in result.new_items
-                        if getattr(item, "type", None) == "tool_call_output_item"
-                    ]
-                    if tool_call_items and not nudge_attempted:
-                        nudge_attempted = True
-                        logger.info("Empty output after %d tool calls — nudging agent to call submit_result", len(tool_call_items))
-                        user_prompt = (
-                            "You completed your work but didn't deliver the result to the user. "
-                            "Call submit_result now with a comprehensive summary of what you found or accomplished."
-                        )
-                        # Reset submitted_result for the nudge attempt
-                        visibility_ctx.submitted_result = None
-                        attempt -= 1  # nudge does not count toward retry limit
-                        continue  # re-run agent with nudge message
-
-                    # No tools called, or nudge already attempted — fail
+                if tag == _EMPTY_FAIL:
                     emit_event("error", {
                         "message": "LLM returned empty response",
                         "error_type": "empty_response",
