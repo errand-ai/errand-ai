@@ -23,6 +23,7 @@ from main import (
     _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
     connect_mcp_servers, resolve_max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS,
     _TRUNCATION_RECOVERY_MESSAGE,
+    extract_output, _OUTPUT, _NUDGE, _EMPTY_FAIL,
 )
 
 
@@ -1237,3 +1238,82 @@ def test_structured_json_response_not_treated_as_empty():
     payload = json.loads(output)
     assert payload["status"] == "completed"
     assert payload["result"] == "Task done"
+
+
+# --- Output extraction priority (submit_result integration) ---
+# All tests below call the real extract_output() helper from main.py.
+
+
+def test_output_extraction_submit_result_preferred_over_text():
+    """submit_result output is used even when text JSON is also present."""
+    submitted = {"status": "completed", "result": "Tool result", "questions": []}
+    raw_text = '{"status": "completed", "result": "Text result", "questions": []}'
+
+    tag, output = extract_output(submitted, raw_text, new_items=[], nudge_attempted=False)
+
+    assert tag == _OUTPUT
+    payload = json.loads(output)
+    assert payload["result"] == "Tool result"
+
+
+def test_output_extraction_text_json_fallback():
+    """Text JSON is used when submit_result was not called."""
+    raw_text = '{"status": "completed", "result": "Some findings", "questions": []}'
+
+    tag, output = extract_output(None, raw_text, new_items=[], nudge_attempted=False)
+
+    assert tag == _OUTPUT
+    payload = json.loads(output)
+    assert payload["result"] == "Some findings"
+
+
+def test_output_extraction_raw_text_fallback():
+    """Raw text is wrapped when no JSON is available and submit_result not called."""
+    tag, output = extract_output(None, "Here are the results...", new_items=[], nudge_attempted=False)
+
+    assert tag == _OUTPUT
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Here are the results..."
+
+
+def test_output_extraction_empty_triggers_nudge_when_tools_called():
+    """Empty output with tool calls triggers nudge (not immediate failure)."""
+    tool_call_item = MagicMock()
+    tool_call_item.type = "tool_call_output_item"
+
+    tag, output = extract_output(None, "", new_items=[tool_call_item], nudge_attempted=False)
+
+    assert tag == _NUDGE
+    assert output is None
+
+
+def test_output_extraction_no_nudge_without_tool_calls():
+    """Empty output with no tool calls goes straight to failure (no nudge)."""
+    tag, output = extract_output(None, "", new_items=[], nudge_attempted=False)
+
+    assert tag == _EMPTY_FAIL
+    assert output is None
+
+
+def test_nudge_capped_at_one_attempt():
+    """Nudge is only attempted once — second empty output goes to failure."""
+    tool_call_item = MagicMock()
+    tool_call_item.type = "tool_call_output_item"
+
+    tag, output = extract_output(None, "", new_items=[tool_call_item], nudge_attempted=True)
+
+    assert tag == _EMPTY_FAIL
+    assert output is None
+
+
+def test_backward_compat_text_json_without_submit_result():
+    """Text-based JSON output still works when submit_result is not called."""
+    raw_text = '{"status": "completed", "result": "Legacy output format", "questions": []}'
+
+    tag, output = extract_output(None, raw_text, new_items=[], nudge_attempted=False)
+
+    assert tag == _OUTPUT
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Legacy output format"

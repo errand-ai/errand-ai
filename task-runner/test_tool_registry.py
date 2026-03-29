@@ -15,6 +15,7 @@ from tool_registry import (
     create_tool_filter,
     discover_tools,
     get_hot_list,
+    submit_result,
     _truncate_description,
     DEFAULT_HOT_TOOLS,
 )
@@ -326,3 +327,71 @@ async def test_lazy_loading_integration():
     sync_tool = MagicMock()
     sync_tool.name = "sync_application"
     assert filter_fn(filter_context, sync_tool) is True
+
+
+# --- submit_result ---
+
+
+def test_submit_result_stores_in_context():
+    """submit_result stores result in context and returns confirmation."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = submit_result(wrapper, result="# Report\n\nFindings here...", status="completed")
+
+    assert result == "Result submitted successfully. You may now stop."
+    assert ctx.submitted_result == {
+        "status": "completed",
+        "result": "# Report\n\nFindings here...",
+        "questions": [],
+    }
+
+
+def test_submit_result_needs_input():
+    """submit_result stores needs_input status with questions."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = submit_result(
+        wrapper,
+        result="Partial findings so far...",
+        status="needs_input",
+        questions=["What date range?", "Which department?"],
+    )
+
+    assert result == "Result submitted successfully. You may now stop."
+    assert ctx.submitted_result["status"] == "needs_input"
+    assert ctx.submitted_result["questions"] == ["What date range?", "Which department?"]
+
+
+def test_submit_result_defaults():
+    """submit_result uses default status and empty questions."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Done")
+
+    assert ctx.submitted_result["status"] == "completed"
+    assert ctx.submitted_result["questions"] == []
+
+
+def test_submit_result_last_call_wins():
+    """Multiple submit_result calls — last call wins."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Draft 1")
+    submit_result(wrapper, result="Final version")
+
+    assert ctx.submitted_result["result"] == "Final version"
+
+
+def test_submit_result_rejects_invalid_status():
+    """submit_result returns error message for invalid status values."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = submit_result(wrapper, result="Some output", status="invalid")
+
+    assert "Invalid status" in result
+    assert ctx.submitted_result is None  # not stored

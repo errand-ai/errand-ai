@@ -1,8 +1,4 @@
-## Purpose
-
-Internal HTTP endpoint for task runners to push structured output with one-time token authentication via Valkey.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Internal result callback endpoint
 
