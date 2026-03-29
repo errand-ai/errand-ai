@@ -1237,3 +1237,176 @@ def test_structured_json_response_not_treated_as_empty():
     payload = json.loads(output)
     assert payload["status"] == "completed"
     assert payload["result"] == "Task done"
+
+
+# --- Output extraction priority (submit_result integration) ---
+
+
+def test_output_extraction_submit_result_preferred_over_text():
+    """submit_result output is used even when text JSON is also present."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    ctx.submitted_result = {"status": "completed", "result": "Tool result", "questions": []}
+    raw_text = '{"status": "completed", "result": "Text result", "questions": []}'
+
+    # Priority 1: submit_result
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+
+    # Priority 2 would check raw_text — but should not be reached
+    payload = json.loads(output)
+    assert payload["result"] == "Tool result"
+
+
+def test_output_extraction_text_json_fallback():
+    """Text JSON is used when submit_result was not called."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    # submitted_result is None by default
+    raw_text = '{"status": "completed", "result": "Some findings", "questions": []}'
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+
+    if output is None and raw_text.strip():
+        parsed = extract_json(raw_text)
+        if parsed:
+            output = TaskRunnerOutput(**parsed).model_dump_json()
+
+    payload = json.loads(output)
+    assert payload["result"] == "Some findings"
+
+
+def test_output_extraction_raw_text_fallback():
+    """Raw text is wrapped when no JSON is available and submit_result not called."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    raw_text = "Here are the results..."
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+    if output is None and raw_text.strip():
+        parsed = extract_json(raw_text)
+        if parsed:
+            output = TaskRunnerOutput(**parsed).model_dump_json()
+    if output is None and raw_text.strip():
+        output = json.dumps({"status": "completed", "result": raw_text, "questions": []})
+
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Here are the results..."
+
+
+def test_output_extraction_empty_triggers_nudge_when_tools_called():
+    """Empty output with tool calls triggers nudge (not immediate failure)."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    raw_text = ""
+    nudge_attempted = False
+
+    # Simulate tool_call_output_items in result.new_items
+    tool_call_item = MagicMock()
+    tool_call_item.type = "tool_call_output_item"
+    new_items = [tool_call_item]
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+    if output is None and raw_text.strip():
+        parsed = extract_json(raw_text)
+        if parsed:
+            output = TaskRunnerOutput(**parsed).model_dump_json()
+    if output is None and raw_text.strip():
+        output = json.dumps({"status": "completed", "result": raw_text, "questions": []})
+
+    # Empty path
+    should_nudge = False
+    if output is None:
+        tool_call_items = [i for i in new_items if getattr(i, "type", None) == "tool_call_output_item"]
+        if tool_call_items and not nudge_attempted:
+            should_nudge = True
+
+    assert should_nudge is True
+
+
+def test_output_extraction_no_nudge_without_tool_calls():
+    """Empty output with no tool calls goes straight to failure (no nudge)."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    raw_text = ""
+    nudge_attempted = False
+    new_items = []  # no tools called
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+
+    should_nudge = False
+    should_fail = False
+    if output is None:
+        tool_call_items = [i for i in new_items if getattr(i, "type", None) == "tool_call_output_item"]
+        if tool_call_items and not nudge_attempted:
+            should_nudge = True
+        else:
+            should_fail = True
+
+    assert should_nudge is False
+    assert should_fail is True
+
+
+def test_nudge_capped_at_one_attempt():
+    """Nudge is only attempted once — second empty output goes to failure."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    raw_text = ""
+    nudge_attempted = True  # already nudged once
+
+    tool_call_item = MagicMock()
+    tool_call_item.type = "tool_call_output_item"
+    new_items = [tool_call_item]
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+
+    should_nudge = False
+    should_fail = False
+    if output is None:
+        tool_call_items = [i for i in new_items if getattr(i, "type", None) == "tool_call_output_item"]
+        if tool_call_items and not nudge_attempted:
+            should_nudge = True
+        else:
+            should_fail = True
+
+    assert should_nudge is False
+    assert should_fail is True
+
+
+def test_backward_compat_text_json_without_submit_result():
+    """Text-based JSON output still works when submit_result is not called."""
+    from tool_registry import ToolVisibilityContext
+
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    raw_text = '{"status": "completed", "result": "Legacy output format", "questions": []}'
+
+    output = None
+    if ctx.submitted_result is not None:
+        output = json.dumps(ctx.submitted_result)
+    if output is None and raw_text.strip():
+        parsed = extract_json(raw_text)
+        if parsed:
+            output = TaskRunnerOutput(**parsed).model_dump_json()
+
+    assert output is not None
+    payload = json.loads(output)
+    assert payload["status"] == "completed"
+    assert payload["result"] == "Legacy output format"

@@ -16,10 +16,11 @@ DEFAULT_HOT_TOOLS = {"web_search", "fetch_url", "retain", "recall"}
 
 @dataclass
 class ToolVisibilityContext:
-    """Tracks which MCP tools are visible to the agent."""
+    """Tracks which MCP tools are visible to the agent and submitted result state."""
 
     enabled_tools: set[str] = field(default_factory=set)
     all_known_tools: set[str] = field(default_factory=set)
+    submitted_result: dict | None = None
 
 
 def get_hot_list() -> set[str]:
@@ -92,6 +93,27 @@ async def build_tool_catalog(servers: list, hot_list: set[str]) -> tuple[str, se
     header = "IMPORTANT: The tools listed below are NOT yet enabled. You MUST call discover_tools with the tool name(s) BEFORE you can use them. Calling a tool without discovering it first will cause an error. Discover all tools you need in a single call."
     catalog = "<available_mcp_tools>\n" + header + "\n" + "\n".join(deferred_lines) + "\n</available_mcp_tools>"
     return catalog, all_known_tools
+
+
+@function_tool
+def submit_result(ctx: RunContextWrapper[ToolVisibilityContext], result: str, status: str = "completed", questions: list[str] | None = None) -> str:
+    """Submit the task result to the user. Call this when you have completed your work.
+
+    This is the primary way to deliver your output. The result field is the ONLY output
+    the user will see — include the full content (text, code, analysis, etc.) with markdown
+    formatting. If called multiple times, only the last call is used.
+
+    Args:
+        result: The full task output with markdown formatting.
+        status: Either "completed" or "needs_input". Defaults to "completed".
+        questions: Follow-up questions when status is "needs_input". Defaults to [].
+    """
+    ctx.context.submitted_result = {
+        "status": status,
+        "result": result,
+        "questions": questions or [],
+    }
+    return "Result submitted successfully. You may now stop."
 
 
 @function_tool

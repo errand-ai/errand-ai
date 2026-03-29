@@ -23,7 +23,7 @@ from agents.mcp import MCPServerStreamableHttp
 from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
-from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list
+from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, submit_result
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -191,13 +191,25 @@ class TaskRunnerOutput(BaseModel):
 
 OUTPUT_INSTRUCTIONS = """
 
-When you have completed the task, respond with ONLY a JSON object (no markdown, no extra text):
-{"status": "completed", "result": "<your detailed result>", "questions": []}
+## Delivering Your Result
 
-IMPORTANT: The "result" field is the ONLY output the user will see. You MUST include the full content you produced (text, code, analysis, creative writing, etc.) directly in the "result" field. Do NOT just describe what you did — include the actual content. Use markdown formatting for readability.
+When you have completed your work, you MUST deliver the result using the `submit_result` tool:
 
-If you need more information, respond with:
-{"status": "needs_input", "result": "<what you've done so far>", "questions": ["<question 1>", "<question 2>"]}
+1. **First**, call `retain()` to save key findings to persistent memory for future tasks.
+2. **Then**, call `submit_result(result="<your detailed result>", status="completed")` to deliver the output to the user.
+
+The `result` field is the ONLY output the user will see. Include the full content you produced (text, code, analysis, creative writing, etc.) directly in the result. Use markdown formatting for readability. Do NOT just describe what you did — include the actual content.
+
+If you need more information from the user:
+  submit_result(result="<what you've done so far>", status="needs_input", questions=["<question 1>", "<question 2>"])
+
+IMPORTANT — `retain` vs `submit_result`:
+- `retain()` saves information to persistent memory for FUTURE tasks. It does NOT deliver output to the user.
+- `submit_result()` delivers the result to the user and completes the current task. This is your primary output mechanism.
+
+Calling `retain` without `submit_result` means the user gets nothing. Always call `submit_result` when you are done.
+
+Fallback: If `submit_result` is unavailable, respond with a JSON object: {"status": "completed", "result": "...", "questions": []}
 """
 
 
@@ -677,7 +689,7 @@ async def main():
             name="TaskRunner",
             instructions=full_instructions,
             model=env["OPENAI_MODEL"],
-            tools=[execute_command, discover_tools],
+            tools=[execute_command, discover_tools, submit_result],
             mcp_servers=mcp_servers if mcp_servers else [],
             model_settings=ModelSettings(
                 max_tokens=max_output_tokens,
@@ -703,6 +715,7 @@ async def main():
         )
 
         attempt = 0
+        nudge_attempted = False
         while attempt < MAX_AGENT_RETRIES:
             attempt += 1
             try:
@@ -756,12 +769,52 @@ async def main():
                 if tool_call_count:
                     logger.info("TOOL_SUMMARY total_tool_calls=%d", tool_call_count)
 
-                # Parse structured output from agent's final text response
+                # Extract output using priority: submit_result > text JSON > raw text > empty
                 final_output = result.final_output
                 raw_text = str(final_output) if final_output else ""
+                output = None
 
-                # Detect empty LLM response (content lost in translation, model misconfiguration, etc.)
-                if not raw_text.strip():
+                # Priority 1: submit_result tool call
+                if visibility_ctx.submitted_result is not None:
+                    output = json.dumps(visibility_ctx.submitted_result)
+                    logger.info("Output from submit_result tool call")
+
+                # Priority 2: text-based JSON fallback (backward compat)
+                if output is None and raw_text.strip():
+                    parsed = extract_json(raw_text)
+                    if parsed:
+                        output = TaskRunnerOutput(**parsed).model_dump_json()
+                        logger.info("Output from text JSON extraction")
+
+                # Priority 3: raw text fallback
+                if output is None and raw_text.strip():
+                    output = json.dumps({
+                        "status": "completed",
+                        "result": raw_text,
+                        "questions": [],
+                    })
+                    logger.info("Output from raw text fallback")
+
+                # Priority 4: empty response — try nudge
+                if output is None:
+                    # Check if agent called any tools during the run
+                    tool_call_items = [
+                        item for item in result.new_items
+                        if getattr(item, "type", None) == "tool_call_output_item"
+                    ]
+                    if tool_call_items and not nudge_attempted:
+                        nudge_attempted = True
+                        logger.info("Empty output after %d tool calls — nudging agent to call submit_result", len(tool_call_items))
+                        user_prompt = (
+                            "You completed your work but didn't deliver the result to the user. "
+                            "Call submit_result now with a comprehensive summary of what you found or accomplished."
+                        )
+                        # Reset submitted_result for the nudge attempt
+                        visibility_ctx.submitted_result = None
+                        attempt -= 1  # nudge does not count toward retry limit
+                        continue  # re-run agent with nudge message
+
+                    # No tools called, or nudge already attempted — fail
                     emit_event("error", {
                         "message": "LLM returned empty response",
                         "error_type": "empty_response",
@@ -778,17 +831,6 @@ async def main():
                     post_result_callback(failed_output)
                     write_output_file(failed_output)
                     sys.exit(1)
-
-                parsed = extract_json(raw_text)
-                if parsed:
-                    output = TaskRunnerOutput(**parsed).model_dump_json()
-                else:
-                    # Fallback: wrap raw output as completed
-                    output = json.dumps({
-                        "status": "completed",
-                        "result": raw_text,
-                        "questions": [],
-                    })
 
                 # Output to stdout
                 print(output)
