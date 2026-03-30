@@ -137,12 +137,16 @@ async def handle_jira_webhook(trigger: WebhookTrigger, body: bytes, headers: dic
     """Process a Jira webhook payload for a matched trigger."""
     payload = parse_jira_payload(body)
     if not payload:
+        logger.info("Jira webhook payload could not be parsed for trigger %s", trigger.id)
         return
 
     if not evaluate_filters(trigger, payload):
-        logger.debug(
-            "Jira webhook %s did not pass filters for trigger %s",
+        logger.info(
+            "Jira webhook %s did not pass filters for trigger %s "
+            "(event=%s, issue_type=%s, labels=%s, project=%s)",
             payload["issue_key"], trigger.id,
+            payload["event"], payload["issue_type"],
+            payload["labels"], payload["project_key"],
         )
         return
 
