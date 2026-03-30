@@ -75,7 +75,7 @@ onMounted(loadStatus)
 </script>
 
 <template>
-  <div class="rounded-lg bg-white p-6 shadow" data-testid="jira-credential-card">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="jira-credential-card">
     <div class="flex items-center justify-between mb-4">
       <h3 class="text-lg font-semibold text-gray-800">Jira</h3>
       <span
