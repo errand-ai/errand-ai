@@ -1,18 +1,18 @@
 """Tests for Jira webhook handler."""
 
 import json
-import os
+import json
 import uuid
 
 import pytest
+
+from unittest.mock import MagicMock
+from platforms.jira.handler import parse_jira_payload, evaluate_filters
 
 
 @pytest.fixture(autouse=True)
 def _ensure_encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "QqXQtnJMYRkG519FlL64LIGn3R_DvpZfeGgrWcHJV_w=")
-
-from unittest.mock import MagicMock
-from platforms.jira.handler import parse_jira_payload, evaluate_filters, _label_just_added
 
 
 def _make_payload(

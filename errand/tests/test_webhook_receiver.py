@@ -2,12 +2,10 @@
 
 import hashlib
 import hmac
-import os
 import uuid
 
 import pytest
 from unittest.mock import AsyncMock, patch
-from platforms.credentials import encrypt
 
 
 @pytest.fixture(autouse=True)

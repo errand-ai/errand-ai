@@ -1,18 +1,17 @@
 """Tests for ExternalStatusUpdater."""
 
-import os
 import uuid
 
 import pytest
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from external_status_updater import _dispatch_jira
 
 
 @pytest.fixture(autouse=True)
 def _ensure_encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "QqXQtnJMYRkG519FlL64LIGn3R_DvpZfeGgrWcHJV_w=")
-
-from unittest.mock import AsyncMock, MagicMock, patch
-
-from external_status_updater import _process_task_event, _dispatch_jira
 
 
 def _make_ref(external_id="PROJ-123", source="jira", trigger_id=None):

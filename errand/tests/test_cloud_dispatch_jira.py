@@ -1,14 +1,13 @@
 """Tests for Jira cloud dispatch routing."""
 
-import os
 import pytest
+
+from unittest.mock import AsyncMock, patch, MagicMock
 
 
 @pytest.fixture(autouse=True)
 def _ensure_encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "QqXQtnJMYRkG519FlL64LIGn3R_DvpZfeGgrWcHJV_w=")
-
-from unittest.mock import AsyncMock, patch, MagicMock
 from cloud_dispatch import dispatch_cloud_webhook
 
 

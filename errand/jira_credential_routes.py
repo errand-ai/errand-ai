@@ -108,7 +108,16 @@ async def get_jira_credential_status(
             "last_verified_at": None,
         }
 
-    cred_data = decrypt(cred.encrypted_data)
+    try:
+        cred_data = decrypt(cred.encrypted_data)
+    except Exception:
+        logger.warning("Failed to decrypt Jira credentials, reporting as disconnected")
+        return {
+            "platform_id": JIRA_PLATFORM_ID,
+            "status": "error",
+            "site_url": None,
+            "last_verified_at": None,
+        }
     return {
         "platform_id": JIRA_PLATFORM_ID,
         "status": cred.status,

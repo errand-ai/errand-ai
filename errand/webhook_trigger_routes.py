@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.exc import IntegrityError
+
 from database import get_session
 from models import WebhookTrigger
 from platforms.credentials import encrypt as encrypt_secret
@@ -139,7 +141,7 @@ async def create_trigger(
         name=body.name,
         source=body.source,
         enabled=body.enabled,
-        profile_id=uuid.UUID(body.profile_id) if body.profile_id else None,
+        profile_id=_parse_uuid(body.profile_id, "profile_id") if body.profile_id else None,
         filters=body.filters,
         actions=body.actions,
         task_prompt=body.task_prompt,
@@ -148,7 +150,7 @@ async def create_trigger(
     session.add(trigger)
     try:
         await session.commit()
-    except Exception:
+    except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail="A trigger with this name already exists")
     await session.refresh(trigger)
@@ -190,13 +192,13 @@ async def update_trigger(
         if field == "webhook_secret":
             setattr(trigger, field, encrypt_secret({"secret": value}) if value else None)
         elif field == "profile_id":
-            setattr(trigger, field, uuid.UUID(value) if value else None)
+            setattr(trigger, field, _parse_uuid(value, "profile_id") if value else None)
         else:
             setattr(trigger, field, value)
 
     try:
         await session.commit()
-    except Exception:
+    except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail="A trigger with this name already exists")
     await session.refresh(trigger)

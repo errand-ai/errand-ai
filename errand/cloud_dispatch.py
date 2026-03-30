@@ -50,7 +50,7 @@ async def _dispatch_jira_webhook(body: bytes, headers: dict, trigger_id: str | N
     import uuid
     from sqlalchemy import select
     from models import WebhookTrigger
-    from webhook_receiver import find_matching_trigger, _verify_hmac
+    from webhook_receiver import _verify_hmac
     from platforms.credentials import decrypt
 
     try:
@@ -75,7 +75,10 @@ async def _dispatch_jira_webhook(body: bytes, headers: dict, trigger_id: str | N
 
     # Re-verify HMAC for defense in depth
     signature = headers.get("x-hub-signature", headers.get("X-Hub-Signature", ""))
-    if signature and trigger.webhook_secret:
+    if trigger.webhook_secret:
+        if not signature:
+            logger.warning("Trigger %s has a secret but relay message has no signature, discarding", trigger_id)
+            return
         try:
             cred_data = decrypt(trigger.webhook_secret)
             secret = cred_data.get("secret", "")

@@ -20,6 +20,7 @@ const jiraConnected = ref(false)
 // Form state
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
+const editingTrigger = ref<WebhookTrigger | null>(null)
 const saving = ref(false)
 
 const formName = ref('')
@@ -74,6 +75,7 @@ async function loadData() {
 
 function resetForm() {
   editingId.value = null
+  editingTrigger.value = null
   formName.value = ''
   formSource.value = 'jira'
   formEnabled.value = true
@@ -100,6 +102,7 @@ function openCreate() {
 
 function openEdit(trigger: WebhookTrigger) {
   editingId.value = trigger.id
+  editingTrigger.value = trigger
   formName.value = trigger.name
   formSource.value = trigger.source
   formEnabled.value = trigger.enabled
@@ -512,7 +515,7 @@ onMounted(loadData)
         </button>
         <button
           v-if="isEditing"
-          @click="confirmDelete(triggers.find((t) => t.id === editingId)!)"
+          @click="editingTrigger && confirmDelete(editingTrigger)"
           class="ml-auto rounded-md border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
           data-testid="trigger-delete-btn"
         >

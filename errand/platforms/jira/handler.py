@@ -6,10 +6,8 @@ creates errand tasks with external references on match.
 
 import json
 import logging
-import uuid
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session
 from models import ExternalTaskRef, Tag, Task, WebhookTrigger, task_tags

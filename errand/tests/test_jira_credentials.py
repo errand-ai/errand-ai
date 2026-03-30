@@ -1,6 +1,5 @@
 """Tests for Jira platform credential API routes."""
 
-import os
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
