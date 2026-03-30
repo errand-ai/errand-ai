@@ -74,8 +74,11 @@ def evaluate_filters(trigger: WebhookTrigger, payload: dict) -> bool:
             if not any(lbl in trigger_labels for lbl in payload["labels"]):
                 return False
         elif payload["event"] == "jira:issue_updated":
-            # On update: check changelog for label addition
-            if not _label_just_added(payload, trigger_labels):
+            # On update: match if the label was just added in this change,
+            # OR if the label is already present on the issue
+            label_present = any(lbl in trigger_labels for lbl in payload["labels"])
+            label_added = _label_just_added(payload, trigger_labels)
+            if not label_present and not label_added:
                 return False
         else:
             # Other events: check current labels

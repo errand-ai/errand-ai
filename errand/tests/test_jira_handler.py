@@ -140,7 +140,8 @@ class TestEvaluateFilters:
         ))
         assert evaluate_filters(trigger, payload) is True
 
-    def test_labels_no_match_on_update_already_existed(self):
+    def test_labels_match_on_update_label_already_present(self):
+        """Label is on the issue but this update changed something else — should still match."""
         changelog = {
             "items": [{"field": "summary", "fromString": "old", "toString": "new"}]
         }
@@ -148,6 +149,19 @@ class TestEvaluateFilters:
         payload = parse_jira_payload(_make_payload(
             event="jira:issue_updated",
             labels=["errand"],
+            changelog=changelog,
+        ))
+        assert evaluate_filters(trigger, payload) is True
+
+    def test_labels_no_match_on_update_label_absent(self):
+        """Label is NOT on the issue and was not added in this change — should not match."""
+        changelog = {
+            "items": [{"field": "summary", "fromString": "old", "toString": "new"}]
+        }
+        trigger = _make_trigger(filters={"labels": ["errand"]})
+        payload = parse_jira_payload(_make_payload(
+            event="jira:issue_updated",
+            labels=["backend"],
             changelog=changelog,
         ))
         assert evaluate_filters(trigger, payload) is False
