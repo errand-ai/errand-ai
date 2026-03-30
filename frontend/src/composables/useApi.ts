@@ -475,3 +475,119 @@ export async function upsertEmailGenerator(data: {
   if (!res.ok) throw new Error(`Failed to save email generator: ${res.status}`)
   return res.json()
 }
+
+// --- Webhook Triggers ---
+
+export interface WebhookTrigger {
+  id: string
+  name: string
+  source: string
+  enabled: boolean
+  profile_id: string | null
+  filters: Record<string, string[]>
+  actions: Record<string, string | boolean>
+  task_prompt: string | null
+  has_secret: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function fetchWebhookTriggers(): Promise<WebhookTrigger[]> {
+  const res = await authFetch(`${BASE}/webhook-triggers`)
+  if (!res.ok) throw new Error(`Failed to fetch webhook triggers: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchWebhookTrigger(id: string): Promise<WebhookTrigger> {
+  const res = await authFetch(`${BASE}/webhook-triggers/${id}`)
+  if (!res.ok) throw new Error(`Failed to fetch webhook trigger: ${res.status}`)
+  return res.json()
+}
+
+export async function createWebhookTrigger(data: {
+  name: string
+  source: string
+  enabled?: boolean
+  profile_id?: string | null
+  filters?: Record<string, string[]>
+  actions?: Record<string, string | boolean>
+  task_prompt?: string | null
+  webhook_secret?: string | null
+}): Promise<WebhookTrigger> {
+  const res = await authFetch(`${BASE}/webhook-triggers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to create webhook trigger: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateWebhookTrigger(id: string, data: Partial<{
+  name: string
+  source: string
+  enabled: boolean
+  profile_id: string | null
+  filters: Record<string, string[]>
+  actions: Record<string, string | boolean>
+  task_prompt: string | null
+  webhook_secret: string | null
+}>): Promise<WebhookTrigger> {
+  const res = await authFetch(`${BASE}/webhook-triggers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to update webhook trigger: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteWebhookTrigger(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/webhook-triggers/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete webhook trigger: ${res.status}`)
+}
+
+// --- Jira Credentials ---
+
+export interface JiraCredentialStatus {
+  platform_id: string
+  status: string
+  site_url: string | null
+  last_verified_at: string | null
+  display_name?: string
+}
+
+export async function fetchJiraCredentialStatus(): Promise<JiraCredentialStatus> {
+  const res = await authFetch(`${BASE}/credentials/jira`)
+  if (!res.ok) throw new Error(`Failed to fetch Jira credential status: ${res.status}`)
+  return res.json()
+}
+
+export async function saveJiraCredentials(data: {
+  cloud_id: string
+  api_token: string
+  site_url: string
+  service_account_email: string
+}): Promise<JiraCredentialStatus> {
+  const res = await authFetch(`${BASE}/credentials/jira`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to save Jira credentials: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteJiraCredentials(): Promise<void> {
+  const res = await authFetch(`${BASE}/credentials/jira`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete Jira credentials: ${res.status}`)
+}

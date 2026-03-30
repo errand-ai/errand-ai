@@ -830,6 +830,21 @@ class TaskManager:
             except Exception:
                 logger.warning("Failed to load GitHub credentials", exc_info=True)
 
+            # Load Jira credentials for MCP token injection
+            jira_credentials = None
+            try:
+                result = await session.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform_id == "jira",
+                        PlatformCredential.status == "connected",
+                    )
+                )
+                jira_cred = result.scalar_one_or_none()
+                if jira_cred:
+                    jira_credentials = decrypt_credentials(jira_cred.encrypted_data)
+            except Exception:
+                logger.warning("Failed to load Jira credentials", exc_info=True)
+
             # Load cloud storage credentials
             cloud_storage_credentials = {}
             for provider in ("google_drive", "onedrive"):
@@ -856,7 +871,7 @@ class TaskManager:
 
         # Create asyncio task for processing
         async_task = asyncio.create_task(
-            self._run_task(task, settings, github_credentials, cloud_storage_credentials or None)
+            self._run_task(task, settings, github_credentials, cloud_storage_credentials or None, jira_credentials)
         )
         self._tasks.add(async_task)
         async_task.add_done_callback(self._tasks.discard)
@@ -888,6 +903,7 @@ class TaskManager:
         settings: dict,
         github_credentials: dict | None = None,
         cloud_storage_credentials: dict | None = None,
+        jira_credentials: dict | None = None,
     ):
         """Core task processing coroutine — equivalent to process_task_in_container."""
         async with self._semaphore:
@@ -898,6 +914,7 @@ class TaskManager:
 
                 exit_code, stdout, stderr = await self._process_task(
                     task, settings, github_credentials, cloud_storage_credentials,
+                    jira_credentials,
                 )
 
                 # Combine for display/storage; use stdout only for parsing
@@ -1061,6 +1078,7 @@ class TaskManager:
         settings: dict,
         github_credentials: dict | None = None,
         cloud_storage_credentials: dict | None = None,
+        jira_credentials: dict | None = None,
     ) -> tuple[int, str, str]:
         """Run task in a container via the configured runtime. Returns (exit_code, stdout, stderr)."""
         runtime = self._runtime
@@ -1296,12 +1314,21 @@ class TaskManager:
         # Inject repo context discovery instructions
         system_prompt += REPO_CONTEXT_INSTRUCTIONS
 
+        # Build environ dict for MCP config variable substitution
+        mcp_environ = dict(os.environ)
+        if jira_credentials:
+            jira_token = jira_credentials.get("api_token", "")
+            if jira_token:
+                mcp_environ["JIRA_API_TOKEN"] = jira_token
+            else:
+                logger.debug("Jira credentials present but no api_token, skipping JIRA_API_TOKEN injection")
+
         # Build files dict for the container
         prompt_text = task.description or task.title
         files = {
             "prompt.txt": prompt_text,
             "system_prompt.txt": system_prompt,
-            "mcp.json": json.dumps(substitute_env_vars(mcp_servers)),
+            "mcp.json": json.dumps(substitute_env_vars(mcp_servers, mcp_environ)),
         }
 
         # Build skills archive
