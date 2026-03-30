@@ -1,6 +1,5 @@
 """Tests for webhook trigger CRUD API routes."""
 
-import os
 import pytest
 
 

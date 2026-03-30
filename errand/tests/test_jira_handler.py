@@ -1,7 +1,6 @@
 """Tests for Jira webhook handler."""
 
 import json
-import json
 import uuid
 
 import pytest
