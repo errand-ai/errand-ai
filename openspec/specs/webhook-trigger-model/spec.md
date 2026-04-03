@@ -1,0 +1,117 @@
+## ADDED Requirements
+
+### Requirement: WebhookTrigger data model
+
+The system SHALL provide a `WebhookTrigger` SQLAlchemy model with the following fields: `id` (UUID, primary key, server-generated), `name` (string, unique, not null), `enabled` (boolean, default true), `source` (string, not null — values such as "jira", "github", etc.), `profile_id` (UUID, foreign key to `TaskProfile.id`, nullable), `filters` (JSON dict, default empty dict), `actions` (JSON dict, default empty dict), `task_prompt` (string, nullable — override prompt template for tasks created by this trigger), `webhook_secret` (string, nullable — stored encrypted at rest), `created_at` (datetime, server default UTC now), `updated_at` (datetime, server default UTC now, updated on modification). The model SHALL have a relationship to `TaskProfile` (many-to-one, nullable). The model SHALL have a one-to-many relationship to `ExternalTaskRef` via the `trigger_id` foreign key.
+
+#### Scenario: Create a WebhookTrigger with minimal fields
+
+- **WHEN** a WebhookTrigger is created with name="Jira Bug Tracker" and source="jira"
+- **THEN** the record is persisted with a generated UUID, enabled=true, empty filters and actions dicts, and null profile_id, task_prompt, and webhook_secret
+
+#### Scenario: Name uniqueness enforced
+
+- **WHEN** a WebhookTrigger with name="My Trigger" already exists and a second trigger with name="My Trigger" is inserted
+- **THEN** the database SHALL raise a unique constraint violation
+
+#### Scenario: Profile relationship is nullable
+
+- **WHEN** a WebhookTrigger is created with profile_id=null
+- **THEN** the trigger is valid and its profile relationship returns null
+
+#### Scenario: Deleting a trigger cascade-nullifies ExternalTaskRef
+
+- **WHEN** a WebhookTrigger is deleted and ExternalTaskRef records reference it via trigger_id
+- **THEN** the trigger_id on those ExternalTaskRef records SHALL be set to null (not deleted)
+
+### Requirement: Alembic migration for WebhookTrigger
+
+The system SHALL include an Alembic migration that creates the `webhook_trigger` table with all columns, the unique constraint on `name`, and the foreign key to `task_profile`. The migration SHALL be reversible (downgrade drops the table).
+
+#### Scenario: Migration applies cleanly
+
+- **WHEN** `alembic upgrade head` is run on a database without the webhook_trigger table
+- **THEN** the table is created with all specified columns, constraints, and foreign keys
+
+### Requirement: CRUD API for WebhookTrigger
+
+The system SHALL expose the following REST endpoints for WebhookTrigger management. All endpoints MUST require admin role authorization.
+
+- `GET /api/webhook-triggers` — list all triggers, returning an array of trigger objects
+- `GET /api/webhook-triggers/{id}` — retrieve a single trigger by UUID
+- `POST /api/webhook-triggers` — create a new trigger from request body
+- `PUT /api/webhook-triggers/{id}` — update an existing trigger (partial update)
+- `DELETE /api/webhook-triggers/{id}` — delete a trigger
+
+#### Scenario: List all triggers
+
+- **WHEN** a GET request is made to `/api/webhook-triggers` by an admin user
+- **THEN** the response status is 200 and the body contains an array of all WebhookTrigger objects
+
+#### Scenario: Get a single trigger
+
+- **WHEN** a GET request is made to `/api/webhook-triggers/{id}` with a valid UUID
+- **THEN** the response status is 200 and the body contains the trigger object with all fields
+
+#### Scenario: Get a non-existent trigger
+
+- **WHEN** a GET request is made to `/api/webhook-triggers/{id}` with a UUID that does not exist
+- **THEN** the response status is 404
+
+#### Scenario: Create a trigger
+
+- **WHEN** a POST request is made to `/api/webhook-triggers` with body `{"name": "Jira Bugs", "source": "jira", "filters": {"event_types": ["issue_created"]}, "actions": {"add_comment": true}}`
+- **THEN** the response status is 201 and the body contains the created trigger with a generated id
+
+#### Scenario: Update a trigger
+
+- **WHEN** a PUT request is made to `/api/webhook-triggers/{id}` with body `{"enabled": false}`
+- **THEN** the response status is 200 and the trigger's enabled field is updated to false
+
+#### Scenario: Delete a trigger
+
+- **WHEN** a DELETE request is made to `/api/webhook-triggers/{id}` with a valid UUID
+- **THEN** the response status is 204 and the trigger is removed from the database
+
+#### Scenario: Non-admin access denied
+
+- **WHEN** a non-admin user makes any request to the webhook-triggers endpoints
+- **THEN** the response status is 403
+
+### Requirement: Filter schema validation
+
+The `filters` JSON field SHALL be validated on create and update. The allowed keys are: `event_types` (array of strings), `issue_types` (array of strings), `labels` (array of strings), `projects` (array of strings). Any key not in this set SHALL cause a 422 validation error. All values MUST be arrays of strings. An empty dict is valid (matches all events).
+
+#### Scenario: Valid filter accepted
+
+- **WHEN** a trigger is created with filters `{"event_types": ["issue_created", "issue_updated"], "projects": ["PROJ"]}`
+- **THEN** the trigger is created successfully
+
+#### Scenario: Unknown filter key rejected
+
+- **WHEN** a trigger is created with filters `{"priority": ["high"]}`
+- **THEN** the response status is 422 with an error indicating "priority" is not a valid filter key
+
+#### Scenario: Non-array filter value rejected
+
+- **WHEN** a trigger is created with filters `{"event_types": "issue_created"}`
+- **THEN** the response status is 422 with an error indicating the value must be an array
+
+### Requirement: Action schema validation
+
+The `actions` JSON field SHALL be validated on create and update. The allowed keys are: `assign_to` (string — username or identifier to assign the external item to), `add_comment` (boolean — whether to post status comments back to the source), `add_label` (string — label to add to the external item), `transition_on_complete` (string — target status/transition name when the task completes), `comment_output` (boolean — whether to include task output in the completion comment). Any key not in this set SHALL cause a 422 validation error. An empty dict is valid (no actions configured).
+
+#### Scenario: Valid actions accepted
+
+- **WHEN** a trigger is created with actions `{"add_comment": true, "transition_on_complete": "Done"}`
+- **THEN** the trigger is created successfully
+
+#### Scenario: Unknown action key rejected
+
+- **WHEN** a trigger is created with actions `{"send_email": true}`
+- **THEN** the response status is 422 with an error indicating "send_email" is not a valid action key
+
+#### Scenario: Wrong action value type rejected
+
+- **WHEN** a trigger is created with actions `{"add_comment": "yes"}`
+- **THEN** the response status is 422 with an error indicating add_comment must be a boolean
