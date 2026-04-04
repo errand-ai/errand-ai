@@ -37,6 +37,8 @@ vi.mock('../../composables/useApi', () => ({
   updateWebhookTrigger: vi.fn().mockResolvedValue({}),
   deleteWebhookTrigger: vi.fn().mockResolvedValue(undefined),
   fetchJiraCredentialStatus: vi.fn().mockResolvedValue({ status: 'disconnected' }),
+  fetchGithubCredentialStatus: vi.fn().mockResolvedValue({ status: 'disconnected' }),
+  introspectGithubProject: vi.fn().mockResolvedValue({}),
 }))
 
 import {

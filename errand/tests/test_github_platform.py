@@ -42,7 +42,7 @@ async def test_verify_pat_success():
     mock_response = MagicMock()
     mock_response.status_code = 200
 
-    with patch("platforms.github.httpx.AsyncClient") as MockClient:
+    with patch("platforms.github.platform.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__ = _async_return
         MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_return_fn(mock_response)
@@ -61,7 +61,7 @@ async def test_verify_pat_unauthorized():
     mock_response = MagicMock()
     mock_response.status_code = 401
 
-    with patch("platforms.github.httpx.AsyncClient") as MockClient:
+    with patch("platforms.github.platform.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__ = _async_return
         MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_return_fn(mock_response)
@@ -78,7 +78,7 @@ async def test_verify_pat_unauthorized():
 async def test_verify_pat_network_error():
     github = GitHubPlatform()
 
-    with patch("platforms.github.httpx.AsyncClient") as MockClient:
+    with patch("platforms.github.platform.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__ = _async_return
         MockClient.return_value.__aexit__ = _async_return_fn(None)
         MockClient.return_value.get = _async_raise_fn(Exception("connection refused"))
@@ -98,7 +98,7 @@ async def test_verify_pat_network_error():
 async def test_verify_app_success():
     github = GitHubPlatform()
 
-    with patch("platforms.github.mint_installation_token") as mock_mint:
+    with patch("platforms.github.platform.mint_installation_token") as mock_mint:
         mock_mint.return_value = "ghs_ephemeral_token"
         result = await github.verify_credentials({
             "auth_mode": "app",
@@ -119,7 +119,7 @@ async def test_verify_app_success():
 async def test_verify_app_failure():
     github = GitHubPlatform()
 
-    with patch("platforms.github.mint_installation_token") as mock_mint:
+    with patch("platforms.github.platform.mint_installation_token") as mock_mint:
         mock_mint.side_effect = RuntimeError("HTTP 401 - Bad credentials")
         result = await github.verify_credentials({
             "auth_mode": "app",
@@ -146,8 +146,8 @@ def test_mint_installation_token_success():
     mock_response.status_code = 201
     mock_response.json.return_value = {"token": "ghs_fresh_token", "expires_at": "2026-02-23T16:00:00Z"}
 
-    with patch("platforms.github.jwt.encode", return_value="fake.jwt.token"), \
-         patch("platforms.github.httpx.post", return_value=mock_response):
+    with patch("platforms.github.platform.jwt.encode", return_value="fake.jwt.token"), \
+         patch("platforms.github.platform.httpx.post", return_value=mock_response):
         token = mint_installation_token("123", "fake-private-key", "456")
 
     assert token == "ghs_fresh_token"
@@ -158,14 +158,14 @@ def test_mint_installation_token_api_error():
     mock_response.status_code = 404
     mock_response.text = "Not Found"
 
-    with patch("platforms.github.jwt.encode", return_value="fake.jwt.token"), \
-         patch("platforms.github.httpx.post", return_value=mock_response):
+    with patch("platforms.github.platform.jwt.encode", return_value="fake.jwt.token"), \
+         patch("platforms.github.platform.httpx.post", return_value=mock_response):
         with pytest.raises(RuntimeError, match="HTTP 404"):
             mint_installation_token("123", "fake-private-key", "999")
 
 
 def test_mint_installation_token_jwt_error():
-    with patch("platforms.github.jwt.encode", side_effect=ValueError("Invalid key")):
+    with patch("platforms.github.platform.jwt.encode", side_effect=ValueError("Invalid key")):
         with pytest.raises(ValueError, match="Invalid key"):
             mint_installation_token("123", "bad-key", "456")
 
