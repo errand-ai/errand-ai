@@ -11,6 +11,8 @@ from models import Base, PlatformCredential, Task
 from main import app, get_current_user, require_editor, require_admin
 from database import get_session
 from task_generator_routes import _require_admin as _tg_require_admin
+from webhook_trigger_routes import _require_admin as _wt_require_admin
+from jira_credential_routes import _require_admin as _jc_require_admin
 
 FAKE_USER_CLAIMS = {
     "sub": "test-user-id",
@@ -182,6 +184,38 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 )
 """
 
+_WEBHOOK_TRIGGERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS webhook_triggers (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1 NOT NULL,
+    source TEXT NOT NULL,
+    profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
+    filters TEXT DEFAULT '{}' NOT NULL,
+    actions TEXT DEFAULT '{}' NOT NULL,
+    task_prompt TEXT,
+    webhook_secret TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_EXTERNAL_TASK_REFS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS external_task_refs (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    task_id VARCHAR(36) NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    trigger_id VARCHAR(36) REFERENCES webhook_triggers(id) ON DELETE SET NULL,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    external_url TEXT NOT NULL,
+    parent_id TEXT,
+    metadata TEXT DEFAULT '{}' NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(external_id, source)
+)
+"""
+
 _MODEL_METADATA_CACHE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS model_metadata_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +241,8 @@ async def _create_tables(engine):
         await conn.execute(text(_LOCAL_USERS_TABLE_SQL))
         await conn.execute(text(_TASK_GENERATORS_TABLE_SQL))
         await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
+        await conn.execute(text(_WEBHOOK_TRIGGERS_TABLE_SQL))
+        await conn.execute(text(_EXTERNAL_TASK_REFS_TABLE_SQL))
         await conn.execute(text(_MODEL_METADATA_CACHE_TABLE_SQL))
 
 
@@ -248,6 +284,8 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[require_admin] = override_require_admin_reject
     app.dependency_overrides[_tg_require_admin] = override_require_admin_reject
+    app.dependency_overrides[_wt_require_admin] = override_require_admin_reject
+    app.dependency_overrides[_jc_require_admin] = override_require_admin_reject
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -283,6 +321,8 @@ async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[require_editor] = override_require_editor
     app.dependency_overrides[require_admin] = override_require_admin
     app.dependency_overrides[_tg_require_admin] = override_require_admin
+    app.dependency_overrides[_wt_require_admin] = override_require_admin
+    app.dependency_overrides[_jc_require_admin] = override_require_admin
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

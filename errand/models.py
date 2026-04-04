@@ -291,6 +291,78 @@ class TaskGenerator(Base):
     )
 
 
+class WebhookTrigger(Base):
+    __tablename__ = "webhook_triggers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    profile_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("task_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    filters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    actions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    task_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    webhook_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    profile: Mapped[Optional["TaskProfile"]] = relationship(lazy="raise")
+    external_refs: Mapped[list["ExternalTaskRef"]] = relationship(back_populates="trigger", lazy="raise")
+
+
+class ExternalTaskRef(Base):
+    __tablename__ = "external_task_refs"
+    __table_args__ = (
+        UniqueConstraint("external_id", "source", name="uq_external_task_ref_external_id_source"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    trigger_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("webhook_triggers.id", ondelete="SET NULL"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_url: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    task: Mapped["Task"] = relationship(lazy="raise")
+    trigger: Mapped[Optional["WebhookTrigger"]] = relationship(back_populates="external_refs", lazy="raise")
+
+
 class ModelMetadataCache(Base):
     __tablename__ = "model_metadata_cache"
 

@@ -31,6 +31,12 @@ vi.mock('../../composables/useApi', () => ({
     created_at: '2024-01-01T00:00:00',
     updated_at: '2024-01-01T00:00:00',
   }),
+  // Required by WebhookTriggersSection child component
+  fetchWebhookTriggers: vi.fn().mockResolvedValue([]),
+  createWebhookTrigger: vi.fn().mockResolvedValue({}),
+  updateWebhookTrigger: vi.fn().mockResolvedValue({}),
+  deleteWebhookTrigger: vi.fn().mockResolvedValue(undefined),
+  fetchJiraCredentialStatus: vi.fn().mockResolvedValue({ status: 'disconnected' }),
 }))
 
 import {

@@ -49,10 +49,14 @@ from platforms.credentials import encrypt as encrypt_credentials, decrypt as dec
 from mcp_server import create_mcp_app, mcp as mcp_server
 from platforms.slack.routes import router as slack_router
 from platforms.slack.status_updater import run_status_updater
+from external_status_updater import run_external_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from cloud_auth import exchange_code
 from integration_routes import router as integration_router
 from task_generator_routes import router as task_generator_router
+from webhook_trigger_routes import router as webhook_trigger_router
+from jira_credential_routes import router as jira_credential_router
+from webhook_receiver import router as webhook_receiver_router
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
 from task_manager import TaskManager
@@ -218,6 +222,9 @@ async def lifespan(app: FastAPI):
     slack_updater_task = asyncio.create_task(
         run_status_updater(get_valkey, async_session, _load_creds)
     )
+    external_updater_task = asyncio.create_task(
+        run_external_status_updater(get_valkey, async_session)
+    )
     version_checker_task = asyncio.create_task(run_version_checker())
     email_poller_task = asyncio.create_task(run_email_poller())
     telemetry_reporter = TelemetryReporter(async_session)
@@ -270,6 +277,7 @@ async def lifespan(app: FastAPI):
     scheduler_task.cancel()
     zombie_cleanup_task.cancel()
     slack_updater_task.cancel()
+    external_updater_task.cancel()
     version_checker_task.cancel()
     email_poller_task.cancel()
     await telemetry_reporter.stop()
@@ -329,6 +337,9 @@ app.include_router(local_auth_router)
 app.include_router(slack_router)
 app.include_router(integration_router)
 app.include_router(task_generator_router)
+app.include_router(webhook_trigger_router)
+app.include_router(jira_credential_router)
+app.include_router(webhook_receiver_router)
 
 app.mount("/mcp", create_mcp_app())
 

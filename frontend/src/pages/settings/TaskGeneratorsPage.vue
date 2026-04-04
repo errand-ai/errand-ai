@@ -9,6 +9,7 @@ import {
   type TaskProfile,
   type TaskGeneratorData,
 } from '../../composables/useApi'
+import WebhookTriggersSection from '../../components/settings/WebhookTriggersSection.vue'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -210,6 +211,9 @@ onMounted(loadData)
           </div>
         </template>
       </div>
+
+      <!-- Webhook Triggers Section -->
+      <WebhookTriggersSection />
     </div>
   </div>
 </template>

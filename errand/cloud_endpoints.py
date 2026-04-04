@@ -233,6 +233,120 @@ async def _clear_endpoint_error(session: AsyncSession) -> None:
         await session.delete(existing)
 
 
+async def register_webhook_trigger_endpoint(
+    cloud_creds: dict,
+    cloud_service_url: str,
+    trigger_id: str,
+    integration: str,
+    webhook_secret: str,
+    label: str,
+) -> dict | None:
+    """Register a webhook trigger endpoint with errand-cloud.
+
+    Returns the endpoint data on success, None on failure.
+    """
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return None
+
+    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                api_url,
+                json={
+                    "integration": integration,
+                    "endpoint_type": "webhook",
+                    "trigger_id": trigger_id,
+                    "webhook_secret": webhook_secret,
+                    "label": label,
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30,
+            )
+            if not resp.is_success:
+                logger.error("Cloud webhook trigger registration failed: %s", resp.text)
+                return None
+            return resp.json()
+    except Exception:
+        logger.exception("Cloud webhook trigger registration API call failed")
+        return None
+
+
+async def deregister_webhook_trigger_endpoint(
+    cloud_creds: dict,
+    cloud_service_url: str,
+    trigger_id: str,
+    integration: str,
+) -> None:
+    """Deregister a webhook trigger endpoint from errand-cloud."""
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return
+
+    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration={integration}&trigger_id={trigger_id}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                api_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info("Deregistered cloud endpoint for trigger %s", trigger_id)
+    except Exception:
+        logger.exception("Cloud webhook trigger deregistration failed for trigger %s", trigger_id)
+
+
+async def try_register_trigger_endpoint(trigger_id: str, integration: str, webhook_secret: str, label: str, session: AsyncSession) -> None:
+    """Register a trigger endpoint with cloud if connected."""
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+    )
+    cloud_cred = result.scalar_one_or_none()
+    if not cloud_cred or cloud_cred.status != "connected":
+        logger.debug("Cloud not connected, skipping trigger endpoint registration for %s", trigger_id)
+        return
+
+    cloud_creds = decrypt_credentials(cloud_cred.encrypted_data)
+
+    from settings_registry import SETTINGS_REGISTRY
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_service_url")
+    )
+    url_setting = result.scalar_one_or_none()
+    cloud_service_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
+
+    await register_webhook_trigger_endpoint(
+        cloud_creds, cloud_service_url, trigger_id, integration, webhook_secret, label,
+    )
+
+
+async def try_deregister_trigger_endpoint(trigger_id: str, integration: str, session: AsyncSession) -> None:
+    """Deregister a trigger endpoint from cloud if connected."""
+    result = await session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+    )
+    cloud_cred = result.scalar_one_or_none()
+    if not cloud_cred or cloud_cred.status != "connected":
+        return
+
+    cloud_creds = decrypt_credentials(cloud_cred.encrypted_data)
+
+    from settings_registry import SETTINGS_REGISTRY
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_service_url")
+    )
+    url_setting = result.scalar_one_or_none()
+    cloud_service_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
+
+    await deregister_webhook_trigger_endpoint(
+        cloud_creds, cloud_service_url, trigger_id, integration,
+    )
+
+
 async def fetch_subscription_status(
     cloud_creds: dict, cloud_service_url: str
 ) -> dict | None:
