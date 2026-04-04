@@ -37,7 +37,10 @@ class TestWebhookTriggerCRUD:
 
     async def test_list_triggers(self, admin_client):
         await admin_client.post("/api/webhook-triggers", json={"name": "T1", "source": "jira"})
-        await admin_client.post("/api/webhook-triggers", json={"name": "T2", "source": "github"})
+        await admin_client.post("/api/webhook-triggers", json={
+            "name": "T2", "source": "github",
+            "filters": {"project_node_id": "PVT_abc", "trigger_column": "Todo"},
+        })
         resp = await admin_client.get("/api/webhook-triggers")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
