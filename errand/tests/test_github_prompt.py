@@ -1,8 +1,6 @@
 """Tests for platforms.github.prompt — system prompt template rendering."""
 
-import pytest
-
-from platforms.github.prompt import SYSTEM_PROMPT_TEMPLATE, render_prompt
+from platforms.github.prompt import render_prompt
 
 # Shared test fixtures
 ISSUE_NUMBER = 42
