@@ -150,8 +150,9 @@ class TestDispatchGitHub:
 
         assert "Review:" in task_obj.title
         assert "org/repo#10" in task_obj.title
-        assert task_obj.profile_id == str(review_profile)
+        assert task_obj.profile_id == review_profile
         assert ref_obj.source == "github"
+        assert ref_obj.external_id != ref.external_id  # unique external_id for review
         session.commit.assert_called()
 
     async def test_completed_aborted_posts_reason_no_review_or_column(self):

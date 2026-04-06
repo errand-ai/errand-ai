@@ -118,12 +118,11 @@ async def handle_github_webhook(trigger: WebhookTrigger, body: bytes, headers: d
         number = issue["number"]
         external_id = f"{repo_owner}/{repo_name}#{number}"
 
-        # Deduplication: check external_id + trigger_id
+        # Deduplication: matches DB unique constraint (external_id, source)
         existing = await session.execute(
             select(ExternalTaskRef).where(
                 ExternalTaskRef.external_id == external_id,
                 ExternalTaskRef.source == "github",
-                ExternalTaskRef.trigger_id == trigger.id,
             )
         )
         if existing.scalar_one_or_none():
@@ -193,14 +192,14 @@ async def handle_github_webhook(trigger: WebhookTrigger, body: bytes, headers: d
             task.id, external_id, trigger.id,
         )
 
-        # Try to post a comment on the issue
+        # Try to post a comment on the issue (best-effort, never aborts)
         try:
-            from main import settings as app_settings
-            base_url = getattr(app_settings, "BASE_URL", "")
+            import os
+            base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
             task_link = f"[{task.id}]({base_url}/tasks/{task.id})" if base_url else str(task.id)
             await client.add_comment(
                 content_node_id,
                 f"Errand task created: {task_link}",
             )
-        except GitHubClientError as e:
-            logger.warning("Failed to comment on issue %s: %s", external_id, e)
+        except Exception:
+            logger.warning("Failed to comment on issue %s", external_id, exc_info=True)

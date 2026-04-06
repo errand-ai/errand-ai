@@ -5,19 +5,18 @@ This guide covers configuring errand to automatically create and manage tasks fr
 ## Prerequisites
 
 - A GitHub organization with Projects V2 enabled
-- A GitHub Personal Access Token (PAT) or GitHub App with the following permissions:
-  - `project` (read/write) — for project board operations
-  - `issues` (read/write) — for commenting on issues
-  - `pull_requests` (read/write) — for creating PRs and requesting reviews
-  - `contents` (read/write) — for cloning and pushing to repositories
-  - `metadata` (read) — for repository discovery
+- One of the following GitHub credential types:
+  - **Classic PAT** with scopes: `repo`, `project`, `admin:org_hook`
+  - **Fine-grained PAT** or **GitHub App** with these permissions:
+    - Repository: `Issues` (read/write), `Pull requests` (read/write), `Contents` (read/write), `Metadata` (read)
+    - Organization: `Projects` (read/write)
 - Access to configure organization-level webhooks
 
 ## 1. Configure GitHub Credentials
 
 1. Navigate to **Settings > Integrations** in errand
 2. Under GitHub, select your auth mode:
-   - **Personal Access Token**: Paste a classic PAT with the scopes listed above
+   - **Personal Access Token**: Paste a classic PAT with the scopes above, or a fine-grained PAT with the listed permissions
    - **GitHub App**: Provide the App ID, private key (PEM), and installation ID
 3. Click **Save** and verify the connection status shows "Connected"
 

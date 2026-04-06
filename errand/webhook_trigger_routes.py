@@ -136,7 +136,11 @@ async def _validate_github_review_profile(actions: dict, session: AsyncSession) 
 
 
 async def _ensure_github_column_options(filters: dict, actions: dict, session: AsyncSession) -> dict:
-    """Auto-introspect project to populate column_options if column actions are configured but no options cached."""
+    """Validate column_options are present and column names exist when column actions are configured.
+
+    Requires the frontend to call the introspect endpoint first to populate column_options.
+    Raises 422 if column actions are set without column_options/project_field_id.
+    """
     has_column_actions = actions.get("column_on_running") or actions.get("column_on_complete")
     if not has_column_actions:
         return actions

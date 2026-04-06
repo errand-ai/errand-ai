@@ -128,8 +128,10 @@ async def _dispatch_jira(
         await session.commit()
 
 
-def _parse_structured_output(output: str) -> dict | None:
+def _parse_structured_output(output: str | None) -> dict | None:
     """Extract a fenced JSON block from task output."""
+    if not output:
+        return None
     match = re.search(r"```json\s*\n(.*?)```", output, re.DOTALL)
     if not match:
         return None
@@ -173,33 +175,45 @@ async def _dispatch_github(
                 logger.warning("Column '%s' not found in cached column_options for task %s", column_name, task_id)
 
         if actions.get("add_comment"):
-            await client.add_comment(
-                ref.metadata_["content_node_id"],
-                f"Errand task started (task ID: {task_id})",
-            )
+            try:
+                await client.add_comment(
+                    ref.metadata_["content_node_id"],
+                    f"Errand task started (task ID: {task_id})",
+                )
+            except Exception:
+                logger.exception("Failed to post running comment for task %s", task_id)
+                errors.append("add_comment failed on running")
 
     elif status == "completed":
         structured = _parse_structured_output(output)
 
         if actions.get("comment_output") or actions.get("add_comment"):
-            if structured and structured.get("status") != "aborted":
-                summary = structured.get("summary", "Task completed.")
-                await client.add_comment(
-                    ref.metadata_["content_node_id"],
-                    f"Errand task completed (task ID: {task_id})\n\n{summary}",
-                )
-            elif not structured:
-                await client.add_comment(
-                    ref.metadata_["content_node_id"],
-                    f"Errand task completed (task ID: {task_id})",
-                )
+            try:
+                if structured and structured.get("status") != "aborted":
+                    summary = structured.get("summary", "Task completed.")
+                    await client.add_comment(
+                        ref.metadata_["content_node_id"],
+                        f"Errand task completed (task ID: {task_id})\n\n{summary}",
+                    )
+                elif not structured:
+                    await client.add_comment(
+                        ref.metadata_["content_node_id"],
+                        f"Errand task completed (task ID: {task_id})",
+                    )
+            except Exception:
+                logger.exception("Failed to post completion comment for task %s", task_id)
+                errors.append("comment failed on completed")
 
         if structured and structured.get("status") == "aborted":
-            reason = structured.get("reason", "No reason provided")
-            await client.add_comment(
-                ref.metadata_["content_node_id"],
-                f"Errand task aborted (task ID: {task_id})\n\nReason: {reason}",
-            )
+            try:
+                reason = structured.get("reason", "No reason provided")
+                await client.add_comment(
+                    ref.metadata_["content_node_id"],
+                    f"Errand task aborted (task ID: {task_id})\n\nReason: {reason}",
+                )
+            except Exception:
+                logger.exception("Failed to post abort comment for task %s", task_id)
+                errors.append("abort comment failed")
             # Skip review + column actions on abort
             if errors:
                 metadata = dict(ref.metadata_) if ref.metadata_ else {}
@@ -232,18 +246,20 @@ async def _dispatch_github(
                     f"Issue: {ref.external_url}"
                 ),
                 status="pending",
-                profile_id=actions["review_profile_id"],
+                profile_id=uuid_mod.UUID(actions["review_profile_id"]),
                 created_by=f"github:review:{ref.external_id}",
             )
             session.add(review_task)
             await session.flush()
+            review_metadata = dict(ref.metadata_) if ref.metadata_ else {}
+            review_metadata["parent_external_id"] = ref.external_id
             review_ref = ExternalTaskRef(
                 task_id=review_task.id,
                 trigger_id=ref.trigger_id,
                 source="github",
-                external_id=ref.external_id,
+                external_id=f"{ref.external_id}:review:{review_task.id}",
                 external_url=ref.external_url,
-                metadata_=ref.metadata_,
+                metadata_=review_metadata,
             )
             session.add(review_ref)
             await session.commit()
@@ -267,11 +283,15 @@ async def _dispatch_github(
 
     elif status == "failed":
         if actions.get("add_comment"):
-            error_msg = output or "No error details available"
-            await client.add_comment(
-                ref.metadata_["content_node_id"],
-                f"Errand task failed (task ID: {task_id})\n\n{error_msg}",
-            )
+            try:
+                error_msg = output or "No error details available"
+                await client.add_comment(
+                    ref.metadata_["content_node_id"],
+                    f"Errand task failed (task ID: {task_id})\n\n{error_msg}",
+                )
+            except Exception:
+                logger.exception("Failed to post failure comment for task %s", task_id)
+                errors.append("add_comment failed on failed")
 
     # Store action errors in ExternalTaskRef metadata for debugging
     if errors:
