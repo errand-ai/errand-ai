@@ -9,6 +9,11 @@ The system SHALL expose a `POST /webhooks/{source}` endpoint (e.g. `/webhooks/ji
 - **WHEN** a POST request is made to `/webhooks/jira` with a valid HMAC signature and JSON body
 - **THEN** the response status is 200, the body contains `{"status": "accepted"}`, and the payload is queued for asynchronous processing
 
+#### Scenario: Valid GitHub webhook received and accepted
+
+- **WHEN** a POST request is made to `/webhooks/github` with a valid `X-Hub-Signature-256` header and JSON body
+- **THEN** the response status is 200, the body contains `{"status": "accepted"}`, and the payload is dispatched to the GitHub webhook handler
+
 #### Scenario: Webhook for unknown source
 
 - **WHEN** a POST request is made to `/webhooks/unknown` and no triggers exist with source="unknown"
@@ -108,3 +113,17 @@ After signature verification and deduplication, the receiver SHALL dispatch payl
 
 - **WHEN** a background task raises an exception during payload processing
 - **THEN** the error is logged with the trigger_id, source, and event ID context, and the background task terminates cleanly
+
+### Requirement: Dispatch GitHub webhooks to handler
+
+When the webhook receiver matches a trigger with `source: "github"`, the system SHALL dispatch the payload to `handle_github_webhook()` from `errand.platforms.github.handler`. The dispatch SHALL pass the parsed JSON payload, the matched `WebhookTrigger`, and a database session. This follows the same async dispatch pattern used for Jira webhooks.
+
+#### Scenario: GitHub webhook dispatched to handler
+
+- **WHEN** a webhook arrives at `/webhooks/github` and matches a trigger with `source: "github"`
+- **THEN** the system calls `handle_github_webhook(payload, trigger, db)` as a background task
+
+#### Scenario: GitHub source with no handler logs warning
+
+- **WHEN** a webhook arrives and matches a trigger with an unrecognized source (not "jira" or "github")
+- **THEN** the system logs a warning: "No handler for webhook source: {source}"
