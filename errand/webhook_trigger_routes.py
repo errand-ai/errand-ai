@@ -292,14 +292,16 @@ async def update_trigger(
         raise HTTPException(status_code=404, detail="Trigger not found")
 
     source = body.source if body.source is not None else trigger.source
+    source_changed = body.source is not None and body.source != trigger.source
     if source == "github":
-        if body.filters is not None:
-            _validate_github_filters(body.filters)
-        if body.actions is not None:
-            _validate_github_actions(body.actions)
-            await _validate_github_review_profile(body.actions, session)
-            filters = body.filters if body.filters is not None else (trigger.filters or {})
-            body.actions = await _ensure_github_column_options(filters, body.actions, session)
+        effective_filters = body.filters if body.filters is not None else (trigger.filters or {})
+        effective_actions = body.actions if body.actions is not None else (trigger.actions or {})
+        if body.filters is not None or source_changed:
+            _validate_github_filters(effective_filters)
+        if body.actions is not None or source_changed:
+            _validate_github_actions(effective_actions)
+            await _validate_github_review_profile(effective_actions, session)
+            body.actions = await _ensure_github_column_options(effective_filters, effective_actions, session)
     else:
         if body.filters is not None:
             _validate_filters(body.filters)

@@ -58,12 +58,12 @@ When `source` is `"github"`, the create and update endpoints SHALL validate filt
 #### Scenario: Create a GitHub trigger with missing required filter
 
 - **WHEN** a POST request is made with `{"name": "Bad Trigger", "source": "github", "filters": {"trigger_column": "Ready"}}` (missing project_node_id)
-- **THEN** the response status is 400 with a validation error
+- **THEN** the response status is 422 with a validation error
 
 #### Scenario: Create a GitHub trigger with invalid action key
 
 - **WHEN** a POST request is made with `{"source": "github", "actions": {"invalid_key": true}}`
-- **THEN** the response status is 400 with a validation error
+- **THEN** the response status is 422 with a validation error
 
 #### Scenario: Update a GitHub trigger actions
 

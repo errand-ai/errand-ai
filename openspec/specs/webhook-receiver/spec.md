@@ -116,12 +116,12 @@ After signature verification and deduplication, the receiver SHALL dispatch payl
 
 ### Requirement: Dispatch GitHub webhooks to handler
 
-When the webhook receiver matches a trigger with `source: "github"`, the system SHALL dispatch the payload to `handle_github_webhook()` from `errand.platforms.github.handler`. The dispatch SHALL pass the parsed JSON payload, the matched `WebhookTrigger`, and a database session. This follows the same async dispatch pattern used for Jira webhooks.
+When the webhook receiver matches a trigger with `source: "github"`, the system SHALL dispatch the payload to `handle_github_webhook()` from `errand.platforms.github.handler`. The dispatch SHALL pass the matched `WebhookTrigger`, the raw request body, and the request headers. This follows the same async dispatch pattern used for Jira webhooks.
 
 #### Scenario: GitHub webhook dispatched to handler
 
 - **WHEN** a webhook arrives at `/webhooks/github` and matches a trigger with `source: "github"`
-- **THEN** the system calls `handle_github_webhook(payload, trigger, db)` as a background task
+- **THEN** the system calls `handle_github_webhook(trigger, body, headers)` as a background task
 
 #### Scenario: GitHub source with no handler logs warning
 

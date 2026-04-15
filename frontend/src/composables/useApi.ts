@@ -509,8 +509,8 @@ export async function createWebhookTrigger(data: {
   source: string
   enabled?: boolean
   profile_id?: string | null
-  filters?: Record<string, string[]>
-  actions?: Record<string, string | boolean>
+  filters?: Record<string, unknown>
+  actions?: Record<string, unknown>
   task_prompt?: string | null
   webhook_secret?: string | null
 }): Promise<WebhookTrigger> {
@@ -531,8 +531,8 @@ export async function updateWebhookTrigger(id: string, data: Partial<{
   source: string
   enabled: boolean
   profile_id: string | null
-  filters: Record<string, string[]>
-  actions: Record<string, string | boolean>
+  filters: Record<string, unknown>
+  actions: Record<string, unknown>
   task_prompt: string | null
   webhook_secret: string | null
 }>): Promise<WebhookTrigger> {

@@ -31,12 +31,12 @@ When creating or updating a webhook trigger with `source: "github"`, the system 
 #### Scenario: Missing required filter key
 
 - **WHEN** a trigger is created with `source: "github"` and `filters: {"project_node_id": "PVT_abc"}` (missing trigger_column)
-- **THEN** the response status is 400 with a validation error
+- **THEN** the response status is 422 with a validation error
 
 #### Scenario: Invalid content_types value
 
 - **WHEN** a trigger is created with `filters: {"content_types": ["InvalidType"]}`
-- **THEN** the response status is 400 with a validation error
+- **THEN** the response status is 422 with a validation error
 
 ### Requirement: GitHub trigger action validation
 
@@ -55,16 +55,16 @@ When creating or updating a webhook trigger with `source: "github"`, the system 
 #### Scenario: Review profile ID references non-existent profile
 
 - **WHEN** a trigger is created with `actions: {"review_profile_id": "non-existent-uuid"}`
-- **THEN** the response status is 400 with a validation error
+- **THEN** the response status is 422 with a validation error
 
 ### Requirement: Store cached project structure in trigger actions
 
-When a trigger is created or updated with `source: "github"`, and the `actions` dict includes `column_on_running` or `column_on_complete`, the system SHALL resolve the column names to option IDs using the cached `column_options` mapping. If `column_options` is not present in the actions, the system SHALL perform a project introspection to populate it. The `project_field_id` and `column_options` keys SHALL be stored in the trigger's `actions` dict for use by the external status updater.
+When a trigger is created or updated with `source: "github"`, and the `actions` dict includes `column_on_running` or `column_on_complete`, the system SHALL resolve the column names to option IDs using the cached `column_options` mapping. If `column_options` or `project_field_id` is not present in the actions, the system SHALL return a 422 error indicating that the frontend must introspect the project first. The `project_field_id` and `column_options` keys SHALL be stored in the trigger's `actions` dict for use by the external status updater.
 
 #### Scenario: Column options cached during trigger creation
 
-- **WHEN** a trigger is created with `column_on_running: "In Progress"` and no `column_options` provided
-- **THEN** the system introspects the project, caches the field ID and column options in the trigger's actions, and validates that "In Progress" exists as a column
+- **WHEN** a trigger is created with `column_on_running: "In Progress"` and `column_options` and `project_field_id` are present in the actions
+- **THEN** the system validates that "In Progress" exists as a column in the cached options and creates the trigger
 
 #### Scenario: Column name not found in project
 
