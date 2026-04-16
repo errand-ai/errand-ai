@@ -205,15 +205,19 @@ async def _dispatch_github(
                 errors.append("comment failed on completed")
 
         if structured and structured.get("status") == "aborted":
-            try:
-                reason = structured.get("reason", "No reason provided")
-                await client.add_comment(
-                    ref.metadata_["content_node_id"],
-                    f"Errand task aborted (task ID: {task_id})\n\nReason: {reason}",
-                )
-            except Exception:
-                logger.exception("Failed to post abort comment for task %s", task_id)
-                errors.append("abort comment failed")
+            # Only post an abort comment when the trigger actually opted in
+            # to commenting, matching the conditional behaviour used for
+            # completion/failure comments.
+            if actions.get("add_comment") or actions.get("comment_output"):
+                try:
+                    reason = structured.get("reason", "No reason provided")
+                    await client.add_comment(
+                        ref.metadata_["content_node_id"],
+                        f"Errand task aborted (task ID: {task_id})\n\nReason: {reason}",
+                    )
+                except Exception:
+                    logger.exception("Failed to post abort comment for task %s", task_id)
+                    errors.append("abort comment failed")
             # Skip review + column actions on abort
             if errors:
                 metadata = dict(ref.metadata_) if ref.metadata_ else {}
@@ -235,34 +239,42 @@ async def _dispatch_github(
                 errors.append("copilot_review failed")
 
         if actions.get("review_profile_id") and structured and structured.get("pr_url") and structured.get("branch"):
-            pr_number = structured.get("pr_number", "")
-            repo_owner = ref.metadata_.get("repo_owner", "")
-            repo_name = ref.metadata_.get("repo_name", "")
-            review_task = Task(
-                title=f"Review: {repo_owner}/{repo_name}#{pr_number}",
-                description=(
-                    f"Review PR {structured['pr_url']}\n"
-                    f"Branch: {structured['branch']}\n"
-                    f"Issue: {ref.external_url}"
-                ),
-                status="pending",
-                profile_id=uuid_mod.UUID(actions["review_profile_id"]),
-                created_by=f"github:review:{ref.external_id}",
-            )
-            session.add(review_task)
-            await session.flush()
-            review_metadata = dict(ref.metadata_) if ref.metadata_ else {}
-            review_metadata["parent_external_id"] = ref.external_id
-            review_ref = ExternalTaskRef(
-                task_id=review_task.id,
-                trigger_id=ref.trigger_id,
-                source="github",
-                external_id=f"{ref.external_id}:review:{review_task.id}",
-                external_url=ref.external_url,
-                metadata_=review_metadata,
-            )
-            session.add(review_ref)
-            await session.commit()
+            try:
+                pr_number = structured.get("pr_number", "")
+                repo_owner = ref.metadata_.get("repo_owner", "")
+                repo_name = ref.metadata_.get("repo_name", "")
+                review_task = Task(
+                    title=f"Review: {repo_owner}/{repo_name}#{pr_number}",
+                    description=(
+                        f"Review PR {structured['pr_url']}\n"
+                        f"Branch: {structured['branch']}\n"
+                        f"Issue: {ref.external_url}"
+                    ),
+                    status="pending",
+                    profile_id=uuid_mod.UUID(actions["review_profile_id"]),
+                    created_by=f"github:review:{ref.external_id}",
+                )
+                session.add(review_task)
+                await session.flush()
+                review_metadata = dict(ref.metadata_) if ref.metadata_ else {}
+                review_metadata["parent_external_id"] = ref.external_id
+                review_ref = ExternalTaskRef(
+                    task_id=review_task.id,
+                    trigger_id=ref.trigger_id,
+                    source="github",
+                    external_id=f"{ref.external_id}:review:{review_task.id}",
+                    external_url=ref.external_url,
+                    metadata_=review_metadata,
+                )
+                session.add(review_ref)
+                await session.commit()
+            except Exception:
+                logger.exception("Failed to create review task for task %s", task_id)
+                errors.append("review_profile_id failed")
+                try:
+                    await session.rollback()
+                except Exception:
+                    logger.exception("Failed to roll back review task creation for task %s", task_id)
 
         if actions.get("column_on_complete"):
             column_name = actions["column_on_complete"]

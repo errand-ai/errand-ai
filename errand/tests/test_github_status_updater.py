@@ -87,7 +87,7 @@ class TestDispatchGitHub:
         trigger = _make_trigger(actions={"comment_output": True})
         session = AsyncMock()
 
-        output = 'Some preamble\n```json\n{"summary": "Created PR #5", "status": "success"}\n```'
+        output = 'Some preamble\n```json\n{"summary": "Created PR #5", "status": "completed"}\n```'
 
         with patch("external_status_updater.GitHubClient") as MockClient:
             mock_client = AsyncMock()
@@ -109,7 +109,7 @@ class TestDispatchGitHub:
         trigger = _make_trigger(actions={"copilot_review": True})
         session = AsyncMock()
 
-        output = '```json\n{"pr_number": 99, "status": "success"}\n```'
+        output = '```json\n{"pr_number": 99, "status": "completed"}\n```'
 
         with patch("external_status_updater.GitHubClient") as MockClient:
             mock_client = AsyncMock()
@@ -129,7 +129,7 @@ class TestDispatchGitHub:
         trigger = _make_trigger(actions={"review_profile_id": str(review_profile)})
         session = AsyncMock()
 
-        output = '```json\n{"pr_url": "https://github.com/org/repo/pull/10", "pr_number": 10, "branch": "feature-x", "status": "success"}\n```'
+        output = '```json\n{"pr_url": "https://github.com/org/repo/pull/10", "pr_number": 10, "branch": "feature-x", "status": "completed"}\n```'
 
         with patch("external_status_updater.GitHubClient") as MockClient:
             mock_client = AsyncMock()

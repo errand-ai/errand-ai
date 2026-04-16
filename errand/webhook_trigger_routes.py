@@ -107,8 +107,18 @@ def _validate_github_actions(actions: dict) -> None:
             raise HTTPException(status_code=422, detail=f"Action '{key}' must be a str")
     if "review_profile_id" in actions:
         _parse_uuid(actions["review_profile_id"], "review_profile_id")
-    if "column_options" in actions and not isinstance(actions["column_options"], dict):
-        raise HTTPException(status_code=422, detail="Action 'column_options' must be a dict")
+    if "column_options" in actions:
+        if not isinstance(actions["column_options"], dict):
+            raise HTTPException(status_code=422, detail="Action 'column_options' must be a dict")
+        # GitHub's updateProjectV2ItemFieldValue GraphQL mutation expects the
+        # singleSelectOptionId as a string; non-string values would blow up at
+        # dispatch time. Enforce the shape up-front.
+        for opt_key, opt_val in actions["column_options"].items():
+            if not isinstance(opt_key, str) or not isinstance(opt_val, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Action 'column_options' must be a dict[str, str]",
+                )
     if "project_field_id" in actions and not isinstance(actions["project_field_id"], str):
         raise HTTPException(status_code=422, detail="Action 'project_field_id' must be a str")
     # Validate column names against column_options if both are provided

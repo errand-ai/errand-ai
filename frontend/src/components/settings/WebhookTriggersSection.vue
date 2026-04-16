@@ -100,7 +100,10 @@ function resetForm() {
   editingId.value = null
   editingTrigger.value = null
   formName.value = ''
-  formSource.value = 'jira'
+  // Default to the first connected integration so users can't land on a form
+  // backed by disconnected credentials. Fall back to 'jira' when neither is
+  // connected (the Add Trigger button is disabled in that state anyway).
+  formSource.value = jiraConnected.value ? 'jira' : (githubConnected.value ? 'github' : 'jira')
   formEnabled.value = true
   formProfileId.value = ''
   formTaskPrompt.value = ''

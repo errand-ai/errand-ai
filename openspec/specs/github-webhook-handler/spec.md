@@ -111,8 +111,8 @@ After filters pass and issue details are resolved, the system SHALL create a Tas
 
 #### Scenario: Duplicate task prevention
 
-- **WHEN** a webhook fires for an issue that already has an ExternalTaskRef with matching `external_id` and `trigger_id`
-- **THEN** the system logs a warning and does not create a duplicate task
+- **WHEN** a webhook fires for an issue that already has an ExternalTaskRef with matching `external_id` and `source: "github"`
+- **THEN** the system logs a warning and does not create a duplicate task (this matches the DB-enforced uniqueness in migration 023 on `(external_id, source)`; dedup is global per source, not per trigger)
 
 #### Scenario: Task includes trigger task_prompt
 
