@@ -2515,9 +2515,20 @@ class SPAStaticFiles(StaticFiles):
 
 
 if STATIC_DIR.is_dir():
+    # Ensure the assets directory exists so the /assets mount always registers
+    # and returns hard 404s for missing files. A partial build with no assets/
+    # directory would otherwise let /assets/* fall through to the SPA mount and
+    # silently return index.html, masking missing-bundle errors. Starlette's
+    # check_dir=False flag does not solve this because its check_config still
+    # validates the directory on the first request — so we create the empty
+    # directory at startup if it's absent.
     _assets_dir = STATIC_DIR / "assets"
-    if _assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=_assets_dir), name="static-assets")
+    _assets_dir.mkdir(exist_ok=True)
+    app.mount(
+        "/assets",
+        StaticFiles(directory=_assets_dir),
+        name="static-assets",
+    )
 
     # SPA mount must be registered AFTER all API/auth/MCP/Slack routes so that
     # those routes match first. Missing files under any non-/assets path fall

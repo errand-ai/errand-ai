@@ -52,7 +52,8 @@ async def static_client(static_dir):
     async def api_health_stub():
         return JSONResponse({"status": "ok"})
 
-    # 2. /assets mount: vanilla StaticFiles -> missing files return 404.
+    # 2. /assets mount: vanilla StaticFiles (missing files return 404).
+    # Matches production wiring in errand/main.py.
     test_app.mount(
         "/assets",
         StaticFiles(directory=static_dir / "assets"),
@@ -222,6 +223,43 @@ async def test_api_route_not_swallowed(static_client):
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
     assert resp.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.asyncio
+async def test_missing_assets_dir_still_returns_404(tmp_path):
+    """Partial-build guard: static/ exists but static/assets/ does NOT at first.
+
+    Reproduces the edge case where the frontend build output is incomplete
+    (index.html present, assets/ missing). Production code creates the empty
+    assets/ directory at startup so the /assets mount always registers; the
+    mount then returns hard 404s for missing files instead of letting the
+    request fall through to the SPA mount and silently serve index.html.
+    """
+    from main import SPAStaticFiles
+
+    # Intentionally do NOT create assets/ — just index.html. Mirror the
+    # production startup logic that ensures the directory exists.
+    (tmp_path / "index.html").write_text("<!DOCTYPE html><html><body>SPA</body></html>")
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir(exist_ok=True)
+
+    test_app = FastAPI()
+    test_app.mount(
+        "/assets",
+        StaticFiles(directory=assets_dir),
+        name="static-assets",
+    )
+    test_app.mount("/", SPAStaticFiles(directory=tmp_path, html=True), name="spa")
+
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/assets/anything.js")
+
+    assert resp.status_code == 404, (
+        f"expected 404 when assets/ dir is empty, got {resp.status_code}; "
+        f"body: {resp.text[:200]!r}"
+    )
+    assert "SPA" not in resp.text, "must not fall back to SPA HTML for /assets/*"
 
 
 def test_static_dir_not_mounted_when_missing():
