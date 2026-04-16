@@ -19,7 +19,7 @@ const api = createDirectApi({
   getToken: () => auth.token,
   onUnauthorized: () => {
     auth.clearToken()
-    window.location.href = '/auth/login'
+    auth.redirectToLogin()
   },
   onForbidden: () => {
     auth.setAccessDenied()

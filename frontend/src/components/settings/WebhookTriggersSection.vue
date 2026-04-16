@@ -8,6 +8,8 @@ import {
   deleteWebhookTrigger,
   fetchTaskProfiles,
   fetchJiraCredentialStatus,
+  fetchGithubCredentialStatus,
+  introspectGithubProject,
   type WebhookTrigger,
   type TaskProfile,
 } from '../../composables/useApi'
@@ -16,6 +18,25 @@ const loading = ref(true)
 const triggers = ref<WebhookTrigger[]>([])
 const profiles = ref<TaskProfile[]>([])
 const jiraConnected = ref(false)
+const githubConnected = ref(false)
+
+// GitHub-specific state
+const formGithubOrg = ref('')
+const formGithubProjectNumber = ref<number | null>(null)
+const formProjectNodeId = ref('')
+const formTriggerColumn = ref('')
+const formContentTypes = ref<string[]>(['Issue'])
+const formColumnOnRunning = ref('')
+const formColumnOnComplete = ref('')
+const formCopilotReview = ref(false)
+const formReviewProfileId = ref('')
+const formProjectFieldId = ref('')
+const formColumnOptions = ref<Record<string, string>>({})
+const introspecting = ref(false)
+const introspectError = ref('')
+const statusOptions = ref<Array<{id: string, name: string}>>([])
+
+const GITHUB_CONTENT_TYPES = ['Issue', 'PullRequest', 'DraftIssue']
 
 // Form state
 const showForm = ref(false)
@@ -60,14 +81,16 @@ const isEditing = computed(() => editingId.value !== null)
 async function loadData() {
   loading.value = true
   try {
-    const [triggersResult, profilesResult, jiraStatus] = await Promise.all([
+    const [triggersResult, profilesResult, jiraStatus, githubStatus] = await Promise.all([
       fetchWebhookTriggers().catch(() => []),
       fetchTaskProfiles().catch(() => []),
       fetchJiraCredentialStatus().catch(() => ({ status: 'disconnected' })),
+      fetchGithubCredentialStatus().catch(() => ({ status: 'disconnected' })),
     ])
     triggers.value = triggersResult
     profiles.value = profilesResult
     jiraConnected.value = jiraStatus.status === 'connected'
+    githubConnected.value = githubStatus.status === 'connected'
   } finally {
     loading.value = false
   }
@@ -77,7 +100,10 @@ function resetForm() {
   editingId.value = null
   editingTrigger.value = null
   formName.value = ''
-  formSource.value = 'jira'
+  // Default to the first connected integration so users can't land on a form
+  // backed by disconnected credentials. Fall back to 'jira' when neither is
+  // connected (the Add Trigger button is disabled in that state anyway).
+  formSource.value = jiraConnected.value ? 'jira' : (githubConnected.value ? 'github' : 'jira')
   formEnabled.value = true
   formProfileId.value = ''
   formTaskPrompt.value = ''
@@ -92,6 +118,19 @@ function resetForm() {
   formAddLabel.value = ''
   formTransitionOnComplete.value = ''
   formCommentOutput.value = false
+  formGithubOrg.value = ''
+  formGithubProjectNumber.value = null
+  formProjectNodeId.value = ''
+  formTriggerColumn.value = ''
+  formContentTypes.value = ['Issue']
+  formColumnOnRunning.value = ''
+  formColumnOnComplete.value = ''
+  formCopilotReview.value = false
+  formReviewProfileId.value = ''
+  formProjectFieldId.value = ''
+  formColumnOptions.value = {}
+  introspectError.value = ''
+  statusOptions.value = []
   nameError.value = null
 }
 
@@ -125,11 +164,34 @@ function openEdit(trigger: WebhookTrigger) {
   formTransitionOnComplete.value = typeof actions.transition_on_complete === 'string' ? actions.transition_on_complete : ''
   formCommentOutput.value = !!actions.comment_output
 
+  if (trigger.source === 'github') {
+    formProjectNodeId.value = trigger.filters?.project_node_id || ''
+    formTriggerColumn.value = trigger.filters?.trigger_column || ''
+    formContentTypes.value = trigger.filters?.content_types || ['Issue']
+    formColumnOnRunning.value = typeof actions.column_on_running === 'string' ? actions.column_on_running : ''
+    formColumnOnComplete.value = typeof actions.column_on_complete === 'string' ? actions.column_on_complete : ''
+    formCopilotReview.value = !!actions.copilot_review
+    formReviewProfileId.value = typeof actions.review_profile_id === 'string' ? actions.review_profile_id : ''
+    formProjectFieldId.value = typeof actions.project_field_id === 'string' ? actions.project_field_id : ''
+    formColumnOptions.value = actions.column_options || {}
+    if (actions.column_options) {
+      statusOptions.value = Object.entries(actions.column_options).map(([name, id]) => ({ id: id as string, name }))
+    }
+  }
+
   nameError.value = null
   showForm.value = true
 }
 
-function buildFilters(): Record<string, string[]> {
+function buildFilters(): Record<string, any> {
+  if (formSource.value === 'github') {
+    const filters: Record<string, any> = {
+      project_node_id: formProjectNodeId.value,
+      trigger_column: formTriggerColumn.value,
+    }
+    if (formContentTypes.value.length) filters.content_types = formContentTypes.value
+    return filters
+  }
   const filters: Record<string, string[]> = {}
   if (formEventTypes.value.length) filters.event_types = formEventTypes.value
   if (formIssueTypes.value.length) filters.issue_types = formIssueTypes.value
@@ -140,7 +202,19 @@ function buildFilters(): Record<string, string[]> {
   return filters
 }
 
-function buildActions(): Record<string, string | boolean> {
+function buildActions(): Record<string, any> {
+  if (formSource.value === 'github') {
+    const actions: Record<string, any> = {}
+    if (formAddComment.value) actions.add_comment = true
+    if (formCommentOutput.value) actions.comment_output = true
+    if (formColumnOnRunning.value) actions.column_on_running = formColumnOnRunning.value
+    if (formColumnOnComplete.value) actions.column_on_complete = formColumnOnComplete.value
+    if (formCopilotReview.value) actions.copilot_review = true
+    if (formReviewProfileId.value) actions.review_profile_id = formReviewProfileId.value
+    if (formProjectFieldId.value) actions.project_field_id = formProjectFieldId.value
+    if (Object.keys(formColumnOptions.value).length) actions.column_options = formColumnOptions.value
+    return actions
+  }
   const actions: Record<string, string | boolean> = {}
   if (formAssignTo.value) actions.assign_to = 'service_account'
   if (formAddComment.value) actions.add_comment = true
@@ -239,6 +313,37 @@ function toggleIssueType(type: string) {
   else formIssueTypes.value.push(type)
 }
 
+async function introspectProject() {
+  if (!formGithubOrg.value || !formGithubProjectNumber.value) return
+  introspecting.value = true
+  introspectError.value = ''
+  try {
+    const result = await introspectGithubProject(formGithubOrg.value, formGithubProjectNumber.value)
+    formProjectNodeId.value = result.project_node_id
+    if (result.status_field) {
+      formProjectFieldId.value = result.status_field.field_id
+      statusOptions.value = result.status_field.options
+      const opts: Record<string, string> = {}
+      for (const opt of result.status_field.options) {
+        opts[opt.name] = opt.id
+      }
+      formColumnOptions.value = opts
+    }
+    toast.success(`Project "${result.title}" introspected`)
+  } catch (err: any) {
+    introspectError.value = err.message || 'Failed to introspect project'
+    toast.error(introspectError.value)
+  } finally {
+    introspecting.value = false
+  }
+}
+
+function toggleContentType(ct: string) {
+  const idx = formContentTypes.value.indexOf(ct)
+  if (idx >= 0) formContentTypes.value.splice(idx, 1)
+  else formContentTypes.value.push(ct)
+}
+
 onMounted(loadData)
 </script>
 
@@ -248,7 +353,7 @@ onMounted(loadData)
       <h3 class="text-lg font-semibold text-gray-800">Webhook Triggers</h3>
       <button
         @click="openCreate"
-        :disabled="!jiraConnected"
+        :disabled="!jiraConnected && !githubConnected"
         class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         data-testid="add-trigger-btn"
       >
@@ -257,15 +362,15 @@ onMounted(loadData)
     </div>
 
     <p class="text-sm text-gray-500 mb-4">
-      Automatically create tasks from incoming webhooks (e.g. Jira issues).
+      Automatically create tasks from incoming webhooks (e.g. Jira issues, GitHub Projects).
     </p>
 
     <div
-      v-if="!jiraConnected"
+      v-if="!jiraConnected && !githubConnected"
       class="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm text-yellow-800 mb-4"
-      data-testid="jira-no-credentials"
+      data-testid="no-credentials"
     >
-      Jira credentials are not configured. Please set up Jira credentials in
+      No integration credentials configured. Set up Jira or GitHub credentials in
       <router-link to="/settings/integrations" class="font-medium underline">Integrations</router-link>
       first.
     </div>
@@ -304,7 +409,7 @@ onMounted(loadData)
     </div>
 
     <!-- Empty state -->
-    <div v-else-if="!triggers.length && !showForm && jiraConnected" class="text-sm text-gray-500" data-testid="no-triggers">
+    <div v-else-if="!triggers.length && !showForm && (jiraConnected || githubConnected)" class="text-sm text-gray-500" data-testid="no-triggers">
       No webhook triggers configured.
     </div>
 
@@ -324,6 +429,7 @@ onMounted(loadData)
           data-testid="trigger-source"
         >
           <option value="jira">Jira</option>
+          <option value="github">GitHub</option>
         </select>
       </div>
 
@@ -420,8 +526,47 @@ onMounted(loadData)
         </div>
       </div>
 
-      <!-- Actions -->
-      <div class="space-y-3 rounded-md border border-gray-200 p-4">
+      <!-- GitHub Filters -->
+      <div v-if="formSource === 'github'" class="space-y-3 rounded-md border border-gray-200 p-4">
+        <h5 class="text-sm font-medium text-gray-700">GitHub Project</h5>
+
+        <div class="flex gap-2 items-end">
+          <div class="flex-1">
+            <label class="block text-xs font-medium text-gray-600 mb-1">Organization</label>
+            <input v-model="formGithubOrg" type="text" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. acme-corp" data-testid="github-org" />
+          </div>
+          <div class="w-32">
+            <label class="block text-xs font-medium text-gray-600 mb-1">Project #</label>
+            <input v-model.number="formGithubProjectNumber" type="number" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. 5" data-testid="github-project-number" />
+          </div>
+          <button @click="introspectProject" :disabled="introspecting || !formGithubOrg || !formGithubProjectNumber" type="button" class="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50" data-testid="introspect-btn">
+            {{ introspecting ? 'Loading...' : 'Introspect' }}
+          </button>
+        </div>
+        <p v-if="introspectError" class="text-xs text-red-500">{{ introspectError }}</p>
+        <p v-if="formProjectNodeId" class="text-xs text-green-600">Project: {{ formProjectNodeId }}</p>
+
+        <div v-if="statusOptions.length">
+          <label class="block text-xs font-medium text-gray-600 mb-1">Trigger Column (creates task when issue moves here)</label>
+          <select v-model="formTriggerColumn" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" data-testid="github-trigger-column">
+            <option value="">Select column...</option>
+            <option v-for="opt in statusOptions" :key="opt.id" :value="opt.name">{{ opt.name }}</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Content Types</label>
+          <div class="flex gap-2 flex-wrap">
+            <label v-for="ct in GITHUB_CONTENT_TYPES" :key="ct" class="inline-flex items-center gap-1 text-xs">
+              <input type="checkbox" :checked="formContentTypes.includes(ct)" @change="toggleContentType(ct)" class="rounded border-gray-300" />
+              {{ ct }}
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Jira Actions -->
+      <div v-if="formSource === 'jira'" class="space-y-3 rounded-md border border-gray-200 p-4">
         <h5 class="text-sm font-medium text-gray-700">Completion Actions</h5>
 
         <label class="flex items-center gap-2 text-sm">
@@ -459,6 +604,51 @@ onMounted(loadData)
             placeholder="e.g. Done"
             data-testid="trigger-transition"
           />
+        </div>
+      </div>
+
+      <!-- GitHub Actions -->
+      <div v-if="formSource === 'github'" class="space-y-3 rounded-md border border-gray-200 p-4">
+        <h5 class="text-sm font-medium text-gray-700">Actions</h5>
+
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" v-model="formAddComment" class="rounded border-gray-300" />
+          Post comments on issue (task started, completed, failed)
+        </label>
+
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" v-model="formCommentOutput" class="rounded border-gray-300" />
+          Include task output in completion comment
+        </label>
+
+        <div v-if="statusOptions.length">
+          <label class="block text-xs font-medium text-gray-600 mb-1">Column on Running</label>
+          <select v-model="formColumnOnRunning" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" data-testid="github-column-running">
+            <option value="">None</option>
+            <option v-for="opt in statusOptions" :key="opt.id" :value="opt.name">{{ opt.name }}</option>
+          </select>
+        </div>
+
+        <div v-if="statusOptions.length">
+          <label class="block text-xs font-medium text-gray-600 mb-1">Column on Complete</label>
+          <select v-model="formColumnOnComplete" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" data-testid="github-column-complete">
+            <option value="">None</option>
+            <option v-for="opt in statusOptions" :key="opt.id" :value="opt.name">{{ opt.name }}</option>
+          </select>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" v-model="formCopilotReview" class="rounded border-gray-300" />
+          Request Copilot review on PRs
+        </label>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Review Task Profile</label>
+          <select v-model="formReviewProfileId" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" data-testid="github-review-profile">
+            <option value="">None</option>
+            <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">Creates a review task on completion using this profile</p>
         </div>
       </div>
 

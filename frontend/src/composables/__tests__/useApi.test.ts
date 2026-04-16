@@ -74,7 +74,7 @@ describe('useApi — 401 retry with refresh', () => {
 
     await expect(fetchTasks()).rejects.toThrow('Unauthorized')
     expect(auth.token).toBeNull()
-    expect(window.location.href).toBe('/auth/login')
+    expect(window.location.href).toBe('/login')
   })
 
   it('redirects to login on 401 when no refresh token available', async () => {
@@ -84,6 +84,38 @@ describe('useApi — 401 retry with refresh', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('Unauthorized', { status: 401 })
     )
+
+    await expect(fetchTasks()).rejects.toThrow('Unauthorized')
+    expect(auth.token).toBeNull()
+    expect(window.location.href).toBe('/login')
+  })
+
+  it('redirects to backend /auth/login on 401 in SSO mode (no refresh token)', async () => {
+    const auth = useAuthStore()
+    auth.setAuthMode('sso')
+    auth.setToken(fakeJwt({ sub: 'u1', exp: Math.floor(Date.now() / 1000) - 10 }))
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('Unauthorized', { status: 401 })
+    )
+
+    await expect(fetchTasks()).rejects.toThrow('Unauthorized')
+    expect(auth.token).toBeNull()
+    expect(window.location.href).toBe('/auth/login')
+  })
+
+  it('redirects to backend /auth/login on 401 in SSO mode when refresh fails', async () => {
+    const auth = useAuthStore()
+    auth.setAuthMode('sso')
+    auth.setToken(fakeJwt({ sub: 'u1', exp: Math.floor(Date.now() / 1000) - 10 }), undefined, 'rt_expired')
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/auth/refresh') {
+        return new Response('Unauthorized', { status: 401 })
+      }
+      return new Response('Unauthorized', { status: 401 })
+    })
 
     await expect(fetchTasks()).rejects.toThrow('Unauthorized')
     expect(auth.token).toBeNull()

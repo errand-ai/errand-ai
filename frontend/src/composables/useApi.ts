@@ -90,7 +90,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
     }
 
     auth.clearToken()
-    window.location.href = '/auth/login'
+    auth.redirectToLogin()
     throw new Error('Unauthorized')
   }
 
@@ -484,8 +484,8 @@ export interface WebhookTrigger {
   source: string
   enabled: boolean
   profile_id: string | null
-  filters: Record<string, string[]>
-  actions: Record<string, string | boolean>
+  filters: Record<string, any>
+  actions: Record<string, any>
   task_prompt: string | null
   has_secret: boolean
   created_at: string | null
@@ -509,8 +509,8 @@ export async function createWebhookTrigger(data: {
   source: string
   enabled?: boolean
   profile_id?: string | null
-  filters?: Record<string, string[]>
-  actions?: Record<string, string | boolean>
+  filters?: Record<string, unknown>
+  actions?: Record<string, unknown>
   task_prompt?: string | null
   webhook_secret?: string | null
 }): Promise<WebhookTrigger> {
@@ -531,8 +531,8 @@ export async function updateWebhookTrigger(id: string, data: Partial<{
   source: string
   enabled: boolean
   profile_id: string | null
-  filters: Record<string, string[]>
-  actions: Record<string, string | boolean>
+  filters: Record<string, unknown>
+  actions: Record<string, unknown>
   task_prompt: string | null
   webhook_secret: string | null
 }>): Promise<WebhookTrigger> {
@@ -551,6 +551,31 @@ export async function updateWebhookTrigger(id: string, data: Partial<{
 export async function deleteWebhookTrigger(id: string): Promise<void> {
   const res = await authFetch(`${BASE}/webhook-triggers/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete webhook trigger: ${res.status}`)
+}
+
+// --- GitHub Credentials ---
+
+export async function fetchGithubCredentialStatus(): Promise<{ status: string }> {
+  const platforms = await fetchPlatforms()
+  const github = platforms.find((p: any) => p.id === 'github')
+  return { status: github?.status || 'disconnected' }
+}
+
+export async function introspectGithubProject(org: string, projectNumber: number): Promise<{
+  project_node_id: string
+  title: string
+  status_field: { field_id: string; options: Array<{id: string; name: string}> } | null
+}> {
+  const res = await authFetch(`${BASE}/webhook-triggers/github/introspect-project`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ org, project_number: projectNumber }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to introspect project: ${res.status}`)
+  }
+  return res.json()
 }
 
 // --- Jira Credentials ---

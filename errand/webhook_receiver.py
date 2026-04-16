@@ -96,6 +96,9 @@ async def _dispatch_webhook(trigger: WebhookTrigger, body: bytes, headers: dict)
         if trigger.source == "jira":
             from platforms.jira.handler import handle_jira_webhook
             await handle_jira_webhook(trigger, body, headers)
+        elif trigger.source == "github":
+            from platforms.github.handler import handle_github_webhook
+            await handle_github_webhook(trigger, body, headers)
         else:
             logger.warning("No handler for webhook source: %s", trigger.source)
     except Exception:
