@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from database import async_session
 from events import get_valkey, publish_event
 from models import Task
+from utils import _next_position
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +74,6 @@ async def release_zombie_lock() -> None:
         await valkey.delete(ZOMBIE_LOCK_KEY)
     except Exception:
         logger.warning("Failed to release zombie cleanup lock", exc_info=True)
-
-
-async def _next_position(session: AsyncSession, status: str) -> int:
-    result = await session.execute(
-        select(func.max(Task.position)).where(Task.status == status)
-    )
-    max_pos = result.scalar()
-    return (max_pos or 0) + 1
 
 
 async def recover_zombie_tasks() -> int:

@@ -236,13 +236,41 @@ async def test_refresh_lock_extends_ttl(fake_valkey):
 
 
 @pytest.mark.asyncio
-async def test_release_lock_deletes_key(fake_valkey):
-    """release_lock deletes the lock key."""
-    await fake_valkey.set(LOCK_KEY, "test-host", ex=LOCK_TTL)
+async def test_release_lock_deletes_key():
+    """release_lock deletes the lock key when we still own it.
 
-    await release_lock()
-    value = await fake_valkey.get(LOCK_KEY)
-    assert value is None
+    Uses a minimal valkey stand-in because fakeredis does not support Lua
+    scripting, and the conditional release is now implemented as an EVAL
+    script (see B3 in fix-code-review-bugs).
+    """
+    import socket
+
+    class _FakeLuaValkey:
+        def __init__(self):
+            self._store: dict[str, str] = {}
+
+        async def set(self, key, value, **_ignored):
+            self._store[key] = value
+
+        async def get(self, key):
+            return self._store.get(key)
+
+        async def execute_command(self, *args):
+            assert args[0] == "EVAL"
+            _, _script, _numkeys, key, expected = args
+            if self._store.get(key) == expected:
+                self._store.pop(key, None)
+                return 1
+            return 0
+
+    fake = _FakeLuaValkey()
+    events_module._valkey = fake
+    try:
+        await fake.set(LOCK_KEY, socket.gethostname(), ex=LOCK_TTL)
+        await release_lock()
+        assert await fake.get(LOCK_KEY) is None
+    finally:
+        events_module._valkey = None
 
 
 # --- WebSocket event tests ---

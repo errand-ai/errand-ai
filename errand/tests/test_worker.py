@@ -1454,18 +1454,29 @@ async def _link_tag(factory, task_id, tag_id):
 
 
 def _make_completed_repeating_task(**overrides):
-    """Create a mock completed repeating task for rescheduling tests."""
-    task = MagicMock(spec=Task)
-    task.id = overrides.get("id", uuid.uuid4())
-    task.title = overrides.get("title", "Check server logs")
-    task.description = overrides.get("description", "Check logs on prod")
-    task.status = "completed"
-    task.category = overrides.get("category", "repeating")
-    task.repeat_interval = overrides.get("repeat_interval", "30m")
-    task.repeat_until = overrides.get("repeat_until", None)
-    task.profile_id = overrides.get("profile_id", None)
-    task.tags = overrides.get("tags", [])
-    return task
+    """Build a DequeuedTask snapshot for rescheduling tests.
+
+    _reschedule_if_repeating operates on the plain ``DequeuedTask`` dataclass
+    (post-B4), so tests must pass the same shape rather than an ORM mock.
+    """
+    from task_manager import DequeuedTask
+
+    # Allow callers to pass either tag_ids=[...] directly or tags=[mock_with_id].
+    if "tag_ids" in overrides:
+        tag_ids = list(overrides.pop("tag_ids"))
+    else:
+        tag_ids = [tag.id for tag in overrides.pop("tags", [])]
+
+    return DequeuedTask(
+        id=overrides.get("id", uuid.uuid4()),
+        title=overrides.get("title", "Check server logs"),
+        description=overrides.get("description", "Check logs on prod"),
+        category=overrides.get("category", "repeating"),
+        profile_id=overrides.get("profile_id", None),
+        repeat_interval=overrides.get("repeat_interval", "30m"),
+        repeat_until=overrides.get("repeat_until", None),
+        tag_ids=tag_ids,
+    )
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,14 @@ keycloak:
   discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
   rolesClaim: resource_access.errand.roles
 
+# Cloud-trusted JWT validation. When the server receives an X-Cloud-JWT header
+# (relayed from errand-cloud), it validates the token's `iss` claim against
+# cloudKeycloakUrl before any JWKS fetch — pinning the trusted issuer closes
+# an SSRF/token-forgery vector. Leave empty to disable cloud JWT auth;
+# setting it opts in. Example: https://keycloak.example.com/realms/errand
+cloudKeycloak:
+  url: ""
+
 llmProviders: []
   # - name: litellm
   #   baseUrl: "https://litellm.example.com/v1"

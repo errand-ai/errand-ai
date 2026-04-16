@@ -69,6 +69,10 @@ services:
       # OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
       # OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
       # OIDC_ROLES_CLAIM: resource_access.content-manager.roles
+      # Trusted issuer for cloud-relayed JWTs (X-Cloud-JWT header). Must
+      # match the cloud Keycloak realm URL exactly; set via .env to enable
+      # cloud JWT auth locally. Leave unset for local-only dev.
+      # CLOUD_KEYCLOAK_URL: ${CLOUD_KEYCLOAK_URL:-}
       VALKEY_URL: redis://valkey:6379
       CONTAINER_RUNTIME: docker
       TASK_RUNNER_IMAGE: errand-task-runner:latest

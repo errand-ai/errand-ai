@@ -59,7 +59,7 @@ Five production bugs and one security flaw were identified in a code review (Git
 
 **Why**: The current code trusts the issuer from the unverified token. An attacker crafts a JWT with `iss` pointing to their own OIDC server, passes JWKS verification, and gains access. Pinning the issuer to a known value closes the vector.
 
-**Configuration**: The allowed issuer should come from an existing env var (e.g. `CLOUD_KEYCLOAK_URL` / realm URL) — not a new setting.
+**Configuration**: The allowed issuer is read from a new `CLOUD_KEYCLOAK_URL` environment variable. No existing env var held the cloud realm URL (the existing `cloud_service_url` DB setting points at the service frontend, not the Keycloak realm), so introducing one is the minimal change. The value is wired through Helm via `.Values.cloudKeycloak.url` (see `helm/errand/values.yaml`) and only injected into the pod when set — leaving it empty disables cloud JWT auth. No new DB setting is introduced.
 
 ### Q1 — Extract _next_position to errand/utils.py
 

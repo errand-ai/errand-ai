@@ -6,6 +6,7 @@ election and asyncio.Semaphore for concurrency control.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import io
 import json
@@ -16,7 +17,9 @@ import secrets
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from urllib.parse import urlparse
@@ -31,6 +34,7 @@ from container_runtime import ContainerRuntime, DockerRuntime, create_runtime
 from database import async_session, engine
 from events import get_valkey, publish_event, VALKEY_URL
 from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, task_tags
+from utils import _next_position
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,45 @@ class TaskRunnerOutput(BaseModel):
     status: Literal["completed", "needs_input"]
     result: str
     questions: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Snapshot of a dequeued task
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class DequeuedTask:
+    """Plain snapshot of the task fields needed by the processing coroutine.
+
+    Captured from the ORM instance while the source DB session is still open,
+    then passed to the async worker. This avoids ``DetachedInstanceError`` when
+    the spawned coroutine accesses task attributes after the session has been
+    closed. See B4 in fix-code-review-bugs.
+    """
+
+    id: uuid.UUID
+    title: str
+    description: str | None
+    category: str | None
+    profile_id: uuid.UUID | None
+    repeat_interval: str | None
+    repeat_until: datetime | None
+    tag_ids: list[uuid.UUID]
+
+    @classmethod
+    def from_orm(cls, task: Task) -> "DequeuedTask":
+        """Build a snapshot from an ORM ``Task`` with ``tags`` eager-loaded."""
+        return cls(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            category=task.category,
+            profile_id=task.profile_id,
+            repeat_interval=task.repeat_interval,
+            repeat_until=task.repeat_until,
+            tag_ids=[tag.id for tag in task.tags],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -490,15 +533,6 @@ For modifying files: download the file content → modify locally → upload the
 # ---------------------------------------------------------------------------
 
 
-async def _next_position(session: AsyncSession, status: str) -> int:
-    """Return the next position value for a task in the given status column."""
-    result = await session.execute(
-        select(func.max(Task.position)).where(Task.status == status)
-    )
-    max_pos = result.scalar()
-    return (max_pos or 0) + 1
-
-
 async def _read_settings(session: AsyncSession) -> dict:
     """Read task processing settings from the settings table and skills from the skills table."""
     settings: dict = {
@@ -628,13 +662,41 @@ async def _dequeue_task(session: AsyncSession) -> Task | None:
     return result.scalar_one_or_none()
 
 
+# Module-level cache for the sync engine used by ``_resolve_provider_sync``.
+# Without this, every lookup built a new SQLAlchemy engine (and its connection
+# pool) and never disposed it, exhausting the database connection pool over
+# time. See B5 in fix-code-review-bugs.
+#
+# The lock is needed because ``_resolve_provider_sync`` is invoked via
+# ``loop.run_in_executor(None, ...)`` — i.e. concurrently from multiple
+# executor threads. A naive ``if is None:`` check would let a burst of
+# concurrent callers race into ``create_sync_engine`` and leak pools.
+_sync_engine = None
+_sync_engine_lock = threading.Lock()
+
+
+def _get_sync_engine():
+    """Return the process-wide sync engine, creating it on first call.
+
+    Thread-safe via double-checked locking: the fast path stays lock-free
+    once the engine is initialised.
+    """
+    global _sync_engine
+    if _sync_engine is not None:
+        return _sync_engine
+    with _sync_engine_lock:
+        if _sync_engine is None:
+            db_url = os.environ.get("DATABASE_URL", "")
+            sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("sqlite+aiosqlite://", "sqlite://")
+            _sync_engine = create_sync_engine(sync_url)
+    return _sync_engine
+
+
 def _resolve_provider_sync(provider_id_str: str) -> dict | None:
     """Resolve provider credentials synchronously for use in executor thread."""
     try:
         from llm_providers import decrypt_api_key
-        db_url = os.environ.get("DATABASE_URL", "")
-        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("sqlite+aiosqlite://", "sqlite://")
-        eng = create_sync_engine(sync_url)
+        eng = _get_sync_engine()
         with eng.connect() as conn:
             row = conn.execute(
                 sa_text("SELECT base_url, api_key_encrypted FROM llm_providers WHERE id = :id"),
@@ -866,12 +928,16 @@ class TaskManager:
             task.heartbeat_at = datetime.now(timezone.utc)
             task.updated_by = "system"
             await session.commit()
-            await session.refresh(task)
+            await session.refresh(task, ["tags"])
             await publish_event("task_updated", _task_to_dict(task))
+
+            # Snapshot scalar fields before the session closes so the spawned
+            # coroutine never touches a detached ORM instance (B4).
+            dequeued = DequeuedTask.from_orm(task)
 
         # Create asyncio task for processing
         async_task = asyncio.create_task(
-            self._run_task(task, settings, github_credentials, cloud_storage_credentials or None, jira_credentials)
+            self._run_task(dequeued, settings, github_credentials, cloud_storage_credentials or None, jira_credentials)
         )
         self._tasks.add(async_task)
         async_task.add_done_callback(self._tasks.discard)
@@ -899,13 +965,17 @@ class TaskManager:
 
     async def _run_task(
         self,
-        task: Task,
+        task: DequeuedTask,
         settings: dict,
         github_credentials: dict | None = None,
         cloud_storage_credentials: dict | None = None,
         jira_credentials: dict | None = None,
     ):
-        """Core task processing coroutine — equivalent to process_task_in_container."""
+        """Core task processing coroutine — equivalent to process_task_in_container.
+
+        Receives a plain ``DequeuedTask`` snapshot (not an ORM instance) so that
+        field access is safe after the source DB session has closed (B4).
+        """
         async with self._semaphore:
             heartbeat_task = None
             try:
@@ -995,12 +1065,15 @@ class TaskManager:
                         )
                         updated_task = result.scalar_one()
                         await publish_event("task_updated", _task_to_dict(updated_task))
+                        # Snapshot before session closes so _reschedule_if_repeating
+                        # operates on a detached-safe plain dataclass (B4).
+                        updated_snapshot = DequeuedTask.from_orm(updated_task)
 
                     logger.info(
                         "Task %s moved to %s (runner_status=%s)", task.id, target_status, parsed.status,
                     )
                     if target_status == "completed":
-                        await self._reschedule_if_repeating(updated_task)
+                        await self._reschedule_if_repeating(updated_snapshot)
                 else:
                     if exit_code != 0:
                         logger.warning("Task %s container exited with code %d", task.id, exit_code)
@@ -1074,7 +1147,7 @@ class TaskManager:
 
     async def _process_task(
         self,
-        task: Task,
+        task: DequeuedTask,
         settings: dict,
         github_credentials: dict | None = None,
         cloud_storage_credentials: dict | None = None,
@@ -1439,7 +1512,7 @@ class TaskManager:
         except asyncio.CancelledError:
             pass
 
-    async def _schedule_retry(self, task: Task, output: str | None = None, runner_logs: str | None = None) -> None:
+    async def _schedule_retry(self, task: DequeuedTask, output: str | None = None, runner_logs: str | None = None) -> None:
         """Move a failed task back to scheduled with exponential backoff."""
         async with async_session() as session:
             result = await session.execute(select(Task).where(Task.id == task.id))
@@ -1495,7 +1568,7 @@ class TaskManager:
                 task.id, new_retry, backoff_minutes, execute_at.isoformat(),
             )
 
-    async def _reschedule_if_repeating(self, task: Task) -> None:
+    async def _reschedule_if_repeating(self, task: DequeuedTask) -> None:
         """If the task is repeating and not expired, create a cloned task for the next interval."""
         if task.category != "repeating":
             return
@@ -1532,9 +1605,9 @@ class TaskManager:
             session.add(new_task)
             await session.flush()
 
-            for tag in task.tags:
+            for tag_id in task.tag_ids:
                 await session.execute(
-                    task_tags.insert().values(task_id=new_task.id, tag_id=tag.id)
+                    task_tags.insert().values(task_id=new_task.id, tag_id=tag_id)
                 )
 
             await session.commit()

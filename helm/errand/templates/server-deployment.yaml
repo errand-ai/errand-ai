@@ -34,6 +34,10 @@ spec:
               value: {{ .Values.keycloak.discoveryUrl | quote }}
             - name: OIDC_ROLES_CLAIM
               value: {{ .Values.keycloak.rolesClaim | quote }}
+            {{- if .Values.cloudKeycloak.url }}
+            - name: CLOUD_KEYCLOAK_URL
+              value: {{ .Values.cloudKeycloak.url | quote }}
+            {{- end }}
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
