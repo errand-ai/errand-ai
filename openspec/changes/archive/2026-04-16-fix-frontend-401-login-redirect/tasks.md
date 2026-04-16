@@ -33,5 +33,5 @@
 - [x] 6.1 Committed (cf26003) on `github-projects-integration` with VERSION bump and OpenSpec artifacts
 - [x] 6.2 Pushed to origin/github-projects-integration — branch already has an open PR from prior work; this commit rides on top. A dedicated PR for just this fix is not opened because the branch was shared at user direction.
 - [x] 6.3 CI run 24501881659 passed on `cf26003` — version, test, build-task-runner, build-errand, helm all green
-- [ ] 6.4 Validate the built Helm chart / images deploy cleanly (ArgoCD sync or `helm upgrade --dry-run`) before merging
-- [ ] 6.5 After merge, run `openspec archive fix-frontend-401-login-redirect` to fold the spec delta into `openspec/specs/frontend-auth/spec.md`
+- [x] 6.4 Deployment validation delegated to ArgoCD auto-sync per user direction; manual `helm upgrade --dry-run` not run.
+- [x] 6.5 Archiving now at user direction (before PR #105 merge); delta spec will be folded into `openspec/specs/frontend-auth/spec.md` as part of `openspec archive`.
