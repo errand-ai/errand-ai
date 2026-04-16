@@ -5,7 +5,7 @@ Modal component for viewing task execution output rendered as formatted markdown
 ## Requirements
 
 ### Requirement: Task output viewer popup
-The system SHALL provide a `TaskOutputModal` component that displays the captured execution output from a task in a read-only popup. The modal SHALL be implemented as a `<dialog>` element styled consistently with the existing `TaskEditModal`. The modal SHALL use a responsive width of `w-[90vw] max-w-5xl` to fill approximately two-thirds of the viewport on wide screens. The modal SHALL display the task title as the header. The modal SHALL parse the output as markdown and render it as formatted HTML using `marked`, sanitized with `DOMPurify`, and styled with Tailwind's `prose` class. The rendered output area SHALL be scrollable with a maximum modal height of `80vh`. The modal SHALL be dismissible by clicking the Close button, pressing Escape, or clicking the backdrop.
+The system SHALL provide a `TaskOutputModal` component that displays the captured execution output from a task in a read-only popup. The modal SHALL be implemented as a `<dialog>` element styled consistently with the existing `TaskEditModal`. The modal SHALL use a responsive width of `w-[90vw] max-w-5xl` to fill approximately two-thirds of the viewport on wide screens. The modal SHALL display the task title as the header. The modal SHALL parse the output as markdown and render it as formatted HTML using `marked`, sanitized with `DOMPurify` at version `>= 3.4.0` (the minimum version required to close the default-config XSS class GHSA-v2wj-7wpq-c8vv and the mutation-XSS re-contextualization class GHSA-h8r8-wccr-v5f2, both of which affect `DOMPurify.sanitize()` calls without custom configuration options), and styled with Tailwind's `prose` class. The rendered output area SHALL be scrollable with a maximum modal height of `80vh`. The modal SHALL be dismissible by clicking the Close button, pressing Escape, or clicking the backdrop.
 
 #### Scenario: View output of completed task
 - **WHEN** the user clicks the "View Output" button on a task card in the Review column
@@ -30,6 +30,10 @@ The system SHALL provide a `TaskOutputModal` component that displays the capture
 #### Scenario: HTML in output is sanitized
 - **WHEN** the output contains raw HTML tags (e.g. `<script>`, `<iframe>`)
 - **THEN** the rendered output has dangerous tags stripped by DOMPurify
+
+#### Scenario: Mutation-XSS payload class is neutralised
+- **WHEN** the task output contains a payload from the GHSA-h8r8-wccr-v5f2 mutation-XSS re-contextualization class (HTML that would evade pre-3.3.2 default-config `DOMPurify.sanitize` when re-parsed into a template context)
+- **THEN** the rendered DOM contains no executable script context and no `on*` event-handler attributes derived from the payload
 
 #### Scenario: Close output modal via button
 - **WHEN** the output viewer modal is open and the user clicks "Close"
