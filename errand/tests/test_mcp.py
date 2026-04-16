@@ -759,6 +759,23 @@ def test_twitter_character_count_no_urls_over_limit():
     assert twitter_character_count(text) == 300
 
 
+def test_twitter_character_count_trailing_punctuation():
+    """Trailing sentence punctuation after a URL counts as normal text.
+
+    The regex ``https?://\\S+`` greedily captures non-whitespace, including
+    punctuation that Twitter's own URL detection excludes. Those trailing
+    characters must still contribute to the effective length.
+    """
+    from mcp_server import twitter_character_count
+
+    # "Check " (6) + URL (t.co 23) + ")." (2) = 31
+    assert twitter_character_count("Check https://example.com).") == 31
+    # Sentence ending: "See " (4) + URL (23) + "." (1) = 28
+    assert twitter_character_count("See https://example.com.") == 28
+    # Multiple trailing chars: "Look " (5) + URL (23) + '!"' (2) = 30
+    assert twitter_character_count('Look https://example.com!"') == 30
+
+
 # --- post_tweet MCP tool ---
 
 

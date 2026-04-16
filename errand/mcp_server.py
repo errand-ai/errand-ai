@@ -343,6 +343,11 @@ async def schedule_task(
 
 TWITTER_TCO_URL_LENGTH = 23
 _TWITTER_URL_PATTERN = re.compile(r"https?://\S+")
+# Trailing characters stripped from URL matches before counting. The regex
+# greedily matches all non-whitespace characters, but Twitter's own URL
+# detection stops before common sentence-terminating punctuation, so those
+# characters should count as normal text, not as part of the t.co-shortened URL.
+_URL_TRAILING_PUNCT = ".,;:!?)]}\"'"
 
 
 def twitter_character_count(text: str) -> int:
@@ -350,9 +355,11 @@ def twitter_character_count(text: str) -> int:
 
     All URLs matching ``https?://\\S+`` are counted as ``TWITTER_TCO_URL_LENGTH``
     characters (23), regardless of their actual length, matching Twitter's own
-    behaviour of shortening every URL to a t.co link.
+    behaviour of shortening every URL to a t.co link. Trailing sentence
+    punctuation (``.,;:!?)]}\"'``) is stripped from matches before counting so
+    that characters outside the URL are counted as normal text.
     """
-    urls = _TWITTER_URL_PATTERN.findall(text)
+    urls = [url.rstrip(_URL_TRAILING_PUNCT) for url in _TWITTER_URL_PATTERN.findall(text)]
     raw_url_chars = sum(len(url) for url in urls)
     return len(text) - raw_url_chars + TWITTER_TCO_URL_LENGTH * len(urls)
 
