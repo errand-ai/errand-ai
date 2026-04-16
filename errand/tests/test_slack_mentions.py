@@ -1,5 +1,6 @@
 """Tests for Slack app_mention event handling."""
 import json
+import time
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
@@ -13,7 +14,7 @@ from fastapi import Request
 import events as events_module
 from main import app
 from database import get_session
-from platforms.slack.routes import _processed_events
+from platforms.slack.routes import _BOT_MENTION_RE, _processed_events
 from platforms.slack.verification import verify_slack_request
 
 
@@ -279,3 +280,36 @@ class TestDuplicateEventPrevention:
         )
         assert response1.status_code == 200
         assert response2.status_code == 200
+
+
+class TestBotMentionRegex:
+    """Tests for the bot-mention stripping regex.
+
+    The regex must match Slack's actual mention syntax (`<@USERID>` or
+    `<@USERID|label>`) while running in linear time on adversarial inputs
+    (no catastrophic backtracking).
+    """
+
+    def test_strips_canonical_mention(self):
+        """Canonical `<@USERID>` mention is stripped, leaving the message."""
+        assert _BOT_MENTION_RE.sub("", "<@U01ABCDEFGH> hello") == "hello"
+
+    def test_strips_mention_with_label(self):
+        """`<@USERID|label>` mention is stripped, leaving the message."""
+        assert _BOT_MENTION_RE.sub("", "<@U01ABCDEFGH|errand-bot> hello") == "hello"
+
+    def test_pathological_input_completes_quickly(self):
+        """ReDoS regression: an unterminated mention prefix repeated 10k times
+        must not trigger super-linear backtracking. The tightened regex (which
+        excludes `|` from the label class) should complete near-instantly.
+
+        Budget: 200 ms wall-clock — generous for a linear-time regex.
+        """
+        pathological = "<@0|" * 10_000
+        start = time.perf_counter()
+        _BOT_MENTION_RE.sub("", pathological)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 200, (
+            f"Regex took {elapsed_ms:.2f} ms on pathological input "
+            f"(budget 200 ms) — possible catastrophic backtracking"
+        )

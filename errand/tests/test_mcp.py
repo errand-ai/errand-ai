@@ -1320,7 +1320,7 @@ async def test_web_search_with_db_credentials(db_session):
     assert "results" in data
     # Verify custom URL was used
     call_args = mock_client.get.call_args
-    assert "custom.search.com" in call_args.args[0]
+    assert call_args.args[0].startswith("https://custom.search.com/")
 
     os.environ.pop("CREDENTIAL_ENCRYPTION_KEY", None)
 

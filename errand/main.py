@@ -19,7 +19,7 @@ import jwt
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -2492,16 +2492,34 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles subclass that serves index.html on a 404.
+
+    Path resolution is delegated to Starlette's hardened StaticFiles. When the
+    base class would respond 404, we instead return the SPA shell so that
+    client-side routing (Vue Router) can handle deep links such as /tasks/123.
+    Other status codes (e.g. 405) pass through unchanged.
+    """
+
+    async def get_response(self, path, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except (HTTPException, StarletteHTTPException) as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
+
+
 if STATIC_DIR.is_dir():
     _assets_dir = STATIC_DIR / "assets"
     if _assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=_assets_dir), name="static-assets")
 
-    @app.get("/{path:path}")
-    async def spa_fallback(request: Request, path: str):
-        static_root = STATIC_DIR.resolve()
-        file_path = (STATIC_DIR / path).resolve()
-        # Prevent path traversal outside static directory
-        if path and file_path.is_relative_to(static_root) and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(static_root / "index.html")
+    # SPA mount must be registered AFTER all API/auth/MCP/Slack routes so that
+    # those routes match first. Missing files under any non-/assets path fall
+    # back to index.html (handled by SPAStaticFiles.get_response).
+    app.mount("/", SPAStaticFiles(directory=STATIC_DIR, html=True), name="spa")

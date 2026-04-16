@@ -551,6 +551,44 @@ class TestClassifyProviderUrl:
     def test_case_insensitive(self):
         assert classify_provider_url("https://API.OPENAI.COM/v1", "openai_compatible") == "openai"
 
+    def test_well_known_host_in_path_not_misclassified(self):
+        # Host is evil.example.com; "api.openai.com" appears only in the path.
+        assert (
+            classify_provider_url(
+                "https://evil.example.com/api.openai.com/v1", "openai_compatible"
+            )
+            == "openai-compatible-other"
+        )
+
+    def test_well_known_host_as_subdomain_suffix_not_misclassified(self):
+        # Hostname is api.openai.com.attacker.example, which is NOT api.openai.com.
+        assert (
+            classify_provider_url(
+                "https://api.openai.com.attacker.example/v1", "openai_compatible"
+            )
+            == "openai-compatible-other"
+        )
+
+    def test_malformed_empty_string_falls_through(self):
+        # Empty string has no hostname; should fall through without raising.
+        assert classify_provider_url("", "openai_compatible") == "openai-compatible-other"
+        assert classify_provider_url("", "litellm") == "litellm-other"
+        assert classify_provider_url("", "unknown") == "other"
+
+    def test_malformed_missing_scheme_falls_through(self):
+        # Without a scheme, urlparse cannot extract a hostname; should fall through.
+        assert (
+            classify_provider_url("api.openai.com/v1", "openai_compatible")
+            == "openai-compatible-other"
+        )
+
+    def test_ollama_wrong_port_not_classified(self):
+        # localhost on a non-Ollama port should not be classified as ollama.
+        assert (
+            classify_provider_url("http://localhost:8080", "openai_compatible")
+            == "openai-compatible-other"
+        )
+
 
 # --- collect_system_metrics ---
 
