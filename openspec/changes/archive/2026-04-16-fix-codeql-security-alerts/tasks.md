@@ -83,8 +83,8 @@
 
 ## 10. PR, CI, and CodeQL re-scan
 
-- [ ] 10.1 Commit with a clear message referencing the alert numbers (e.g. "Close CodeQL alerts #1–7, #11–13; cluster 2 dismissed separately")
-- [ ] 10.2 Push the branch and open a PR; reference this OpenSpec change in the PR description
+- [x] 10.1 Commit with a clear message referencing the alert numbers (e.g. "Close CodeQL alerts #1–7, #11–13; cluster 2 dismissed separately")
+- [x] 10.2 Push the branch and open a PR; reference this OpenSpec change in the PR description (PR #120, branch `close-codeql-alerts` since `fix-codeql-security-alerts` was the OpenSpec scaffolding branch already merged in #117)
 - [ ] 10.3 Wait for the PR build to complete; confirm images + Helm chart published to GHCR with the `<VERSION>-pr<N>` tag
 - [ ] 10.4 Open the PR's CodeQL scan results and verify alerts #1, #2, #3, #4, #5, #6, #7, #11, #12, and #13 are all closed (resolved or no longer reported); verify no new alerts of the same categories appear
 - [ ] 10.5 If any of those alerts persist, revisit the fix (do not dismiss them without strong justification); re-run CodeQL after the new commit
