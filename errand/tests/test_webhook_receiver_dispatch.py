@@ -2,6 +2,8 @@
 import asyncio
 import logging
 
+import pytest
+
 import webhook_receiver
 
 
@@ -24,6 +26,9 @@ async def test_dispatch_task_reference_kept_and_removed_on_success(monkeypatch):
     # Reference is retained while the task is in-flight.
     assert task in webhook_receiver._background_tasks
 
+    # ``started`` fires partway through _fake_dispatch, so awaiting the event
+    # alone does not guarantee the task has finished. Awaiting the task is
+    # load-bearing — it joins execution and re-raises any unexpected error.
     await started.wait()
     await task
 
@@ -46,11 +51,11 @@ async def test_dispatch_exception_is_logged_at_error(monkeypatch, caplog):
         webhook_receiver._background_tasks.add(task)
         task.add_done_callback(webhook_receiver._on_dispatch_done)
 
-        # Let the task run and the callback fire.
-        try:
+        # Let the task run and the callback fire. The dispatch intentionally
+        # raises; assert the exact error so we know we're exercising the real
+        # failure path (not some other unexpected exception).
+        with pytest.raises(RuntimeError, match="dispatch blew up"):
             await task
-        except RuntimeError:
-            pass
         await asyncio.sleep(0)
 
     assert task not in webhook_receiver._background_tasks

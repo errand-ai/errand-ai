@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import task_manager
 from task_manager import DequeuedTask, TaskManager
 
 
