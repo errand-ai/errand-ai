@@ -2,6 +2,7 @@ import email as email_module
 import html2text
 import json
 import logging
+import re
 import secrets
 import uuid as uuid_mod
 from email.message import EmailMessage
@@ -340,6 +341,29 @@ async def schedule_task(
         return str(task.id)
 
 
+TWITTER_TCO_URL_LENGTH = 23
+_TWITTER_URL_PATTERN = re.compile(r"https?://\S+")
+# Trailing characters stripped from URL matches before counting. The regex
+# greedily matches all non-whitespace characters, but Twitter's own URL
+# detection stops before common sentence-terminating punctuation, so those
+# characters should count as normal text, not as part of the t.co-shortened URL.
+_URL_TRAILING_PUNCT = ".,;:!?)]}\"'"
+
+
+def twitter_character_count(text: str) -> int:
+    """Return the effective tweet length after Twitter's t.co URL shortening.
+
+    All URLs matching ``https?://\\S+`` are counted as ``TWITTER_TCO_URL_LENGTH``
+    characters (23), regardless of their actual length, matching Twitter's own
+    behaviour of shortening every URL to a t.co link. Trailing sentence
+    punctuation (``.,;:!?)]}\"'``) is stripped from matches before counting so
+    that characters outside the URL are counted as normal text.
+    """
+    urls = [url.rstrip(_URL_TRAILING_PUNCT) for url in _TWITTER_URL_PATTERN.findall(text)]
+    raw_url_chars = sum(len(url) for url in urls)
+    return len(text) - raw_url_chars + TWITTER_TCO_URL_LENGTH * len(urls)
+
+
 @mcp.tool()
 async def post_tweet(message: str) -> str:
     """Post a tweet to Twitter/X. Message must be 1-280 characters."""
@@ -348,8 +372,9 @@ async def post_tweet(message: str) -> str:
     if not message or not message.strip():
         return "Error: Message cannot be empty"
 
-    if len(message) > 280:
-        return f"Error: Message exceeds 280 character limit (got {len(message)} characters)"
+    effective_length = twitter_character_count(message)
+    if effective_length > 280:
+        return f"Error: Message exceeds 280 character limit (got {effective_length} characters)"
 
     # Load credentials from DB via platform registry, fall back to env vars
     from platforms import get_registry

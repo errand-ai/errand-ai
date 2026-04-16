@@ -706,6 +706,76 @@ async def test_schedule_task_invalid_repeat_interval_rejected(db_session):
         assert count.scalar() == 0
 
 
+# --- twitter_character_count helper ---
+
+
+def test_twitter_character_count_url_within_limit():
+    """Tweet with a single long URL and short body stays within the 280 limit."""
+    from mcp_server import twitter_character_count
+
+    body = "a" * 200
+    url = "https://example.com/" + "x" * 70  # 90 chars total
+    text = f"{body} {url}"
+    # 200 body + 1 space + 23 (t.co) = 224
+    assert twitter_character_count(text) == 224
+
+
+def test_twitter_character_count_url_over_limit():
+    """Tweet with a URL where body text pushes effective length over 280."""
+    from mcp_server import twitter_character_count
+
+    body = "a" * 270
+    url = "https://example.com/" + "x" * 30  # 50 chars total
+    text = f"{body} {url}"
+    # 270 body + 1 space + 23 (t.co) = 294
+    assert twitter_character_count(text) == 294
+
+
+def test_twitter_character_count_multiple_urls():
+    """Each URL in a tweet is counted as 23 characters."""
+    from mcp_server import twitter_character_count
+
+    body = "a" * 200
+    url1 = "https://example.com/" + "x" * 60  # 80 chars
+    url2 = "https://other.example.com/" + "y" * 54  # 80 chars
+    text = f"{body} {url1} {url2}"
+    # 200 body + 2 spaces + 23 + 23 = 248
+    assert twitter_character_count(text) == 248
+
+
+def test_twitter_character_count_no_urls():
+    """Tweet without URLs returns its raw length."""
+    from mcp_server import twitter_character_count
+
+    text = "a" * 250
+    assert twitter_character_count(text) == 250
+
+
+def test_twitter_character_count_no_urls_over_limit():
+    """Tweet without URLs over the 280 limit reports its raw length."""
+    from mcp_server import twitter_character_count
+
+    text = "a" * 300
+    assert twitter_character_count(text) == 300
+
+
+def test_twitter_character_count_trailing_punctuation():
+    """Trailing sentence punctuation after a URL counts as normal text.
+
+    The regex ``https?://\\S+`` greedily captures non-whitespace, including
+    punctuation that Twitter's own URL detection excludes. Those trailing
+    characters must still contribute to the effective length.
+    """
+    from mcp_server import twitter_character_count
+
+    # "Check " (6) + URL (t.co 23) + ")." (2) = 31
+    assert twitter_character_count("Check https://example.com).") == 31
+    # Sentence ending: "See " (4) + URL (23) + "." (1) = 28
+    assert twitter_character_count("See https://example.com.") == 28
+    # Multiple trailing chars: "Look " (5) + URL (23) + '!"' (2) = 30
+    assert twitter_character_count('Look https://example.com!"') == 30
+
+
 # --- post_tweet MCP tool ---
 
 
@@ -743,6 +813,57 @@ async def test_post_tweet_too_long():
     assert "Error" in result
     assert "280 character limit" in result
     assert "281" in result
+
+
+async def test_post_tweet_long_url_passes_validation(monkeypatch):
+    """Tweet with a long URL but short body is accepted after t.co adjustment.
+
+    Raw length exceeds 280, but effective length (after counting URLs as 23 chars)
+    is well under the limit, so the tweet should be posted.
+    """
+    monkeypatch.setenv("TWITTER_API_KEY", "key")
+    monkeypatch.setenv("TWITTER_API_SECRET", "secret")
+    monkeypatch.setenv("TWITTER_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("TWITTER_ACCESS_SECRET", "access")
+
+    from platforms import get_registry
+    from platforms.twitter import TwitterPlatform
+    registry = get_registry()
+    registry.register(TwitterPlatform())
+
+    body = "Check this out: "  # 16 chars
+    url = "https://example.com/a/very/long/path/" + "x" * 250  # > 280 chars on its own
+    message = body + url
+    assert len(message) > 280  # raw length would be rejected
+    # effective length: 16 + 23 = 39 → well within limit
+
+    mock_response = type("Response", (), {"data": {"id": "999"}})()
+    mock_user = type("User", (), {"data": type("Data", (), {"username": "testuser"})()})()
+
+    with patch("tweepy.Client") as MockClient:
+        instance = MockClient.return_value
+        instance.create_tweet.return_value = mock_response
+        instance.get_me.return_value = mock_user
+
+        from mcp_server import post_tweet
+        result = await post_tweet(message)
+
+    assert "https://x.com/testuser/status/999" in result
+    instance.create_tweet.assert_called_once_with(text=message)
+
+
+async def test_post_tweet_error_reports_effective_count():
+    """Error message reports the t.co-adjusted length, not the raw length."""
+    from mcp_server import post_tweet
+
+    body = "a" * 270
+    url = "https://example.com/" + "x" * 70  # 90 chars raw
+    message = f"{body} {url}"
+    # raw: 270 + 1 + 90 = 361; effective: 270 + 1 + 23 = 294
+    result = await post_tweet(message)
+    assert "Error" in result
+    assert "294" in result
+    assert "361" not in result
 
 
 async def test_post_tweet_empty():
