@@ -5,6 +5,7 @@ The JWT is a Keycloak token from the cloud realm, validated against
 the cloud Keycloak's JWKS endpoint.
 """
 import logging
+import os
 import secrets
 import time
 
@@ -13,11 +14,23 @@ from jwt import PyJWKClient
 
 logger = logging.getLogger(__name__)
 
+# Environment variable that pins the expected JWT issuer. Without this the
+# system would trust whatever `iss` claim the (unverified) token carries and
+# happily fetch JWKS from an attacker-controlled URL. See S3 in
+# fix-code-review-bugs.
+CLOUD_KEYCLOAK_URL_ENV = "CLOUD_KEYCLOAK_URL"
+
 # JWKS cache
 _jwks_client: PyJWKClient | None = None
 _jwks_issuer: str | None = None
 _jwks_fetched_at: float = 0
 JWKS_CACHE_TTL = 3600  # 1 hour
+
+
+def _expected_cloud_issuer() -> str | None:
+    """Return the trusted cloud Keycloak issuer URL, or None if not configured."""
+    value = os.environ.get(CLOUD_KEYCLOAK_URL_ENV, "").strip()
+    return value.rstrip("/") or None
 
 
 async def _get_cloud_service_url() -> str | None:
@@ -67,12 +80,28 @@ def validate_cloud_jwt(token: str) -> dict:
     """Validate a cloud JWT token. Returns claims dict.
 
     Raises jwt.InvalidTokenError on failure.
+
+    The token's ``iss`` claim MUST match the ``CLOUD_KEYCLOAK_URL`` env var
+    before any JWKS fetch is attempted. This prevents an attacker-forged
+    token from coercing the server into calling an arbitrary URL (SSRF) and
+    accepting a signature from an untrusted key source.
     """
+    # Pin the expected issuer from configuration, not from the token itself.
+    expected_issuer = _expected_cloud_issuer()
+    if expected_issuer is None:
+        raise jwt.InvalidTokenError(
+            f"Cloud JWT validation not configured: {CLOUD_KEYCLOAK_URL_ENV} env var is unset"
+        )
+
     # Peek at the issuer without verification
     unverified = jwt.decode(token, options={"verify_signature": False})
     issuer = unverified.get("iss", "")
     if not issuer:
         raise jwt.InvalidTokenError("Missing issuer claim")
+    if issuer.rstrip("/") != expected_issuer:
+        raise jwt.InvalidTokenError(
+            "JWT issuer does not match configured cloud Keycloak URL"
+        )
 
     jwks_client = _ensure_jwks_client(issuer)
 

@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Tracked async task dispatch
-The webhook receiver SHALL store references to all asyncio tasks it creates via `asyncio.create_task()` in an instance-level set. Each task SHALL have a `done_callback` registered that removes the task from the set and logs any exception at `ERROR` level. This ensures tasks are not garbage-collected before completion and that exceptions are surfaced rather than silently lost.
+The webhook receiver SHALL store references to all asyncio tasks it creates via `asyncio.create_task()` in a module-level set. Each task SHALL have a `done_callback` registered that removes the task from the set and logs any exception at `ERROR` level. This ensures tasks are not garbage-collected before completion and that exceptions are surfaced rather than silently lost.
 
 #### Scenario: Task reference kept until completion
 - **WHEN** a webhook is dispatched via `asyncio.create_task()`
-- **THEN** the task object is added to the receiver's internal task set before the response is returned
+- **THEN** the task object is added to the module-level task set before the response is returned
 
 #### Scenario: Task removed from set on completion
 - **WHEN** a dispatched task completes successfully
@@ -17,4 +17,4 @@ The webhook receiver SHALL store references to all asyncio tasks it creates via 
 
 #### Scenario: Task not garbage-collected mid-execution
 - **WHEN** a dispatched task is long-running and no other code holds a reference to it
-- **THEN** the task remains alive because the receiver's set holds a strong reference
+- **THEN** the task remains alive because the module-level set holds a strong reference

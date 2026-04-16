@@ -39,6 +39,25 @@ SOURCE_HEADERS = {
 _dedup_cache: dict[str, float] = {}
 DEDUP_TTL = 300  # 5 minutes
 
+# Strong references to in-flight dispatch tasks. Without this, Python's GC can
+# drop a bare `asyncio.create_task()` before it completes and silently swallow
+# any exception it raised. See B1 in fix-code-review-bugs.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _on_dispatch_done(task: asyncio.Task) -> None:
+    """done_callback for dispatched webhook tasks.
+
+    Drops the strong reference and surfaces any unhandled exception at ERROR
+    level. Runs on the event loop, so the call is quick and allocation-free.
+    """
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Webhook dispatch task failed", exc_info=exc)
+
 
 def _cleanup_dedup_cache() -> None:
     """Remove expired entries from the dedup cache."""
@@ -143,8 +162,11 @@ async def receive_webhook(
         source, trigger.id, event_id,
     )
 
-    # Dispatch asynchronously
+    # Dispatch asynchronously. Keep a strong reference so the task is not GC'd
+    # before completion, and surface exceptions via the done callback.
     raw_headers = dict(request.headers)
-    asyncio.create_task(_dispatch_webhook(trigger, body, raw_headers))
+    task = asyncio.create_task(_dispatch_webhook(trigger, body, raw_headers))
+    _background_tasks.add(task)
+    task.add_done_callback(_on_dispatch_done)
 
     return {"status": "accepted"}

@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from database import async_session
 from events import get_valkey, publish_event
 from models import Setting, Task
+from utils import _next_position
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,6 @@ def _task_to_dict(task: Task) -> dict:
     }
 
 
-async def _next_position(session: AsyncSession, status: str) -> int:
-    result = await session.execute(
-        select(func.max(Task.position)).where(Task.status == status)
-    )
-    max_pos = result.scalar()
-    return (max_pos or 0) + 1
-
-
 async def acquire_lock() -> bool:
     valkey = get_valkey()
     if valkey is None:
@@ -74,12 +67,31 @@ async def refresh_lock() -> bool:
     return await valkey.expire(LOCK_KEY, LOCK_TTL)
 
 
+# Atomic check-and-delete: only DEL the key if its current value matches the
+# caller's identity. Prevents a replica from releasing a lock another replica
+# has since acquired (e.g. after our TTL expired). Returns 1 on delete, 0 on
+# no-op. Requires Valkey/Redis >= 2.6 for server-side Lua scripting.
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+"""
+
+
 async def release_lock() -> None:
     valkey = get_valkey()
     if valkey is None:
         return
+    lock_value = socket.gethostname()
     try:
-        await valkey.delete(LOCK_KEY)
+        # Run the Lua script directly via EVAL (not EVALSHA) so behaviour is
+        # identical on servers that have not seen the script before, and so
+        # fakeredis (used in tests) can execute it.
+        await valkey.execute_command(
+            "EVAL", _RELEASE_LOCK_SCRIPT, 1, LOCK_KEY, lock_value
+        )
     except Exception:
         logger.warning("Failed to release scheduler lock", exc_info=True)
 

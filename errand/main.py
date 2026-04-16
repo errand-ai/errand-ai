@@ -43,6 +43,7 @@ from llm_providers import (
 )
 from local_auth import router as local_auth_router
 from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
+from utils import _next_position
 from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
@@ -574,16 +575,6 @@ class TagResponse(BaseModel):
 
 
 # --- Protected /api endpoints ---
-
-
-async def _next_position(session: AsyncSession, status: str, exclude_id=None) -> int:
-    """Return the next position value for a task in the given status column."""
-    query = select(func.max(Task.position)).where(Task.status == status)
-    if exclude_id is not None:
-        query = query.where(Task.id != exclude_id)
-    result = await session.execute(query)
-    max_pos = result.scalar()
-    return (max_pos or 0) + 1
 
 
 @app.get("/api/tags", response_model=list[TagResponse])

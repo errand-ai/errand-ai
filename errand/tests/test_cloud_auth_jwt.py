@@ -8,6 +8,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 import cloud_auth_jwt
 
+# Fixed issuer used across tests; aligned with CLOUD_KEYCLOAK_URL below.
+_TEST_ISSUER = "https://keycloak.example.com/realms/errand"
+
+
+@pytest.fixture(autouse=True)
+def _pin_cloud_keycloak_url(monkeypatch):
+    """Pin the trusted issuer for every test so validate_cloud_jwt is enabled."""
+    monkeypatch.setenv(cloud_auth_jwt.CLOUD_KEYCLOAK_URL_ENV, _TEST_ISSUER)
+
 
 @pytest.fixture()
 def rsa_keypair():
@@ -94,6 +103,29 @@ def test_validate_cloud_jwt_missing_issuer():
     token = pyjwt.encode({"sub": "test", "exp": int(time.time()) + 3600}, "secret", algorithm="HS256")
     with pytest.raises(pyjwt.InvalidTokenError):
         cloud_auth_jwt.validate_cloud_jwt(token)
+
+
+def test_validate_cloud_jwt_mismatched_issuer_skips_jwks_fetch(rsa_keypair):
+    """Issuer pinned via env var — mismatched tokens MUST be rejected before any network call."""
+    private_key, _ = rsa_keypair
+    token = _make_cloud_jwt(private_key, issuer="https://attacker.example.com/realms/evil")
+
+    with patch.object(cloud_auth_jwt, "_ensure_jwks_client") as mock_jwks:
+        with pytest.raises(pyjwt.InvalidTokenError, match="issuer does not match"):
+            cloud_auth_jwt.validate_cloud_jwt(token)
+        mock_jwks.assert_not_called()
+
+
+def test_validate_cloud_jwt_requires_env_var(monkeypatch, rsa_keypair):
+    """Unset CLOUD_KEYCLOAK_URL must fail closed, even for a well-formed token."""
+    monkeypatch.delenv(cloud_auth_jwt.CLOUD_KEYCLOAK_URL_ENV, raising=False)
+    private_key, _ = rsa_keypair
+    token = _make_cloud_jwt(private_key)
+
+    with patch.object(cloud_auth_jwt, "_ensure_jwks_client") as mock_jwks:
+        with pytest.raises(pyjwt.InvalidTokenError, match="not configured"):
+            cloud_auth_jwt.validate_cloud_jwt(token)
+        mock_jwks.assert_not_called()
 
 
 def test_jwks_url_from_issuer():
