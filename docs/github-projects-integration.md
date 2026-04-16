@@ -136,7 +136,7 @@ If the task cannot proceed (e.g., no matching openspec change), it aborts:
 - Verify the trigger's project_node_id matches (visible in errand logs)
 - Check the trigger column matches the column the issue moved TO
 - Ensure content_types includes "Issue" (default)
-- Check for duplicate prevention — an issue can only create one task per trigger
+- Check for duplicate prevention — task creation is deduplicated globally per source using the GitHub item's external ID, so the same issue will not create multiple tasks even if multiple triggers match
 
 ### Column transition failing
 - Project columns may have been renamed since trigger creation

@@ -244,3 +244,33 @@ class TestGitHubTriggerRoutes:
             "filters": {"bad_key": "x"},
         })
         assert resp.status_code == 422
+
+    async def test_introspect_project_missing_status_field_returns_400(self, admin_client, monkeypatch):
+        """Introspection must fail loudly when the project has no 'Status' single-select field —
+        otherwise the frontend would show a success toast with an unusable (null) status_field
+        and the trigger would be impossible to configure."""
+        from unittest.mock import AsyncMock
+
+        async def fake_from_credentials(session):
+            client = AsyncMock()
+            client.introspect_project = AsyncMock(return_value={
+                "project_node_id": "PVT_abc",
+                "title": "Backlog",
+                # A project that only has date/text fields, no SingleSelectField named "Status"
+                "fields": [
+                    {"id": "f1", "name": "Priority", "type": "SingleSelectField", "options": []},
+                    {"id": "f2", "name": "Due date", "type": "DateField"},
+                ],
+            })
+            return client
+
+        from platforms.github import client as gh_client
+        monkeypatch.setattr(gh_client.GitHubClient, "from_credentials", fake_from_credentials)
+
+        resp = await admin_client.post(
+            "/api/webhook-triggers/github/introspect-project",
+            json={"org": "acme", "project_number": 1},
+        )
+        assert resp.status_code == 400
+        assert "Status" in resp.json()["detail"]
+        assert "Backlog" in resp.json()["detail"]

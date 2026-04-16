@@ -402,6 +402,19 @@ async def introspect_github_project(
             status_field = {"field_id": field["id"], "options": field["options"]}
             break
 
+    if status_field is None:
+        # Fail loudly instead of returning a 200 with an unusable payload — the
+        # frontend's column dropdown can't be populated without a single-select
+        # "Status" field, so the trigger would be impossible to configure.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Project '{result['title']}' has no single-select field named "
+                "'Status'. Rename the project's status field to 'Status' or add "
+                "one before configuring a GitHub trigger."
+            ),
+        )
+
     return {
         "project_node_id": result["project_node_id"],
         "title": result["title"],
