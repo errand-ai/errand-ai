@@ -138,10 +138,15 @@ export const useAuthStore = defineStore('auth', () => {
     accessDenied.value = true
   }
 
+  function redirectToLogin() {
+    // SSO mode → backend OIDC authorize endpoint; everything else (local/setup/null) → Vue /login page
+    window.location.href = authMode.value === 'sso' ? '/auth/login' : '/login'
+  }
+
   // If a token was restored from localStorage, schedule refresh
   if (token.value) {
     scheduleRefresh()
   }
 
-  return { token, idToken, refreshToken, isAuthenticated, accessDenied, authMode, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, setAuthMode, scheduleRefresh, cancelRefresh, doRefresh }
+  return { token, idToken, refreshToken, isAuthenticated, accessDenied, authMode, userDisplay, roles, isAdmin, isEditor, isViewer, setToken, clearToken, setAccessDenied, setAuthMode, scheduleRefresh, cancelRefresh, doRefresh, redirectToLogin }
 })

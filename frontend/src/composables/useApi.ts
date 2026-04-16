@@ -90,7 +90,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
     }
 
     auth.clearToken()
-    window.location.href = '/auth/login'
+    auth.redirectToLogin()
     throw new Error('Unauthorized')
   }
 
