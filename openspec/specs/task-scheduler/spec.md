@@ -37,6 +37,8 @@ The scheduler SHALL publish a `task_updated` WebSocket event via the existing `p
 ### Requirement: Valkey distributed lock ensures single scheduler instance
 The scheduler SHALL acquire a Valkey distributed lock before checking for due tasks. The lock SHALL use the `SET key value NX EX ttl` pattern with key `errand:scheduler-lock`, a TTL of 30 seconds, and the pod hostname as the lock value. If lock acquisition fails (another replica holds the lock), the scheduler SHALL skip the cycle and sleep until the next interval. The lock SHALL be refreshed every cycle while held.
 
+When releasing the lock, the scheduler SHALL use an atomic Lua script that checks the lock value matches the current holder's identity before deleting. If the lock value no longer matches (i.e. another replica has acquired it after expiry), the release SHALL be a no-op. This prevents a replica from releasing a lock it no longer owns.
+
 #### Scenario: First replica acquires the lock and runs scheduler
 - **WHEN** a single backend replica starts and no lock exists in Valkey
 - **THEN** the replica acquires the lock and runs the scheduler check
@@ -52,6 +54,14 @@ The scheduler SHALL acquire a Valkey distributed lock before checking for due ta
 #### Scenario: Lock is refreshed each cycle
 - **WHEN** the lock-holding replica completes a scheduler cycle
 - **THEN** it refreshes the lock TTL back to 30 seconds before sleeping
+
+#### Scenario: Lock released only if still owned by this holder
+- **WHEN** the original lock holder calls release and the lock value still matches its identity
+- **THEN** the Lua script deletes the key atomically
+
+#### Scenario: Lock not released if owned by another replica
+- **WHEN** the lock TTL expired and a second replica acquired the lock, then the original replica attempts to release
+- **THEN** the Lua script finds the lock value does not match and performs no delete
 
 ### Requirement: Scheduler runs as background task in backend lifespan
 The scheduler SHALL be started as an `asyncio.create_task()` during the FastAPI lifespan startup, after Valkey and the database engine are initialised. The scheduler task SHALL be cancelled during lifespan shutdown. The scheduler SHALL poll at a configurable interval (default 15 seconds) controlled by the `SCHEDULER_INTERVAL` environment variable.
