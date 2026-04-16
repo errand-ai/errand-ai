@@ -225,8 +225,9 @@ def classify_provider_url(base_url: str, provider_type: str) -> str:
         hostname = parsed.hostname
         port = parsed.port
     except ValueError:
+        # hostname=None short-circuits the `if hostname:` guard below, so port
+        # is unreachable on this path; no need to reset it.
         hostname = None
-        port = None
 
     if hostname:
         category = _KNOWN_PROVIDER_HOSTS.get(hostname)

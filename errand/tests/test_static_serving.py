@@ -35,7 +35,7 @@ async def static_client(static_dir):
     """Async client backed by a fresh FastAPI app wired like production.
 
     Order matches ``errand/main.py``:
-      1. Stub auth route registered first (must not be swallowed by the SPA).
+      1. Stub auth + API routes registered first (must not be swallowed by SPA).
       2. ``/assets`` mounted as vanilla ``StaticFiles`` (404 on miss).
       3. ``SPAStaticFiles`` mounted at ``/`` with ``html=True``.
     """
@@ -47,6 +47,10 @@ async def static_client(static_dir):
     @test_app.get("/auth/login")
     async def auth_login_stub():
         return JSONResponse({"route": "auth_login"})
+
+    @test_app.get("/api/health")
+    async def api_health_stub():
+        return JSONResponse({"status": "ok"})
 
     # 2. /assets mount: vanilla StaticFiles -> missing files return 404.
     test_app.mount(
@@ -203,6 +207,21 @@ async def test_auth_route_not_swallowed(static_client):
     resp = await static_client.get("/auth/login")
     assert resp.status_code == 200
     assert resp.json() == {"route": "auth_login"}
+
+
+@pytest.mark.asyncio
+async def test_api_route_not_swallowed(static_client):
+    """Spec scenario "API routes unaffected": /api/* resolves to the API route,
+    not the SPA mount.
+
+    The fixture registers the stub /api/health route BEFORE mounting
+    SPAStaticFiles, so the SPA mount must not capture this path. Guards the
+    route-ordering invariant for any future fixture/wiring change.
+    """
+    resp = await static_client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert resp.headers["content-type"].startswith("application/json")
 
 
 def test_static_dir_not_mounted_when_missing():
