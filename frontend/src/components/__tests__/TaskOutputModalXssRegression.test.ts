@@ -53,16 +53,23 @@ describe('TaskOutputModal — mutation-XSS payload class is neutralised', () => 
         }
       }
 
-      // Assertion 3: no javascript: URLs attributable to the payload.
+      // Assertion 3: no dangerous-scheme URLs attributable to the payload.
+      // Covers javascript:, data:, and vbscript: — the URL-scheme XSS vectors
+      // DOMPurify is expected to neutralise.
       const html = outputContainer.innerHTML.toLowerCase()
-      expect(html).not.toContain('javascript:')
+      const dangerousSchemes = ['javascript:', 'data:', 'vbscript:']
+      for (const scheme of dangerousSchemes) {
+        expect(html).not.toContain(scheme)
+      }
 
-      // Assertion 4: any surviving <img> elements have no executable vectors
+      // Assertion 4: any surviving <img> elements have no executable URL vectors
       // (onerror/onload/etc. are covered by assertion 2, but re-check that
-      // src is not a javascript: URL — belt and braces).
+      // src is not a dangerous-scheme URL — belt and braces).
       for (const img of Array.from(outputContainer.querySelectorAll('img'))) {
         const src = (img.getAttribute('src') ?? '').toLowerCase().trim()
-        expect(src.startsWith('javascript:')).toBe(false)
+        for (const scheme of dangerousSchemes) {
+          expect(src.startsWith(scheme)).toBe(false)
+        }
       }
     })
   }
