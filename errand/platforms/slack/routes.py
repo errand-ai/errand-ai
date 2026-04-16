@@ -41,7 +41,7 @@ _EVENT_TTL = 300  # 5 minutes
 _slack_client = SlackClient()
 
 # Regex to strip bot mention from text: <@BOTID> or <@BOTID|botname>
-_BOT_MENTION_RE = re.compile(r"<@[A-Z0-9]+(?:\|[^>]+)?>\s*")
+_BOT_MENTION_RE = re.compile(r"<@[A-Z0-9]+(?:\|[^>|]+)?>\s*")
 
 
 def _is_duplicate_event(event_id: str) -> bool:

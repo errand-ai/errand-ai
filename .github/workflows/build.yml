@@ -18,9 +18,14 @@ on:
 env:
   REGISTRY: ghcr.io
 
+permissions:
+  contents: read
+
 jobs:
   version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:

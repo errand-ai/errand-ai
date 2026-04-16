@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import psutil
@@ -197,20 +198,43 @@ async def collect_valkey_info() -> tuple[str | None, bool]:
 # --- LLM config collection ---
 
 
-def classify_provider_url(base_url: str, provider_type: str) -> str:
-    """Classify a provider base URL into a category without exposing the raw URL."""
-    url_lower = base_url.lower()
+_KNOWN_PROVIDER_HOSTS = {
+    "api.openai.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "generativelanguage.googleapis.com": "gemini",
+    "api.x.ai": "xai",
+}
 
-    if "api.openai.com" in url_lower:
-        return "openai"
-    if "api.anthropic.com" in url_lower:
-        return "anthropic"
-    if "generativelanguage.googleapis.com" in url_lower:
-        return "gemini"
-    if "api.x.ai" in url_lower:
-        return "xai"
-    if "localhost:11434" in url_lower or "127.0.0.1:11434" in url_lower:
-        return "ollama"
+_OLLAMA_HOSTS = {"localhost", "127.0.0.1"}
+_OLLAMA_PORT = 11434
+
+
+def classify_provider_url(base_url: str, provider_type: str) -> str:
+    """Classify a provider base URL into a category without exposing the raw URL.
+
+    Uses host-based matching (parsing the URL's authority) rather than substring
+    matching against the full URL. URLs whose host does not exactly match a
+    well-known endpoint fall through to the generic categories.
+    """
+    hostname: str | None = None
+    port: int | None = None
+    try:
+        parsed = urlparse(base_url)
+        # parsed.hostname is already lowercased and strips userinfo; parsed.port
+        # may itself raise ValueError on malformed authority components.
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        # hostname=None short-circuits the `if hostname:` guard below, so port
+        # is unreachable on this path; no need to reset it.
+        hostname = None
+
+    if hostname:
+        category = _KNOWN_PROVIDER_HOSTS.get(hostname)
+        if category is not None:
+            return category
+        if hostname in _OLLAMA_HOSTS and port == _OLLAMA_PORT:
+            return "ollama"
 
     if provider_type == "litellm":
         return "litellm-other"

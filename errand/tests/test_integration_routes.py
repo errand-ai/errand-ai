@@ -66,7 +66,7 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     url = data["redirect_url"]
-    assert "accounts.google.com" in url
+    assert url.startswith("https://accounts.google.com/")
     assert "goog-client-id" in url
     assert "access_type=offline" in url
     assert "drive" in url
