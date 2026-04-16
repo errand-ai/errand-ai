@@ -17,6 +17,7 @@ import secrets
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -665,16 +666,29 @@ async def _dequeue_task(session: AsyncSession) -> Task | None:
 # Without this, every lookup built a new SQLAlchemy engine (and its connection
 # pool) and never disposed it, exhausting the database connection pool over
 # time. See B5 in fix-code-review-bugs.
+#
+# The lock is needed because ``_resolve_provider_sync`` is invoked via
+# ``loop.run_in_executor(None, ...)`` — i.e. concurrently from multiple
+# executor threads. A naive ``if is None:`` check would let a burst of
+# concurrent callers race into ``create_sync_engine`` and leak pools.
 _sync_engine = None
+_sync_engine_lock = threading.Lock()
 
 
 def _get_sync_engine():
-    """Return the process-wide sync engine, creating it on first call."""
+    """Return the process-wide sync engine, creating it on first call.
+
+    Thread-safe via double-checked locking: the fast path stays lock-free
+    once the engine is initialised.
+    """
     global _sync_engine
-    if _sync_engine is None:
-        db_url = os.environ.get("DATABASE_URL", "")
-        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("sqlite+aiosqlite://", "sqlite://")
-        _sync_engine = create_sync_engine(sync_url)
+    if _sync_engine is not None:
+        return _sync_engine
+    with _sync_engine_lock:
+        if _sync_engine is None:
+            db_url = os.environ.get("DATABASE_URL", "")
+            sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("sqlite+aiosqlite://", "sqlite://")
+            _sync_engine = create_sync_engine(sync_url)
     return _sync_engine
 
 

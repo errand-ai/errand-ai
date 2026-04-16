@@ -87,8 +87,10 @@ async def release_lock() -> None:
     lock_value = socket.gethostname()
     try:
         # Run the Lua script directly via EVAL (not EVALSHA) so behaviour is
-        # identical on servers that have not seen the script before, and so
-        # fakeredis (used in tests) can execute it.
+        # identical on servers that have not seen the script before. (Unit
+        # tests do not rely on Lua support — fakeredis does not implement it;
+        # test_scheduler_release_lock.py uses a hand-rolled fake that honours
+        # the check-and-delete contract.)
         await valkey.execute_command(
             "EVAL", _RELEASE_LOCK_SCRIPT, 1, LOCK_KEY, lock_value
         )

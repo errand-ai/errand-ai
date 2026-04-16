@@ -95,10 +95,13 @@ def validate_cloud_jwt(token: str) -> dict:
 
     # Peek at the issuer without verification
     unverified = jwt.decode(token, options={"verify_signature": False})
-    issuer = unverified.get("iss", "")
-    if not issuer:
+    raw_issuer = unverified.get("iss", "")
+    if not raw_issuer:
         raise jwt.InvalidTokenError("Missing issuer claim")
-    if issuer.rstrip("/") != expected_issuer:
+    # Normalise once and use the normalised value everywhere downstream so
+    # trailing-slash variants do not cause JWKS-cache misses.
+    issuer = raw_issuer.rstrip("/")
+    if issuer != expected_issuer:
         raise jwt.InvalidTokenError(
             "JWT issuer does not match configured cloud Keycloak URL"
         )
@@ -118,7 +121,7 @@ def validate_cloud_jwt(token: str) -> dict:
         token,
         signing_key.key,
         algorithms=["RS256"],
-        issuer=issuer,
+        issuer=raw_issuer,
         options={"verify_aud": False, "require": ["exp", "iss", "sub"]},
     )
     return claims
