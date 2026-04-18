@@ -70,11 +70,15 @@ async def local_login(body: dict, session: AsyncSession = Depends(get_session)):
     if not username or not password:
         raise HTTPException(status_code=422, detail="Username and password required")
 
+    password_bytes = password.encode()
+    if len(password_bytes) > 72:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     result = await session.execute(
         select(LocalUser).where(LocalUser.username == username)
     )
     user = result.scalar_one_or_none()
-    if user is None or not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
+    if user is None or not bcrypt.checkpw(password_bytes, user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     secret = await _get_jwt_secret(session)
@@ -112,6 +116,10 @@ async def change_password(
     if not bcrypt.checkpw(current_password.encode(), user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    user.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    new_password_bytes = new_password.encode()
+    if len(new_password_bytes) > 72:
+        raise HTTPException(status_code=422, detail="Password must not exceed 72 bytes")
+
+    user.password_hash = bcrypt.hashpw(new_password_bytes, bcrypt.gensalt()).decode()
     await session.commit()
     return {"ok": True}

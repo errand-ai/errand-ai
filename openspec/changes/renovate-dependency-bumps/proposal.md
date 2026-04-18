@@ -12,7 +12,7 @@ Tailwind CSS v4 and the Python 3.12→3.14 base image bump are excluded — Tail
 - `pytest-asyncio` 0.24 → 1.x (major, test-only)
 - `openai` 1.x → 2.x (major — usage is vanilla AsyncOpenAI, API-compatible)
 - `redis` 5.x → 7.x (major — standard API usage, transparent upgrade)
-- `bcrypt` cap removal: `>=4.0.0,<5.0.0` → `>=4.0.0` then bump to 5.x (major)
+- `bcrypt` `>=4.0.0,<5.0.0` → `>=5.0.0` (major)
 - `marked` 17 → 18 (major, frontend runtime dep)
 - Non-major bumps from Renovate #136: fastapi, sqlalchemy, alembic, asyncpg, httpx, psycopg2-binary, aiosqlite, fakeredis, redis minor, openai minor, pytest-asyncio minor
 
@@ -52,5 +52,5 @@ None — this is a dependency-only change.
 - **frontend/package-lock.json**: Full regeneration
 - **Dockerfile**: Node 20→24 base image
 - **testing/docker-compose.yml**: postgres 16→18, valkey 8→9
-- **All 839 backend tests and 440 frontend tests** must pass after bumps
+- **All backend tests and frontend tests** must pass after bumps
 - **Renovate PRs**: After merging, trigger rebase/retry on all 18 PRs to auto-close resolved ones

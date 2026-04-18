@@ -211,9 +211,13 @@ async def lifespan(app: FastAPI):
             import bcrypt
             result = await session.execute(select(LocalUser).where(LocalUser.username == admin_username))
             if result.scalar_one_or_none() is None:
-                session.add(LocalUser(username=admin_username, password_hash=bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()))
-                await session.commit()
-                logger.info("Auto-provisioned local admin user '%s'", admin_username)
+                admin_password_bytes = admin_password.encode()
+                if len(admin_password_bytes) > 72:
+                    logger.error("ADMIN_PASSWORD exceeds bcrypt's 72-byte limit, skipping auto-provision")
+                else:
+                    session.add(LocalUser(username=admin_username, password_hash=bcrypt.hashpw(admin_password_bytes, bcrypt.gensalt()).decode()))
+                    await session.commit()
+                    logger.info("Auto-provisioned local admin user '%s'", admin_username)
 
     from model_metadata import run_periodic_refresh
     model_metadata_task = asyncio.create_task(run_periodic_refresh(async_session))
@@ -2299,7 +2303,11 @@ async def setup_create_user(body: dict, session: AsyncSession = Depends(get_sess
 
     import bcrypt
 
-    user = LocalUser(username=username, password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
+    password_bytes = password.encode()
+    if len(password_bytes) > 72:
+        raise HTTPException(status_code=422, detail="Password must not exceed 72 bytes")
+
+    user = LocalUser(username=username, password_hash=bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode())
     session.add(user)
     await session.commit()
 

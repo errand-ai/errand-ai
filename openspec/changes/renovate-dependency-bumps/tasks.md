@@ -9,7 +9,7 @@
 - [x] 2.2 Update `fastapi==0.115.0` → `fastapi==0.136.0`
 - [x] 2.3 Update `sqlalchemy[asyncio]==2.0.35` → `sqlalchemy[asyncio]==2.0.49`
 - [x] 2.4 Update `alembic==1.13.3` → `alembic==1.18.4`
-- [x] 2.5 Update `asyncpg==0.29.0` → `asyncpg==0.31.0`
+- [x] 2.5 Update `asyncpg==0.29.0` → `asyncpg==0.30.0` (0.31.0 lacks manylinux wheels)
 - [x] 2.6 Update `httpx==0.27.2` → `httpx==0.28.1`
 - [x] 2.7 Update `psycopg2-binary==2.9.9` → `psycopg2-binary==2.9.11`
 - [x] 2.8 Update `redis[hiredis]==5.2.1` → `redis[hiredis]==7.4.0`
@@ -57,7 +57,7 @@
 
 ## 7. PR and review
 
-- [ ] 7.1 Commit on the feature branch, push to origin, open a PR against `main`
+- [x] 7.1 Commit on the feature branch, push to origin, open a PR against `main` — errand-ai/errand-ai#152
 - [ ] 7.2 Confirm CI passes (tests, Docker build, Helm chart package)
 - [ ] 7.3 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
 - [ ] 7.4 Merge to `main`
