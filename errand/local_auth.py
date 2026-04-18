@@ -113,7 +113,8 @@ async def change_password(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not bcrypt.checkpw(current_password.encode(), user.password_hash.encode()):
+    current_password_bytes = current_password.encode()
+    if len(current_password_bytes) > 72 or not bcrypt.checkpw(current_password_bytes, user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
     new_password_bytes = new_password.encode()
