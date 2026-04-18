@@ -128,6 +128,14 @@ async def _dispatch_github_webhook(body: bytes, headers: dict, trigger_id: str |
         logger.warning("Trigger %s not found, discarding relay message", trigger_id)
         return
 
+    if trigger.source != "github":
+        logger.warning(
+            "Trigger %s has source %s, expected github; discarding relay message",
+            trigger_id,
+            trigger.source,
+        )
+        return
+
     if not trigger.enabled:
         logger.warning("Trigger %s is disabled, discarding relay message", trigger_id)
         return

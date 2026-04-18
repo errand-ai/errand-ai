@@ -65,9 +65,33 @@ class TestCloudDispatchGitHub:
             mock_logger.warning.assert_called()
             assert "not found" in mock_logger.warning.call_args[0][0].lower()
 
+    async def test_source_mismatch(self):
+        """Trigger with wrong source is discarded."""
+        mock_trigger = MagicMock()
+        mock_trigger.source = "jira"
+        mock_trigger.enabled = True
+
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_trigger
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with patch("cloud_dispatch.async_session") as mock_session_ctx, \
+             patch("cloud_dispatch.logger") as mock_logger:
+            mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+            await _dispatch_github_webhook(
+                b'{"test": true}',
+                {"x-hub-signature-256": "sha256=abc"},
+                "00000000-0000-0000-0000-000000000000",
+            )
+            mock_logger.warning.assert_called()
+            assert "expected github" in mock_logger.warning.call_args[0][0].lower()
+
     async def test_disabled_trigger(self):
         """2.5 Disabled trigger logs warning and discards."""
         mock_trigger = MagicMock()
+        mock_trigger.source = "github"
         mock_trigger.enabled = False
 
         mock_session = AsyncMock()
@@ -90,6 +114,7 @@ class TestCloudDispatchGitHub:
     async def test_hmac_reverification_failure(self):
         """2.6 HMAC re-verification failure discards message."""
         mock_trigger = MagicMock()
+        mock_trigger.source = "github"
         mock_trigger.enabled = True
         mock_trigger.webhook_secret = "encrypted-secret"
 
@@ -115,6 +140,7 @@ class TestCloudDispatchGitHub:
     async def test_missing_signature_header_with_secret(self):
         """2.7 Missing signature header with secret-bearing trigger discards message."""
         mock_trigger = MagicMock()
+        mock_trigger.source = "github"
         mock_trigger.enabled = True
         mock_trigger.webhook_secret = "encrypted-secret"
 
