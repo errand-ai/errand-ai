@@ -5,7 +5,7 @@ Vitest test infrastructure using vue-test-utils and jsdom for frontend component
 ## Requirements
 
 ### Requirement: Frontend test infrastructure
-The frontend SHALL have a Vitest test suite using `@vue/test-utils` and `jsdom`. Tests SHALL mock the API layer (`fetch` or `useApi` composable) to avoid real HTTP requests. The Pinia store SHALL be instantiated fresh for each test using `createTestingPinia` or manual setup.
+The frontend SHALL have a Vitest test suite using `@vue/test-utils` and `jsdom` 29.x. Tests SHALL mock the API layer (`fetch` or `useApi` composable) to avoid real HTTP requests. The Pinia store SHALL be instantiated fresh for each test using `createTestingPinia` or manual setup.
 
 #### Scenario: Test suite runs without backend
 - **WHEN** a developer runs `npm test` in the frontend directory

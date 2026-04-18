@@ -58,8 +58,8 @@
 ## 7. PR and review
 
 - [x] 7.1 Commit on the feature branch, push to origin, open a PR against `main` — errand-ai/errand-ai#152
-- [ ] 7.2 Confirm CI passes (tests, Docker build, Helm chart package)
-- [ ] 7.3 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
+- [x] 7.2 Confirm CI passes (tests, Docker build, Helm chart package)
+- [x] 7.3 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
 - [ ] 7.4 Merge to `main`
 
 ## 8. Post-merge: Renovate PR cleanup
