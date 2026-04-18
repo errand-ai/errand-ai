@@ -25,7 +25,7 @@ services:
 # Using Valkey as a Pub/Sub service. Valkey is a Redis-compatible nosql database
 # that provides high performance and scalability.
   valkey:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:9-alpine
     ports:
       - "6379:6379"
     healthcheck:
