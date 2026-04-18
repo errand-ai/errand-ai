@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from passlib.hash import bcrypt
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -74,7 +74,7 @@ async def local_login(body: dict, session: AsyncSession = Depends(get_session)):
         select(LocalUser).where(LocalUser.username == username)
     )
     user = result.scalar_one_or_none()
-    if user is None or not bcrypt.verify(password, user.password_hash):
+    if user is None or not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     secret = await _get_jwt_secret(session)
@@ -109,9 +109,9 @@ async def change_password(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not bcrypt.verify(current_password, user.password_hash):
+    if not bcrypt.checkpw(current_password.encode(), user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    user.password_hash = bcrypt.hash(new_password)
+    user.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
     await session.commit()
     return {"ok": True}

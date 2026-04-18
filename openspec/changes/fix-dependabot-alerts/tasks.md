@@ -49,11 +49,11 @@
 
 ## 8. PR and review
 
-- [ ] 8.1 Commit on the feature branch, push to origin, open a PR against `main` titled `fix: close Dependabot alerts (cryptography, python-multipart, pytest, vite, tailwind, ui-components 0.6)`
-- [ ] 8.2 PR body SHALL enumerate the closed alert GHSAs and link to the `bump-dompurify` release in `errand-ai/errand-component-library`
-- [ ] 8.3 Confirm CI passes (tests, Docker build, Helm chart package)
-- [ ] 8.4 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
-- [ ] 8.5 Merge to `main`
+- [x] 8.1 Commit on the feature branch, push to origin, open a PR against `main` titled `fix: close Dependabot alerts (cryptography, python-multipart, pytest, vite, tailwind, ui-components 0.6)`
+- [x] 8.2 PR body SHALL enumerate the closed alert GHSAs and link to the `bump-dompurify` release in `errand-ai/errand-component-library`
+- [x] 8.3 Confirm CI passes (tests, Docker build, Helm chart package)
+- [x] 8.4 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
+- [x] 8.5 Merge to `main`
 
 ## 9. Post-merge verification
 

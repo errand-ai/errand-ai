@@ -208,10 +208,10 @@ async def lifespan(app: FastAPI):
         admin_username = os.environ.get("ADMIN_USERNAME")
         admin_password = os.environ.get("ADMIN_PASSWORD")
         if admin_username and admin_password:
-            from passlib.hash import bcrypt
+            import bcrypt
             result = await session.execute(select(LocalUser).where(LocalUser.username == admin_username))
             if result.scalar_one_or_none() is None:
-                session.add(LocalUser(username=admin_username, password_hash=bcrypt.hash(admin_password)))
+                session.add(LocalUser(username=admin_username, password_hash=bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()))
                 await session.commit()
                 logger.info("Auto-provisioned local admin user '%s'", admin_username)
 
@@ -2297,9 +2297,9 @@ async def setup_create_user(body: dict, session: AsyncSession = Depends(get_sess
     if not username or not password:
         raise HTTPException(status_code=422, detail="Username and password required")
 
-    from passlib.hash import bcrypt
+    import bcrypt
 
-    user = LocalUser(username=username, password_hash=bcrypt.hash(password))
+    user = LocalUser(username=username, password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
     session.add(user)
     await session.commit()
 
