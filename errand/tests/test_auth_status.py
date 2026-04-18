@@ -65,9 +65,9 @@ async def test_auth_status_local_mode():
     """No OIDC, local user exists → local mode."""
     engine, session_factory, redis, transport = await _make_status_client()
 
-    from passlib.hash import bcrypt
+    import bcrypt
     async with session_factory() as session:
-        password_hash = bcrypt.hash("testpass")
+        password_hash = bcrypt.hashpw(b"testpass", bcrypt.gensalt()).decode()
         await session.execute(
             text("INSERT INTO local_users (username, password_hash, role) VALUES ('admin', :hash, 'admin')"),
             {"hash": password_hash},

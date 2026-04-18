@@ -1,5 +1,5 @@
 # Stage 1: Build frontend (runs natively on build platform — output is platform-independent JS/CSS)
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-build
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-build
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
 RUN --mount=type=secret,id=npm_token \

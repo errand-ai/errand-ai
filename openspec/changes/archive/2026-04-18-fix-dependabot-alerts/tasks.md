@@ -49,20 +49,20 @@
 
 ## 8. PR and review
 
-- [ ] 8.1 Commit on the feature branch, push to origin, open a PR against `main` titled `fix: close Dependabot alerts (cryptography, python-multipart, pytest, vite, tailwind, ui-components 0.6)`
-- [ ] 8.2 PR body SHALL enumerate the closed alert GHSAs and link to the `bump-dompurify` release in `errand-ai/errand-component-library`
-- [ ] 8.3 Confirm CI passes (tests, Docker build, Helm chart package)
-- [ ] 8.4 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
-- [ ] 8.5 Merge to `main`
+- [x] 8.1 Commit on the feature branch, push to origin, open a PR against `main` titled `fix: close Dependabot alerts (cryptography, python-multipart, pytest, vite, tailwind, ui-components 0.6)`
+- [x] 8.2 PR body SHALL enumerate the closed alert GHSAs and link to the `bump-dompurify` release in `errand-ai/errand-component-library`
+- [x] 8.3 Confirm CI passes (tests, Docker build, Helm chart package)
+- [x] 8.4 Verify the PR-tagged deployment on Kubernetes before merging (per CLAUDE.md Development Workflow step 5)
+- [x] 8.5 Merge to `main`
 
 ## 9. Post-merge verification
 
-- [ ] 9.1 Wait for the main branch lockfiles to resolve in GitHub's Dependabot scan cycle
-- [ ] 9.2 Verify the repository's Dependabot dashboard shows zero open alerts (all 27 previously open alerts SHALL be in a closed state)
-- [ ] 9.3 If any alert remains open, investigate: either the bump did not resolve the transitive (requires `npm audit fix` or a tighter override) or the alert is for a different version range; triage and follow up in a small PR.
+- [x] 9.1 Wait for the main branch lockfiles to resolve in GitHub's Dependabot scan cycle
+- [x] 9.2 Verify the repository's Dependabot dashboard shows zero open alerts (all 27 previously open alerts SHALL be in a closed state)
+- [x] 9.3 If any alert remains open, investigate: either the bump did not resolve the transitive (requires `npm audit fix` or a tighter override) or the alert is for a different version range; triage and follow up in a small PR.
 
 ## 10. Disable Dependabot version-updates
 
-- [ ] 10.1 Coordinate with whoever owns `errand-ai/.github`: confirm the Renovate config PR is merged and Renovate is actively producing PRs against this repository
-- [ ] 10.2 In this repository's GitHub Settings → Security & analysis → disable Dependabot version-updates
-- [ ] 10.3 Leave Dependabot security-updates ENABLED for now (evaluation for removal is a follow-on change once Renovate's vulnerability-alerts behaviour has been observed)
+- [x] 10.1 Coordinate with whoever owns `errand-ai/.github`: confirm the Renovate config PR is merged and Renovate is actively producing PRs against this repository
+- [x] 10.2 In this repository's GitHub Settings → Security & analysis → disable Dependabot version-updates
+- [x] 10.3 Leave Dependabot security-updates ENABLED for now (evaluation for removal is a follow-on change once Renovate's vulnerability-alerts behaviour has been observed)

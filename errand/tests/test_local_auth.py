@@ -2,7 +2,7 @@
 import jwt
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from passlib.hash import bcrypt
+import bcrypt
 
 from tests.conftest import _create_tables
 from main import app
@@ -23,7 +23,7 @@ async def _setup_local_auth_client():
         await session.execute(
             text("INSERT INTO settings (key, value) VALUES ('jwt_signing_secret', '\"testsecret123456789012345678901234\"')")
         )
-        password_hash = bcrypt.hash("testpassword")
+        password_hash = bcrypt.hashpw(b"testpassword", bcrypt.gensalt()).decode()
         await session.execute(
             text("INSERT INTO local_users (username, password_hash, role) VALUES ('testadmin', :hash, 'admin')"),
             {"hash": password_hash},

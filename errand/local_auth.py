@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from passlib.hash import bcrypt
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,11 +70,15 @@ async def local_login(body: dict, session: AsyncSession = Depends(get_session)):
     if not username or not password:
         raise HTTPException(status_code=422, detail="Username and password required")
 
+    password_bytes = password.encode()
+    if len(password_bytes) > 72:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     result = await session.execute(
         select(LocalUser).where(LocalUser.username == username)
     )
     user = result.scalar_one_or_none()
-    if user is None or not bcrypt.verify(password, user.password_hash):
+    if user is None or not bcrypt.checkpw(password_bytes, user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     secret = await _get_jwt_secret(session)
@@ -109,9 +113,14 @@ async def change_password(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not bcrypt.verify(current_password, user.password_hash):
+    current_password_bytes = current_password.encode()
+    if len(current_password_bytes) > 72 or not bcrypt.checkpw(current_password_bytes, user.password_hash.encode()):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    user.password_hash = bcrypt.hash(new_password)
+    new_password_bytes = new_password.encode()
+    if len(new_password_bytes) > 72:
+        raise HTTPException(status_code=422, detail="Password must not exceed 72 bytes")
+
+    user.password_hash = bcrypt.hashpw(new_password_bytes, bcrypt.gensalt()).decode()
     await session.commit()
     return {"ok": True}

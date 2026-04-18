@@ -3,7 +3,7 @@ import jwt
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from passlib.hash import bcrypt
+import bcrypt
 
 from tests.conftest import _create_tables
 from main import app
@@ -75,7 +75,7 @@ async def test_setup_create_user_already_exists():
 
     # Pre-create a local user
     async with session_factory() as session:
-        password_hash = bcrypt.hash("existingpass")
+        password_hash = bcrypt.hashpw(b"existingpass", bcrypt.gensalt()).decode()
         await session.execute(
             text("INSERT INTO local_users (username, password_hash, role) VALUES ('existing', :hash, 'admin')"),
             {"hash": password_hash},
