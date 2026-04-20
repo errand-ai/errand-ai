@@ -91,7 +91,6 @@ async def new_task(description: str, profile: str | None = None) -> str:
                 db_profiles = prof_result.scalars().all()
                 profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
             else:
-                db_profiles = None
                 profile_infos = None
 
             llm_result = await generate_title(description, session, profiles=profile_infos)
