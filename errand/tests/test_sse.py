@@ -331,3 +331,55 @@ async def test_sse_logs_forwards_and_closes(sse_app):
         assert "Done." in body
         # Verify end sentinel
         assert "event: task_log_end" in body
+
+
+# ---------------------------------------------------------------------------
+# API key auth for log streaming
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_accepts_mcp_api_key(sse_app):
+    """Log streaming endpoint accepts MCP API key as token."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "completed")
+
+    api_key = "test-mcp-api-key-" + "a" * 48
+    async with test_session() as session:
+        await session.execute(
+            text("INSERT INTO settings (key, value) VALUES ('mcp_api_key', :val)"),
+            {"val": json.dumps(api_key)},
+        )
+        await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={api_key}")
+        assert resp.status_code == 200
+        assert "event: task_log_end" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_still_accepts_jwt(sse_app):
+    """Log streaming endpoint still accepts JWT as token."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "completed")
+    valid_token = _make_local_token()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={valid_token}")
+        assert resp.status_code == 200
+        assert "event: task_log_end" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_rejects_invalid_token(sse_app):
+    """Log streaming endpoint rejects invalid token with 401."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "completed")
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token=totally-invalid-token")
+        assert resp.status_code == 401

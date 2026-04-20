@@ -63,18 +63,36 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def new_task(description: str) -> str:
-    """Create a new task from a description. Returns the task UUID."""
+async def new_task(description: str, profile: str | None = None) -> str:
+    """Create a new task from a description. Returns the task UUID.
+
+    Args:
+        description: The task description.
+        profile: Optional name of a task profile to assign.
+    """
     async with async_session() as session:
         words = description.strip().split()
 
         category = "immediate"
         resolved_profile_id = None
+
+        # If explicit profile provided, resolve it first
+        if profile:
+            prof_result = await session.execute(select(TaskProfile).where(TaskProfile.name == profile))
+            found = prof_result.scalar_one_or_none()
+            if not found:
+                return f"Error: Task profile '{profile}' not found."
+            resolved_profile_id = found.id
+
         if len(words) > 5:
-            # Load profiles for classification
-            prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
-            db_profiles = prof_result.scalars().all()
-            profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+            # Load profiles for classification (only if no explicit profile)
+            if not profile:
+                prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+                db_profiles = prof_result.scalars().all()
+                profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+            else:
+                db_profiles = None
+                profile_infos = None
 
             llm_result = await generate_title(description, session, profiles=profile_infos)
             title = llm_result.title
@@ -84,8 +102,8 @@ async def new_task(description: str) -> str:
             else:
                 cleaned_description = llm_result.description
 
-            # Resolve profile name to ID
-            if llm_result.profile and db_profiles:
+            # Resolve profile name to ID from LLM suggestion (only if no explicit profile)
+            if not profile and llm_result.profile and db_profiles:
                 profile_map = {p.name: p.id for p in db_profiles}
                 resolved_profile_id = profile_map.get(llm_result.profile)
         else:
@@ -143,14 +161,42 @@ async def new_task(description: str) -> str:
 
 
 @mcp.tool()
-async def task_status(task_id: str) -> str:
-    """Get the current status and details of a task by UUID."""
+async def list_task_profiles() -> str:
+    """List available task profiles. Returns JSON array of {name, description, model} per profile."""
+    async with async_session() as session:
+        result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+        profiles = result.scalars().all()
+        return json.dumps([
+            {"name": p.name, "description": p.description, "model": p.model}
+            for p in profiles
+        ])
+
+
+@mcp.tool()
+async def task_status(task_id: str, format: str = "text") -> str:
+    """Get the current status and details of a task by UUID.
+
+    Args:
+        task_id: The UUID of the task.
+        format: Output format — "text" (default) for plaintext, "json" for structured JSON.
+    """
     async with async_session() as session:
         result = await session.execute(select(Task).where(Task.id == uuid_mod.UUID(task_id)))
         task = result.scalar_one_or_none()
 
         if task is None:
             return f"Error: Task {task_id} not found."
+
+        if format == "json":
+            return json.dumps({
+                "id": str(task.id),
+                "title": task.title,
+                "status": task.status,
+                "category": task.category,
+                "created_at": task.created_at.isoformat(),
+                "updated_at": task.updated_at.isoformat(),
+                "has_output": bool(task.output),
+            })
 
         return (
             f"Title: {task.title}\n"

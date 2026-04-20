@@ -288,7 +288,8 @@ async def test_mcp_server_has_fifteen_tools():
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
     assert tool_names == {
-        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks", "post_tweet",
+        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks",
+        "list_task_profiles", "post_tweet",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
     }
@@ -1442,3 +1443,131 @@ async def test_read_url_timeout(db_session):
     data = json.loads(result)
     assert "error" in data
     assert "Timeout" in data["error"]
+
+
+# --- Paperclip integration: new_task with profile ---
+
+
+async def test_new_task_with_valid_profile(db_session):
+    """new_task with valid profile creates task with correct profile_id."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    # Create a profile
+    async with session_factory() as session:
+        profile = TaskProfile(name="Research Agent", description="Researches things", model={"provider": "openai", "name": "gpt-4o"})
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        profile_id = profile.id
+
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix the bug", profile="Research Agent")
+
+    assert len(task_uuid) == 36
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.profile_id == profile_id
+
+
+async def test_new_task_with_invalid_profile(db_session):
+    """new_task with invalid profile returns error message."""
+    from mcp_server import new_task
+    result = await new_task("Fix the bug", profile="Nonexistent Profile")
+    assert "Error: Task profile 'Nonexistent Profile' not found." == result
+
+
+async def test_new_task_without_profile_backward_compat(db_session):
+    """new_task without profile behaves as before."""
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix bug")
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.profile_id is None
+        assert task.title == "Fix bug"
+
+
+# --- Paperclip integration: list_task_profiles ---
+
+
+async def test_list_task_profiles_returns_json(db_session):
+    """list_task_profiles returns correct JSON structure."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    async with session_factory() as session:
+        session.add(TaskProfile(name="Agent A", description="Does A", model={"provider": "openai", "name": "gpt-4o"}))
+        session.add(TaskProfile(name="Agent B", description="Does B", model=None))
+        await session.commit()
+
+    from mcp_server import list_task_profiles
+    result = await list_task_profiles()
+    data = json.loads(result)
+
+    assert len(data) == 2
+    assert data[0]["name"] == "Agent A"
+    assert data[0]["description"] == "Does A"
+    assert data[0]["model"] == {"provider": "openai", "name": "gpt-4o"}
+    assert data[1]["name"] == "Agent B"
+    assert data[1]["model"] is None
+
+
+async def test_list_task_profiles_empty(db_session):
+    """list_task_profiles returns empty array when no profiles exist."""
+    from mcp_server import list_task_profiles
+    result = await list_task_profiles()
+    data = json.loads(result)
+    assert data == []
+
+
+# --- Paperclip integration: task_status format ---
+
+
+async def test_task_status_json_format(db_session):
+    """task_status with format='json' returns valid JSON with expected fields."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(title="Test task", description="Testing", status="running", category="immediate", output="some output")
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_status
+    result = await task_status(task_id, format="json")
+    data = json.loads(result)
+
+    assert data["id"] == task_id
+    assert data["title"] == "Test task"
+    assert data["status"] == "running"
+    assert data["category"] == "immediate"
+    assert "created_at" in data
+    assert "updated_at" in data
+    assert data["has_output"] is True
+
+
+async def test_task_status_text_format_backward_compat(db_session):
+    """task_status with format='text' returns plaintext (backward compatible)."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(title="Test task", description="Testing", status="pending", category="immediate")
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_status
+    result = await task_status(task_id, format="text")
+    assert "Title: Test task" in result
+    assert "Status: pending" in result
+
+    # Also verify default (no format) works the same
+    result_default = await task_status(task_id)
+    assert result_default == result
