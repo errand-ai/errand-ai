@@ -1736,11 +1736,11 @@ async def test_new_task_with_env(db_session):
     """new_task with env parameter stores encrypted env vars."""
     from mcp_server import new_task
 
-    env_json = json.dumps({"PAPERCLIP_TOKEN": "secret123", "CALLBACK_URL": "https://example.com"})
+    env_dict = {"PAPERCLIP_TOKEN": "secret123", "CALLBACK_URL": "https://example.com"}
 
     with patch("mcp_server._encrypt_env", return_value="encrypted-blob") as mock_enc:
-        task_uuid = await new_task("Fix bug", env=env_json)
-        mock_enc.assert_called_once_with({"PAPERCLIP_TOKEN": "secret123", "CALLBACK_URL": "https://example.com"})
+        task_uuid = await new_task("Fix bug", env=env_dict)
+        mock_enc.assert_called_once_with(env_dict)
 
     _, session_factory = db_session
     async with session_factory() as session:
@@ -1766,7 +1766,7 @@ async def test_new_task_env_no_encryption_key(db_session):
     from mcp_server import new_task
 
     with patch("mcp_server._encrypt_env", side_effect=RuntimeError("key not set")):
-        result = await new_task("Fix bug", env='{"KEY": "val"}')
+        result = await new_task("Fix bug", env={"KEY": "val"})
         assert "encryption key not configured" in result
 
 
@@ -1774,10 +1774,10 @@ async def test_schedule_task_with_env(db_session):
     """schedule_task with env parameter stores encrypted env vars."""
     from mcp_server import schedule_task
 
-    env_json = json.dumps({"TOKEN": "abc"})
+    env_dict = {"TOKEN": "abc"}
 
     with patch("mcp_server._encrypt_env", return_value="encrypted-blob") as mock_enc:
-        task_uuid = await schedule_task("Do it", execute_at="2026-12-01T00:00:00Z", env=env_json)
+        task_uuid = await schedule_task("Do it", execute_at="2026-12-01T00:00:00Z", env=env_dict)
         mock_enc.assert_called_once()
 
     _, session_factory = db_session

@@ -93,7 +93,7 @@ async def new_task(
     description: str,
     profile: str | None = None,
     title: str | None = None,
-    env: str | None = None,
+    env: dict | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Create a new task from a description. Returns the task UUID.
@@ -103,7 +103,7 @@ async def new_task(
         profile: Optional name of a task profile to assign.
         title: Optional task title. When set, the title and description are used
             verbatim and the LLM summariser is skipped.
-        env: Optional JSON object of environment variable key/value pairs to inject
+        env: Optional object of environment variable key/value pairs to inject
             into the task-runner container. Values are stored encrypted.
     """
     async with async_session() as session:
@@ -151,14 +151,10 @@ async def new_task(
         # Encrypt per-task env vars if provided
         encrypted_env = None
         if env:
-            try:
-                env_dict = json.loads(env) if isinstance(env, str) else env
-            except (json.JSONDecodeError, TypeError):
-                return "Error: Invalid env JSON. Expected a JSON object mapping strings to strings."
-            if not isinstance(env_dict, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env_dict.items()):
+            if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
                 return "Error: Invalid env value. Expected an object mapping strings to strings."
             try:
-                encrypted_env = _encrypt_env(env_dict)
+                encrypted_env = _encrypt_env(env)
             except RuntimeError:
                 return "Error: Cannot store encrypted env vars — encryption key not configured."
 
@@ -444,7 +440,7 @@ async def schedule_task(
     repeat_interval: str | None = None,
     repeat_until: str | None = None,
     profile: str | None = None,
-    env: str | None = None,
+    env: dict | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID.
@@ -502,14 +498,10 @@ async def schedule_task(
         # Encrypt per-task env vars if provided
         encrypted_env = None
         if env:
-            try:
-                env_dict = json.loads(env) if isinstance(env, str) else env
-            except (json.JSONDecodeError, TypeError):
-                return "Error: Invalid env JSON. Expected a JSON object mapping strings to strings."
-            if not isinstance(env_dict, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env_dict.items()):
+            if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
                 return "Error: Invalid env value. Expected an object mapping strings to strings."
             try:
-                encrypted_env = _encrypt_env(env_dict)
+                encrypted_env = _encrypt_env(env)
             except RuntimeError:
                 return "Error: Cannot store encrypted env vars — encryption key not configured."
 
