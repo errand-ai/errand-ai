@@ -12,7 +12,7 @@ import httpx
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
@@ -21,7 +21,7 @@ from starlette.applications import Starlette
 from database import async_session
 from events import publish_event
 from llm import generate_title, ProfileInfo
-from models import Setting, Task, TaskProfile
+from models import Setting, Skill, SkillFile, Task, TaskProfile
 from task_manager import normalize_interval
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,27 @@ mcp = FastMCP(
 )
 
 
+def _encrypt_env(env_dict: dict) -> str:
+    """Encrypt a dict of env vars using the platform Fernet cipher."""
+    from platforms.credentials import encrypt
+    return encrypt(env_dict)
+
+
+def _get_client_id(ctx: Context | None) -> str:
+    """Extract X-Client-Id header from MCP request context, defaulting to 'mcp'."""
+    if ctx and ctx.request_context and ctx.request_context.request:
+        return ctx.request_context.request.headers.get("x-client-id", "mcp")
+    return "mcp"
+
+
 @mcp.tool()
-async def new_task(description: str, profile: str | None = None, title: str | None = None) -> str:
+async def new_task(
+    description: str,
+    profile: str | None = None,
+    title: str | None = None,
+    env: str | None = None,
+    ctx: Context | None = None,
+) -> str:
     """Create a new task from a description. Returns the task UUID.
 
     Args:
@@ -71,6 +90,8 @@ async def new_task(description: str, profile: str | None = None, title: str | No
         profile: Optional name of a task profile to assign.
         title: Optional task title. When set, the title and description are used
             verbatim and the LLM summariser is skipped.
+        env: Optional JSON object of environment variable key/value pairs to inject
+            into the task-runner container. Values are stored encrypted.
     """
     async with async_session() as session:
         category = "immediate"
@@ -114,6 +135,15 @@ async def new_task(description: str, profile: str | None = None, title: str | No
                 title = description.strip()
                 cleaned_description = None
 
+        # Encrypt per-task env vars if provided
+        encrypted_env = None
+        if env:
+            try:
+                env_dict = json.loads(env) if isinstance(env, str) else env
+                encrypted_env = _encrypt_env(env_dict)
+            except RuntimeError:
+                return "Error: Cannot store encrypted env vars — encryption key not configured."
+
         # Auto-route based on category (same logic as main task creation)
         if category in ("scheduled", "repeating"):
             status = "scheduled"
@@ -134,7 +164,8 @@ async def new_task(description: str, profile: str | None = None, title: str | No
             status=status,
             position=position,
             profile_id=resolved_profile_id,
-            created_by="mcp",
+            encrypted_env=encrypted_env,
+            created_by=_get_client_id(ctx),
         )
         session.add(task)
         await session.commit()
@@ -174,6 +205,113 @@ async def list_task_profiles() -> str:
             {"name": p.name, "description": p.description, "model": p.model}
             for p in profiles
         ])
+
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_ALLOWED_SKILL_FILE_SUBDIRS = {"scripts", "references", "assets"}
+
+
+def _validate_skill_name(name: str) -> str | None:
+    """Validate skill name. Returns error message or None."""
+    if not name:
+        return "Name is required"
+    if len(name) > 64:
+        return "Name must be at most 64 characters"
+    if name != name.lower():
+        return "Name must be lowercase"
+    if "--" in name:
+        return "Name must not contain consecutive hyphens"
+    if not _SKILL_NAME_RE.match(name):
+        return "Name must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen"
+    return None
+
+
+@mcp.tool()
+async def list_skills() -> str:
+    """List available skills. Returns JSON array of {name, description} per skill."""
+    async with async_session() as session:
+        result = await session.execute(select(Skill).order_by(Skill.name))
+        skills = result.scalars().all()
+        return json.dumps([
+            {"name": s.name, "description": s.description}
+            for s in skills
+        ])
+
+
+@mcp.tool()
+async def upsert_skill(name: str, description: str, instructions: str, files: str | None = None) -> str:
+    """Create or update a skill by name. Returns success message with skill ID.
+
+    Args:
+        name: Skill name (lowercase, max 64 chars, letters/digits/hyphens only).
+        description: Short description of the skill (max 1024 chars).
+        instructions: Full markdown instructions for the skill.
+        files: Optional JSON array of {path, content} objects. Paths must be in
+            scripts/, references/, or assets/ subdirectories.
+    """
+    error = _validate_skill_name(name)
+    if error:
+        return f"Error: {error}"
+    if len(description) > 1024:
+        return "Error: Description must be at most 1024 characters"
+
+    # Parse files if provided
+    file_list = []
+    if files:
+        try:
+            file_list = json.loads(files) if isinstance(files, str) else files
+        except (json.JSONDecodeError, TypeError):
+            return "Error: Invalid files JSON"
+        for f in file_list:
+            path = f.get("path", "")
+            parts = path.split("/")
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                return f"Error: Invalid file path '{path}' — must be subdir/filename"
+            if parts[0] not in _ALLOWED_SKILL_FILE_SUBDIRS:
+                return f"Error: Invalid file path '{path}' — must be in scripts/, references/, or assets/"
+
+    async with async_session() as session:
+        result = await session.execute(select(Skill).where(Skill.name == name))
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.description = description
+            existing.instructions = instructions
+            # Replace all files
+            await session.execute(
+                select(SkillFile).where(SkillFile.skill_id == existing.id)
+            )
+            from sqlalchemy import delete
+            await session.execute(delete(SkillFile).where(SkillFile.skill_id == existing.id))
+            for f in file_list:
+                session.add(SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
+            await session.commit()
+            return f"Skill '{name}' updated (id: {existing.id})"
+        else:
+            skill = Skill(name=name, description=description, instructions=instructions)
+            session.add(skill)
+            await session.flush()
+            for f in file_list:
+                session.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
+            await session.commit()
+            return f"Skill '{name}' created (id: {skill.id})"
+
+
+@mcp.tool()
+async def delete_skill(name: str) -> str:
+    """Delete a skill by name.
+
+    Args:
+        name: The name of the skill to delete.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Skill).where(Skill.name == name))
+        skill = result.scalar_one_or_none()
+        if not skill:
+            return f"Error: Skill '{name}' not found."
+        await session.delete(skill)
+        await session.commit()
+        return f"Skill '{name}' deleted."
 
 
 @mcp.tool()
@@ -289,6 +427,8 @@ async def schedule_task(
     repeat_interval: str | None = None,
     repeat_until: str | None = None,
     profile: str | None = None,
+    env: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID.
 
@@ -342,6 +482,15 @@ async def schedule_task(
             title = description.strip()
             cleaned_desc = None
 
+        # Encrypt per-task env vars if provided
+        encrypted_env = None
+        if env:
+            try:
+                env_dict = json.loads(env) if isinstance(env, str) else env
+                encrypted_env = _encrypt_env(env_dict)
+            except RuntimeError:
+                return "Error: Cannot store encrypted env vars — encryption key not configured."
+
         category = "repeating" if normalised_interval else "scheduled"
         status = "scheduled"
 
@@ -360,8 +509,9 @@ async def schedule_task(
             execute_at=parsed_execute_at,
             repeat_interval=normalised_interval,
             repeat_until=parsed_repeat_until,
+            encrypted_env=encrypted_env,
             profile_id=resolved_profile_id,
-            created_by="mcp",
+            created_by=_get_client_id(ctx),
         )
         session.add(task)
         await session.commit()

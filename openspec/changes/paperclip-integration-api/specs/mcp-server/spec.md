@@ -13,6 +13,19 @@ The `task_status` MCP tool SHALL support returning structured JSON in addition t
 
 ## ADDED Requirements
 
+### Requirement: Capture X-Client-Id header for task attribution
+MCP tool handlers that create tasks SHALL read the `X-Client-Id` HTTP header from the request and use its value as the task's `created_by` field.
+
+#### Scenario: Client sends X-Client-Id header
+- **WHEN** an MCP request includes the header `X-Client-Id: paperclip`
+- **AND** `new_task` or `schedule_task` creates a task
+- **THEN** the task's `created_by` SHALL be `"paperclip"`
+
+#### Scenario: Client does not send X-Client-Id header
+- **WHEN** an MCP request does not include the `X-Client-Id` header
+- **AND** `new_task` or `schedule_task` creates a task
+- **THEN** the task's `created_by` SHALL be `"mcp"` (backward compatible)
+
 ### Requirement: API key authentication for log streaming
 The log streaming SSE endpoint SHALL accept the MCP API key as an authentication token.
 

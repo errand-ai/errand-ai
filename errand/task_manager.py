@@ -62,6 +62,24 @@ LEADER_LOCK_CONNECT_ARGS = {
 DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 MAX_GIT_RETRIES = 5
 
+# Sources considered internal to errand (not external MCP clients).
+_INTERNAL_CREATED_BY = {"system", "mcp", "email_poller"}
+
+
+def _is_external_client(created_by: str | None) -> bool:
+    """Return True if the task was created by an external MCP client (e.g. paperclip)."""
+    if not created_by:
+        return False
+    if created_by in _INTERNAL_CREATED_BY:
+        return False
+    # User emails (contain @) are internal (created via the UI)
+    if "@" in created_by:
+        return False
+    # Jira-originated tasks (e.g. "jira:SCRUM-6")
+    if created_by.startswith("jira:"):
+        return False
+    return True
+
 DEFAULT_HINDSIGHT_BANK_ID = "errand-tasks"
 
 
@@ -99,6 +117,8 @@ class DequeuedTask:
     repeat_interval: str | None
     repeat_until: datetime | None
     tag_ids: list[uuid.UUID]
+    created_by: str | None = None
+    encrypted_env: str | None = None
 
     @classmethod
     def from_orm(cls, task: Task) -> "DequeuedTask":
@@ -112,6 +132,8 @@ class DequeuedTask:
             repeat_interval=task.repeat_interval,
             repeat_until=task.repeat_until,
             tag_ids=[tag.id for tag in task.tags],
+            created_by=task.created_by,
+            encrypted_env=task.encrypted_env,
         )
 
 
@@ -1007,7 +1029,16 @@ class TaskManager:
                         await self._schedule_retry(task, output=full_output, runner_logs=stderr)
                         return
 
-                    target_status = "completed" if parsed.status == "completed" else "review"
+                    if parsed.status == "completed":
+                        target_status = "completed"
+                    elif parsed.status == "needs_input" and _is_external_client(task.created_by):
+                        target_status = "completed"
+                        logger.info(
+                            "Task %s: needs_input from external client '%s' — completing instead of review",
+                            task.id, task.created_by,
+                        )
+                    else:
+                        target_status = "review"
 
                     async with async_session() as session:
                         new_position = await _next_position(session, target_status)
@@ -1424,6 +1455,15 @@ class TaskManager:
                 env_vars["RESULT_CALLBACK_TOKEN"] = callback_token
             except Exception:
                 logger.warning("Failed to store callback token in Valkey, skipping callback env vars", exc_info=True)
+
+        # Decrypt and inject per-task env vars (overrides global)
+        if task.encrypted_env:
+            try:
+                from platforms.credentials import decrypt
+                per_task_env = decrypt(task.encrypted_env)
+                env_vars.update(per_task_env)
+            except Exception:
+                logger.warning("Task %s: failed to decrypt per-task env vars", task.id, exc_info=True)
 
         # Prepare container via runtime
         git_ssh_hosts = settings.get("git_ssh_hosts", []) if ssh_private_key else []

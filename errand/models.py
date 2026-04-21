@@ -70,6 +70,7 @@ class Task(Base):
     )
     created_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    encrypted_env: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
     profile: Mapped[Optional["TaskProfile"]] = relationship(lazy="raise")
 

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
     created_by TEXT,
     updated_by TEXT,
+        encrypted_env TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

@@ -14,11 +14,14 @@ The Paperclip errand adapter communicates with errand via MCP tools and one REST
 - Add `list_task_profiles` MCP tool
 - Add structured JSON output option to `task_status` MCP tool
 - Add API key authentication to the log streaming SSE endpoint
+- Capture `X-Client-Id` HTTP header to identify MCP client in `created_by`
+- Skip `review` state for tasks created by external clients when the task runner reports `needs_input`
 
 **Non-Goals:**
 - Per-task token usage tracking (future enhancement)
 - Changes to the REST task creation endpoint
-- Changes to the task runner or container runtime
+- Configurable list of external client IDs (hard-code awareness for now; generalise later if needed)
+- K8s Secret volumes for env var injection (env vars in container spec are sufficient for now)
 
 ## Decisions
 
@@ -34,13 +37,49 @@ Extend the existing `new_task` tool signature with an optional `title: str | Non
 
 **Rationale:** The Paperclip adapter already has its own title and description from the upstream request. Calling the LLM summariser would waste tokens, add latency, and risk altering the caller's intent. When `title` is omitted, existing behaviour is preserved (LLM generates title for descriptions >5 words).
 
-### 3. `list_task_profiles` as a new MCP tool
+### 3. Capture `X-Client-Id` header for `created_by`
+
+MCP tool handlers accept a `ctx: Context` parameter that provides access to the underlying HTTP request. Read the `X-Client-Id` header from the request and use its value as `created_by` on the task, falling back to `"mcp"` when the header is absent.
+
+**Rationale:** Avoids adding yet another tool parameter. HTTP headers are the standard mechanism for client identification. The MCP SDK's `Context.request_context.request` exposes the Starlette `Request` object, so headers are directly accessible. Any MCP client can set `X-Client-Id` without changes to the MCP protocol.
+
+### 4. Skip `review` state for external client tasks
+
+When the task runner finishes a task with `status="needs_input"`, the current logic moves it to `review` so the errand UI can present questions to the user. For tasks where `created_by` is not `"system"`, `"mcp"`, or a known errand user (i.e. it's an external client like `"paperclip"`), skip `review` and move directly to `completed`. The external client is responsible for handling any clarification questions raised during task processing.
+
+**Rationale:** The Paperclip adapter manages its own conversation flow. Putting tasks into `review` would leave them stuck in the errand UI with no one to answer them. The `created_by` field already distinguishes task origin, so no new metadata is needed.
+
+**Implementation:** Add `created_by` to the `DequeuedTask` dataclass so it's available at wrap-up time. In the wrap-up logic, when `parsed.status == "needs_input"` and `task.created_by` is not a known internal source, set `target_status = "completed"` instead of `"review"`.
+
+### 5. Per-task encrypted environment variables
+
+Add an optional `env` parameter to `new_task` and `schedule_task` — a JSON object of key/value string pairs. Values are encrypted with the existing Fernet cipher (`CREDENTIAL_ENCRYPTION_KEY`) and stored in a new `encrypted_env` column on the Task model. At execution time, the TaskManager decrypts and merges these into the container's env vars.
+
+**Rationale:** The Paperclip adapter generates per-run JWT tokens for authenticating callbacks to the Paperclip API. These are sensitive, short-lived values that must be scoped to a single task — not stored in global settings. Using the existing Fernet encryption pattern (from `platforms/credentials.py`) keeps the security model consistent.
+
+**Schema change:** New nullable `encrypted_env` Text column on the `tasks` table. Requires an Alembic migration. The column stores the Fernet-encrypted JSON string. When `CREDENTIAL_ENCRYPTION_KEY` is not set, the tool returns an error rather than storing plaintext.
+
+**Runtime injection:** In `_run_task`, after building the base `env_vars` dict, decrypt `encrypted_env` from the `DequeuedTask` and merge. Per-task env vars override global credentials with the same key name.
+
+### 6. Skills management via MCP tools
+
+Add three MCP tools for managing skills:
+
+- **`list_skills`** — returns JSON array of `{ name, description }` for each skill (mirrors the REST `GET /api/skills` but scoped for MCP consumers)
+- **`upsert_skill`** — creates or updates a skill by name. Accepts `name`, `description`, `instructions`, and an optional `files` array of `{ path, content }` objects. If a skill with the same name exists, it is updated; otherwise a new one is created. Files are replaced in full on update.
+- **`delete_skill`** — deletes a skill by name
+
+**Rationale:** The Paperclip adapter maintains skill definitions as `skills/<name>/SKILL.md` files in its deployment. It needs to sync these into errand's skills system so they can be injected into the task-runner at execution. The existing REST endpoints require admin OIDC auth which MCP clients don't have. Dedicated MCP tools with API key auth are the clean path.
+
+**Upsert semantics:** The adapter calls `upsert_skill` for each skill it manages. Using upsert-by-name avoids the need to track errand skill IDs on the Paperclip side. On update, all existing SkillFiles are deleted and replaced with the provided set — this matches the "sync from source of truth" pattern.
+
+### 7. `list_task_profiles` as a new MCP tool
 
 Returns a JSON array of `{ name, description, model }` for each profile. Omits internal fields (system_prompt, mcp_servers, etc.) that aren't needed by external consumers.
 
 **Rationale:** The REST endpoint `GET /api/task-profiles` requires admin auth and returns too many internal fields. A dedicated MCP tool scoped to external consumer needs is cleaner.
 
-### 4. Structured `task_status` via optional `format` parameter
+### 8. Structured `task_status` via optional `format` parameter
 
 Add `format: str = "text"` parameter to `task_status`. When `"json"`, return a JSON string with `{ id, title, status, category, created_at, updated_at, has_output }`. Default `"text"` preserves backward compatibility.
 
@@ -48,7 +87,7 @@ Add `format: str = "text"` parameter to `task_status`. When `"json"`, return a J
 
 **Alternative considered:** A separate `task_status_json` tool. Rejected — unnecessary tool proliferation for a format option.
 
-### 5. API key auth for log streaming via query parameter
+### 9. API key auth for log streaming via query parameter
 
 The SSE endpoint `GET /api/tasks/{id}/logs/stream` already accepts a `token` query parameter (for SSE, since EventSource can't set headers). Add logic to also accept the MCP API key as this token value, in addition to the existing JWT.
 
