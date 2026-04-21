@@ -71,7 +71,9 @@ def _encrypt_env(env_dict: dict) -> str:
 def _get_client_id(ctx: Context | None) -> str:
     """Extract X-Client-Id header from MCP request context, defaulting to 'mcp'."""
     if ctx and ctx.request_context and ctx.request_context.request:
-        return ctx.request_context.request.headers.get("x-client-id", "mcp")
+        client_id = ctx.request_context.request.headers.get("x-client-id")
+        if client_id and client_id.strip():
+            return client_id.strip()
     return "mcp"
 
 
@@ -106,8 +108,8 @@ async def new_task(
             resolved_profile_id = found.id
 
         if title:
-            # Explicit title — skip LLM summariser entirely
-            cleaned_description = description.strip() or None
+            # Explicit title — skip LLM summariser, store description verbatim
+            cleaned_description = description or None
         else:
             words = description.strip().split()
             if len(words) > 5:
@@ -140,6 +142,11 @@ async def new_task(
         if env:
             try:
                 env_dict = json.loads(env) if isinstance(env, str) else env
+            except (json.JSONDecodeError, TypeError):
+                return "Error: Invalid env JSON. Expected a JSON object mapping strings to strings."
+            if not isinstance(env_dict, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env_dict.items()):
+                return "Error: Invalid env value. Expected an object mapping strings to strings."
+            try:
                 encrypted_env = _encrypt_env(env_dict)
             except RuntimeError:
                 return "Error: Cannot store encrypted env vars — encryption key not configured."
@@ -263,7 +270,9 @@ async def upsert_skill(name: str, description: str, instructions: str, files: st
         except (json.JSONDecodeError, TypeError):
             return "Error: Invalid files JSON"
         for f in file_list:
-            path = f.get("path", "")
+            if not isinstance(f, dict) or "path" not in f or "content" not in f:
+                return "Error: Each file must be an object with 'path' and 'content' keys"
+            path = f["path"]
             parts = path.split("/")
             if len(parts) != 2 or not parts[0] or not parts[1]:
                 return f"Error: Invalid file path '{path}' — must be subdir/filename"
@@ -278,9 +287,6 @@ async def upsert_skill(name: str, description: str, instructions: str, files: st
             existing.description = description
             existing.instructions = instructions
             # Replace all files
-            await session.execute(
-                select(SkillFile).where(SkillFile.skill_id == existing.id)
-            )
             from sqlalchemy import delete
             await session.execute(delete(SkillFile).where(SkillFile.skill_id == existing.id))
             for f in file_list:
@@ -487,6 +493,11 @@ async def schedule_task(
         if env:
             try:
                 env_dict = json.loads(env) if isinstance(env, str) else env
+            except (json.JSONDecodeError, TypeError):
+                return "Error: Invalid env JSON. Expected a JSON object mapping strings to strings."
+            if not isinstance(env_dict, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env_dict.items()):
+                return "Error: Invalid env value. Expected an object mapping strings to strings."
+            try:
                 encrypted_env = _encrypt_env(env_dict)
             except RuntimeError:
                 return "Error: Cannot store encrypted env vars — encryption key not configured."

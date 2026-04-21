@@ -384,7 +384,7 @@ async def _validate_token(token: str) -> dict:
     """Validate a JWT token (OIDC or local). Returns claims dict with _roles."""
     try:
         unverified = jwt.decode(token, options={"verify_signature": False})
-    except (jwt.InvalidTokenError, Exception):
+    except (jwt.InvalidTokenError, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid token")
 
     issuer = unverified.get("iss", "")
@@ -2441,7 +2441,9 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
                 select(Setting.value).where(Setting.key == "mcp_api_key")
             )
             stored_key = result.scalar_one_or_none()
-        if not stored_key or not secrets.compare_digest(token, stored_key):
+        if not isinstance(stored_key, str) or not stored_key:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if not secrets.compare_digest(token, stored_key):
             raise HTTPException(status_code=401, detail="Invalid token")
 
     # Validate task_id
