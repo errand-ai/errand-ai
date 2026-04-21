@@ -1898,3 +1898,17 @@ async def test_delete_skill_not_found(db_session):
     from mcp_server import delete_skill
     result = await delete_skill("nonexistent")
     assert "not found" in result
+
+
+async def test_upsert_skill_consecutive_hyphens(db_session):
+    """upsert_skill accepts name with consecutive hyphens."""
+    from mcp_server import upsert_skill
+    result = await upsert_skill("code-review--abc123", "A skill", "Do things")
+    assert "created" in result
+
+    _, session_factory = db_session
+    from models import Skill
+    async with session_factory() as session:
+        skill_result = await session.execute(select(Skill).where(Skill.name == "code-review--abc123"))
+        skill = skill_result.scalar_one()
+        assert skill.name == "code-review--abc123"

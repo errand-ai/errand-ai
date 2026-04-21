@@ -36,6 +36,7 @@
 - [x] 5.3 On upsert update: delete existing SkillFiles and replace with provided set
 - [x] 5.4 Validate skill name against existing pattern (lowercase, no leading/trailing hyphens, max 64 chars)
 - [x] 5.5 Implement `delete_skill` MCP tool — delete skill by name; return error if not found
+- [x] 5.6 Relax MCP skill name validation to allow consecutive hyphens (external clients append hash suffixes with `--`)
 
 ## 6. Structured Task Status
 
@@ -80,3 +81,4 @@
 - [x] 8.28 Test `upsert_skill` with invalid name returns error
 - [x] 8.29 Test `delete_skill` removes skill and files
 - [x] 8.30 Test `delete_skill` with non-existent name returns error
+- [x] 8.31 Test `upsert_skill` accepts name with consecutive hyphens (e.g. `code-review--abc123`)

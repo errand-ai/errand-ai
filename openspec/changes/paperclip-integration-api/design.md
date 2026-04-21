@@ -75,6 +75,8 @@ Add three MCP tools for managing skills:
 
 **Upsert semantics:** The adapter calls `upsert_skill` for each skill it manages. Using upsert-by-name avoids the need to track errand skill IDs on the Paperclip side. On update, all existing SkillFiles are deleted and replaced with the provided set — this matches the "sync from source of truth" pattern.
 
+**Relaxed name validation for MCP:** The MCP `upsert_skill` tool uses a relaxed name validation that permits consecutive hyphens (e.g. `code-review--522856552c`). External clients like Paperclip append hash suffixes to skill names using `--` as a separator. The REST API retains the stricter validation (no consecutive hyphens) since it's used by the admin UI where names are human-authored. The MCP tool only enforces: lowercase, max 64 chars, letters/digits/hyphens, no leading/trailing hyphens.
+
 ### 7. `list_task_profiles` as a new MCP tool
 
 Returns a JSON array of `{ name, description, model }` for each profile. Omits internal fields (system_prompt, mcp_servers, etc.) that aren't needed by external consumers.

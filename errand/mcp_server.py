@@ -247,15 +247,13 @@ _ALLOWED_SKILL_FILE_SUBDIRS = {"scripts", "references", "assets"}
 
 
 def _validate_skill_name(name: str) -> str | None:
-    """Validate skill name. Returns error message or None."""
+    """Validate skill name (relaxed for MCP — allows consecutive hyphens). Returns error message or None."""
     if not name:
         return "Name is required"
     if len(name) > 64:
         return "Name must be at most 64 characters"
     if name != name.lower():
         return "Name must be lowercase"
-    if "--" in name:
-        return "Name must not contain consecutive hyphens"
     if not _SKILL_NAME_RE.match(name):
         return "Name must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen"
     return None

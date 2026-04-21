@@ -35,6 +35,10 @@ The MCP server SHALL provide an `upsert_skill` tool that creates or updates a sk
 - **WHEN** `upsert_skill` is called with a name that doesn't match the validation pattern (lowercase, no leading/trailing hyphens, max 64 chars)
 - **THEN** the tool SHALL return an error message
 
+#### Scenario: Skill name with consecutive hyphens
+- **WHEN** `upsert_skill` is called with a name containing consecutive hyphens (e.g. `"code-review--522856552c"`)
+- **THEN** the tool SHALL accept the name (consecutive hyphens are permitted to support external naming conventions)
+
 ### Requirement: Delete skill via MCP
 The MCP server SHALL provide a `delete_skill` tool that removes a skill by name.
 
