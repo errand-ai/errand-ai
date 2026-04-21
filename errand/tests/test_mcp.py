@@ -1725,6 +1725,8 @@ async def test_is_external_client():
     assert _is_external_client("email_poller") is False
     assert _is_external_client("user@example.com") is False
     assert _is_external_client("jira:SCRUM-6") is False
+    assert _is_external_client("github:dispatch") is False
+    assert _is_external_client("github:review:123") is False
     assert _is_external_client(None) is False
     assert _is_external_client("") is False
 

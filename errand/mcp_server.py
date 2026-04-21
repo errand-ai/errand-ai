@@ -93,6 +93,18 @@ def _encrypt_env(env_dict: dict) -> str:
     return encrypt(env_dict)
 
 
+def _validate_and_encrypt_env(env: dict | None) -> tuple[str | None, str | None]:
+    """Validate and encrypt per-task env vars. Returns (encrypted_env, error_message)."""
+    if not env:
+        return None, None
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+        return None, "Error: Invalid env value. Expected an object mapping strings to strings."
+    try:
+        return _encrypt_env(env), None
+    except RuntimeError:
+        return None, "Error: Cannot store encrypted env vars — encryption key not configured."
+
+
 def _get_client_id(ctx: Context | None) -> str:
     """Extract X-Client-Id header from MCP request context, defaulting to 'mcp'."""
     if ctx and ctx.request_context and ctx.request_context.request:
@@ -163,14 +175,9 @@ async def new_task(
                 cleaned_description = None
 
         # Encrypt per-task env vars if provided
-        encrypted_env = None
-        if env:
-            if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
-                return "Error: Invalid env value. Expected an object mapping strings to strings."
-            try:
-                encrypted_env = _encrypt_env(env)
-            except RuntimeError:
-                return "Error: Cannot store encrypted env vars — encryption key not configured."
+        encrypted_env, env_error = _validate_and_encrypt_env(env)
+        if env_error:
+            return env_error
 
         # Auto-route based on category (same logic as main task creation)
         if category in ("scheduled", "repeating"):
@@ -289,6 +296,10 @@ async def upsert_skill(name: str, description: str, instructions: str, files: li
         for f in file_list:
             if not isinstance(f, dict) or "path" not in f or "content" not in f:
                 return "Error: Each file must be an object with 'path' and 'content' keys"
+            if not isinstance(f["path"], str) or not f["path"]:
+                return "Error: Each file 'path' must be a non-empty string"
+            if not isinstance(f["content"], str):
+                return "Error: Each file 'content' must be a string"
             path = f["path"]
             parts = path.split("/")
             if len(parts) != 2 or not parts[0] or not parts[1]:
@@ -345,6 +356,8 @@ async def task_status(task_id: str, format: str = "text") -> str:
         task_id: The UUID of the task.
         format: Output format — "text" (default) for plaintext, "json" for structured JSON.
     """
+    if format not in ("text", "json"):
+        return f"Error: Unsupported format '{format}'. Supported formats are 'text' and 'json'."
     async with async_session() as session:
         result = await session.execute(select(Task).where(Task.id == uuid_mod.UUID(task_id)))
         task = result.scalar_one_or_none()
@@ -506,14 +519,9 @@ async def schedule_task(
             cleaned_desc = None
 
         # Encrypt per-task env vars if provided
-        encrypted_env = None
-        if env:
-            if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
-                return "Error: Invalid env value. Expected an object mapping strings to strings."
-            try:
-                encrypted_env = _encrypt_env(env)
-            except RuntimeError:
-                return "Error: Cannot store encrypted env vars — encryption key not configured."
+        encrypted_env, env_error = _validate_and_encrypt_env(env)
+        if env_error:
+            return env_error
 
         category = "repeating" if normalised_interval else "scheduled"
         status = "scheduled"

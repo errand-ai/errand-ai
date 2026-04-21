@@ -78,6 +78,9 @@ def _is_external_client(created_by: str | None) -> bool:
     # Jira-originated tasks (e.g. "jira:SCRUM-6")
     if created_by.startswith("jira:"):
         return False
+    # GitHub-originated tasks (e.g. "github:dispatch", "github:review:123")
+    if created_by.startswith("github:"):
+        return False
     return True
 
 DEFAULT_HINDSIGHT_BANK_ID = "errand-tasks"
