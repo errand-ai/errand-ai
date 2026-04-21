@@ -28,13 +28,19 @@ Extend the existing `new_task` tool signature with an optional `profile: str | N
 
 **Rationale:** Simpler than adding a separate tool. The existing `new_task` flow already handles title generation, category classification, and position assignment — just needs profile resolution added.
 
-### 2. `list_task_profiles` as a new MCP tool
+### 2. Add `title` param to `new_task` to bypass LLM summariser
+
+Extend the existing `new_task` tool signature with an optional `title: str | None` parameter. When set, the title is used verbatim and the description is stored as-is — the LLM summariser is skipped entirely. Category defaults to `"immediate"`.
+
+**Rationale:** The Paperclip adapter already has its own title and description from the upstream request. Calling the LLM summariser would waste tokens, add latency, and risk altering the caller's intent. When `title` is omitted, existing behaviour is preserved (LLM generates title for descriptions >5 words).
+
+### 3. `list_task_profiles` as a new MCP tool
 
 Returns a JSON array of `{ name, description, model }` for each profile. Omits internal fields (system_prompt, mcp_servers, etc.) that aren't needed by external consumers.
 
 **Rationale:** The REST endpoint `GET /api/task-profiles` requires admin auth and returns too many internal fields. A dedicated MCP tool scoped to external consumer needs is cleaner.
 
-### 3. Structured `task_status` via optional `format` parameter
+### 4. Structured `task_status` via optional `format` parameter
 
 Add `format: str = "text"` parameter to `task_status`. When `"json"`, return a JSON string with `{ id, title, status, category, created_at, updated_at, has_output }`. Default `"text"` preserves backward compatibility.
 
@@ -42,7 +48,7 @@ Add `format: str = "text"` parameter to `task_status`. When `"json"`, return a J
 
 **Alternative considered:** A separate `task_status_json` tool. Rejected — unnecessary tool proliferation for a format option.
 
-### 4. API key auth for log streaming via query parameter
+### 5. API key auth for log streaming via query parameter
 
 The SSE endpoint `GET /api/tasks/{id}/logs/stream` already accepts a `token` query parameter (for SSE, since EventSource can't set headers). Add logic to also accept the MCP API key as this token value, in addition to the existing JWT.
 

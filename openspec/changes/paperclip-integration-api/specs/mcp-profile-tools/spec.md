@@ -17,6 +17,19 @@ The `new_task` MCP tool SHALL accept an optional `profile` parameter to assign a
 - **WHEN** `new_task` is called with a `profile` that does not exist
 - **THEN** the tool SHALL return an error message: `"Error: Task profile '<name>' not found."`
 
+### Requirement: Create task with explicit title via MCP
+The `new_task` MCP tool SHALL accept an optional `title` parameter to set the task title directly, bypassing the LLM summariser.
+
+#### Scenario: Task created with explicit title
+- **WHEN** `new_task` is called with `title="My Task"` and `description="Do the thing"`
+- **THEN** the task SHALL be created with title `"My Task"` and description `"Do the thing"`
+- **THEN** the LLM summariser SHALL NOT be called
+- **THEN** the category SHALL default to `"immediate"`
+
+#### Scenario: Task created without title
+- **WHEN** `new_task` is called without the `title` parameter
+- **THEN** the tool SHALL behave as it does today (LLM generates title for descriptions over 5 words, short descriptions used as title directly)
+
 ### Requirement: List task profiles via MCP
 The MCP server SHALL provide a `list_task_profiles` tool that returns available task profiles.
 

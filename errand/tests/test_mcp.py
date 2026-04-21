@@ -1492,6 +1492,87 @@ async def test_new_task_without_profile_backward_compat(db_session):
         assert task.title == "Fix bug"
 
 
+# --- Paperclip integration: new_task with explicit title ---
+
+
+async def test_new_task_with_explicit_title(db_session):
+    """new_task with explicit title sets title and description verbatim, no LLM call."""
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        task_uuid = await new_task(
+            "Detailed description of the task that is more than five words long",
+            title="My Custom Title",
+        )
+        mock_gen.assert_not_called()
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "My Custom Title"
+        assert task.description == "Detailed description of the task that is more than five words long"
+        assert task.status == "pending"
+        assert task.category == "immediate"
+
+
+async def test_new_task_with_title_and_profile(db_session):
+    """new_task with both title and profile sets both correctly."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    async with session_factory() as session:
+        profile = TaskProfile(name="Research Agent", description="Researches things", model={"provider": "openai", "name": "gpt-4o"})
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        profile_id = profile.id
+
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        task_uuid = await new_task(
+            "Research the latest frameworks",
+            title="Framework Research",
+            profile="Research Agent",
+        )
+        mock_gen.assert_not_called()
+
+    assert len(task_uuid) == 36
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Framework Research"
+        assert task.description == "Research the latest frameworks"
+        assert task.profile_id == profile_id
+
+
+async def test_new_task_without_title_calls_llm(db_session):
+    """new_task without title still calls LLM summariser for long descriptions."""
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        mock_result = type("LLMResult", (), {
+            "title": "Generated Title",
+            "success": True,
+            "category": "immediate",
+            "description": "Cleaned up description from LLM",
+            "profile": None,
+        })()
+        mock_gen.return_value = mock_result
+
+        task_uuid = await new_task("This is a long description with more than five words")
+        mock_gen.assert_called_once()
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Generated Title"
+
+
 # --- Paperclip integration: list_task_profiles ---
 
 

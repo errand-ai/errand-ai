@@ -63,16 +63,16 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def new_task(description: str, profile: str | None = None) -> str:
+async def new_task(description: str, profile: str | None = None, title: str | None = None) -> str:
     """Create a new task from a description. Returns the task UUID.
 
     Args:
         description: The task description.
         profile: Optional name of a task profile to assign.
+        title: Optional task title. When set, the title and description are used
+            verbatim and the LLM summariser is skipped.
     """
     async with async_session() as session:
-        words = description.strip().split()
-
         category = "immediate"
         resolved_profile_id = None
 
@@ -84,30 +84,35 @@ async def new_task(description: str, profile: str | None = None) -> str:
                 return f"Error: Task profile '{profile}' not found."
             resolved_profile_id = found.id
 
-        if len(words) > 5:
-            # Load profiles for classification (only if no explicit profile)
-            if not profile:
-                prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
-                db_profiles = prof_result.scalars().all()
-                profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
-            else:
-                profile_infos = None
-
-            llm_result = await generate_title(description, session, profiles=profile_infos)
-            title = llm_result.title
-            category = llm_result.category or "immediate"
-            if not llm_result.success:
-                cleaned_description = description.strip()
-            else:
-                cleaned_description = llm_result.description
-
-            # Resolve profile name to ID from LLM suggestion (only if no explicit profile)
-            if not profile and llm_result.profile and db_profiles:
-                profile_map = {p.name: p.id for p in db_profiles}
-                resolved_profile_id = profile_map.get(llm_result.profile)
+        if title:
+            # Explicit title — skip LLM summariser entirely
+            cleaned_description = description.strip() or None
         else:
-            title = description.strip()
-            cleaned_description = None
+            words = description.strip().split()
+            if len(words) > 5:
+                # Load profiles for classification (only if no explicit profile)
+                if not profile:
+                    prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+                    db_profiles = prof_result.scalars().all()
+                    profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+                else:
+                    profile_infos = None
+
+                llm_result = await generate_title(description, session, profiles=profile_infos)
+                title = llm_result.title
+                category = llm_result.category or "immediate"
+                if not llm_result.success:
+                    cleaned_description = description.strip()
+                else:
+                    cleaned_description = llm_result.description
+
+                # Resolve profile name to ID from LLM suggestion (only if no explicit profile)
+                if not profile and llm_result.profile and db_profiles:
+                    profile_map = {p.name: p.id for p in db_profiles}
+                    resolved_profile_id = profile_map.get(llm_result.profile)
+            else:
+                title = description.strip()
+                cleaned_description = None
 
         # Auto-route based on category (same logic as main task creation)
         if category in ("scheduled", "repeating"):
