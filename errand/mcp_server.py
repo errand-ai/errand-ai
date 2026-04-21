@@ -61,6 +61,17 @@ mcp = FastMCP(
     streamable_http_path="/",
 )
 
+# Wrap call_tool to log which tool is being invoked
+_original_call_tool = mcp.call_tool
+
+
+async def _logging_call_tool(name, arguments):
+    logger.info("MCP tool call: %s", name)
+    return await _original_call_tool(name, arguments)
+
+
+mcp.call_tool = _logging_call_tool
+
 
 def _encrypt_env(env_dict: dict) -> str:
     """Encrypt a dict of env vars using the platform Fernet cipher."""
