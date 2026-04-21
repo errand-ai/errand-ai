@@ -61,16 +61,16 @@ mcp = FastMCP(
     streamable_http_path="/",
 )
 
-# Wrap call_tool to log which tool is being invoked
-_original_call_tool = mcp.call_tool
+# Wrap the tool manager's call_tool to log which tool is being invoked
+_original_tm_call_tool = mcp._tool_manager.call_tool
 
 
-async def _logging_call_tool(name, arguments):
-    logger.info("MCP tool call: %s", name)
-    return await _original_call_tool(name, arguments)
+async def _logging_call_tool(name, arguments, **kwargs):
+    logger.info("MCP tool call: %s (args: %s)", name, list(arguments.keys()) if arguments else [])
+    return await _original_tm_call_tool(name, arguments, **kwargs)
 
 
-mcp.call_tool = _logging_call_tool
+mcp._tool_manager.call_tool = _logging_call_tool
 
 
 def _encrypt_env(env_dict: dict) -> str:
