@@ -36,7 +36,7 @@ RUN mkdir -p /staged-libs && \
       done ; \
     done
 
-FROM node:22-bookworm-slim AS node-builder
+FROM node:24-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
 # Resolve the openspec entry point for the wrapper script
 RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
