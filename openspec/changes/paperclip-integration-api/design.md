@@ -53,7 +53,7 @@ When the task runner finishes a task with `status="needs_input"`, the current lo
 
 ### 5. Per-task encrypted environment variables
 
-Add an optional `env` parameter to `new_task` and `schedule_task` — a JSON object of key/value string pairs. Values are encrypted with the existing Fernet cipher (`CREDENTIAL_ENCRYPTION_KEY`) and stored in a new `encrypted_env` column on the Task model. At execution time, the TaskManager decrypts and merges these into the container's env vars.
+Add an optional `env` parameter to `new_task` and `schedule_task` — typed as `dict | None` so the MCP schema generates `{"type": "object"}`. Values are encrypted with the existing Fernet cipher (`CREDENTIAL_ENCRYPTION_KEY`) and stored in a new `encrypted_env` column on the Task model. At execution time, the TaskManager decrypts and merges these into the container's env vars.
 
 **Rationale:** The Paperclip adapter generates per-run JWT tokens for authenticating callbacks to the Paperclip API. These are sensitive, short-lived values that must be scoped to a single task — not stored in global settings. Using the existing Fernet encryption pattern (from `platforms/credentials.py`) keeps the security model consistent.
 
@@ -61,12 +61,14 @@ Add an optional `env` parameter to `new_task` and `schedule_task` — a JSON obj
 
 **Runtime injection:** In `_run_task`, after building the base `env_vars` dict, decrypt `encrypted_env` from the `DequeuedTask` and merge. Per-task env vars override global credentials with the same key name.
 
+**Type lesson learned:** MCP tool parameters must use native Python types that map to the correct JSON schema. Using `str` for structured data generates `{"type": "string"}` which causes the SDK to silently drop object/array arguments from clients. Use `dict` for objects and `list` for arrays.
+
 ### 6. Skills management via MCP tools
 
 Add three MCP tools for managing skills:
 
 - **`list_skills`** — returns JSON array of `{ name, description }` for each skill (mirrors the REST `GET /api/skills` but scoped for MCP consumers)
-- **`upsert_skill`** — creates or updates a skill by name. Accepts `name`, `description`, `instructions`, and an optional `files` array of `{ path, content }` objects. If a skill with the same name exists, it is updated; otherwise a new one is created. Files are replaced in full on update.
+- **`upsert_skill`** — creates or updates a skill by name. Accepts `name`, `description`, `instructions`, and an optional `files` parameter typed as `list | None` (array of `{ path, content }` objects). If a skill with the same name exists, it is updated; otherwise a new one is created. Files are replaced in full on update.
 - **`delete_skill`** — deletes a skill by name
 
 **Rationale:** The Paperclip adapter maintains skill definitions as `skills/<name>/SKILL.md` files in its deployment. It needs to sync these into errand's skills system so they can be injected into the task-runner at execution. The existing REST endpoints require admin OIDC auth which MCP clients don't have. Dedicated MCP tools with API key auth are the clean path.
@@ -93,11 +95,18 @@ The SSE endpoint `GET /api/tasks/{id}/logs/stream` already accepts a `token` que
 
 **Rationale:** The endpoint already has a query-param auth path for SSE compatibility. Accepting the MCP API key there requires minimal changes — just check the API key if JWT validation fails.
 
+### 10. MCP tool call logging
+
+Patch `_tool_manager.call_tool` on the FastMCP instance to log tool name and key arguments at INFO level. FastMCP registers its handler at init time via `_setup_handlers()`, so replacing `mcp.call_tool` after construction has no effect — the low-level server retains a reference to the original bound method. Patching `_tool_manager.call_tool` intercepts the actual dispatch path.
+
+**Rationale:** The MCP SDK logs only `"Processing request of type CallToolRequest"` with no tool name, and the HTTP access log shows only `POST /mcp/ 200`. Without tool-level logging, diagnosing integration issues requires reading Paperclip logs instead of errand's own logs.
+
 ## Risks / Trade-offs
 
 - **MCP API key on log streaming** — Expands the API key's scope from MCP-only to include one REST endpoint. Mitigation: the API key already grants full task management via MCP; log streaming is read-only and lower privilege.
 - **`task_status` signature change** — Adding a parameter is backwards-compatible but makes the tool slightly more complex. Mitigation: default is `"text"`, existing callers unaffected.
+- **MCP parameter types** — Using `str` for structured parameters (dicts, lists) causes the SDK to generate the wrong JSON schema (`{"type": "string"}`) and silently drop arguments. Always use `dict` for objects and `list` for arrays.
 
 ## Open Questions
 
-- None — all decisions are straightforward extensions of existing patterns.
+- None — all decisions validated during integration testing with the Paperclip adapter.

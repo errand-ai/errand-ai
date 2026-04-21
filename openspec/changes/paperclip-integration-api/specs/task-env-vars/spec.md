@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Per-task encrypted environment variables via MCP
-The `new_task` and `schedule_task` MCP tools SHALL accept an optional `env` parameter containing key/value pairs to be injected as environment variables into the task-runner container.
+The `new_task` and `schedule_task` MCP tools SHALL accept an optional `env` parameter (typed as `dict | None` for correct MCP JSON schema generation) containing key/value pairs to be injected as environment variables into the task-runner container.
 
 #### Scenario: Task created with env vars
 - **WHEN** `new_task` is called with `env={"PAPERCLIP_TOKEN": "eyJ...", "CALLBACK_URL": "https://..."}`

@@ -12,7 +12,7 @@ The MCP server SHALL provide a `list_skills` tool that returns available skills.
 - **THEN** the tool SHALL return an empty JSON array
 
 ### Requirement: Upsert skill via MCP
-The MCP server SHALL provide an `upsert_skill` tool that creates or updates a skill by name.
+The MCP server SHALL provide an `upsert_skill` tool that creates or updates a skill by name. The `files` parameter SHALL be typed as `list | None` for correct MCP JSON schema generation.
 
 #### Scenario: Create new skill
 - **WHEN** `upsert_skill` is called with `name="code-review"`, `description="..."`, `instructions="..."`
