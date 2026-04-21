@@ -1821,8 +1821,7 @@ async def test_upsert_skill_create(db_session):
     """upsert_skill creates new skill with files."""
     from mcp_server import upsert_skill
 
-    files_json = json.dumps([{"path": "references/guide.md", "content": "# Guide"}])
-    result = await upsert_skill("my-skill", "A skill", "Do things", files=files_json)
+    result = await upsert_skill("my-skill", "A skill", "Do things", files=[{"path": "references/guide.md", "content": "# Guide"}])
     assert "created" in result
 
     _, session_factory = db_session
@@ -1852,8 +1851,7 @@ async def test_upsert_skill_update(db_session):
         await session.commit()
 
     from mcp_server import upsert_skill
-    files_json = json.dumps([{"path": "scripts/new.sh", "content": "#!/bin/bash"}])
-    result = await upsert_skill("my-skill", "New desc", "New instructions", files=files_json)
+    result = await upsert_skill("my-skill", "New desc", "New instructions", files=[{"path": "scripts/new.sh", "content": "#!/bin/bash"}])
     assert "updated" in result
 
     async with session_factory() as session:

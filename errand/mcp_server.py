@@ -66,8 +66,22 @@ _original_tm_call_tool = mcp._tool_manager.call_tool
 
 
 async def _logging_call_tool(name, arguments, **kwargs):
-    logger.info("MCP tool call: %s (args: %s)", name, list(arguments.keys()) if arguments else [])
-    return await _original_tm_call_tool(name, arguments, **kwargs)
+    # Log key identifying arguments for debugging
+    detail = ""
+    if arguments:
+        if name in ("upsert_skill", "delete_skill") and "name" in arguments:
+            detail = f" name={arguments['name']!r}"
+        elif name == "new_task" and "title" in arguments:
+            detail = f" title={arguments['title']!r}"
+        elif name == "task_status" and "task_id" in arguments:
+            detail = f" task_id={arguments['task_id']}"
+    logger.info("MCP tool call: %s%s", name, detail)
+    result = await _original_tm_call_tool(name, arguments, **kwargs)
+    # Log first 200 chars of result for debugging
+    if result:
+        result_str = str(result[0].text if hasattr(result, '__getitem__') and hasattr(result[0], 'text') else result)[:200]
+        logger.info("MCP tool result: %s → %s", name, result_str)
+    return result
 
 
 mcp._tool_manager.call_tool = _logging_call_tool
@@ -253,14 +267,14 @@ async def list_skills() -> str:
 
 
 @mcp.tool()
-async def upsert_skill(name: str, description: str, instructions: str, files: str | None = None) -> str:
+async def upsert_skill(name: str, description: str, instructions: str, files: list | None = None) -> str:
     """Create or update a skill by name. Returns success message with skill ID.
 
     Args:
         name: Skill name (lowercase, max 64 chars, letters/digits/hyphens only).
         description: Short description of the skill (max 1024 chars).
         instructions: Full markdown instructions for the skill.
-        files: Optional JSON array of {path, content} objects. Paths must be in
+        files: Optional array of {path, content} objects. Paths must be in
             scripts/, references/, or assets/ subdirectories.
     """
     error = _validate_skill_name(name)
@@ -269,13 +283,9 @@ async def upsert_skill(name: str, description: str, instructions: str, files: st
     if len(description) > 1024:
         return "Error: Description must be at most 1024 characters"
 
-    # Parse files if provided
-    file_list = []
-    if files:
-        try:
-            file_list = json.loads(files) if isinstance(files, str) else files
-        except (json.JSONDecodeError, TypeError):
-            return "Error: Invalid files JSON"
+    # Validate files if provided
+    file_list = files or []
+    if file_list:
         for f in file_list:
             if not isinstance(f, dict) or "path" not in f or "content" not in f:
                 return "Error: Each file must be an object with 'path' and 'content' keys"
