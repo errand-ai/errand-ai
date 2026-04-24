@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -626,8 +627,9 @@ def _trim_context_window(messages: list) -> list:
 def _serialize_messages_for_summary(messages: list) -> str:
     """Convert a message list to a text representation for the summarization LLM.
 
-    Role labels are added. Tool results are truncated to ~2k chars. The output
-    is wrapped in <conversation> tags.
+    Role labels are added. Tool call arguments, tool results, and message
+    content are all truncated to ~2k chars. The output is wrapped in
+    <conversation> tags.
     """
     TOOL_RESULT_TRUNCATION = 2000
     parts = []
@@ -673,7 +675,7 @@ def _serialize_messages_for_summary(messages: list) -> str:
     return "<conversation>\n" + "\n\n".join(parts) + "\n</conversation>"
 
 
-def _extract_file_operations(messages: list) -> tuple[set, set]:
+def _extract_file_operations(messages: list) -> tuple[set[str], set[str]]:
     """Scan execute_command tool calls for file read/write operations.
 
     Returns (read_files, modified_files) sets using best-effort heuristics.
@@ -717,14 +719,23 @@ def _extract_file_operations(messages: list) -> tuple[set, set]:
         for m in re.finditer(r'\btee\s+(?:-a\s+)?(\S+)', command):
             modified_files.add(m.group(1))
 
-        # Write: cp / mv — destination is last argument
-        for m in re.finditer(r'\b(?:cp|mv)\s+\S+\s+(\S+)', command):
-            modified_files.add(m.group(1))
+        # Write: cp / mv — destination is the last non-flag token
+        cp_mv_match = re.search(r'\b(cp|mv)\b', command)
+        if cp_mv_match:
+            try:
+                tokens = shlex.split(command)
+                # Find the cp/mv verb position, then take last non-flag token after it
+                verb_pos = next(i for i, t in enumerate(tokens) if t in ("cp", "mv"))
+                positional = [t for t in tokens[verb_pos + 1:] if not t.startswith('-')]
+                if positional:
+                    modified_files.add(positional[-1])
+            except (ValueError, StopIteration):
+                pass
 
     return read_files, modified_files
 
 
-def _format_file_lists(read_files: set, modified_files: set, existing_summary: str = "") -> str:
+def _format_file_lists(read_files: set[str], modified_files: set[str], existing_summary: str = "") -> str:
     """Produce <read-files> and <modified-files> XML blocks.
 
     Merges with file lists already present in existing_summary (if any).
@@ -877,9 +888,9 @@ def _compact_context(messages: list) -> list:
             max_tokens=2048,
         )
         summary_text = response.choices[0].message.content or ""
-    except Exception as e:
+    except Exception:
         logger.warning(
-            "Context compaction failed (LLM call error: %s) — falling back to trim", e,
+            "Context compaction failed (LLM call error) — falling back to trim", exc_info=True,
         )
         return _trim_context_window(messages)
 
