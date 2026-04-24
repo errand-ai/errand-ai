@@ -102,7 +102,7 @@ def test_subsequent_compaction_uses_merge_prompt():
     # Each filler message is ~62000 chars → ~20667 tokens (> KEEP_RECENT_TOKENS=20000),
     # and 8 of them → ~165333 tokens > MAX_CONTEXT_TOKENS=150000, triggering compaction.
     filler = "y" * 62_000
-    messages = [summary_msg] + [_make_assistant_msg(filler)] * 8
+    messages = [summary_msg] + [_make_assistant_msg(filler) for _ in range(8)]
 
     merge_result_text = "## Goal\nOld goal\n## Progress\n### Done\nStep 1, Step 2\n### In Progress\nStep 3\n### Blocked\n\n## Key Decisions\nDecision A, Decision B\n## Next Steps\nStep 4\n## Critical Context\nFoo, Bar\n"
 
@@ -198,7 +198,7 @@ def test_file_lists_carried_forward():
     # last filler is kept as recent context; everything before it (including new_tool_call)
     # is summarized.  8 fillers → ~165k tokens > MAX_CONTEXT_TOKENS, triggering compaction.
     filler = "z" * 62_000
-    messages = [summary_msg, new_tool_call] + [_make_assistant_msg(filler)] * 8
+    messages = [summary_msg, new_tool_call] + [_make_assistant_msg(filler) for _ in range(8)]
 
     merge_text = "## Goal\nTest\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
     mock_client = _mock_openai_response(merge_text)

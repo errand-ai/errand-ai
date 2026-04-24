@@ -810,11 +810,16 @@ def _compact_context(messages: list) -> list:
             )
         existing_msg_content = str(raw)
 
+    # For subsequent compactions exclude the existing summary message from the
+    # "new conversation content" — it would otherwise appear twice in the merge
+    # prompt (once as existing_summary, again inside conversation_text).
+    new_to_summarize = to_summarize[1:] if is_subsequent else to_summarize
+
     # Extract file operations from messages being summarized
-    read_files, modified_files = _extract_file_operations(to_summarize)
+    read_files, modified_files = _extract_file_operations(new_to_summarize)
 
     # Serialize older messages for the summarization LLM
-    conversation_text = _serialize_messages_for_summary(to_summarize)
+    conversation_text = _serialize_messages_for_summary(new_to_summarize)
 
     # Build prompt for the summarization call
     if is_subsequent and existing_msg_content:
@@ -833,10 +838,34 @@ def _compact_context(messages: list) -> list:
         user_content = FIRST_COMPACTION_PROMPT.format(conversation=conversation_text)
 
     # Call summarization LLM synchronously (task 3.2 + 3.3)
-    compaction_model = os.environ.get("COMPACTION_MODEL") or os.environ.get("OPENAI_MODEL", "")
+    compaction_model = (
+        os.environ.get("COMPACTION_MODEL", "").strip()
+        or os.environ.get("OPENAI_MODEL", "").strip()
+    )
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not compaction_model or not api_key:
+        logger.info(
+            "Context compaction skipped (missing %s) — falling back to trim",
+            "OPENAI_MODEL" if not compaction_model else "OPENAI_API_KEY",
+        )
+        return _trim_context_window(messages)
+
+    compaction_timeout = 30.0
+    timeout_raw = os.environ.get("COMPACTION_TIMEOUT_SECONDS", "").strip()
+    if timeout_raw:
+        try:
+            parsed = float(timeout_raw)
+            if parsed > 0:
+                compaction_timeout = parsed
+            else:
+                logger.warning("Invalid COMPACTION_TIMEOUT_SECONDS '%s' (must be positive), using %.0fs", timeout_raw, compaction_timeout)
+        except ValueError:
+            logger.warning("Invalid COMPACTION_TIMEOUT_SECONDS '%s' (not a number), using %.0fs", timeout_raw, compaction_timeout)
+
     sync_client = OpenAI(
-        base_url=os.environ.get("OPENAI_BASE_URL"),
-        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_BASE_URL") or None,
+        api_key=api_key,
+        timeout=compaction_timeout,
     )
     try:
         response = sync_client.chat.completions.create(
