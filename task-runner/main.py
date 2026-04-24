@@ -783,7 +783,6 @@ def _compact_context(messages: list) -> list:
 
     # Find split point: keep ~KEEP_RECENT_TOKENS of the most recent messages
     recent_tokens = 0
-    split_idx = 1  # default: summarize everything except the very last message
     for i in range(len(messages) - 1, -1, -1):
         msg_tokens = _estimate_tokens([messages[i]])
         if recent_tokens + msg_tokens > KEEP_RECENT_TOKENS:

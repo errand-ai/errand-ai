@@ -4,11 +4,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from main import (
     COMPACTION_SUMMARY_PREFIX,
-    MAX_CONTEXT_TOKENS,
     _compact_context,
     _extract_file_operations,
     _format_file_lists,
