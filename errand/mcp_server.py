@@ -304,6 +304,9 @@ async def upsert_skill(name: str, description: str, instructions: str, files: li
                 return f"Error: Invalid file path '{path}' — must be subdir/filename"
             if parts[0] not in _ALLOWED_SKILL_FILE_SUBDIRS:
                 return f"Error: Invalid file path '{path}' — must be in scripts/, references/, or assets/"
+        paths = [f["path"] for f in file_list]
+        if len(paths) != len(set(paths)):
+            return "Error: Duplicate file paths are not allowed"
 
     async with async_session() as session:
         result = await session.execute(select(Skill).where(Skill.name == name))
