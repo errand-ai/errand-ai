@@ -120,6 +120,25 @@ When the TaskManager dequeues a task for processing, it SHALL copy all required 
 - **WHEN** a task processing coroutine starts
 - **THEN** it receives a plain data object (not a SQLAlchemy ORM instance bound to a closed session)
 
+### Requirement: Skip review state for external client tasks
+
+When a task completes with `needs_input` status and was created by an external client, the task manager SHALL move it directly to `completed` instead of `review`.
+
+#### Scenario: External client task with needs_input
+- **WHEN** a task finishes with `parsed.status == "needs_input"`
+- **AND** the task's `created_by` is not a known internal source (`"system"`, `"mcp"`, an email address, or `"email_poller"`)
+- **THEN** the task SHALL move to `completed` status (not `review`)
+- **AND** the task's output and questions SHALL still be stored
+
+#### Scenario: Internal task with needs_input (unchanged)
+- **WHEN** a task finishes with `parsed.status == "needs_input"`
+- **AND** the task's `created_by` is a known internal source (e.g. `"mcp"`, `"system"`, a user email)
+- **THEN** the task SHALL move to `review` status as before (backward compatible)
+
+#### Scenario: Completed task (unchanged)
+- **WHEN** a task finishes with `parsed.status == "completed"`
+- **THEN** the task SHALL move to `completed` status regardless of `created_by`
+
 ### Requirement: Cached sync database engine
 
 The `_resolve_provider_sync` function SHALL use a module-level cached sync engine instead of calling `create_sync_engine()` on every invocation. The engine SHALL be created once (lazily on first call or at module import) and reused for all subsequent calls. The engine SHALL never be created more than once per process lifetime.
