@@ -697,14 +697,19 @@ def _extract_file_operations(messages: list) -> tuple[set[str], set[str]]:
             continue
 
         # Read commands: cat, head, tail, less, grep
-        # Take the last non-flag, non-pure-digit token (handles -n 20 style flags)
-        m = re.search(r'\b(?:cat|head|tail|less|grep)\s+(.*)', command)
+        # Use shlex.split for correct handling of quoted/escaped paths,
+        # then take the last non-flag, non-pure-digit token.
+        m = re.search(r'\b(?:cat|head|tail|less|grep)\b', command)
         if m:
-            tokens = m.group(1).split()
-            for tok in reversed(tokens):
-                if not tok.startswith('-') and not tok.isdigit():
-                    read_files.add(tok)
-                    break
+            try:
+                all_tokens = shlex.split(command)
+                verb_pos = next(i for i, t in enumerate(all_tokens) if t in ("cat", "head", "tail", "less", "grep"))
+                for tok in reversed(all_tokens[verb_pos + 1:]):
+                    if not tok.startswith('-') and not tok.isdigit():
+                        read_files.add(tok)
+                        break
+            except (ValueError, StopIteration):
+                pass
 
         # Write: output redirect (> or >>)
         for m in re.finditer(r'(?:>>?)\s*(\S+)', command):
@@ -892,6 +897,10 @@ def _compact_context(messages: list) -> list:
         logger.warning(
             "Context compaction failed (LLM call error) — falling back to trim", exc_info=True,
         )
+        return _trim_context_window(messages)
+
+    if not summary_text.strip():
+        logger.warning("Context compaction returned empty summary — falling back to trim")
         return _trim_context_window(messages)
 
     # Append file lists to summary (task 3.4 carry-forward)
