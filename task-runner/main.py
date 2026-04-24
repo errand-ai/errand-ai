@@ -13,7 +13,7 @@ from contextlib import AsyncExitStack
 from uuid import uuid4
 
 import httpx
-from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, RateLimitError, BadRequestError, AuthenticationError, APIStatusError
+from openai import AsyncOpenAI, OpenAI, APIConnectionError, APITimeoutError, RateLimitError, BadRequestError, AuthenticationError, APIStatusError
 from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
@@ -318,6 +318,69 @@ COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
 MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "2"))
 MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "150000"))
 CHARS_PER_TOKEN = 3  # conservative: base64 images tokenize at ~2-3 chars/token
+KEEP_RECENT_TOKENS = 20_000  # tokens of recent messages to retain during compaction
+
+# Marker that identifies a compaction summary message (task 4.2)
+COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:"
+
+# Summarization prompts (tasks 1.1–1.3)
+SUMMARIZATION_SYSTEM_PROMPT = (
+    "You are a context summarization assistant. Your sole job is to produce a structured "
+    "checkpoint summary of a conversation. Do NOT continue the conversation, answer questions, "
+    "or take any action. Output ONLY the summary in the requested format."
+)
+
+FIRST_COMPACTION_PROMPT = """\
+Summarize the following conversation into a structured checkpoint. Use exactly these sections:
+
+## Goal
+What the agent is trying to accomplish in this task.
+
+## Progress
+### Done
+Completed steps and outcomes.
+
+### In Progress
+What is currently being worked on.
+
+### Blocked
+Any blockers or unresolved issues.
+
+## Key Decisions
+Important choices made and their rationale.
+
+## Next Steps
+Concrete actions remaining to complete the goal.
+
+## Critical Context
+Important facts, constraints, or context the agent must remember.
+
+---
+{conversation}"""
+
+MERGE_COMPACTION_PROMPT = """\
+You have an existing summary of earlier conversation history, and new conversation content that \
+occurred after that summary. Merge the new content into the existing summary: update progress, \
+add new decisions and context, and remove only clearly irrelevant items. Preserve all existing \
+information that is still relevant.
+
+The merged summary must have exactly these sections:
+
+## Goal
+## Progress (### Done / ### In Progress / ### Blocked)
+## Key Decisions
+## Next Steps
+## Critical Context
+
+---
+Existing summary:
+
+{existing_summary}
+
+---
+New conversation content to merge:
+
+{conversation}"""
 
 
 @function_tool
@@ -558,12 +621,272 @@ def _trim_context_window(messages: list) -> list:
     return trimmed
 
 
+# --- Context Compaction Helpers (tasks 2.1–2.4) ---
+
+def _serialize_messages_for_summary(messages: list) -> str:
+    """Convert a message list to a text representation for the summarization LLM.
+
+    Role labels are added. Tool results are truncated to ~2k chars. The output
+    is wrapped in <conversation> tags.
+    """
+    TOOL_RESULT_TRUNCATION = 2000
+    parts = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        msg_type = msg.get("type", "")
+
+        if msg_type == "function_call":
+            name = msg.get("name", "unknown")
+            args = msg.get("arguments", "{}")
+            parts.append(f"[TOOL CALL: {name}]\n{str(args)[:TOOL_RESULT_TRUNCATION]}")
+        elif msg_type == "function_call_output":
+            output = msg.get("output", "")
+            if isinstance(output, list):
+                output = " ".join(
+                    p.get("text", "") for p in output
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            output_str = str(output)
+            if len(output_str) > TOOL_RESULT_TRUNCATION:
+                output_str = output_str[:TOOL_RESULT_TRUNCATION] + "... [truncated]"
+            parts.append(f"[TOOL RESULT]\n{output_str}")
+        elif role:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif part.get("type") == "image_url":
+                            text_parts.append("[image]")
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = "\n".join(text_parts)
+            content_str = str(content)
+            if len(content_str) > TOOL_RESULT_TRUNCATION:
+                content_str = content_str[:TOOL_RESULT_TRUNCATION] + "... [truncated]"
+            parts.append(f"[{role.upper()}]\n{content_str}")
+
+    return "<conversation>\n" + "\n\n".join(parts) + "\n</conversation>"
+
+
+def _extract_file_operations(messages: list) -> tuple[set, set]:
+    """Scan execute_command tool calls for file read/write operations.
+
+    Returns (read_files, modified_files) sets using best-effort heuristics.
+    """
+    read_files: set[str] = set()
+    modified_files: set[str] = set()
+
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("type") != "function_call":
+            continue
+        if msg.get("name") != "execute_command":
+            continue
+        try:
+            args = json.loads(msg.get("arguments", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        command = args.get("command", "")
+        if not command:
+            continue
+
+        # Read commands: cat, head, tail, less, grep
+        # Take the last non-flag, non-pure-digit token (handles -n 20 style flags)
+        m = re.search(r'\b(?:cat|head|tail|less|grep)\s+(.*)', command)
+        if m:
+            tokens = m.group(1).split()
+            for tok in reversed(tokens):
+                if not tok.startswith('-') and not tok.isdigit():
+                    read_files.add(tok)
+                    break
+
+        # Write: output redirect (> or >>)
+        for m in re.finditer(r'(?:>>?)\s*(\S+)', command):
+            modified_files.add(m.group(1))
+
+        # Write: sed -i — last argument
+        m = re.search(r'\bsed\b.*\s-i\b.*\s+(\S+)\s*$', command)
+        if m:
+            modified_files.add(m.group(1))
+
+        # Write: tee
+        for m in re.finditer(r'\btee\s+(?:-a\s+)?(\S+)', command):
+            modified_files.add(m.group(1))
+
+        # Write: cp / mv — destination is last argument
+        for m in re.finditer(r'\b(?:cp|mv)\s+\S+\s+(\S+)', command):
+            modified_files.add(m.group(1))
+
+    return read_files, modified_files
+
+
+def _format_file_lists(read_files: set, modified_files: set, existing_summary: str = "") -> str:
+    """Produce <read-files> and <modified-files> XML blocks.
+
+    Merges with file lists already present in existing_summary (if any).
+    """
+    existing_read: set[str] = set()
+    existing_modified: set[str] = set()
+    if existing_summary:
+        m = re.search(r'<read-files>(.*?)</read-files>', existing_summary, re.DOTALL)
+        if m:
+            existing_read = {f.strip() for f in m.group(1).splitlines() if f.strip()}
+        m = re.search(r'<modified-files>(.*?)</modified-files>', existing_summary, re.DOTALL)
+        if m:
+            existing_modified = {f.strip() for f in m.group(1).splitlines() if f.strip()}
+
+    all_read = sorted(existing_read | read_files)
+    all_modified = sorted(existing_modified | modified_files)
+
+    parts = []
+    if all_read:
+        parts.append("<read-files>\n" + "\n".join(all_read) + "\n</read-files>")
+    if all_modified:
+        parts.append("<modified-files>\n" + "\n".join(all_modified) + "\n</modified-files>")
+    return "\n".join(parts)
+
+
+def _is_compaction_summary(message: dict) -> bool:
+    """Return True if message is a compaction summary (identified by prefix marker)."""
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content", "")
+    if isinstance(content, list):
+        content = " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return isinstance(content, str) and content.strip().startswith(COMPACTION_SUMMARY_PREFIX)
+
+
+# --- Core Compaction (tasks 3.1–3.4) ---
+
+def _compact_context(messages: list) -> list:
+    """Replace oldest messages with an LLM-generated summary when context exceeds budget.
+
+    On first compaction uses FIRST_COMPACTION_PROMPT; on subsequent compactions
+    detects the existing summary and uses MERGE_COMPACTION_PROMPT instead.
+    Falls back to _trim_context_window if the summarization call fails.
+    """
+    estimated_before = _estimate_tokens(messages)
+    if len(messages) <= 2 or estimated_before <= MAX_CONTEXT_TOKENS:
+        return messages
+
+    logger.info(
+        "Context compaction triggered: ~%d estimated tokens (limit %d), %d messages",
+        estimated_before, MAX_CONTEXT_TOKENS, len(messages),
+    )
+
+    # Find split point: keep ~KEEP_RECENT_TOKENS of the most recent messages
+    recent_tokens = 0
+    split_idx = 1  # default: summarize everything except the very last message
+    for i in range(len(messages) - 1, -1, -1):
+        msg_tokens = _estimate_tokens([messages[i]])
+        if recent_tokens + msg_tokens > KEEP_RECENT_TOKENS:
+            split_idx = i + 1
+            break
+        recent_tokens += msg_tokens
+    else:
+        split_idx = 1
+
+    # Ensure at least one message is summarized and at least one is kept
+    split_idx = max(1, min(split_idx, len(messages) - 1))
+
+    to_summarize = messages[:split_idx]
+    to_keep = messages[split_idx:]
+
+    # Detect existing compaction summary (task 3.4)
+    existing_msg_content: str = ""
+    is_subsequent = bool(to_summarize) and _is_compaction_summary(to_summarize[0])
+    if is_subsequent:
+        raw = to_summarize[0].get("content", "")
+        if isinstance(raw, list):
+            raw = " ".join(
+                p.get("text", "") for p in raw
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        existing_msg_content = str(raw)
+
+    # Extract file operations from messages being summarized
+    read_files, modified_files = _extract_file_operations(to_summarize)
+
+    # Serialize older messages for the summarization LLM
+    conversation_text = _serialize_messages_for_summary(to_summarize)
+
+    # Build prompt for the summarization call
+    if is_subsequent and existing_msg_content:
+        summary_match = re.search(r'<summary>(.*?)</summary>', existing_msg_content, re.DOTALL)
+        inner = summary_match.group(1).strip() if summary_match else existing_msg_content
+        # Strip file XML blocks before passing to merge prompt
+        inner_no_files = re.sub(
+            r'\n*<(?:read|modified)-files>.*?</(?:read|modified)-files>',
+            '', inner, flags=re.DOTALL,
+        ).strip()
+        user_content = MERGE_COMPACTION_PROMPT.format(
+            existing_summary=inner_no_files,
+            conversation=conversation_text,
+        )
+    else:
+        user_content = FIRST_COMPACTION_PROMPT.format(conversation=conversation_text)
+
+    # Call summarization LLM synchronously (task 3.2 + 3.3)
+    compaction_model = os.environ.get("COMPACTION_MODEL") or os.environ.get("OPENAI_MODEL", "")
+    sync_client = OpenAI(
+        base_url=os.environ.get("OPENAI_BASE_URL"),
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+    try:
+        response = sync_client.chat.completions.create(
+            model=compaction_model,
+            messages=[
+                {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=2048,
+        )
+        summary_text = response.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning(
+            "Context compaction failed (LLM call error: %s) — falling back to trim", e,
+        )
+        return _trim_context_window(messages)
+
+    # Append file lists to summary (task 3.4 carry-forward)
+    file_lists = _format_file_lists(read_files, modified_files, existing_msg_content)
+    if file_lists:
+        summary_text = summary_text.rstrip() + "\n\n" + file_lists
+
+    summary_message = {
+        "role": "user",
+        "content": (
+            COMPACTION_SUMMARY_PREFIX
+            + "\n\n<summary>\n"
+            + summary_text
+            + "\n</summary>"
+        ),
+    }
+
+    compacted = [summary_message] + list(to_keep)
+    estimated_after = _estimate_tokens(compacted)
+    logger.info(
+        "Context compaction complete: %d -> %d messages, ~%d -> ~%d estimated tokens "
+        "(%d messages summarized, model=%s)",
+        len(messages), len(compacted), estimated_before, estimated_after,
+        len(to_summarize), compaction_model,
+    )
+    return compacted
+
+
 def filter_model_input(data: CallModelData) -> ModelInputData:
-    """Pre-model filter: sanitize tool calls, strip old screenshots, and trim context window."""
+    """Pre-model filter: sanitize tool calls, strip old screenshots, and compact context."""
     messages = list(data.model_data.input)
     messages = _sanitize_tool_calls(messages)
     messages = _strip_screenshots(messages)
-    messages = _trim_context_window(messages)
+    messages = _compact_context(messages)
     return ModelInputData(input=messages, instructions=data.model_data.instructions)
 
 
