@@ -12,7 +12,7 @@ import httpx
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
@@ -21,7 +21,7 @@ from starlette.applications import Starlette
 from database import async_session
 from events import publish_event
 from llm import generate_title, ProfileInfo
-from models import Setting, Task, TaskProfile
+from models import Setting, Skill, SkillFile, Task, TaskProfile
 from task_manager import normalize_interval
 
 logger = logging.getLogger(__name__)
@@ -61,36 +61,123 @@ mcp = FastMCP(
     streamable_http_path="/",
 )
 
+# Wrap the tool manager's call_tool to log which tool is being invoked
+_original_tm_call_tool = mcp._tool_manager.call_tool
+
+
+async def _logging_call_tool(name, arguments, **kwargs):
+    # Log key identifying arguments for debugging
+    detail = ""
+    if arguments:
+        if name in ("upsert_skill", "delete_skill") and "name" in arguments:
+            detail = f" name={arguments['name']!r}"
+        elif name == "new_task" and "title" in arguments:
+            detail = f" title={arguments['title']!r}"
+        elif name == "task_status" and "task_id" in arguments:
+            detail = f" task_id={arguments['task_id']}"
+    logger.info("MCP tool call: %s%s", name, detail)
+    result = await _original_tm_call_tool(name, arguments, **kwargs)
+    # Log first 200 chars of result for debugging
+    if result:
+        result_str = str(result[0].text if hasattr(result, '__getitem__') and hasattr(result[0], 'text') else result)[:200]
+        logger.info("MCP tool result: %s → %s", name, result_str)
+    return result
+
+
+mcp._tool_manager.call_tool = _logging_call_tool
+
+
+def _encrypt_env(env_dict: dict) -> str:
+    """Encrypt a dict of env vars using the platform Fernet cipher."""
+    from platforms.credentials import encrypt
+    return encrypt(env_dict)
+
+
+def _validate_and_encrypt_env(env: dict | None) -> tuple[str | None, str | None]:
+    """Validate and encrypt per-task env vars. Returns (encrypted_env, error_message)."""
+    if not env:
+        return None, None
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+        return None, "Error: Invalid env value. Expected an object mapping strings to strings."
+    try:
+        return _encrypt_env(env), None
+    except RuntimeError:
+        return None, "Error: Cannot store encrypted env vars — encryption key not configured."
+
+
+def _get_client_id(ctx: Context | None) -> str:
+    """Extract X-Client-Id header from MCP request context, defaulting to 'mcp'."""
+    if ctx and ctx.request_context and ctx.request_context.request:
+        client_id = ctx.request_context.request.headers.get("x-client-id")
+        if client_id and client_id.strip():
+            return client_id.strip()
+    return "mcp"
+
 
 @mcp.tool()
-async def new_task(description: str) -> str:
-    """Create a new task from a description. Returns the task UUID."""
-    async with async_session() as session:
-        words = description.strip().split()
+async def new_task(
+    description: str,
+    profile: str | None = None,
+    title: str | None = None,
+    env: dict | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Create a new task from a description. Returns the task UUID.
 
+    Args:
+        description: The task description.
+        profile: Optional name of a task profile to assign.
+        title: Optional task title. When set, the title and description are used
+            verbatim and the LLM summariser is skipped.
+        env: Optional object of environment variable key/value pairs to inject
+            into the task-runner container. Values are stored encrypted.
+    """
+    async with async_session() as session:
         category = "immediate"
         resolved_profile_id = None
-        if len(words) > 5:
-            # Load profiles for classification
-            prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
-            db_profiles = prof_result.scalars().all()
-            profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
 
-            llm_result = await generate_title(description, session, profiles=profile_infos)
-            title = llm_result.title
-            category = llm_result.category or "immediate"
-            if not llm_result.success:
-                cleaned_description = description.strip()
-            else:
-                cleaned_description = llm_result.description
+        # If explicit profile provided, resolve it first
+        if profile:
+            prof_result = await session.execute(select(TaskProfile).where(TaskProfile.name == profile))
+            found = prof_result.scalar_one_or_none()
+            if not found:
+                return f"Error: Task profile '{profile}' not found."
+            resolved_profile_id = found.id
 
-            # Resolve profile name to ID
-            if llm_result.profile and db_profiles:
-                profile_map = {p.name: p.id for p in db_profiles}
-                resolved_profile_id = profile_map.get(llm_result.profile)
+        if title:
+            # Explicit title — skip LLM summariser, store description verbatim
+            cleaned_description = description or None
         else:
-            title = description.strip()
-            cleaned_description = None
+            words = description.strip().split()
+            if len(words) > 5:
+                # Load profiles for classification (only if no explicit profile)
+                if not profile:
+                    prof_result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+                    db_profiles = prof_result.scalars().all()
+                    profile_infos = [ProfileInfo(name=p.name, match_rules=p.match_rules) for p in db_profiles] if db_profiles else None
+                else:
+                    profile_infos = None
+
+                llm_result = await generate_title(description, session, profiles=profile_infos)
+                title = llm_result.title
+                category = llm_result.category or "immediate"
+                if not llm_result.success:
+                    cleaned_description = description.strip()
+                else:
+                    cleaned_description = llm_result.description
+
+                # Resolve profile name to ID from LLM suggestion (only if no explicit profile)
+                if not profile and llm_result.profile and db_profiles:
+                    profile_map = {p.name: p.id for p in db_profiles}
+                    resolved_profile_id = profile_map.get(llm_result.profile)
+            else:
+                title = description.strip()
+                cleaned_description = None
+
+        # Encrypt per-task env vars if provided
+        encrypted_env, env_error = _validate_and_encrypt_env(env)
+        if env_error:
+            return env_error
 
         # Auto-route based on category (same logic as main task creation)
         if category in ("scheduled", "repeating"):
@@ -112,7 +199,8 @@ async def new_task(description: str) -> str:
             status=status,
             position=position,
             profile_id=resolved_profile_id,
-            created_by="mcp",
+            encrypted_env=encrypted_env,
+            created_by=_get_client_id(ctx),
         )
         session.add(task)
         await session.commit()
@@ -143,14 +231,151 @@ async def new_task(description: str) -> str:
 
 
 @mcp.tool()
-async def task_status(task_id: str) -> str:
-    """Get the current status and details of a task by UUID."""
+async def list_task_profiles() -> str:
+    """List available task profiles. Returns JSON array of {name, description, model} per profile."""
+    async with async_session() as session:
+        result = await session.execute(select(TaskProfile).order_by(TaskProfile.name))
+        profiles = result.scalars().all()
+        return json.dumps([
+            {"name": p.name, "description": p.description, "model": p.model}
+            for p in profiles
+        ])
+
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_ALLOWED_SKILL_FILE_SUBDIRS = {"scripts", "references", "assets"}
+
+
+def _validate_skill_name(name: str) -> str | None:
+    """Validate skill name (relaxed for MCP — allows consecutive hyphens). Returns error message or None."""
+    if not name:
+        return "Name is required"
+    if len(name) > 64:
+        return "Name must be at most 64 characters"
+    if name != name.lower():
+        return "Name must be lowercase"
+    if not _SKILL_NAME_RE.match(name):
+        return "Name must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen"
+    return None
+
+
+@mcp.tool()
+async def list_skills() -> str:
+    """List available skills. Returns JSON array of {name, description} per skill."""
+    async with async_session() as session:
+        result = await session.execute(select(Skill).order_by(Skill.name))
+        skills = result.scalars().all()
+        return json.dumps([
+            {"name": s.name, "description": s.description}
+            for s in skills
+        ])
+
+
+@mcp.tool()
+async def upsert_skill(name: str, description: str, instructions: str, files: list | None = None) -> str:
+    """Create or update a skill by name. Returns success message with skill ID.
+
+    Args:
+        name: Skill name (lowercase, max 64 chars, letters/digits/hyphens only).
+        description: Short description of the skill (max 1024 chars).
+        instructions: Full markdown instructions for the skill.
+        files: Optional array of {path, content} objects. Paths must be in
+            scripts/, references/, or assets/ subdirectories.
+    """
+    error = _validate_skill_name(name)
+    if error:
+        return f"Error: {error}"
+    if len(description) > 1024:
+        return "Error: Description must be at most 1024 characters"
+
+    # Validate files if provided
+    file_list = files or []
+    if file_list:
+        for f in file_list:
+            if not isinstance(f, dict) or "path" not in f or "content" not in f:
+                return "Error: Each file must be an object with 'path' and 'content' keys"
+            if not isinstance(f["path"], str) or not f["path"]:
+                return "Error: Each file 'path' must be a non-empty string"
+            if not isinstance(f["content"], str):
+                return "Error: Each file 'content' must be a string"
+            path = f["path"]
+            parts = path.split("/")
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                return f"Error: Invalid file path '{path}' — must be subdir/filename"
+            if parts[0] not in _ALLOWED_SKILL_FILE_SUBDIRS:
+                return f"Error: Invalid file path '{path}' — must be in scripts/, references/, or assets/"
+        paths = [f["path"] for f in file_list]
+        if len(paths) != len(set(paths)):
+            return "Error: Duplicate file paths are not allowed"
+
+    async with async_session() as session:
+        result = await session.execute(select(Skill).where(Skill.name == name))
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.description = description
+            existing.instructions = instructions
+            # Replace all files
+            from sqlalchemy import delete
+            await session.execute(delete(SkillFile).where(SkillFile.skill_id == existing.id))
+            for f in file_list:
+                session.add(SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
+            await session.commit()
+            return f"Skill '{name}' updated (id: {existing.id})"
+        else:
+            skill = Skill(name=name, description=description, instructions=instructions)
+            session.add(skill)
+            await session.flush()
+            for f in file_list:
+                session.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
+            await session.commit()
+            return f"Skill '{name}' created (id: {skill.id})"
+
+
+@mcp.tool()
+async def delete_skill(name: str) -> str:
+    """Delete a skill by name.
+
+    Args:
+        name: The name of the skill to delete.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Skill).where(Skill.name == name))
+        skill = result.scalar_one_or_none()
+        if not skill:
+            return f"Error: Skill '{name}' not found."
+        await session.delete(skill)
+        await session.commit()
+        return f"Skill '{name}' deleted."
+
+
+@mcp.tool()
+async def task_status(task_id: str, format: str = "text") -> str:
+    """Get the current status and details of a task by UUID.
+
+    Args:
+        task_id: The UUID of the task.
+        format: Output format — "text" (default) for plaintext, "json" for structured JSON.
+    """
+    if format not in ("text", "json"):
+        return f"Error: Unsupported format '{format}'. Supported formats are 'text' and 'json'."
     async with async_session() as session:
         result = await session.execute(select(Task).where(Task.id == uuid_mod.UUID(task_id)))
         task = result.scalar_one_or_none()
 
         if task is None:
             return f"Error: Task {task_id} not found."
+
+        if format == "json":
+            return json.dumps({
+                "id": str(task.id),
+                "title": task.title,
+                "status": task.status,
+                "category": task.category,
+                "created_at": task.created_at.isoformat(),
+                "updated_at": task.updated_at.isoformat(),
+                "has_output": bool(task.output),
+            })
 
         return (
             f"Title: {task.title}\n"
@@ -239,6 +464,8 @@ async def schedule_task(
     repeat_interval: str | None = None,
     repeat_until: str | None = None,
     profile: str | None = None,
+    env: dict | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Create a scheduled or repeating task. Optionally assign a task profile by name. Returns the task UUID.
 
@@ -292,6 +519,11 @@ async def schedule_task(
             title = description.strip()
             cleaned_desc = None
 
+        # Encrypt per-task env vars if provided
+        encrypted_env, env_error = _validate_and_encrypt_env(env)
+        if env_error:
+            return env_error
+
         category = "repeating" if normalised_interval else "scheduled"
         status = "scheduled"
 
@@ -310,8 +542,9 @@ async def schedule_task(
             execute_at=parsed_execute_at,
             repeat_interval=normalised_interval,
             repeat_until=parsed_repeat_until,
+            encrypted_env=encrypted_env,
             profile_id=resolved_profile_id,
-            created_by="mcp",
+            created_by=_get_client_id(ctx),
         )
         session.add(task)
         await session.commit()

@@ -58,8 +58,25 @@ _TABLES_SQL = [
         profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
         created_by TEXT,
         updated_by TEXT,
+        encrypted_env TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS skills (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        instructions TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS skill_files (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        skill_id VARCHAR(36) NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        content TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        UNIQUE(skill_id, path)
     )""",
     """CREATE TABLE IF NOT EXISTS settings (
         key TEXT NOT NULL PRIMARY KEY,
@@ -288,7 +305,8 @@ async def test_mcp_server_has_fifteen_tools():
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
     assert tool_names == {
-        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks", "post_tweet",
+        "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks",
+        "list_task_profiles", "list_skills", "upsert_skill", "delete_skill", "post_tweet",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
     }
@@ -1442,3 +1460,455 @@ async def test_read_url_timeout(db_session):
     data = json.loads(result)
     assert "error" in data
     assert "Timeout" in data["error"]
+
+
+# --- Paperclip integration: new_task with profile ---
+
+
+async def test_new_task_with_valid_profile(db_session):
+    """new_task with valid profile creates task with correct profile_id."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    # Create a profile
+    async with session_factory() as session:
+        profile = TaskProfile(name="Research Agent", description="Researches things", model={"provider": "openai", "name": "gpt-4o"})
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        profile_id = profile.id
+
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix the bug", profile="Research Agent")
+
+    assert len(task_uuid) == 36
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.profile_id == profile_id
+
+
+async def test_new_task_with_invalid_profile(db_session):
+    """new_task with invalid profile returns error message."""
+    from mcp_server import new_task
+    result = await new_task("Fix the bug", profile="Nonexistent Profile")
+    assert "Error: Task profile 'Nonexistent Profile' not found." == result
+
+
+async def test_new_task_without_profile_backward_compat(db_session):
+    """new_task without profile behaves as before."""
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix bug")
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.profile_id is None
+        assert task.title == "Fix bug"
+
+
+# --- Paperclip integration: new_task with explicit title ---
+
+
+async def test_new_task_with_explicit_title(db_session):
+    """new_task with explicit title sets title and description verbatim, no LLM call."""
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        task_uuid = await new_task(
+            "Detailed description of the task that is more than five words long",
+            title="My Custom Title",
+        )
+        mock_gen.assert_not_called()
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "My Custom Title"
+        assert task.description == "Detailed description of the task that is more than five words long"
+        assert task.status == "pending"
+        assert task.category == "immediate"
+
+
+async def test_new_task_with_title_and_profile(db_session):
+    """new_task with both title and profile sets both correctly."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    async with session_factory() as session:
+        profile = TaskProfile(name="Research Agent", description="Researches things", model={"provider": "openai", "name": "gpt-4o"})
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        profile_id = profile.id
+
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        task_uuid = await new_task(
+            "Research the latest frameworks",
+            title="Framework Research",
+            profile="Research Agent",
+        )
+        mock_gen.assert_not_called()
+
+    assert len(task_uuid) == 36
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Framework Research"
+        assert task.description == "Research the latest frameworks"
+        assert task.profile_id == profile_id
+
+
+async def test_new_task_without_title_calls_llm(db_session):
+    """new_task without title still calls LLM summariser for long descriptions."""
+    from mcp_server import new_task
+
+    with patch("mcp_server.generate_title") as mock_gen:
+        mock_result = type("LLMResult", (), {
+            "title": "Generated Title",
+            "success": True,
+            "category": "immediate",
+            "description": "Cleaned up description from LLM",
+            "profile": None,
+        })()
+        mock_gen.return_value = mock_result
+
+        task_uuid = await new_task("This is a long description with more than five words")
+        mock_gen.assert_called_once()
+
+    assert len(task_uuid) == 36
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.title == "Generated Title"
+
+
+# --- Paperclip integration: list_task_profiles ---
+
+
+async def test_list_task_profiles_returns_json(db_session):
+    """list_task_profiles returns correct JSON structure."""
+    _, session_factory = db_session
+    from models import TaskProfile
+
+    async with session_factory() as session:
+        session.add(TaskProfile(name="Agent A", description="Does A", model={"provider": "openai", "name": "gpt-4o"}))
+        session.add(TaskProfile(name="Agent B", description="Does B", model=None))
+        await session.commit()
+
+    from mcp_server import list_task_profiles
+    result = await list_task_profiles()
+    data = json.loads(result)
+
+    assert len(data) == 2
+    assert data[0]["name"] == "Agent A"
+    assert data[0]["description"] == "Does A"
+    assert data[0]["model"] == {"provider": "openai", "name": "gpt-4o"}
+    assert data[1]["name"] == "Agent B"
+    assert data[1]["model"] is None
+
+
+async def test_list_task_profiles_empty(db_session):
+    """list_task_profiles returns empty array when no profiles exist."""
+    from mcp_server import list_task_profiles
+    result = await list_task_profiles()
+    data = json.loads(result)
+    assert data == []
+
+
+# --- Paperclip integration: task_status format ---
+
+
+async def test_task_status_json_format(db_session):
+    """task_status with format='json' returns valid JSON with expected fields."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(title="Test task", description="Testing", status="running", category="immediate", output="some output")
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_status
+    result = await task_status(task_id, format="json")
+    data = json.loads(result)
+
+    assert data["id"] == task_id
+    assert data["title"] == "Test task"
+    assert data["status"] == "running"
+    assert data["category"] == "immediate"
+    assert "created_at" in data
+    assert "updated_at" in data
+    assert data["has_output"] is True
+
+
+async def test_task_status_text_format_backward_compat(db_session):
+    """task_status with format='text' returns plaintext (backward compatible)."""
+    _, session_factory = db_session
+
+    async with session_factory() as session:
+        task = Task(title="Test task", description="Testing", status="pending", category="immediate")
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = str(task.id)
+
+    from mcp_server import task_status
+    result = await task_status(task_id, format="text")
+    assert "Title: Test task" in result
+    assert "Status: pending" in result
+
+    # Also verify default (no format) works the same
+    result_default = await task_status(task_id)
+    assert result_default == result
+
+
+# --- Paperclip integration: X-Client-Id header ---
+
+
+async def test_new_task_with_client_id_header(db_session):
+    """new_task with X-Client-Id header sets created_by to header value."""
+    from mcp_server import _get_client_id
+
+    # Test the helper directly
+    mock_ctx = MagicMock()
+    mock_ctx.request_context.request.headers.get.return_value = "paperclip"
+    assert _get_client_id(mock_ctx) == "paperclip"
+
+
+async def test_new_task_without_client_id_header(db_session):
+    """new_task without X-Client-Id header sets created_by to 'mcp'."""
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix bug")
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.created_by == "mcp"
+
+
+async def test_schedule_task_with_client_id_header(db_session):
+    """schedule_task with X-Client-Id header sets created_by to header value."""
+    from mcp_server import _get_client_id
+
+    mock_ctx = MagicMock()
+    mock_ctx.request_context.request.headers.get.return_value = "paperclip"
+    assert _get_client_id(mock_ctx) == "paperclip"
+
+    # Also test None context falls back to "mcp"
+    assert _get_client_id(None) == "mcp"
+
+
+# --- Paperclip integration: external client review bypass ---
+
+
+async def test_is_external_client():
+    """_is_external_client correctly identifies external vs internal sources."""
+    from task_manager import _is_external_client
+
+    # External clients
+    assert _is_external_client("paperclip") is True
+    assert _is_external_client("some-adapter") is True
+
+    # Internal sources
+    assert _is_external_client("mcp") is False
+    assert _is_external_client("system") is False
+    assert _is_external_client("email_poller") is False
+    assert _is_external_client("user@example.com") is False
+    assert _is_external_client("jira:SCRUM-6") is False
+    assert _is_external_client("github:dispatch") is False
+    assert _is_external_client("github:review:123") is False
+    assert _is_external_client(None) is False
+    assert _is_external_client("") is False
+
+
+# --- Paperclip integration: per-task encrypted env vars ---
+
+
+async def test_new_task_with_env(db_session):
+    """new_task with env parameter stores encrypted env vars."""
+    from mcp_server import new_task
+
+    env_dict = {"PAPERCLIP_TOKEN": "secret123", "CALLBACK_URL": "https://example.com"}
+
+    with patch("mcp_server._encrypt_env", return_value="encrypted-blob") as mock_enc:
+        task_uuid = await new_task("Fix bug", env=env_dict)
+        mock_enc.assert_called_once_with(env_dict)
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.encrypted_env == "encrypted-blob"
+
+
+async def test_new_task_without_env(db_session):
+    """new_task without env parameter leaves encrypted_env null."""
+    from mcp_server import new_task
+    task_uuid = await new_task("Fix bug")
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.encrypted_env is None
+
+
+async def test_new_task_env_no_encryption_key(db_session):
+    """new_task with env but no encryption key returns error."""
+    from mcp_server import new_task
+
+    with patch("mcp_server._encrypt_env", side_effect=RuntimeError("key not set")):
+        result = await new_task("Fix bug", env={"KEY": "val"})
+        assert "encryption key not configured" in result
+
+
+async def test_schedule_task_with_env(db_session):
+    """schedule_task with env parameter stores encrypted env vars."""
+    from mcp_server import schedule_task
+
+    env_dict = {"TOKEN": "abc"}
+
+    with patch("mcp_server._encrypt_env", return_value="encrypted-blob") as mock_enc:
+        task_uuid = await schedule_task("Do it", execute_at="2026-12-01T00:00:00Z", env=env_dict)
+        mock_enc.assert_called_once()
+
+    _, session_factory = db_session
+    async with session_factory() as session:
+        result = await session.execute(select(Task).where(Task.id == uuid.UUID(task_uuid)))
+        task = result.scalar_one()
+        assert task.encrypted_env == "encrypted-blob"
+
+
+# --- Paperclip integration: skills MCP tools ---
+
+
+async def test_list_skills_returns_json(db_session):
+    """list_skills returns correct JSON structure."""
+    _, session_factory = db_session
+    from models import Skill
+
+    async with session_factory() as session:
+        session.add(Skill(name="code-review", description="Reviews code", instructions="Do the review"))
+        session.add(Skill(name="testing", description="Runs tests", instructions="Run all tests"))
+        await session.commit()
+
+    from mcp_server import list_skills
+    result = await list_skills()
+    data = json.loads(result)
+
+    assert len(data) == 2
+    assert data[0]["name"] == "code-review"
+    assert data[0]["description"] == "Reviews code"
+    assert data[1]["name"] == "testing"
+
+
+async def test_list_skills_empty(db_session):
+    """list_skills returns empty array when no skills exist."""
+    from mcp_server import list_skills
+    result = await list_skills()
+    assert json.loads(result) == []
+
+
+async def test_upsert_skill_create(db_session):
+    """upsert_skill creates new skill with files."""
+    from mcp_server import upsert_skill
+
+    result = await upsert_skill("my-skill", "A skill", "Do things", files=[{"path": "references/guide.md", "content": "# Guide"}])
+    assert "created" in result
+
+    _, session_factory = db_session
+    from models import Skill, SkillFile
+    async with session_factory() as session:
+        skill_result = await session.execute(select(Skill).where(Skill.name == "my-skill"))
+        skill = skill_result.scalar_one()
+        assert skill.description == "A skill"
+        assert skill.instructions == "Do things"
+
+        file_result = await session.execute(select(SkillFile).where(SkillFile.skill_id == skill.id))
+        files = file_result.scalars().all()
+        assert len(files) == 1
+        assert files[0].path == "references/guide.md"
+
+
+async def test_upsert_skill_update(db_session):
+    """upsert_skill updates existing skill, replacing files."""
+    _, session_factory = db_session
+    from models import Skill, SkillFile
+
+    async with session_factory() as session:
+        skill = Skill(name="my-skill", description="Old desc", instructions="Old instructions")
+        session.add(skill)
+        await session.flush()
+        session.add(SkillFile(skill_id=skill.id, path="references/old.md", content="old"))
+        await session.commit()
+
+    from mcp_server import upsert_skill
+    result = await upsert_skill("my-skill", "New desc", "New instructions", files=[{"path": "scripts/new.sh", "content": "#!/bin/bash"}])
+    assert "updated" in result
+
+    async with session_factory() as session:
+        skill_result = await session.execute(select(Skill).where(Skill.name == "my-skill"))
+        skill = skill_result.scalar_one()
+        assert skill.description == "New desc"
+        assert skill.instructions == "New instructions"
+
+        file_result = await session.execute(select(SkillFile).where(SkillFile.skill_id == skill.id))
+        files = file_result.scalars().all()
+        assert len(files) == 1
+        assert files[0].path == "scripts/new.sh"
+
+
+async def test_upsert_skill_invalid_name(db_session):
+    """upsert_skill with invalid name returns error."""
+    from mcp_server import upsert_skill
+    result = await upsert_skill("Invalid-Name!", "desc", "instructions")
+    assert "Error" in result
+
+
+async def test_delete_skill_exists(db_session):
+    """delete_skill removes skill and files."""
+    _, session_factory = db_session
+    from models import Skill
+
+    async with session_factory() as session:
+        session.add(Skill(name="to-delete", description="Delete me", instructions="..."))
+        await session.commit()
+
+    from mcp_server import delete_skill
+    result = await delete_skill("to-delete")
+    assert "deleted" in result
+
+    async with session_factory() as session:
+        skill_result = await session.execute(select(Skill).where(Skill.name == "to-delete"))
+        assert skill_result.scalar_one_or_none() is None
+
+
+async def test_delete_skill_not_found(db_session):
+    """delete_skill with non-existent name returns error."""
+    from mcp_server import delete_skill
+    result = await delete_skill("nonexistent")
+    assert "not found" in result
+
+
+async def test_upsert_skill_consecutive_hyphens(db_session):
+    """upsert_skill accepts name with consecutive hyphens."""
+    from mcp_server import upsert_skill
+    result = await upsert_skill("code-review--abc123", "A skill", "Do things")
+    assert "created" in result
+
+    _, session_factory = db_session
+    from models import Skill
+    async with session_factory() as session:
+        skill_result = await session.execute(select(Skill).where(Skill.name == "code-review--abc123"))
+        skill = skill_result.scalar_one()
+        assert skill.name == "code-review--abc123"
