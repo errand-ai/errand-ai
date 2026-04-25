@@ -179,6 +179,23 @@ def test_extract_file_operations_ignores_non_execute_command():
     assert not modified_files
 
 
+def test_extract_file_operations_file_tools():
+    """File tools (read_file, write_file, edit_file) are tracked."""
+    msgs = [
+        _make_tool_call("read_file", {"path": "/workspace/config.yaml"}),
+        _make_tool_call("write_file", {"path": "/workspace/output.txt", "content": "hello"}),
+        _make_tool_call("edit_file", {"path": "/workspace/main.py", "old_text": "foo", "new_text": "bar"}),
+        _make_tool_call("read_file", {"path": "/workspace/utils.py", "offset": 10, "limit": 20}),
+    ]
+    read_files, modified_files = _extract_file_operations(msgs)
+    assert "/workspace/config.yaml" in read_files
+    assert "/workspace/utils.py" in read_files
+    assert "/workspace/output.txt" in modified_files
+    assert "/workspace/main.py" in modified_files
+    assert len(read_files) == 2
+    assert len(modified_files) == 2
+
+
 # ---------------------------------------------------------------------------
 # 5.5 File lists are carried forward across compactions
 # ---------------------------------------------------------------------------

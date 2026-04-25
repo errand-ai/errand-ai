@@ -15,7 +15,7 @@ import pytest
 from conftest import MockCallModelData as _MockCallModelData
 
 from main import (
-    read_env_vars, read_file, parse_mcp_config, TaskRunnerOutput,
+    read_env_vars, _read_startup_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
     emit_event, get_reasoning_effort, extract_json,
     filter_model_input, _strip_screenshots, _trim_context_window,
@@ -60,20 +60,20 @@ def test_read_env_vars_missing_exits():
 # --- File reading ---
 
 
-def test_read_file_success():
+def test_read_startup_file_success():
     """Reads file content correctly."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("Hello world")
         f.flush()
-        result = read_file(f.name, "test file")
+        result = _read_startup_file(f.name, "test file")
     assert result == "Hello world"
     os.unlink(f.name)
 
 
-def test_read_file_missing_exits():
+def test_read_startup_file_missing_exits():
     """Exits with code 1 when file doesn't exist."""
     with pytest.raises(SystemExit) as exc_info:
-        read_file("/nonexistent/path.txt", "test file")
+        _read_startup_file("/nonexistent/path.txt", "test file")
     assert exc_info.value.code == 1
 
 
