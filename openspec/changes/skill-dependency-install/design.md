@@ -54,7 +54,7 @@ The task-runner entrypoint is currently `["python3", "/app/main.py"]`. Skills ar
 - Node packages install to `/opt/skill-deps/node/node_modules/` via `npm install --prefix`
 - Entrypoint prepends `/opt/skill-deps/python/` to `PYTHONPATH` and sets `NODE_PATH=/opt/skill-deps/node/node_modules`
 
-**Rationale**: Installing to a dedicated directory rather than the existing site-packages avoids conflicts with the base image's pre-installed packages (openai-agents, mcp, pydantic, httpx). If a skill dependency conflicts with a base package, the base package takes precedence because its path appears first in `PYTHONPATH`.
+**Rationale**: Installing to a dedicated directory rather than the existing site-packages avoids mutating or overwriting the base image's pre-installed packages (openai-agents, mcp, pydantic, httpx). Because `/opt/skill-deps/python/` is prepended to `PYTHONPATH`, skill-installed packages take precedence at import time if they conflict with a base package.
 
 ### D5: Entrypoint is a no-op when no dependencies exist
 

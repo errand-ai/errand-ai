@@ -20,11 +20,15 @@ The task-runner container SHALL include an entrypoint shell script (`entrypoint.
 - **THEN** the entrypoint immediately exec's into `python3 /app/main.py` without invoking pip or npm
 
 ### Requirement: Entrypoint installs skill-declared Node dependencies
-The task-runner entrypoint SHALL scan `/workspace/skills/*/package.json` before starting the agent. For each `package.json` found, the entrypoint SHALL copy it to a shared install directory at `/opt/skill-deps/node/` and run `npm install --prefix /opt/skill-deps/node/` to install the declared packages. After all installations complete, the entrypoint SHALL set `NODE_PATH` to `/opt/skill-deps/node/node_modules`. The entrypoint SHALL then delete all npm-related files (`/opt/npm-bootstrap/` and any npm cache) before exec'ing into the agent.
+The task-runner entrypoint SHALL scan `/workspace/skills/*/package.json` before starting the agent. If any `package.json` files are found, the entrypoint SHALL merge their declared dependencies into a single combined `package.json` in the shared install directory at `/opt/skill-deps/node/` and run `npm install --prefix /opt/skill-deps/node/` once to install the merged dependency set. After installation completes, the entrypoint SHALL set `NODE_PATH` to `/opt/skill-deps/node/node_modules`. The entrypoint SHALL then delete all npm-related files (`/opt/npm-bootstrap/` and any npm cache) before exec'ing into the agent.
 
 #### Scenario: Skill with Node dependencies
 - **WHEN** a skill at `/workspace/skills/my-tool/package.json` declares dependencies
 - **THEN** the entrypoint installs Node packages to `/opt/skill-deps/node/node_modules/`, sets `NODE_PATH`, removes npm, and starts the agent
+
+#### Scenario: Multiple skills with Node dependencies
+- **WHEN** skills at `/workspace/skills/skill-a/package.json` and `/workspace/skills/skill-b/package.json` both declare dependencies
+- **THEN** the entrypoint merges the declared dependencies into a single install manifest, runs `npm install --prefix /opt/skill-deps/node/` once, and makes all packages available from `/opt/skill-deps/node/node_modules/`
 
 #### Scenario: Mixed Python and Node dependencies
 - **WHEN** one skill has a `requirements.txt` and another has a `package.json`
