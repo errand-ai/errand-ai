@@ -844,9 +844,12 @@ def _serialize_messages_for_summary(messages: list) -> str:
 
 
 def _extract_file_operations(messages: list) -> tuple[set[str], set[str]]:
-    """Scan execute_command tool calls for file read/write operations.
+    """Scan tool calls for file read/write operations.
 
-    Returns (read_files, modified_files) sets using best-effort heuristics.
+    Extracts paths from file tools (read_file, write_file, edit_file) and
+    from execute_command calls using best-effort heuristics.
+
+    Returns (read_files, modified_files) sets.
     """
     read_files: set[str] = set()
     modified_files: set[str] = set()
@@ -854,7 +857,24 @@ def _extract_file_operations(messages: list) -> tuple[set[str], set[str]]:
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("type") != "function_call":
             continue
-        if msg.get("name") != "execute_command":
+
+        tool_name = msg.get("name", "")
+
+        # File tools: extract path directly from arguments
+        if tool_name in ("read_file", "write_file", "edit_file"):
+            try:
+                args = json.loads(msg.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            path = args.get("path", "")
+            if path:
+                if tool_name == "read_file":
+                    read_files.add(path)
+                else:
+                    modified_files.add(path)
+            continue
+
+        if tool_name != "execute_command":
             continue
         try:
             args = json.loads(msg.get("arguments", "{}"))
