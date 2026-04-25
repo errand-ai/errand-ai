@@ -195,10 +195,12 @@ class TaskRunnerOutput(BaseModel):
 FILE_TOOL_GUIDANCE = """
 
 ## File Operations
-For reading, writing, and editing files, prefer the dedicated file tools
-(read_file, write_file, edit_file) over shell commands. These tools provide
-safer concurrent access and structured output. Use execute_command for
-non-file operations (installing packages, running tests, git commands, etc.).
+For reading, writing, and editing files, use the dedicated file tools
+(read_file, write_file, edit_file) instead of shell commands. These tools
+provide safer concurrent access and structured output. Do not use shell
+commands such as cat, echo, or sed for ordinary file operations. Use
+execute_command for non-file operations (installing packages, running tests,
+git commands, etc.).
 """
 
 OUTPUT_INSTRUCTIONS = """
@@ -399,7 +401,9 @@ New conversation content to merge:
 def execute_command(command: str, working_directory: str = "/workspace") -> str:
     """Execute a shell command and return the combined stdout and stderr output.
 
-    Use this tool to run commands like git clone, ls, cat, grep, etc.
+    Use this tool to run commands like git clone, ls, grep, pip install, etc.
+    For reading, writing, and editing files, prefer the dedicated file tools
+    (read_file, write_file, edit_file) instead.
 
     Args:
         command: The shell command to execute.
@@ -443,11 +447,24 @@ class FileMutationQueue:
         resolved = str(Path(path).resolve())
         if resolved not in self._locks:
             self._locks[resolved] = asyncio.Lock()
-        async with self._locks[resolved]:
+        lock = self._locks[resolved]
+        async with lock:
             yield
+        # Evict lock if no one else is waiting
+        if not lock.locked():
+            self._locks.pop(resolved, None)
 
 
 _file_mutation_queue = FileMutationQueue()
+
+
+def _write_file_sync(path: str, content: str) -> str:
+    """Synchronous write implementation run via asyncio.to_thread."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    byte_count = p.stat().st_size
+    return f"Wrote {byte_count} bytes to {path}"
 
 
 @function_tool
@@ -462,11 +479,35 @@ async def write_file(path: str, content: str) -> str:
         content: The content to write to the file.
     """
     async with _file_mutation_queue.acquire(path):
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        byte_count = p.stat().st_size
-        return f"Wrote {byte_count} bytes to {path}"
+        try:
+            return await asyncio.to_thread(_write_file_sync, path, content)
+        except (OSError, UnicodeError) as exc:
+            return f"Error: unable to write file {path}: {exc}"
+
+
+def _edit_file_sync(path: str, old_text: str, new_text: str) -> str:
+    """Synchronous edit implementation run via asyncio.to_thread."""
+    p = Path(path)
+    if not p.is_file():
+        return f"Error: file not found: {path}"
+
+    original = p.read_text(encoding="utf-8")
+    count = original.count(old_text)
+    if count == 0:
+        return f"Error: no match found for the provided old_text in {path}"
+    if count > 1:
+        return f"Error: found {count} matches for old_text in {path}. Provide more context for a unique match."
+
+    updated = original.replace(old_text, new_text, 1)
+    p.write_text(updated, encoding="utf-8")
+
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        updated.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+    )
+    return "".join(diff) or "No visible diff (whitespace-only change)"
 
 
 @function_tool
@@ -482,28 +523,30 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
         old_text: The exact text to find (must match exactly once).
         new_text: The replacement text.
     """
+    async with _file_mutation_queue.acquire(path):
+        try:
+            return await asyncio.to_thread(_edit_file_sync, path, old_text, new_text)
+        except (OSError, UnicodeError) as exc:
+            return f"Error: unable to edit file {path}: {exc}"
+
+
+def _read_file_sync(path: str, offset: int, limit: int) -> str:
+    """Synchronous read implementation run via asyncio.to_thread."""
     p = Path(path)
     if not p.is_file():
         return f"Error: file not found: {path}"
 
-    async with _file_mutation_queue.acquire(path):
-        original = p.read_text(encoding="utf-8")
-        count = original.count(old_text)
-        if count == 0:
-            return f"Error: no match found for the provided old_text in {path}"
-        if count > 1:
-            return f"Error: found {count} matches for old_text in {path}. Provide more context for a unique match."
+    offset = max(0, offset)
+    limit = max(0, limit)
 
-        updated = original.replace(old_text, new_text, 1)
-        p.write_text(updated, encoding="utf-8")
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if offset > 0:
+        lines = lines[offset:]
+    if limit > 0:
+        lines = lines[:limit]
 
-        diff = difflib.unified_diff(
-            original.splitlines(keepends=True),
-            updated.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        )
-        return "".join(diff) or "No visible diff (whitespace-only change)"
+    numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(lines)]
+    return "\n".join(numbered) if numbered else "(empty file)"
 
 
 @function_tool
@@ -518,18 +561,10 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
         offset: Start reading from this line number (0-based). Defaults to 0.
         limit: Maximum number of lines to return. 0 means all lines. Defaults to 0.
     """
-    p = Path(path)
-    if not p.is_file():
-        return f"Error: file not found: {path}"
-
-    lines = p.read_text(encoding="utf-8").splitlines()
-    if offset > 0:
-        lines = lines[offset:]
-    if limit > 0:
-        lines = lines[:limit]
-
-    numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(lines)]
-    return "\n".join(numbered) if numbered else "(empty file)"
+    try:
+        return await asyncio.to_thread(_read_file_sync, path, offset, limit)
+    except (OSError, UnicodeError) as exc:
+        return f"Error: unable to read file {path}: {exc}"
 
 
 def get_reasoning_effort() -> str:
