@@ -43,6 +43,9 @@ RUN npm install -g @fission-ai/openspec@latest
 # Stage npm for entrypoint-phase skill dependency installation
 RUN mkdir -p /npm-staging && cp -rL /usr/local/lib/node_modules/npm /npm-staging/lib && \
     mkdir -p /npm-staging/bin && ln -s ../lib/npm/bin/npm-cli.js /npm-staging/bin/npm
+# Remove npm from global node_modules so it is not copied to final image
+# (openspec does not depend on npm at runtime)
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack
 # Resolve the openspec entry point for the wrapper script
 RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
     echo "#!/bin/sh" > /usr/local/bin/openspec-sh && \
