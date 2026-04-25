@@ -2,6 +2,8 @@ FROM python:3.11-slim AS builder
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
+# Stage pip itself for entrypoint-phase skill dependency installation
+RUN pip install --no-cache-dir --target=/pip-staging pip
 
 FROM debian:bookworm-slim AS git-builder
 ARG GH_VERSION=2.67.0
@@ -38,6 +40,9 @@ RUN mkdir -p /staged-libs && \
 
 FROM node:22-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
+# Stage npm for entrypoint-phase skill dependency installation
+RUN mkdir -p /npm-staging && cp -rL /usr/local/lib/node_modules/npm /npm-staging/lib && \
+    mkdir -p /npm-staging/bin && ln -s ../lib/npm/bin/npm-cli.js /npm-staging/bin/npm
 # Resolve the openspec entry point for the wrapper script
 RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
     echo "#!/bin/sh" > /usr/local/bin/openspec-sh && \
@@ -46,8 +51,10 @@ RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
 
 FROM gcr.io/distroless/python3-debian12:nonroot
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
+COPY --from=builder --chown=65532:65532 /pip-staging /opt/pip-bootstrap
 COPY main.py /app/main.py
 COPY tool_registry.py /app/tool_registry.py
+COPY entrypoint.sh /app/entrypoint.sh
 
 # Copy shared libraries first (needed by all binaries below)
 COPY --from=git-builder /staged-libs/ /
@@ -76,6 +83,8 @@ COPY --from=git-builder /usr/local/bin/gh /usr/local/bin/gh
 COPY --from=node-builder /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=node-builder /usr/local/bin/openspec-sh /usr/local/bin/openspec
+# Copy staged npm for entrypoint-phase skill dependency installation
+COPY --from=node-builder --chown=65532:65532 /npm-staging /opt/npm-bootstrap
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.
@@ -83,6 +92,8 @@ COPY --from=node-builder /usr/local/bin/openspec-sh /usr/local/bin/openspec
 COPY --from=git-builder /bin/busybox /bin/busybox
 USER root
 RUN ["/bin/busybox", "sh", "-c", "/bin/busybox --install -s /bin"]
+# Create skill-deps directory writable by nonroot for entrypoint dependency installation
+RUN ["/bin/busybox", "sh", "-c", "mkdir -p /opt/skill-deps && chown 65532:65532 /opt/skill-deps"]
 USER nonroot
 
 # Copy .ssh directory (permissions 700 preserved from git-builder)
@@ -90,4 +101,4 @@ COPY --from=git-builder --chown=65532:65532 /home/nonroot/.ssh /home/nonroot/.ss
 
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
 WORKDIR /workspace
-ENTRYPOINT ["python3", "/app/main.py"]
+ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]
