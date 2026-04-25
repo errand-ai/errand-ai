@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import difflib
 import json
 import logging
 import os
@@ -10,7 +11,8 @@ import shlex
 import subprocess
 import sys
 import time
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -190,6 +192,15 @@ class TaskRunnerOutput(BaseModel):
     questions: list[str] = []
 
 
+FILE_TOOL_GUIDANCE = """
+
+## File Operations
+For reading, writing, and editing files, prefer the dedicated file tools
+(read_file, write_file, edit_file) over shell commands. These tools provide
+safer concurrent access and structured output. Use execute_command for
+non-file operations (installing packages, running tests, git commands, etc.).
+"""
+
 OUTPUT_INSTRUCTIONS = """
 
 ## Delivering Your Result
@@ -240,7 +251,7 @@ def read_env_vars() -> dict[str, str]:
     return env
 
 
-def read_file(path: str, name: str) -> str:
+def _read_startup_file(path: str, name: str) -> str:
     """Read a file and return its contents. Exit with error if file is missing."""
     try:
         with open(path, "r") as f:
@@ -416,6 +427,109 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
         return f"Command timed out after {COMMAND_TIMEOUT} seconds"
     except Exception as e:
         return f"Error executing command: {e}"
+
+
+# --- File Mutation Queue and File Tools ---
+
+class FileMutationQueue:
+    """Per-file asyncio.Lock map that serializes writes to the same path."""
+
+    def __init__(self):
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def acquire(self, path: str):
+        """Acquire a lock for the resolved absolute path."""
+        resolved = str(Path(path).resolve())
+        if resolved not in self._locks:
+            self._locks[resolved] = asyncio.Lock()
+        async with self._locks[resolved]:
+            yield
+
+
+_file_mutation_queue = FileMutationQueue()
+
+
+@function_tool
+async def write_file(path: str, content: str) -> str:
+    """Create or overwrite a file with the given content.
+
+    Use this tool for writing files instead of shell commands like echo or cat.
+    It provides safe concurrent access via per-file locking.
+
+    Args:
+        path: The file path to write to.
+        content: The content to write to the file.
+    """
+    async with _file_mutation_queue.acquire(path):
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        byte_count = p.stat().st_size
+        return f"Wrote {byte_count} bytes to {path}"
+
+
+@function_tool
+async def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Edit a file by replacing an exact text match with new text.
+
+    Use this tool for editing files instead of shell commands like sed.
+    The old_text must match exactly once in the file. Provide enough
+    surrounding context for a unique match.
+
+    Args:
+        path: The file path to edit.
+        old_text: The exact text to find (must match exactly once).
+        new_text: The replacement text.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return f"Error: file not found: {path}"
+
+    async with _file_mutation_queue.acquire(path):
+        original = p.read_text(encoding="utf-8")
+        count = original.count(old_text)
+        if count == 0:
+            return f"Error: no match found for the provided old_text in {path}"
+        if count > 1:
+            return f"Error: found {count} matches for old_text in {path}. Provide more context for a unique match."
+
+        updated = original.replace(old_text, new_text, 1)
+        p.write_text(updated, encoding="utf-8")
+
+        diff = difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+        return "".join(diff) or "No visible diff (whitespace-only change)"
+
+
+@function_tool
+async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
+    """Read a file and return its content with line numbers.
+
+    Use this tool for reading files instead of shell commands like cat.
+    Supports optional pagination via offset and limit.
+
+    Args:
+        path: The file path to read.
+        offset: Start reading from this line number (0-based). Defaults to 0.
+        limit: Maximum number of lines to return. 0 means all lines. Defaults to 0.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return f"Error: file not found: {path}"
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if offset > 0:
+        lines = lines[offset:]
+    if limit > 0:
+        lines = lines[:limit]
+
+    numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(lines)]
+    return "\n".join(numbered) if numbered else "(empty file)"
 
 
 def get_reasoning_effort() -> str:
@@ -1042,9 +1156,9 @@ async def main():
     env = read_env_vars()
 
     # 2. Read input files
-    user_prompt = read_file(env["USER_PROMPT_PATH"], "user prompt")
-    system_prompt = read_file(env["SYSTEM_PROMPT_PATH"], "system prompt")
-    mcp_config_raw = read_file(env["MCP_CONFIGURATION_PATH"], "MCP configuration")
+    user_prompt = _read_startup_file(env["USER_PROMPT_PATH"], "user prompt")
+    system_prompt = _read_startup_file(env["SYSTEM_PROMPT_PATH"], "system prompt")
+    mcp_config_raw = _read_startup_file(env["MCP_CONFIGURATION_PATH"], "MCP configuration")
 
     # 3. Configure OpenAI client for LiteLLM
     # Use Chat Completions API instead of Responses API — LiteLLM's /responses
@@ -1077,8 +1191,9 @@ async def main():
         for server in mcp_servers:
             server.tool_filter = tool_filter
 
-        # Build system prompt with catalog injected before output instructions
+        # Build system prompt with file tool guidance, catalog, and output instructions
         full_instructions = system_prompt
+        full_instructions += FILE_TOOL_GUIDANCE
         if catalog:
             full_instructions += "\n\n" + catalog
         full_instructions += OUTPUT_INSTRUCTIONS
@@ -1097,7 +1212,7 @@ async def main():
             name="TaskRunner",
             instructions=full_instructions,
             model=env["OPENAI_MODEL"],
-            tools=[execute_command, discover_tools, submit_result],
+            tools=[execute_command, write_file, edit_file, read_file, discover_tools, submit_result],
             mcp_servers=mcp_servers if mcp_servers else [],
             model_settings=ModelSettings(
                 max_tokens=max_output_tokens,
