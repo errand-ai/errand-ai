@@ -435,24 +435,37 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
 
 # --- File Mutation Queue and File Tools ---
 
+class _FileLockState:
+    """Tracks a per-path lock and the number of coroutines using or waiting on it."""
+
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
 class FileMutationQueue:
     """Per-file asyncio.Lock map that serializes writes to the same path."""
 
     def __init__(self):
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, _FileLockState] = {}
 
     @asynccontextmanager
     async def acquire(self, path: str):
         """Acquire a lock for the resolved absolute path."""
         resolved = str(Path(path).resolve())
-        if resolved not in self._locks:
-            self._locks[resolved] = asyncio.Lock()
-        lock = self._locks[resolved]
-        async with lock:
-            yield
-        # Evict lock if no one else is waiting
-        if not lock.locked():
-            self._locks.pop(resolved, None)
+        state = self._locks.get(resolved)
+        if state is None:
+            state = _FileLockState()
+            self._locks[resolved] = state
+
+        state.users += 1
+        try:
+            async with state.lock:
+                yield
+        finally:
+            state.users -= 1
+            if state.users == 0:
+                self._locks.pop(resolved, None)
 
 
 _file_mutation_queue = FileMutationQueue()
@@ -539,14 +552,20 @@ def _read_file_sync(path: str, offset: int, limit: int) -> str:
     offset = max(0, offset)
     limit = max(0, limit)
 
-    lines = p.read_text(encoding="utf-8").splitlines()
+    all_lines = p.read_text(encoding="utf-8").splitlines()
+    lines = all_lines
     if offset > 0:
         lines = lines[offset:]
     if limit > 0:
         lines = lines[:limit]
 
+    if not all_lines:
+        return "(empty file)"
+    if not lines:
+        return "(no lines in range)"
+
     numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(lines)]
-    return "\n".join(numbered) if numbered else "(empty file)"
+    return "\n".join(numbered)
 
 
 @function_tool

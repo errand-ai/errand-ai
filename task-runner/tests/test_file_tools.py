@@ -202,6 +202,61 @@ async def test_mutation_queue_serializes_same_path(tmp_dir):
 
 
 # ---------------------------------------------------------------------------
+# FileMutationQueue — queued waiters serialize correctly with eviction
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mutation_queue_queued_waiters_serialize(tmp_dir):
+    """FileMutationQueue serializes queued acquires and evicts only when safe."""
+    path = os.path.join(tmp_dir, "concurrent.txt")
+    queue = FileMutationQueue()
+    order = []
+
+    first_acquired = asyncio.Event()
+    first_can_release = asyncio.Event()
+    second_acquired = asyncio.Event()
+    second_can_release = asyncio.Event()
+
+    async def first_writer():
+        async with queue.acquire(path):
+            order.append("A_start")
+            first_acquired.set()
+            await first_can_release.wait()
+            order.append("A_end")
+
+    async def second_writer():
+        await first_acquired.wait()
+        async with queue.acquire(path):
+            order.append("B_start")
+            second_acquired.set()
+            await second_can_release.wait()
+            order.append("B_end")
+
+    async def third_writer():
+        await second_acquired.wait()
+        async with queue.acquire(path):
+            order.append("C_start")
+            order.append("C_end")
+
+    first_task = asyncio.create_task(first_writer())
+    second_task = asyncio.create_task(second_writer())
+
+    await first_acquired.wait()
+    # B is now waiting on the lock
+    first_can_release.set()
+    await second_acquired.wait()
+
+    # Launch C while B holds the lock
+    third_task = asyncio.create_task(third_writer())
+    await asyncio.sleep(0)  # let C enqueue
+
+    second_can_release.set()
+    await asyncio.gather(first_task, second_task, third_task)
+
+    assert order == ["A_start", "A_end", "B_start", "B_end", "C_start", "C_end"]
+
+
+# ---------------------------------------------------------------------------
 # 4.12 FileMutationQueue — allows concurrent writes to different paths
 # ---------------------------------------------------------------------------
 
