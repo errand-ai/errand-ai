@@ -563,8 +563,9 @@ BINARY_FILE_INSTRUCTIONS = """
 ## Binary Files
 Never read binary file contents (images, PDFs, archives, etc.) into the conversation.
 Binary data will exceed the context window and cause task failure. To upload or transfer
-binary files, use file-path-based tools that accept a file path argument (e.g., Google
-Drive upload_file). To inspect binary files, use execute_command with tools like `file`,
+binary files, use file-path-based tools that accept a file path argument (e.g.,
+cloud-storage upload tools such as `gdrive_upload_file` or `onedrive_upload_file`).
+To inspect binary files, use execute_command with tools like `file`,
 `ls -la`, or `identify` (for images).
 """
 

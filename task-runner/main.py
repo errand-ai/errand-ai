@@ -429,12 +429,13 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
             output = f"Command exited with code {result.returncode}\n{output}"
         if len(output) > MAX_TOOL_OUTPUT_CHARS:
             original_len = len(output)
-            output = output[:MAX_TOOL_OUTPUT_CHARS] + (
+            suffix = (
                 f"\n\n[OUTPUT TRUNCATED — was {original_len} characters, limit is {MAX_TOOL_OUTPUT_CHARS} characters]\n"
                 "This output exceeds the context window budget. For binary files (images, archives, etc.), "
                 "do not read contents into the conversation. Use file-path-based tools to upload or process "
-                "them directly (e.g., Google Drive upload_file with the file path)."
+                "them directly (e.g., cloud-storage upload tools that accept a file path)."
             )
+            output = output[:MAX_TOOL_OUTPUT_CHARS - len(suffix)] + suffix
             logger.warning(
                 "execute_command output truncated: %d -> %d characters (limit %d)",
                 original_len, len(output), MAX_TOOL_OUTPUT_CHARS,
