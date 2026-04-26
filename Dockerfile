@@ -21,9 +21,11 @@ RUN <<EOF
     linux/amd64) PLATFORM="manylinux2014_x86_64" ;;
     linux/arm64) PLATFORM="manylinux2014_aarch64" ;;
   esac
-  # Download pure-Python packages that only publish source distributions first
-  pip download --no-cache-dir --no-binary=:all: -d /wheels sgmllib3k
+  # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
+  # Download it separately without --only-binary, then exclude from the main download.
+  pip download --no-cache-dir -d /wheels feedparser sgmllib3k
   # Download remaining packages as binary wheels for the target platform
+  grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
     --only-binary=:all: \
     --platform "$PLATFORM" \
@@ -31,7 +33,7 @@ RUN <<EOF
     --implementation cp \
     --abi cp312 \
     -d /wheels \
-    -r requirements.txt
+    -r requirements-filtered.txt
 EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
