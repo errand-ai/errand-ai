@@ -30,7 +30,7 @@ from sqlalchemy import create_engine as create_sync_engine, func, select, text a
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from container_runtime import ContainerRuntime, DockerRuntime, create_runtime
+from container_runtime import ContainerRuntime, DockerRuntime, KubernetesRuntime, create_runtime
 from database import async_session, engine
 from events import get_valkey, publish_event, VALKEY_URL
 from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, task_tags
@@ -794,9 +794,12 @@ class TaskManager:
             logger.error("Failed to initialise container runtime: %s", e)
             return
 
-        # Pre-pull images for Docker mode
+        # Pre-pull images for Docker mode; clean up orphaned jobs for K8s
         if isinstance(self._runtime, DockerRuntime):
             await asyncio.get_event_loop().run_in_executor(None, self._pre_pull_images)
+        elif isinstance(self._runtime, KubernetesRuntime):
+            from container_runtime import cleanup_orphaned_jobs
+            await cleanup_orphaned_jobs(self._runtime)
 
         logger.info("TaskManager started, polling every %ds", POLL_INTERVAL)
 
@@ -1173,6 +1176,14 @@ class TaskManager:
                         logger.info("Task %s moved to review after %d git retries", task.id, current.retry_count)
                     else:
                         await self._schedule_retry(task, output=error_str)
+
+            except asyncio.CancelledError:
+                logger.warning("Task %s processing cancelled, scheduling retry", task.id)
+                try:
+                    await self._schedule_retry(task, output="Processing cancelled during shutdown")
+                except Exception:
+                    logger.exception("Failed to schedule retry for cancelled task %s", task.id)
+                raise
 
             except Exception:
                 logger.exception("Task %s failed", task.id)
