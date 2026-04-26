@@ -597,20 +597,9 @@ def twitter_character_count(text: str) -> int:
     return len(text) - raw_url_chars + TWITTER_TCO_URL_LENGTH * len(urls)
 
 
-@mcp.tool()
-async def post_tweet(message: str) -> str:
-    """Post a tweet to Twitter/X. Message must be 1-280 characters."""
+async def _load_twitter_credentials() -> dict | None:
+    """Load Twitter credentials from DB, falling back to env vars. Returns None if unavailable."""
     import os
-
-    if not message or not message.strip():
-        return "Error: Message cannot be empty"
-
-    effective_length = twitter_character_count(message)
-    if effective_length > 280:
-        return f"Error: Message exceeds 280 character limit (got {effective_length} characters)"
-
-    # Load credentials from DB via platform registry, fall back to env vars
-    from platforms import get_registry
     from platforms.credentials import load_credentials
 
     credentials = None
@@ -634,6 +623,22 @@ async def post_tweet(message: str) -> str:
                 "access_secret": access_secret,
             }
 
+    return credentials
+
+
+@mcp.tool()
+async def post_tweet(message: str) -> str:
+    """Post a tweet to Twitter/X. Message must be 1-280 characters."""
+    if not message or not message.strip():
+        return "Error: Message cannot be empty"
+
+    effective_length = twitter_character_count(message)
+    if effective_length > 280:
+        return f"Error: Message exceeds 280 character limit (got {effective_length} characters)"
+
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
     if not credentials:
         return "Error: Twitter API credentials not configured"
 
@@ -647,6 +652,153 @@ async def post_tweet(message: str) -> str:
         return f"Tweet posted: {result.url}"
     else:
         return f"Error posting tweet: {result.error}"
+
+
+@mcp.tool()
+async def reply_to_tweet(tweet_id: str, message: str) -> str:
+    """Reply to a tweet by ID. Message must be 1-280 characters."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
+    if not message or not message.strip():
+        return "Error: Message cannot be empty"
+
+    effective_length = twitter_character_count(message)
+    if effective_length > 280:
+        return f"Error: Message exceeds 280 character limit (got {effective_length} characters)"
+
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return "Error: Twitter API credentials not configured"
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return "Error: Twitter platform not registered"
+
+    result = await platform.reply(tweet_id, message, credentials=credentials)
+    if result.success:
+        return f"Reply posted: {result.url}"
+    else:
+        return f"Error replying to tweet: {result.error}"
+
+
+@mcp.tool()
+async def like_tweet(tweet_id: str) -> str:
+    """Like a tweet by ID."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return "Error: Twitter API credentials not configured"
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return "Error: Twitter platform not registered"
+
+    try:
+        await platform.like(tweet_id, credentials=credentials)
+        return f"Liked tweet {tweet_id}"
+    except Exception as e:
+        return f"Error liking tweet: {e}"
+
+
+@mcp.tool()
+async def retweet(tweet_id: str) -> str:
+    """Retweet a tweet by ID."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return "Error: Twitter API credentials not configured"
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return "Error: Twitter platform not registered"
+
+    try:
+        await platform.retweet(tweet_id, credentials=credentials)
+        return f"Retweeted tweet {tweet_id}"
+    except Exception as e:
+        return f"Error retweeting: {e}"
+
+
+@mcp.tool()
+async def get_tweet_metrics(tweet_id: str) -> str:
+    """Get metrics for a tweet by ID. Returns JSON with text, dates, and all available metric categories."""
+    if not tweet_id or not tweet_id.strip():
+        return json.dumps({"error": "Tweet ID cannot be empty"})
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return json.dumps({"error": "Twitter API credentials not configured"})
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return json.dumps({"error": "Twitter platform not registered"})
+
+    try:
+        metrics = await platform.get_metrics(tweet_id, credentials=credentials)
+        return json.dumps(metrics)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def get_my_recent_tweets(max_results: int = 10) -> str:
+    """Get the authenticated user's recent tweets with metrics. Returns JSON array of tweets.
+
+    Args:
+        max_results: Number of tweets to return (5-100, default 10).
+    """
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return json.dumps({"error": "Twitter API credentials not configured"})
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return json.dumps({"error": "Twitter platform not registered"})
+
+    try:
+        tweets = await platform.get_my_tweets(max_results, credentials=credentials)
+        return json.dumps(tweets)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def search_tweets(query: str, max_results: int = 10) -> str:
+    """Search recent tweets (last 7 days) by query. Requires X API Basic tier. Returns JSON array of tweets."""
+    from platforms import get_registry
+
+    credentials = await _load_twitter_credentials()
+    if not credentials:
+        return json.dumps({"error": "Twitter API credentials not configured"})
+
+    registry = get_registry()
+    platform = registry.get("twitter")
+    if not platform:
+        return json.dumps({"error": "Twitter platform not registered"})
+
+    try:
+        result = await platform.search(query, credentials=credentials, max_results=max_results)
+        return json.dumps(result.get("results", []))
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -680,6 +832,93 @@ async def read_url(url: str, max_length: int = 50000) -> str:
         return json.dumps({"error": f"Timeout fetching {url}"})
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None) -> str:
+    """Fetch and parse an RSS or Atom feed. Returns JSON with feed metadata and items.
+
+    Args:
+        url: The RSS or Atom feed URL to fetch.
+        max_items: Maximum number of items to return (default 20).
+        since: Optional ISO 8601 datetime — only return items published after this time.
+    """
+    import feedparser
+    from datetime import datetime, timezone
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+    except httpx.TimeoutException:
+        return json.dumps({"error": f"Timeout fetching feed from {url}"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to fetch feed: {e}"})
+
+    feed = feedparser.parse(resp.text)
+
+    if not feed.entries and not getattr(feed.feed, "title", ""):
+        return json.dumps({"error": f"URL does not contain a valid RSS or Atom feed: {url}"})
+
+    # Parse since filter
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                return json.dumps({"error": f"Invalid 'since' datetime: {since}. Timezone offset or 'Z' is required."})
+        except ValueError:
+            return json.dumps({"error": f"Invalid 'since' datetime format: {since}"})
+
+    # Build items
+    items = []
+    for entry in feed.entries:
+        published = ""
+        published_dt = None
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
+            try:
+                published_dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                published = published_dt.isoformat()
+            except (TypeError, ValueError, OverflowError):
+                logger.debug("Failed to parse published date for feed entry: %s", getattr(entry, "title", ""), exc_info=True)
+        elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
+            try:
+                published_dt = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+                published = published_dt.isoformat()
+            except (TypeError, ValueError, OverflowError):
+                logger.debug("Failed to parse updated date for feed entry: %s", getattr(entry, "title", ""), exc_info=True)
+
+        if since_dt and published_dt and published_dt <= since_dt:
+            continue
+        if since_dt and not published_dt:
+            continue
+
+        summary = ""
+        if hasattr(entry, "summary") and entry.summary:
+            summary = entry.summary[:500]
+        elif hasattr(entry, "description") and entry.description:
+            summary = entry.description[:500]
+
+        items.append({
+            "title": getattr(entry, "title", ""),
+            "link": getattr(entry, "link", ""),
+            "published": published,
+            "summary": summary,
+        })
+
+    # Sort: dated items newest first, undated items last
+    # Tuple key (has_date, date_str) ensures dated entries sort before undated ones
+    items.sort(key=lambda x: (bool(x["published"]), x["published"]), reverse=True)
+    max_items = max(1, min(max_items, 100))
+    items = items[:max_items]
+
+    feed_meta = {
+        "title": getattr(feed.feed, "title", ""),
+        "link": getattr(feed.feed, "link", ""),
+        "description": getattr(feed.feed, "subtitle", getattr(feed.feed, "description", "")),
+    }
+
+    return json.dumps({"feed": feed_meta, "items": items})
 
 
 @mcp.tool()

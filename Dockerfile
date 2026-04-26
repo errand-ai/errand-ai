@@ -21,6 +21,11 @@ RUN <<EOF
     linux/amd64) PLATFORM="manylinux2014_x86_64" ;;
     linux/arm64) PLATFORM="manylinux2014_aarch64" ;;
   esac
+  # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
+  # Build them into wheels in stage 2 so stage 3 can install offline without setuptools.
+  pip wheel --no-cache-dir --no-deps -w /wheels "feedparser>=6.0,<7" sgmllib3k
+  # Download remaining packages as binary wheels for the target platform
+  grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
     --only-binary=:all: \
     --platform "$PLATFORM" \
@@ -28,7 +33,7 @@ RUN <<EOF
     --implementation cp \
     --abi cp312 \
     -d /wheels \
-    -r requirements.txt
+    -r requirements-filtered.txt
 EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
