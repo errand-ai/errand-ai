@@ -281,7 +281,6 @@ function buildPayload(): Record<string, unknown> {
 
   if (formSkillMode.value === 'inherit') {
     payload.skill_ids = null
-    payload.include_git_skills = true
   } else if (formSkillMode.value === 'none') {
     payload.skill_ids = []
     payload.include_git_skills = formIncludeGitSkills.value
@@ -591,7 +590,7 @@ onMounted(() => {
           </div>
 
           <!-- Three-state: Skills -->
-          <div v-if="availableSkills.length > 0">
+          <div>
             <label class="block text-xs font-medium text-gray-600 mb-2">Skills</label>
             <div class="flex gap-4 mb-2">
               <label class="flex items-center gap-1.5 text-xs text-gray-600">
