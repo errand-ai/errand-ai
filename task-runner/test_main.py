@@ -427,7 +427,34 @@ def test_execute_command_invalid_directory():
     assert "Error executing command" in result
 
 
-# --- Truncation ---
+# --- execute_command output truncation ---
+
+
+def test_execute_command_output_truncated_at_cap(tmp_path):
+    """Output exceeding MAX_TOOL_OUTPUT_CHARS is truncated with a guidance message."""
+    main_module = sys.modules["main"]
+    original_cap = main_module.MAX_TOOL_OUTPUT_CHARS
+    main_module.MAX_TOOL_OUTPUT_CHARS = 100  # small cap for testing
+    try:
+        # Generate output larger than the cap
+        result = execute_command(f"python3 -c \"print('x' * 200)\"", working_directory=str(tmp_path))
+        assert "[OUTPUT TRUNCATED" in result
+        assert "file-path-based tools" in result
+    finally:
+        main_module.MAX_TOOL_OUTPUT_CHARS = original_cap
+
+
+def test_execute_command_output_within_cap_not_truncated(tmp_path):
+    """Output within MAX_TOOL_OUTPUT_CHARS is returned unchanged."""
+    main_module = sys.modules["main"]
+    original_cap = main_module.MAX_TOOL_OUTPUT_CHARS
+    main_module.MAX_TOOL_OUTPUT_CHARS = 10000  # large cap
+    try:
+        result = execute_command("echo hello", working_directory=str(tmp_path))
+        assert "[OUTPUT TRUNCATED" not in result
+        assert "hello" in result
+    finally:
+        main_module.MAX_TOOL_OUTPUT_CHARS = original_cap
 
 
 # --- Streaming event loop: thinking and reasoning emission ---

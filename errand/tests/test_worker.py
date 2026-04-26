@@ -1058,6 +1058,32 @@ async def test_skills_directive_omitted_when_no_skills():
 
 
 @pytest.mark.asyncio
+async def test_system_prompt_includes_binary_file_directive():
+    """System prompt always includes the Binary Files directive."""
+    task = _make_mock_task(description="Research task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "You are a helpful assistant.",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+        }):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
+    assert "## Binary Files" in system_prompt_content
+    assert "Never read binary file contents" in system_prompt_content
+    assert "file-path-based tools" in system_prompt_content
+
+
+@pytest.mark.asyncio
 async def test_process_task_container_copies_three_files():
     """process_task_in_container copies prompt.txt, system_prompt.txt, and mcp.json."""
     task = _make_mock_task(description="My task")
