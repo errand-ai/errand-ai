@@ -22,8 +22,8 @@ RUN <<EOF
     linux/arm64) PLATFORM="manylinux2014_aarch64" ;;
   esac
   # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
-  # Download it separately without --only-binary, then exclude from the main download.
-  pip download --no-cache-dir -d /wheels feedparser sgmllib3k
+  # Download the sdists without deps (pure Python, installed from source in stage 3).
+  pip download --no-cache-dir --no-deps -d /wheels feedparser sgmllib3k
   # Download remaining packages as binary wheels for the target platform
   grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
