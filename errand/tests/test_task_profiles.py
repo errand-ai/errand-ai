@@ -325,6 +325,7 @@ async def mcp_db_session(fake_valkey):
             mcp_servers TEXT,
             litellm_mcp_servers TEXT,
             skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
         )""",
@@ -476,6 +477,7 @@ async def worker_db_session():
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
+                include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -811,3 +813,57 @@ async def test_resolve_profile_skill_ids(worker_db_session):
     settings = {}
     resolved = await resolve_profile(session, task, settings)
     assert resolved["_profile_skill_ids"] == [skill_id_1, skill_id_2]
+    assert resolved["_profile_include_git_skills"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_include_git_skills_false(worker_db_session):
+    """Profile include_git_skills=False is stored as _profile_include_git_skills."""
+    from task_manager import _resolve_profile as resolve_profile
+
+    session = worker_db_session
+
+    skill_id_1 = str(uuid.uuid4())
+    profile = TaskProfile(
+        name="no-git-skills",
+        skill_ids=[skill_id_1],
+        include_git_skills=False,
+    )
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+
+    task = Task(title="Test", status="pending", category="immediate")
+    task.profile_id = profile.id
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    settings = {}
+    resolved = await resolve_profile(session, task, settings)
+    assert resolved["_profile_skill_ids"] == [skill_id_1]
+    assert resolved["_profile_include_git_skills"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_skill_ids_null_no_git_key(worker_db_session):
+    """When skill_ids is null (inherit), _profile_include_git_skills is not set."""
+    from task_manager import _resolve_profile as resolve_profile
+
+    session = worker_db_session
+
+    profile = TaskProfile(name="inherit-skills", skill_ids=None)
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+
+    task = Task(title="Test", status="pending", category="immediate")
+    task.profile_id = profile.id
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    settings = {}
+    resolved = await resolve_profile(session, task, settings)
+    assert "_profile_skill_ids" not in resolved
+    assert "_profile_include_git_skills" not in resolved

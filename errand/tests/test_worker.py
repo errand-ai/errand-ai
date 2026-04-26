@@ -333,6 +333,7 @@ async def db_session():
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -423,6 +424,7 @@ async def retry_session_factory(db_session):
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -1787,6 +1789,76 @@ def test_build_skills_archive_multiple_skills():
     assert "skills/beta/SKILL.md" in names
 
 
+# --- Profile skill filtering ---
+
+
+def _filter_skills(skills, profile_skill_ids, include_git):
+    """Reproduce the profile skill filtering logic from task_manager._process_task."""
+    if profile_skill_ids is not None:
+        db_skills = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
+        git_skills_filtered = [s for s in skills if not s.get("id")] if include_git else []
+        return db_skills + git_skills_filtered
+    return skills
+
+
+def test_profile_skill_filter_select_with_git():
+    """Select specific DB skills + include git skills."""
+    skills = [
+        {"id": "uuid-1", "name": "db-skill-1"},
+        {"id": "uuid-2", "name": "db-skill-2"},
+        {"name": "git-skill-1"},
+        {"name": "git-skill-2"},
+    ]
+    result = _filter_skills(skills, ["uuid-1"], include_git=True)
+    assert len(result) == 3
+    assert result[0]["name"] == "db-skill-1"
+    assert result[1]["name"] == "git-skill-1"
+    assert result[2]["name"] == "git-skill-2"
+
+
+def test_profile_skill_filter_select_without_git():
+    """Select specific DB skills, exclude git skills."""
+    skills = [
+        {"id": "uuid-1", "name": "db-skill-1"},
+        {"id": "uuid-2", "name": "db-skill-2"},
+        {"name": "git-skill-1"},
+    ]
+    result = _filter_skills(skills, ["uuid-1"], include_git=False)
+    assert len(result) == 1
+    assert result[0]["name"] == "db-skill-1"
+
+
+def test_profile_skill_filter_empty_ids_with_git():
+    """Empty skill_ids but include git skills = git skills only."""
+    skills = [
+        {"id": "uuid-1", "name": "db-skill-1"},
+        {"name": "git-skill-1"},
+    ]
+    result = _filter_skills(skills, [], include_git=True)
+    assert len(result) == 1
+    assert result[0]["name"] == "git-skill-1"
+
+
+def test_profile_skill_filter_empty_ids_without_git():
+    """Empty skill_ids + no git = no skills at all."""
+    skills = [
+        {"id": "uuid-1", "name": "db-skill-1"},
+        {"name": "git-skill-1"},
+    ]
+    result = _filter_skills(skills, [], include_git=False)
+    assert len(result) == 0
+
+
+def test_profile_skill_filter_inherit():
+    """Null skill_ids = inherit all (both DB and git)."""
+    skills = [
+        {"id": "uuid-1", "name": "db-skill-1"},
+        {"name": "git-skill-1"},
+    ]
+    result = _filter_skills(skills, None, include_git=False)
+    assert len(result) == 2
+
+
 # --- Skill manifest ---
 
 
@@ -2178,6 +2250,7 @@ class TestGitFailureRetry:
                     mcp_servers TEXT,
                     litellm_mcp_servers TEXT,
                     skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
                 )

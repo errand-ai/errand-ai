@@ -51,6 +51,7 @@ const formLitellmMode = ref<'inherit' | 'none' | 'select'>('inherit')
 const formLitellmSelected = ref<string[]>([])
 const formSkillMode = ref<'inherit' | 'none' | 'select'>('inherit')
 const formSkillSelected = ref<string[]>([])
+const formIncludeGitSkills = ref(true)
 
 // Delete dialog
 const showDeleteDialog = ref(false)
@@ -68,7 +69,9 @@ const overrideSummary = computed(() => {
     if (profile.reasoning_effort) overrides.push('Reasoning')
     if (profile.mcp_servers != null) overrides.push('MCP')
     if (profile.litellm_mcp_servers != null) overrides.push('LiteLLM')
-    if (profile.skill_ids != null) overrides.push('Skills')
+    if (profile.skill_ids != null) {
+      overrides.push(profile.include_git_skills ? 'Skills (+git)' : 'Skills')
+    }
     return overrides.length ? overrides.join(', ') : 'No overrides'
   }
 })
@@ -180,6 +183,7 @@ function resetForm() {
   formLitellmSelected.value = []
   formSkillMode.value = 'inherit'
   formSkillSelected.value = []
+  formIncludeGitSkills.value = true
 }
 
 function openAdd() {
@@ -238,6 +242,7 @@ function openEdit(profile: TaskProfile) {
     formSkillMode.value = 'select'
     formSkillSelected.value = [...profile.skill_ids]
   }
+  formIncludeGitSkills.value = profile.include_git_skills ?? true
 
   showForm.value = true
 }
@@ -274,9 +279,15 @@ function buildPayload(): Record<string, unknown> {
   else if (formLitellmMode.value === 'none') payload.litellm_mcp_servers = []
   else payload.litellm_mcp_servers = formLitellmSelected.value
 
-  if (formSkillMode.value === 'inherit') payload.skill_ids = null
-  else if (formSkillMode.value === 'none') payload.skill_ids = []
-  else payload.skill_ids = formSkillSelected.value
+  if (formSkillMode.value === 'inherit') {
+    payload.skill_ids = null
+  } else if (formSkillMode.value === 'none') {
+    payload.skill_ids = []
+    payload.include_git_skills = formIncludeGitSkills.value
+  } else {
+    payload.skill_ids = formSkillSelected.value
+    payload.include_git_skills = formIncludeGitSkills.value
+  }
 
   return payload
 }
@@ -579,7 +590,7 @@ onMounted(() => {
           </div>
 
           <!-- Three-state: Skills -->
-          <div v-if="availableSkills.length > 0">
+          <div>
             <label class="block text-xs font-medium text-gray-600 mb-2">Skills</label>
             <div class="flex gap-4 mb-2">
               <label class="flex items-center gap-1.5 text-xs text-gray-600">
@@ -599,6 +610,12 @@ onMounted(() => {
               <label v-for="skill in availableSkills" :key="skill.id" class="flex items-center gap-1.5 text-xs text-gray-600">
                 <input type="checkbox" :value="skill.id" v-model="formSkillSelected" class="text-blue-600" />
                 {{ skill.name }}
+              </label>
+            </div>
+            <div v-if="formSkillMode !== 'inherit'" class="ml-4 mt-2">
+              <label class="flex items-center gap-1.5 text-xs text-gray-600" data-testid="profile-git-skills-toggle">
+                <input type="checkbox" v-model="formIncludeGitSkills" class="text-blue-600" />
+                Include Git Repository Skills
               </label>
             </div>
           </div>

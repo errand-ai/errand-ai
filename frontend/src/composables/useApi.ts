@@ -35,6 +35,7 @@ export interface TaskProfile {
   mcp_servers: string[] | null
   litellm_mcp_servers: string[] | null
   skill_ids: string[] | null
+  include_git_skills: boolean
   created_at: string
   updated_at: string
 }

@@ -2120,6 +2120,7 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "mcp_servers": p.mcp_servers,
         "litellm_mcp_servers": p.litellm_mcp_servers,
         "skill_ids": p.skill_ids,
+        "include_git_skills": p.include_git_skills,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -2168,6 +2169,7 @@ async def create_task_profile(
         mcp_servers=body.get("mcp_servers"),
         litellm_mcp_servers=body.get("litellm_mcp_servers"),
         skill_ids=body.get("skill_ids"),
+        include_git_skills=body.get("include_git_skills") is not False,
     )
     session.add(profile)
     await session.commit()
@@ -2219,6 +2221,12 @@ async def update_task_profile(
                 detail=f"Invalid reasoning_effort '{re_val}'. Must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}",
             )
         profile.reasoning_effort = re_val
+
+    if "include_git_skills" in body:
+        val = body["include_git_skills"]
+        if val is not None and not isinstance(val, bool):
+            raise HTTPException(status_code=422, detail="include_git_skills must be a boolean")
+        profile.include_git_skills = val is not False
 
     for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
         if field in body:
