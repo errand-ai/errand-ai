@@ -37,6 +37,7 @@ _TABLES_SQL = [
         mcp_servers TEXT,
         litellm_mcp_servers TEXT,
         skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
     )""",

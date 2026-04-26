@@ -78,8 +78,8 @@ describe('TaskGeneratorsPage', () => {
     toastMock.error.mockClear()
     vi.mocked(upsertEmailGenerator).mockClear()
     vi.mocked(fetchTaskProfiles).mockResolvedValue([
-      { id: 'profile-1', name: 'Profile A', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
-      { id: 'profile-2', name: 'Profile B', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+      { id: 'profile-1', name: 'Profile A', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, include_git_skills: true, created_at: '', updated_at: '' },
+      { id: 'profile-2', name: 'Profile B', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, include_git_skills: true, created_at: '', updated_at: '' },
     ])
     vi.mocked(fetchPlatforms).mockResolvedValue([
       { id: 'email', label: 'Email', capabilities: ['email'], credential_schema: [], status: 'connected', last_verified_at: null },

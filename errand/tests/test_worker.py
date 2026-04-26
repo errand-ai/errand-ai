@@ -333,6 +333,7 @@ async def db_session():
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -423,6 +424,7 @@ async def retry_session_factory(db_session):
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -2178,6 +2180,7 @@ class TestGitFailureRetry:
                     mcp_servers TEXT,
                     litellm_mcp_servers TEXT,
                     skill_ids TEXT,
+            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
                 )

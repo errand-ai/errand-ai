@@ -230,8 +230,8 @@ describe('PlatformCredentialForm', () => {
 
   it('shows profile names when profiles exist', async () => {
     vi.mocked(fetchTaskProfiles).mockResolvedValue([
-      { id: 'p1', name: 'Default Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
-      { id: 'p2', name: 'Email Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, created_at: '', updated_at: '' },
+      { id: 'p1', name: 'Default Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, include_git_skills: true, created_at: '', updated_at: '' },
+      { id: 'p2', name: 'Email Profile', description: null, match_rules: null, model: null, system_prompt: null, max_turns: null, reasoning_effort: null, mcp_servers: null, litellm_mcp_servers: null, skill_ids: null, include_git_skills: true, created_at: '', updated_at: '' },
     ])
 
     const wrapper = mount(PlatformCredentialForm, {

@@ -677,6 +677,7 @@ async def _resolve_profile(session: AsyncSession, task: Task, settings: dict) ->
         resolved["_profile_litellm_mcp_servers"] = profile.litellm_mcp_servers
     if profile.skill_ids is not None:
         resolved["_profile_skill_ids"] = profile.skill_ids
+        resolved["_profile_include_git_skills"] = profile.include_git_skills
 
     return resolved
 
@@ -1412,13 +1413,13 @@ class TaskManager:
             logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
             skills = merge_skills(skills, git_skills)
 
-        # Apply profile skill_ids filter
+        # Apply profile skill filter: DB skills filtered by UUID, git skills by flag
         profile_skill_ids = settings.get("_profile_skill_ids")
         if profile_skill_ids is not None:
-            if len(profile_skill_ids) == 0:
-                skills = []
-            else:
-                skills = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
+            include_git = settings.get("_profile_include_git_skills", True)
+            db_skills = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
+            git_skills_filtered = [s for s in skills if not s.get("id")] if include_git else []
+            skills = db_skills + git_skills_filtered
 
         # Inject skill manifest
         if skills:

@@ -197,6 +197,9 @@ class TaskProfile(Base):
     mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     litellm_mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     skill_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    include_git_skills: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

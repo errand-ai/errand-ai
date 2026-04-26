@@ -2120,6 +2120,7 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "mcp_servers": p.mcp_servers,
         "litellm_mcp_servers": p.litellm_mcp_servers,
         "skill_ids": p.skill_ids,
+        "include_git_skills": p.include_git_skills,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -2168,6 +2169,7 @@ async def create_task_profile(
         mcp_servers=body.get("mcp_servers"),
         litellm_mcp_servers=body.get("litellm_mcp_servers"),
         skill_ids=body.get("skill_ids"),
+        include_git_skills=body.get("include_git_skills", True),
     )
     session.add(profile)
     await session.commit()
@@ -2220,7 +2222,7 @@ async def update_task_profile(
             )
         profile.reasoning_effort = re_val
 
-    for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
+    for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids", "include_git_skills"):
         if field in body:
             setattr(profile, field, body[field])
 
