@@ -364,6 +364,9 @@ export interface CloudStorageProviderStatus {
   mcp_configured: boolean
   user_email?: string
   user_name?: string
+  /** True when stored OAuth scopes are narrower than the currently required set
+   *  (Google Workspace only — OneDrive does not include this field). */
+  reauth_required?: boolean
 }
 
 export interface CloudStorageStatus {

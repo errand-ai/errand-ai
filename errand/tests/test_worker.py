@@ -1938,6 +1938,7 @@ async def test_read_settings_skills_empty_by_default(worker_session: AsyncSessio
 
 from task_manager import (
     refresh_git_clone, parse_skills_from_directory, merge_skills,
+    load_system_skills, _load_cloud_storage_credentials,
     GitSkillsError, MAX_GIT_RETRIES,
 )
 
@@ -2242,6 +2243,57 @@ class TestMergeSkills:
         result = merge_skills(db, [])
         assert len(result) == 1
         assert result[0]["name"] == "code-review"
+
+    def test_three_way_merge_db_over_git_over_system(self, caplog):
+        """Precedence: DB > git > system. Earlier sources win on name conflicts."""
+        db = [{"name": "shared", "description": "DB", "instructions": "db", "files": []}]
+        git = [
+            {"name": "shared", "description": "Git", "instructions": "git", "files": []},
+            {"name": "git-only", "description": "G", "instructions": "g", "files": []},
+        ]
+        system = [
+            {"name": "shared", "description": "System", "instructions": "sys", "files": []},
+            {"name": "git-only", "description": "System override", "instructions": "x", "files": []},
+            {"name": "system-only", "description": "S", "instructions": "s", "files": []},
+        ]
+        result = merge_skills(db, git, system)
+        names = sorted(s["name"] for s in result)
+        assert names == ["git-only", "shared", "system-only"]
+        # `shared` resolves to the DB version, `git-only` to the git version.
+        by_name = {s["name"]: s for s in result}
+        assert by_name["shared"]["description"] == "DB"
+        assert by_name["git-only"]["description"] == "G"
+        assert by_name["system-only"]["description"] == "S"
+
+    def test_system_skills_optional(self):
+        """system_skills argument defaults to None and behaves like an empty list."""
+        db = [{"name": "code-review", "description": "CR", "instructions": "...", "files": []}]
+        git = [{"name": "research", "description": "R", "instructions": "...", "files": []}]
+        result = merge_skills(db, git)  # no system arg
+        assert sorted(s["name"] for s in result) == ["code-review", "research"]
+
+
+class TestLoadSystemSkills:
+    """Tests for load_system_skills()."""
+
+    def test_loads_skills_from_directory(self, tmp_path):
+        gws = tmp_path / "gws"
+        gws.mkdir()
+        skill_dir = gws / "gws-drive"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: gws-drive\ndescription: Drive operations\n---\n\nBody"
+        )
+
+        result = load_system_skills("gws", base_dir=str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["name"] == "gws-drive"
+        assert result[0]["description"] == "Drive operations"
+
+    def test_missing_skill_set_returns_empty(self, tmp_path):
+        """Missing system skill directory is not an error — returns []."""
+        result = load_system_skills("gws", base_dir=str(tmp_path))
+        assert result == []
 
 
 import os
@@ -3177,12 +3229,12 @@ async def test_litellm_mcp_legacy_key_blocks_injection():
     assert "litellm_argocd" not in mcp_config["mcpServers"]
 
 
-# --- Cloud Storage MCP injection ---
+# --- Cloud Storage MCP injection (OneDrive only) and Google Workspace token injection ---
 
 
 @pytest.mark.asyncio
-async def test_cloud_storage_mcp_injected_both_gates():
-    """When URL is set and credentials exist, cloud storage MCP is injected."""
+async def test_onedrive_mcp_and_google_token_both_injected():
+    """OneDrive credentials → MCP entry; Google credentials → GOOGLE_WORKSPACE_CLI_TOKEN env var."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {},
@@ -3197,27 +3249,29 @@ async def test_cloud_storage_mcp_injected_both_gates():
 
     mock_runtime = _make_mock_runtime()
 
-    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"), \
-         patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"):
+    with patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"):
         await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    assert "google_drive" in mcp_config["mcpServers"]
-    assert mcp_config["mcpServers"]["google_drive"]["url"] == "http://gdrive:8080/mcp"
-    assert mcp_config["mcpServers"]["google_drive"]["headers"]["Authorization"] == "Bearer ya29.test"
+    # Google Drive is no longer an MCP entry — replaced by gws CLI env var.
+    assert "google_drive" not in mcp_config.get("mcpServers", {})
     assert "onedrive" in mcp_config["mcpServers"]
     assert mcp_config["mcpServers"]["onedrive"]["headers"]["Authorization"] == "Bearer eyJ.test"
 
-    # System prompt should include cloud storage instructions
+    # Google access token is injected as GOOGLE_WORKSPACE_CLI_TOKEN env var.
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+
+    # OneDrive cloud-storage instructions present; Google Workspace instructions present.
     system_prompt = files["system_prompt.txt"]
     assert "Cloud Storage" in system_prompt
-    assert "ETag" in system_prompt
+    assert "Google Workspace" in system_prompt
 
 
 @pytest.mark.asyncio
-async def test_cloud_storage_not_injected_no_url():
-    """When MCP URL not set, cloud storage is not injected even with credentials."""
+async def test_onedrive_not_injected_no_url():
+    """When ONEDRIVE_MCP_URL not set, OneDrive is not injected even with credentials."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {},
@@ -3226,25 +3280,23 @@ async def test_cloud_storage_not_injected_no_url():
         "system_prompt": "Be helpful.",
     }
     cloud_creds = {
-        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+        "onedrive": {"access_token": "eyJ.test", "expires_at": 9999999999},
     }
 
     mock_runtime = _make_mock_runtime()
 
-    with patch("task_manager.GDRIVE_MCP_URL", ""), \
-         patch("task_manager.ONEDRIVE_MCP_URL", ""):
+    with patch("task_manager.ONEDRIVE_MCP_URL", ""):
         await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
-    assert "google_drive" not in mcp_config.get("mcpServers", {})
-    # No cloud storage instructions
+    assert "onedrive" not in mcp_config.get("mcpServers", {})
     assert "Cloud Storage" not in files["system_prompt.txt"]
 
 
 @pytest.mark.asyncio
-async def test_cloud_storage_not_injected_no_credentials():
-    """When no credentials exist, cloud storage is not injected."""
+async def test_google_workspace_token_not_injected_without_credentials():
+    """When no Google credentials exist, GOOGLE_WORKSPACE_CLI_TOKEN is not set."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {},
@@ -3254,60 +3306,132 @@ async def test_cloud_storage_not_injected_no_credentials():
     }
 
     mock_runtime = _make_mock_runtime()
+    await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=None)
 
-    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
-        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=None)
-
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert "GOOGLE_WORKSPACE_CLI_TOKEN" not in env
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
-    mcp_config = json.loads(files["mcp.json"])
-    assert "google_drive" not in mcp_config.get("mcpServers", {})
+    assert "Google Workspace" not in files["system_prompt.txt"]
 
 
 @pytest.mark.asyncio
-async def test_cloud_storage_profile_filter():
-    """Cloud storage respects profile_mcp_servers filter."""
+async def test_onedrive_profile_filter_excludes():
+    """OneDrive respects _profile_mcp_servers filter."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "Be helpful.",
-        "_profile_mcp_servers": ["errand"],  # cloud storage NOT listed
+        "_profile_mcp_servers": ["errand"],  # onedrive NOT listed
+    }
+    cloud_creds = {
+        "onedrive": {"access_token": "eyJ.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert "onedrive" not in mcp_config.get("mcpServers", {})
+
+
+@pytest.mark.asyncio
+async def test_google_workspace_token_injected_even_with_profile_filter():
+    """Profile MCP filter does not gate the Google Workspace env-var injection."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        # `google_drive` is no longer an MCP server, so even when the filter
+        # excludes everything but `errand`, the env-var injection still runs.
+        "_profile_mcp_servers": ["errand"],
     }
     cloud_creds = {
         "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
     }
 
     mock_runtime = _make_mock_runtime()
+    await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
-        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
 
-    files = mock_runtime.async_prepare.call_args.kwargs["files"]
-    mcp_config = json.loads(files["mcp.json"])
-    assert "google_drive" not in mcp_config.get("mcpServers", {})
+
+# --- Cloud-storage credential refresh-then-inject chain ---
 
 
 @pytest.mark.asyncio
-async def test_cloud_storage_profile_filter_includes():
-    """Cloud storage is injected when profile filter includes it."""
+async def test_load_cloud_storage_credentials_refreshes_expired_google_token():
+    """Expired Google token is refreshed before being returned to the caller."""
+    fake_session = MagicMock()
+
+    stored_creds = {
+        "access_token": "ya29.expired",
+        "refresh_token": "1//rt",
+        "expires_at": 0,  # already expired
+    }
+    refreshed_creds = {**stored_creds, "access_token": "ya29.refreshed", "expires_at": 9999999999}
+
+    async def fake_load(provider, _session):
+        return stored_creds if provider == "google_drive" else None
+
+    async def fake_refresh(provider, creds, _session):
+        assert creds is stored_creds
+        return refreshed_creds
+
+    with patch("task_manager.PlatformCredential", create=True), \
+         patch("platforms.credentials.load_credentials", side_effect=fake_load), \
+         patch("cloud_storage.refresh_token_if_needed", side_effect=fake_refresh):
+        result = await _load_cloud_storage_credentials(fake_session)
+
+    assert result == {"google_drive": refreshed_creds}
+    assert result["google_drive"]["access_token"] == "ya29.refreshed"
+
+
+@pytest.mark.asyncio
+async def test_load_cloud_storage_credentials_omits_provider_on_failed_refresh():
+    """If refresh returns None, the provider is dropped from the result."""
+    fake_session = MagicMock()
+
+    async def fake_load(provider, _session):
+        return {"access_token": "x", "expires_at": 0} if provider == "google_drive" else None
+
+    async def fake_refresh(_provider, _creds, _session):
+        return None  # refresh failure
+
+    with patch("platforms.credentials.load_credentials", side_effect=fake_load), \
+         patch("cloud_storage.refresh_token_if_needed", side_effect=fake_refresh):
+        result = await _load_cloud_storage_credentials(fake_session)
+
+    assert "google_drive" not in result
+
+
+@pytest.mark.asyncio
+async def test_refreshed_google_token_lands_in_task_env_var():
+    """Refresh-then-inject chain: when the loader produces a refreshed access_token,
+    that exact value is what ends up as GOOGLE_WORKSPACE_CLI_TOKEN on the container."""
     task = _make_mock_task(description="Test task")
     settings = {
         "mcp_servers": {},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "Be helpful.",
-        "_profile_mcp_servers": ["errand", "google_drive"],
     }
+    # Simulates the dict returned by _load_cloud_storage_credentials after a
+    # successful refresh — access_token is the *new* one, not the one previously
+    # stored in PlatformCredential.
     cloud_creds = {
-        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+        "google_drive": {"access_token": "ya29.refreshed", "expires_at": 9999999999},
     }
 
     mock_runtime = _make_mock_runtime()
+    await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
-    with patch("task_manager.GDRIVE_MCP_URL", "http://gdrive:8080/mcp"):
-        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
-
-    files = mock_runtime.async_prepare.call_args.kwargs["files"]
-    mcp_config = json.loads(files["mcp.json"])
-    assert "google_drive" in mcp_config["mcpServers"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.refreshed"

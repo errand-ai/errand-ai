@@ -10,6 +10,15 @@ RUN --mount=type=secret,id=npm_token \
 COPY frontend/ .
 RUN npm run build
 
+# Stage 1b: Fetch bundled gws agent skills (platform-independent SKILL.md files)
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS gws-skills
+ARG GWS_VERSION=0.22.5
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googleworkspace/cli.git /tmp/gws-cli && \
+    mkdir -p /gws-skills && \
+    cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
+
 # Stage 2: Download Python wheels (runs natively, downloads wheels for target platform)
 FROM --platform=$BUILDPLATFORM python:3.12 AS build
 ARG TARGETPLATFORM
@@ -48,5 +57,6 @@ RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r requiremen
 COPY errand/ .
 COPY VERSION .
 COPY --from=frontend-build /frontend/dist ./static/
+COPY --from=gws-skills /gws-skills /app/system-skills/gws
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

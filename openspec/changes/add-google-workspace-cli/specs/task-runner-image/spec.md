@@ -6,8 +6,8 @@ The repository SHALL include a `task-runner/Dockerfile` that produces a minimal,
 1. **python builder** (`python:3.11-slim`): Install Python dependencies via pip into a target directory.
 2. **git-builder** (`debian:bookworm-slim`): Install `git`, `openssh-client`, `ca-certificates`, `busybox`, and `curl` system packages. Download the `gh` CLI binary from the GitHub releases tarball for the target architecture (`TARGETARCH`) and place it at `/usr/local/bin/gh`. Stage shared libraries needed by git, ssh, busybox, and curl. Create the `.ssh` directory at `/home/nonroot/.ssh` with permissions 700.
 3. **node-builder** (`node:22-bookworm-slim`): Run `npm install -g @fission-ai/openspec@latest` to install the openspec CLI globally. The node binary, global node_modules, and openspec entry point SHALL be available for copying to the final stage.
-4. **gws-builder** (`node:22-bookworm-slim` or Rust builder): Install the Google Workspace CLI (`gws`) and run `gws generate-skills --output-dir /gws-skills/` to generate agent skills from the Google Discovery API. The `gws` binary and generated skills SHALL be available for copying to the final stage.
-5. **final** (`gcr.io/distroless/python3-debian12:nonroot`): Copy Python packages from the python builder, staged binaries and libraries from git-builder (git, ssh, curl, busybox, gh), node binary plus openspec from node-builder, and `gws` binary plus generated skills from gws-builder. The generated skills SHALL be placed at `/opt/system-skills/gws/`. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["python3", "/app/main.py"]`.
+4. **gws-builder** (`debian:bookworm-slim`): Download the Google Workspace CLI (`gws`) release tarball from `github.com/googleworkspace/cli/releases` (matching `${GWS_VERSION}` and `TARGETARCH`) and clone the repository at the matching version tag to obtain the bundled agent skills (`skills/gws-*`). The `gws` binary and skill directories SHALL be available for copying to the final stage.
+5. **final** (`gcr.io/distroless/python3-debian12:nonroot`): Copy Python packages from the python builder, staged binaries and libraries from git-builder (git, ssh, curl, busybox, gh), node binary plus openspec from node-builder, and `gws` binary plus bundled skills from gws-builder. The skills SHALL be placed at `/opt/system-skills/gws/`. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["python3", "/app/main.py"]`.
 
 The `gh` version, `openspec` version, and `gws` version SHALL be configurable via Docker build args with sensible defaults.
 
@@ -57,6 +57,6 @@ The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh
 - **WHEN** the container starts
 - **THEN** `gws --version` executes successfully and outputs a Google Workspace CLI version string
 
-#### Scenario: gws skills are generated
+#### Scenario: gws skills are bundled
 - **WHEN** the container starts
-- **THEN** `/opt/system-skills/gws/` contains SKILL.md files for Google Workspace services
+- **THEN** `/opt/system-skills/gws/` contains SKILL.md files for Google Workspace services (sourced from the upstream `googleworkspace/cli` repository)

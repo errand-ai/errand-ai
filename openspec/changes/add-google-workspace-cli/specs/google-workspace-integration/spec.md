@@ -1,15 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: gws CLI installed in task-runner image
-The task-runner Dockerfile SHALL include a build stage that installs the Google Workspace CLI (`gws`) and runs `gws generate-skills` to produce agent skill files. The generated skills SHALL be stored at `/opt/system-skills/gws/` in the final image. The `gws` binary SHALL be available at `/usr/local/bin/gws`.
+The task-runner Dockerfile SHALL include a build stage that installs the Google Workspace CLI (`gws`) by downloading the pre-built release tarball from `github.com/googleworkspace/cli` (matching `${GWS_VERSION}` and the build's `TARGETARCH`) and copies the agent skill files from the same repository (cloned at the matching version tag) into `/opt/system-skills/gws/` in the final image. The `gws` binary SHALL be available at `/usr/local/bin/gws`.
 
 #### Scenario: gws binary available in container
 - **WHEN** the task-runner container starts
 - **THEN** `gws --version` executes successfully and outputs a version string
 
-#### Scenario: Skills generated at build time
+#### Scenario: Skills bundled at build time
 - **WHEN** the task-runner image is built
-- **THEN** `/opt/system-skills/gws/` contains generated SKILL.md files for Google Workspace services
+- **THEN** `/opt/system-skills/gws/` contains SKILL.md files for Google Workspace services (Drive, Gmail, Calendar, Sheets, Docs, etc.) sourced from the upstream `googleworkspace/cli` repository
 
 #### Scenario: gws-shared skill present
 - **WHEN** the task-runner image is built

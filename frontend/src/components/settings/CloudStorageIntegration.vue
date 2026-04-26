@@ -21,20 +21,25 @@ const loading = ref(true)
 const disconnecting = ref<string | null>(null)
 
 const PROVIDER_META: Record<string, { label: string; icon: string }> = {
-  google_drive: { label: 'Google Drive', icon: '📁' },
   onedrive: { label: 'OneDrive', icon: '☁️' },
 }
+
+// Providers shown in the Cloud Storage section. Google Workspace has its own
+// dedicated section because the integration covers more than just storage.
+const CLOUD_STORAGE_PROVIDERS = ['onedrive']
 
 async function loadStatus() {
   loading.value = true
   try {
     const status = await fetchCloudStorageStatus()
-    providers.value = Object.entries(status).map(([id, providerStatus]) => ({
-      id,
-      label: PROVIDER_META[id]?.label ?? id,
-      icon: PROVIDER_META[id]?.icon ?? '📂',
-      status: providerStatus,
-    }))
+    providers.value = Object.entries(status)
+      .filter(([id]) => CLOUD_STORAGE_PROVIDERS.includes(id))
+      .map(([id, providerStatus]) => ({
+        id,
+        label: PROVIDER_META[id]?.label ?? id,
+        icon: PROVIDER_META[id]?.icon ?? '📂',
+        status: providerStatus,
+      }))
   } catch {
     toast.error('Failed to load cloud storage status.')
   } finally {

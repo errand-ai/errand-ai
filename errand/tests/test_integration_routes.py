@@ -69,7 +69,15 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     assert url.startswith("https://accounts.google.com/")
     assert "goog-client-id" in url
     assert "access_type=offline" in url
+    # Expanded Google Workspace scopes — drive plus gmail/calendar/etc.
     assert "drive" in url
+    assert "gmail.modify" in url
+    assert "calendar" in url
+    assert "spreadsheets" in url
+    assert "documents" in url
+    assert "chat.messages" in url
+    assert "tasks" in url
+    assert "contacts.readonly" in url
     assert "state=" in url
 
 
@@ -103,7 +111,7 @@ async def test_authorize_not_configured(integration_client):
 async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     """When no local credentials but cloud is connected, redirects to cloud service."""
     client, session_factory, redis = integration_client
-    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
+    # Google Workspace no longer requires an MCP URL — access is via gws CLI env var.
     # No GOOGLE_CLIENT_ID/SECRET
 
     # Create cloud PlatformCredential
@@ -166,14 +174,16 @@ async def test_authorize_unknown_provider(integration_client):
 # --- Callback ---
 
 
-def _mock_token_response(access_token="ya29.test", refresh_token="1//refresh", expires_in=3600):
-    resp = Response(200, json={
+def _mock_token_response(access_token="ya29.test", refresh_token="1//refresh", expires_in=3600, scope=None):
+    body = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": expires_in,
         "token_type": "Bearer",
-    })
-    return resp
+    }
+    if scope is not None:
+        body["scope"] = scope
+    return Response(200, json=body)
 
 
 def _mock_userinfo_response(email="user@example.com", name="Test User", provider="google_drive"):
@@ -192,8 +202,14 @@ async def test_callback_google_success(integration_client, monkeypatch):
     # Set up valid OAuth state
     await redis.setex("oauth_state:test-state", 600, "google_drive")
 
+    granted = (
+        "openid email profile "
+        "https://www.googleapis.com/auth/drive "
+        "https://www.googleapis.com/auth/gmail.modify "
+        "https://www.googleapis.com/auth/calendar"
+    )
     mock_client = AsyncMock()
-    mock_client.post.return_value = _mock_token_response()
+    mock_client.post.return_value = _mock_token_response(scope=granted)
     mock_client.get.return_value = _mock_userinfo_response()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -220,6 +236,9 @@ async def test_callback_google_success(integration_client, monkeypatch):
         assert data["refresh_token"] == "1//refresh"
         assert data["user_email"] == "user@example.com"
         assert data["user_name"] == "Test User"
+        # Granted scopes are persisted for stale-scope detection.
+        assert "https://www.googleapis.com/auth/drive" in data["granted_scopes"]
+        assert "https://www.googleapis.com/auth/gmail.modify" in data["granted_scopes"]
 
 
 @pytest.mark.anyio
@@ -354,12 +373,12 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
     client, session_factory, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
-    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
     monkeypatch.setenv("MICROSOFT_CLIENT_ID", "ms-id")
     monkeypatch.setenv("MICROSOFT_CLIENT_SECRET", "ms-secret")
     monkeypatch.setenv("ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp")
 
-    # Connect Google Drive only
+    # Connect Google Drive with current full scope set — should not trigger reauth.
+    from integration_routes import GOOGLE_WORKSPACE_SCOPES
     async with session_factory() as session:
         session.add(PlatformCredential(
             platform_id="google_drive",
@@ -367,6 +386,7 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
                 "access_token": "test",
                 "user_email": "user@gmail.com",
                 "user_name": "Test User",
+                "granted_scopes": GOOGLE_WORKSPACE_SCOPES.split(),
             }),
             status="connected",
         ))
@@ -380,11 +400,62 @@ async def test_status_both_available_one_connected(integration_client, monkeypat
     assert data["google_drive"]["connected"] is True
     assert data["google_drive"]["mode"] == "direct"
     assert data["google_drive"]["user_email"] == "user@gmail.com"
+    assert data["google_drive"]["reauth_required"] is False
 
     assert data["onedrive"]["available"] is True
     assert data["onedrive"]["connected"] is False
     assert data["onedrive"]["mode"] == "direct"
     assert "user_email" not in data["onedrive"]
+
+
+@pytest.mark.anyio
+async def test_status_google_workspace_reauth_required(integration_client, monkeypatch):
+    """Existing Drive-only credential triggers reauth_required after scope expansion."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="google_drive",
+            encrypted_data=encrypt({
+                "access_token": "test",
+                "user_email": "old@gmail.com",
+                "user_name": "Old User",
+                # Pre-expansion: only drive scope was granted.
+                "granted_scopes": [
+                    "openid", "email", "profile",
+                    "https://www.googleapis.com/auth/drive",
+                ],
+            }),
+            status="connected",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["connected"] is True
+    assert data["google_drive"]["reauth_required"] is True
+
+
+@pytest.mark.anyio
+async def test_status_google_workspace_no_granted_scopes_field(integration_client, monkeypatch):
+    """Older credential rows without granted_scopes are treated as needing reauth."""
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="google_drive",
+            encrypted_data=encrypt({"access_token": "legacy"}),
+            status="connected",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["reauth_required"] is True
 
 
 @pytest.mark.anyio
@@ -403,26 +474,26 @@ async def test_status_not_available(integration_client):
 
 
 @pytest.mark.anyio
-async def test_status_partial_config(integration_client, monkeypatch):
-    """Client ID set but no MCP URL — not available."""
+async def test_status_google_no_mcp_url_required(integration_client, monkeypatch):
+    """Google Workspace is available with only client credentials — no MCP URL needed."""
     client, _, _ = integration_client
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
-    # No GDRIVE_MCP_URL
+    # No GDRIVE_MCP_URL — gws CLI replaces gdrive-mcp.
 
     resp = await client.get("/api/integrations/status")
     data = resp.json()
-    assert data["google_drive"]["available"] is False
-    assert data["google_drive"]["mode"] is None
-    assert data["google_drive"]["mcp_configured"] is False
+    assert data["google_drive"]["available"] is True
+    assert data["google_drive"]["mode"] == "direct"
+    # mcp_configured is True for google_drive (no longer URL-gated).
+    assert data["google_drive"]["mcp_configured"] is True
 
 
 @pytest.mark.anyio
 async def test_status_cloud_mode(integration_client, monkeypatch):
     """When no local credentials but cloud is connected, mode is 'cloud'."""
     client, session_factory, _ = integration_client
-    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
-    # No GOOGLE_CLIENT_ID/SECRET
+    # No GOOGLE_CLIENT_ID/SECRET — and no GDRIVE_MCP_URL is required either.
 
     # Create cloud PlatformCredential
     async with session_factory() as session:
@@ -438,14 +509,12 @@ async def test_status_cloud_mode(integration_client, monkeypatch):
     assert data["google_drive"]["available"] is True
     assert data["google_drive"]["mode"] == "cloud"
     assert data["google_drive"]["connected"] is False
-    assert data["google_drive"]["mcp_configured"] is True
 
 
 @pytest.mark.anyio
 async def test_status_cloud_not_connected(integration_client, monkeypatch):
-    """MCP URL set, no local creds, cloud credential exists but not connected."""
+    """No local creds, cloud credential exists but not connected → unavailable."""
     client, session_factory, _ = integration_client
-    monkeypatch.setenv("GDRIVE_MCP_URL", "http://gdrive:8080/mcp")
 
     async with session_factory() as session:
         session.add(PlatformCredential(
@@ -459,16 +528,19 @@ async def test_status_cloud_not_connected(integration_client, monkeypatch):
     data = resp.json()
     assert data["google_drive"]["available"] is False
     assert data["google_drive"]["mode"] is None
-    assert data["google_drive"]["mcp_configured"] is True
 
 
 @pytest.mark.anyio
 async def test_status_mcp_configured_field(integration_client, monkeypatch):
-    """mcp_configured field reflects MCP URL presence."""
+    """mcp_configured reflects MCP URL presence for OneDrive only.
+
+    Google Workspace always reports mcp_configured=True since the gws CLI
+    is bundled into the task-runner image and does not require an MCP URL.
+    """
     client, _, _ = integration_client
     monkeypatch.setenv("ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp")
 
     resp = await client.get("/api/integrations/status")
     data = resp.json()
-    assert data["google_drive"]["mcp_configured"] is False
+    assert data["google_drive"]["mcp_configured"] is True
     assert data["onedrive"]["mcp_configured"] is True

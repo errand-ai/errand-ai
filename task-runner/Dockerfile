@@ -38,6 +38,27 @@ RUN mkdir -p /staged-libs && \
       done ; \
     done
 
+FROM debian:bookworm-slim AS gws-builder
+ARG GWS_VERSION=0.22.5
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+# Map Docker's TARGETARCH to the gws release tarball target triple.
+RUN case "${TARGETARCH}" in \
+      amd64) GWS_TARGET=x86_64-unknown-linux-gnu ;; \
+      arm64) GWS_TARGET=aarch64-unknown-linux-gnu ;; \
+      *)     echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/googleworkspace/cli/releases/download/v${GWS_VERSION}/google-workspace-cli-${GWS_TARGET}.tar.gz" \
+      | tar xz -C /tmp && \
+    install -m 0755 /tmp/gws /usr/local/bin/gws
+# Clone the repo at the matching tag to obtain the bundled SKILL.md files
+# (skills are pre-authored under skills/gws-*, versioned alongside the binary).
+RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googleworkspace/cli.git /tmp/gws-cli && \
+    mkdir -p /gws-skills && \
+    cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
+
 FROM node:22-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
 # Stage npm for entrypoint-phase skill dependency installation
@@ -88,6 +109,10 @@ COPY --from=node-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=node-builder /usr/local/bin/openspec-sh /usr/local/bin/openspec
 # Copy staged npm for entrypoint-phase skill dependency installation
 COPY --from=node-builder --chown=65532:65532 /npm-staging /opt/npm-bootstrap
+
+# Copy gws CLI binary and bundled agent skills from gws-builder
+COPY --from=gws-builder /usr/local/bin/gws /usr/local/bin/gws
+COPY --from=gws-builder /gws-skills /opt/system-skills/gws
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.
