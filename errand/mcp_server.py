@@ -906,7 +906,8 @@ async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None)
             "summary": summary,
         })
 
-    # Sort: dated items newest first, undated items last (empty string sorts before any ISO date in reverse)
+    # Sort: dated items newest first, undated items last
+    # Tuple key (has_date, date_str) ensures dated entries sort before undated ones
     items.sort(key=lambda x: (bool(x["published"]), x["published"]), reverse=True)
     max_items = max(1, min(max_items, 100))
     items = items[:max_items]

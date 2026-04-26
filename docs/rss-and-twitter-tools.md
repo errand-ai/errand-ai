@@ -29,7 +29,7 @@ Reply to a tweet by ID.
 | `tweet_id` | str | required | ID of tweet to reply to |
 | `message` | str | required | Reply text (1-280 chars) |
 
-**Returns:** Reply URL on success, error message on failure.
+**Returns:** `"Reply posted: <url>"` on success, error message on failure.
 
 ```
 reply_to_tweet("1234567890", "Great insight! Here's a follow-up thought.")
