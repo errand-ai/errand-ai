@@ -657,6 +657,8 @@ async def post_tweet(message: str) -> str:
 @mcp.tool()
 async def reply_to_tweet(tweet_id: str, message: str) -> str:
     """Reply to a tweet by ID. Message must be 1-280 characters."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
     if not message or not message.strip():
         return "Error: Message cannot be empty"
 
@@ -685,6 +687,8 @@ async def reply_to_tweet(tweet_id: str, message: str) -> str:
 @mcp.tool()
 async def like_tweet(tweet_id: str) -> str:
     """Like a tweet by ID."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
     from platforms import get_registry
 
     credentials = await _load_twitter_credentials()
@@ -706,6 +710,8 @@ async def like_tweet(tweet_id: str) -> str:
 @mcp.tool()
 async def retweet(tweet_id: str) -> str:
     """Retweet a tweet by ID."""
+    if not tweet_id or not tweet_id.strip():
+        return "Error: Tweet ID cannot be empty"
     from platforms import get_registry
 
     credentials = await _load_twitter_credentials()
@@ -727,6 +733,8 @@ async def retweet(tweet_id: str) -> str:
 @mcp.tool()
 async def get_tweet_metrics(tweet_id: str) -> str:
     """Get metrics for a tweet by ID. Returns JSON with text, dates, and all available metric categories."""
+    if not tweet_id or not tweet_id.strip():
+        return json.dumps({"error": "Tweet ID cannot be empty"})
     from platforms import get_registry
 
     credentials = await _load_twitter_credentials()
@@ -785,8 +793,8 @@ async def search_tweets(query: str, max_results: int = 10) -> str:
         return json.dumps({"error": "Twitter platform not registered"})
 
     try:
-        tweets = await platform.search(query, credentials=credentials, max_results=max_results)
-        return json.dumps(tweets)
+        result = await platform.search(query, credentials=credentials, max_results=max_results)
+        return json.dumps(result.get("results", []))
     except ValueError as e:
         return json.dumps({"error": str(e)})
     except Exception as e:
@@ -857,6 +865,8 @@ async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None)
     if since:
         try:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                return json.dumps({"error": f"Invalid 'since' datetime: {since}. Timezone offset or 'Z' is required."})
         except ValueError:
             return json.dumps({"error": f"Invalid 'since' datetime format: {since}"})
 
@@ -869,14 +879,14 @@ async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None)
             try:
                 published_dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                 published = published_dt.isoformat()
-            except Exception:
-                pass
+            except (TypeError, ValueError, OverflowError):
+                logger.debug("Failed to parse published date for feed entry: %s", getattr(entry, "title", ""), exc_info=True)
         elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
             try:
                 published_dt = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
                 published = published_dt.isoformat()
-            except Exception:
-                pass
+            except (TypeError, ValueError, OverflowError):
+                logger.debug("Failed to parse updated date for feed entry: %s", getattr(entry, "title", ""), exc_info=True)
 
         if since_dt and published_dt and published_dt <= since_dt:
             continue
@@ -898,6 +908,7 @@ async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None)
 
     # Sort: dated items newest first, undated items last (empty string sorts before any ISO date in reverse)
     items.sort(key=lambda x: (bool(x["published"]), x["published"]), reverse=True)
+    max_items = max(1, min(max_items, 100))
     items = items[:max_items]
 
     feed_meta = {

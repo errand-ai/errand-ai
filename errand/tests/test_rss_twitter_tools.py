@@ -710,5 +710,6 @@ async def test_twitter_platform_search():
             "api_key": "k", "api_secret": "s", "access_token": "t", "access_secret": "a",
         }, max_results=10)
 
-    assert len(result) == 1
-    assert result[0]["author_username"] == "author1"
+    assert result["query"] == "query"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["author_username"] == "author1"

@@ -187,7 +187,7 @@ class TwitterPlatform(Platform):
                 tweets.append(t)
         return tweets
 
-    async def search(self, query: str, **kwargs) -> list[dict]:
+    async def search(self, query: str, **kwargs) -> dict:
         import tweepy
 
         credentials = kwargs.get("credentials")
@@ -234,4 +234,4 @@ class TwitterPlatform(Platform):
                     "author_username": users.get(str(tweet.author_id), ""),
                     "public_metrics": dict(tweet.public_metrics) if tweet.public_metrics else {},
                 })
-        return tweets
+        return {"query": query, "results": tweets}
