@@ -51,8 +51,11 @@ class TwitterPlatform(Platform):
             )
             response = client.create_tweet(text=message)
             tweet_id = response.data["id"]
-            user = client.get_me()
-            username = user.data.username if user.data else "i"
+            try:
+                user = client.get_me()
+                username = user.data.username if user.data else "i"
+            except Exception:
+                username = "i"
             url = f"https://x.com/{username}/status/{tweet_id}"
             return PostResult(success=True, url=url)
         except Exception as e:
@@ -74,8 +77,11 @@ class TwitterPlatform(Platform):
             )
             response = client.create_tweet(text=message, in_reply_to_tweet_id=tweet_id)
             reply_id = response.data["id"]
-            user = client.get_me()
-            username = user.data.username if user.data else "i"
+            try:
+                user = client.get_me()
+                username = user.data.username if user.data else "i"
+            except Exception:
+                username = "i"
             url = f"https://x.com/{username}/status/{reply_id}"
             return PostResult(success=True, url=url)
         except Exception as e:
