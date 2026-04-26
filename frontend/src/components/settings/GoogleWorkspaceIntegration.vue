@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchCloudStorageStatus,
@@ -31,6 +31,27 @@ const SERVICES: Service[] = [
 const status = ref<CloudStorageProviderStatus | null>(null)
 const loading = ref(true)
 const disconnecting = ref(false)
+
+// Polling state for the OAuth popup. Tracked in refs so the interval is
+// cleared deterministically on unmount or after a max wait — we don't want a
+// stray timer running forever if the popup is blocked or the user navigates
+// away mid-flow.
+const popupPoll = ref<ReturnType<typeof setInterval> | null>(null)
+const popupTimeout = ref<ReturnType<typeof setTimeout> | null>(null)
+// Cap the popup wait at 10 minutes — beyond that, OAuth state has expired
+// server-side anyway (OAUTH_STATE_TTL = 600s).
+const POPUP_MAX_WAIT_MS = 10 * 60 * 1000
+
+function stopPolling() {
+  if (popupPoll.value !== null) {
+    clearInterval(popupPoll.value)
+    popupPoll.value = null
+  }
+  if (popupTimeout.value !== null) {
+    clearTimeout(popupTimeout.value)
+    popupTimeout.value = null
+  }
+}
 
 const reauthRequired = computed(() => status.value?.reauth_required === true)
 const isConnected = computed(() => status.value?.connected === true)
@@ -64,12 +85,20 @@ async function connect() {
       toast.error('Popup blocked — please allow popups for this site')
       return
     }
-    const poll = setInterval(async () => {
+    // Replace any existing poll (e.g. from a previous click) so we never run
+    // two pollers concurrently.
+    stopPolling()
+    popupPoll.value = setInterval(() => {
       if (popup.closed) {
-        clearInterval(poll)
-        await loadStatus()
+        stopPolling()
+        loadStatus()
       }
     }, 500)
+    popupTimeout.value = setTimeout(() => {
+      // Give up polling after the max wait — OAuth state has expired server
+      // side and the user can simply click Connect again.
+      stopPolling()
+    }, POPUP_MAX_WAIT_MS)
   } catch {
     toast.error('Failed to start Google Workspace authorization')
   }
@@ -92,6 +121,7 @@ const taskStore = useTaskStore()
 watch(() => taskStore.cloudStorageChanged, () => { loadStatus() })
 
 onMounted(loadStatus)
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>

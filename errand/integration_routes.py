@@ -31,7 +31,8 @@ OAUTH_STATE_TTL = 600  # 10 minutes
 
 # Google Workspace OAuth scopes — covers Drive, Gmail, Calendar, Sheets, Docs,
 # Chat, Tasks, and Contacts so the gws CLI can operate across all services.
-# Order matters for stale-scope detection (we compare stored vs required as sets).
+# Stale-scope detection compares stored vs required as sets, so order does not
+# affect correctness here.
 GOOGLE_WORKSPACE_SCOPES = " ".join([
     "openid",
     "email",
@@ -314,6 +315,15 @@ async def callback(
     if not access_token:
         return _popup_close_response("No access token received", error=True)
 
+    # Authorization servers (Google in particular) may omit `refresh_token`
+    # on subsequent authorizations even when one is still valid server-side.
+    # Preserve the previously-stored refresh token in that case so re-auth
+    # doesn't accidentally disable background refreshes.
+    if not refresh_token:
+        existing_creds = await load_credentials(provider, session)
+        if existing_creds and existing_creds.get("refresh_token"):
+            refresh_token = existing_creds["refresh_token"]
+
     # Fetch user info
     user_email = ""
     user_name = ""
@@ -463,8 +473,12 @@ async def integration_status(
             "available": available,
             "connected": connected,
             "mode": mode,
-            "mcp_configured": _has_mcp_url(provider),
         }
+        # `mcp_configured` is only meaningful for providers that gate on an MCP
+        # URL. Google Workspace uses the bundled `gws` CLI and does not require
+        # one, so the field is omitted to avoid misleading API consumers.
+        if provider != "google_drive":
+            entry["mcp_configured"] = _has_mcp_url(provider)
         if connected and creds:
             entry["user_email"] = creds.get("user_email", "")
             entry["user_name"] = creds.get("user_name", "")

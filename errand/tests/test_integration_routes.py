@@ -275,6 +275,63 @@ async def test_callback_invalid_state(integration_client, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_callback_preserves_existing_refresh_token(integration_client, monkeypatch):
+    """When the token response omits refresh_token, preserve the previously stored one."""
+    client, session_factory, redis = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    # Pre-existing credential row with a valid refresh token from an earlier auth.
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="google_drive",
+            encrypted_data=encrypt({
+                "access_token": "ya29.old",
+                "refresh_token": "1//keep-this",
+                "expires_at": 0,
+                "user_email": "u@example.com",
+                "user_name": "U",
+                "granted_scopes": [],
+            }),
+            status="connected",
+        ))
+        await session.commit()
+
+    await redis.setex("oauth_state:reauth-state", 600, "google_drive")
+
+    # Token response without refresh_token (Google does this on re-auth without prompt=consent).
+    resp_body = {
+        "access_token": "ya29.new",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+        "scope": "openid email profile https://www.googleapis.com/auth/drive",
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = Response(200, json=resp_body)
+    mock_client.get.return_value = _mock_userinfo_response()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("integration_routes.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.get(
+            "/api/integrations/google_drive/callback?code=AUTH_CODE&state=reauth-state",
+        )
+
+    assert resp.status_code == 200
+
+    async with session_factory() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(PlatformCredential).where(PlatformCredential.platform_id == "google_drive")
+        )
+        cred = result.scalar_one()
+        data = decrypt(cred.encrypted_data)
+        assert data["access_token"] == "ya29.new"
+        # Original refresh_token must be retained when the new response omits it.
+        assert data["refresh_token"] == "1//keep-this"
+
+
+@pytest.mark.anyio
 async def test_callback_missing_state(integration_client, monkeypatch):
     """Callback without state parameter should be rejected."""
     client, _, redis = integration_client
@@ -485,8 +542,9 @@ async def test_status_google_no_mcp_url_required(integration_client, monkeypatch
     data = resp.json()
     assert data["google_drive"]["available"] is True
     assert data["google_drive"]["mode"] == "direct"
-    # mcp_configured is True for google_drive (no longer URL-gated).
-    assert data["google_drive"]["mcp_configured"] is True
+    # `mcp_configured` is omitted entirely for google_drive — the gws CLI does
+    # not gate on an MCP URL, so the field would only mislead API consumers.
+    assert "mcp_configured" not in data["google_drive"]
 
 
 @pytest.mark.anyio
@@ -532,15 +590,15 @@ async def test_status_cloud_not_connected(integration_client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_status_mcp_configured_field(integration_client, monkeypatch):
-    """mcp_configured reflects MCP URL presence for OneDrive only.
+    """mcp_configured is only emitted for OneDrive (the remaining MCP-URL-gated provider).
 
-    Google Workspace always reports mcp_configured=True since the gws CLI
-    is bundled into the task-runner image and does not require an MCP URL.
+    Google Workspace omits the field entirely because the gws CLI is bundled
+    into the task-runner image and does not require an MCP URL.
     """
     client, _, _ = integration_client
     monkeypatch.setenv("ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp")
 
     resp = await client.get("/api/integrations/status")
     data = resp.json()
-    assert data["google_drive"]["mcp_configured"] is True
+    assert "mcp_configured" not in data["google_drive"]
     assert data["onedrive"]["mcp_configured"] is True

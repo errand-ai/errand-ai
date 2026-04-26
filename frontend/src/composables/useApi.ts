@@ -361,7 +361,9 @@ export interface CloudStorageProviderStatus {
   available: boolean
   connected: boolean
   mode: 'direct' | 'cloud' | null
-  mcp_configured: boolean
+  /** Only present for providers that gate on an MCP URL (currently OneDrive).
+   *  Google Workspace uses the bundled `gws` CLI and omits this field. */
+  mcp_configured?: boolean
   user_email?: string
   user_name?: string
   /** True when stored OAuth scopes are narrower than the currently required set
