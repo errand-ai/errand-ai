@@ -1,5 +1,5 @@
 """Unit tests for container_runtime.py — ContainerRuntime ABC, DockerRuntime, KubernetesRuntime, AppleContainerRuntime."""
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
@@ -670,7 +670,7 @@ class TestKubernetesRuntime:
 
 
 class TestCleanupOrphanedJobs:
-    """Tests for the cleanup_orphaned_jobs function."""
+    """Tests for the async cleanup_orphaned_jobs function."""
 
     def _make_runtime(self):
         with patch("container_runtime.KubernetesRuntime.__init__", return_value=None):
@@ -680,8 +680,8 @@ class TestCleanupOrphanedJobs:
         runtime.namespace = "test-ns"
         return runtime
 
-    @patch("container_runtime._recover_orphaned_task")
-    def test_cleans_up_orphaned_jobs_configmaps_and_secrets(self, mock_recover):
+    @patch("container_runtime._recover_orphaned_task", new_callable=AsyncMock)
+    async def test_cleans_up_orphaned_jobs_configmaps_and_secrets(self, mock_recover):
         """cleanup_orphaned_jobs deletes all matching Jobs, ConfigMaps, and Secrets."""
         runtime = self._make_runtime()
 
@@ -699,7 +699,7 @@ class TestCleanupOrphanedJobs:
         mock_secret.metadata.name = "task-runner-ssh-old"
         runtime.core_v1.list_namespaced_secret.return_value.items = [mock_secret]
 
-        cleanup_orphaned_jobs(runtime)
+        await cleanup_orphaned_jobs(runtime)
 
         mock_recover.assert_called_once_with("abc-123")
         runtime.batch_v1.delete_namespaced_job.assert_called_once_with(
@@ -716,7 +716,7 @@ class TestCleanupOrphanedJobs:
             "test-ns",
         )
 
-    def test_handles_list_api_error(self):
+    async def test_handles_list_api_error(self):
         """cleanup_orphaned_jobs handles ApiException when listing resources."""
         from kubernetes.client.rest import ApiException
 
@@ -724,10 +724,10 @@ class TestCleanupOrphanedJobs:
         runtime.batch_v1.list_namespaced_job.side_effect = ApiException(status=403)
 
         # Should not raise
-        cleanup_orphaned_jobs(runtime)
+        await cleanup_orphaned_jobs(runtime)
 
-    @patch("container_runtime._recover_orphaned_task")
-    def test_handles_delete_api_error(self, mock_recover):
+    @patch("container_runtime._recover_orphaned_task", new_callable=AsyncMock)
+    async def test_handles_delete_api_error(self, mock_recover):
         """cleanup_orphaned_jobs continues when individual delete fails."""
         from kubernetes.client.rest import ApiException
 
@@ -743,10 +743,10 @@ class TestCleanupOrphanedJobs:
         runtime.core_v1.list_namespaced_secret.return_value.items = []
 
         # Should not raise
-        cleanup_orphaned_jobs(runtime)
+        await cleanup_orphaned_jobs(runtime)
 
-    @patch("container_runtime._recover_orphaned_task")
-    def test_recovery_failure_does_not_block_cleanup(self, mock_recover):
+    @patch("container_runtime._recover_orphaned_task", new_callable=AsyncMock)
+    async def test_recovery_failure_does_not_block_cleanup(self, mock_recover):
         """If task recovery fails, the Job is still deleted."""
         runtime = self._make_runtime()
         mock_recover.side_effect = Exception("DB error")
@@ -760,13 +760,13 @@ class TestCleanupOrphanedJobs:
         runtime.core_v1.list_namespaced_secret.return_value.items = []
 
         # Should not raise — recovery failure is caught
-        cleanup_orphaned_jobs(runtime)
+        await cleanup_orphaned_jobs(runtime)
 
         # Job should still be deleted despite recovery failure
         runtime.batch_v1.delete_namespaced_job.assert_called_once()
 
-    @patch("container_runtime._recover_orphaned_task")
-    def test_job_without_task_id_label_still_deleted(self, mock_recover):
+    @patch("container_runtime._recover_orphaned_task", new_callable=AsyncMock)
+    async def test_job_without_task_id_label_still_deleted(self, mock_recover):
         """Jobs without the task-id label are deleted without attempting recovery."""
         runtime = self._make_runtime()
 
@@ -778,7 +778,7 @@ class TestCleanupOrphanedJobs:
         runtime.core_v1.list_namespaced_config_map.return_value.items = []
         runtime.core_v1.list_namespaced_secret.return_value.items = []
 
-        cleanup_orphaned_jobs(runtime)
+        await cleanup_orphaned_jobs(runtime)
 
         mock_recover.assert_not_called()
         runtime.batch_v1.delete_namespaced_job.assert_called_once()
@@ -790,7 +790,6 @@ class TestCleanupOrphanedJobs:
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -879,68 +878,65 @@ import tempfile as _tempfile
 import os as _os
 
 
-def _setup_recover_db():
+async def _setup_recover_db():
     """Create file-based SQLite DB and return (session_factory, engine, db_path).
 
-    Uses a temp file so asyncio.run() in _recover_orphaned_task (which opens a
-    new connection) sees the same data.
+    Async version — called from async test functions.
     """
     fd, db_path = _tempfile.mkstemp(suffix=".db")
     _os.close(fd)
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
 
-    async def _init():
-        async with engine.begin() as conn:
-            await conn.execute(text(_TASKS_TABLE_SQL))
-            await conn.execute(text(_TAGS_TABLE_SQL))
-            await conn.execute(text(_TASK_TAGS_TABLE_SQL))
+    async with engine.begin() as conn:
+        await conn.execute(text(_TASKS_TABLE_SQL))
+        await conn.execute(text(_TAGS_TABLE_SQL))
+        await conn.execute(text(_TASK_TAGS_TABLE_SQL))
 
-    _asyncio.run(_init())
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False), engine, db_path
 
 
 class TestRecoverOrphanedTask:
-    """Tests for _recover_orphaned_task DB logic (sync — function uses asyncio.run)."""
+    """Tests for async _recover_orphaned_task DB logic."""
 
-    def test_non_running_task_not_modified(self):
+    async def test_non_running_task_not_modified(self):
         """A task not in running status is left unchanged by orphan recovery."""
-        sf, engine, db_path = _setup_recover_db()
-        task_id = _asyncio.run(_insert_task(sf, status="completed"))
+        sf, engine, db_path = await _setup_recover_db()
+        task_id = await _insert_task(sf, status="completed")
 
         with patch("database.async_session", sf), \
              patch("events.publish_event", new_callable=AsyncMock) as mock_pub:
-            _recover_orphaned_task(task_id)
+            await _recover_orphaned_task(task_id)
 
-        task = _asyncio.run(_get_task(sf, task_id))
+        task = await _get_task(sf, task_id)
         assert task["status"] == "completed"
         mock_pub.assert_not_called()
-        _asyncio.run(engine.dispose())
+        await engine.dispose()
         _os.unlink(db_path)
 
-    def test_missing_task_does_not_raise(self):
+    async def test_missing_task_does_not_raise(self):
         """Recovery for a task ID not in the DB logs a warning and returns."""
-        sf, engine, db_path = _setup_recover_db()
+        sf, engine, db_path = await _setup_recover_db()
 
         with patch("database.async_session", sf):
-            _recover_orphaned_task(str(uuid.uuid4()))
+            await _recover_orphaned_task(str(uuid.uuid4()))
 
-        _asyncio.run(engine.dispose())
+        await engine.dispose()
         _os.unlink(db_path)
 
-    def test_exhausted_retries_moved_to_review(self):
+    async def test_exhausted_retries_moved_to_review(self):
         """A running task with retry_count >= 5 is moved to review."""
-        sf, engine, db_path = _setup_recover_db()
-        task_id = _asyncio.run(_insert_task(sf, status="running", retry_count=5))
+        sf, engine, db_path = await _setup_recover_db()
+        task_id = await _insert_task(sf, status="running", retry_count=5)
 
         with patch("database.async_session", sf), \
              patch("events.publish_event", new_callable=AsyncMock):
-            _recover_orphaned_task(task_id)
+            await _recover_orphaned_task(task_id)
 
-        task = _asyncio.run(_get_task(sf, task_id))
+        task = await _get_task(sf, task_id)
         assert task["status"] == "review"
-        assert "startup cleanup" in task["output"].lower()
+        assert "server startup cleanup" in task["output"].lower()
         assert task["heartbeat_at"] is None
-        _asyncio.run(engine.dispose())
+        await engine.dispose()
         _os.unlink(db_path)
 
 
@@ -1141,14 +1137,12 @@ class TestCreateRuntime:
         assert isinstance(result, DockerRuntime)
         mock_client.ping.assert_called_once()
 
-    @patch("container_runtime.cleanup_orphaned_jobs")
     @patch("container_runtime.KubernetesRuntime.__init__", return_value=None)
-    def test_create_runtime_kubernetes(self, mock_init, mock_cleanup):
+    def test_create_runtime_kubernetes(self, mock_init):
         """create_runtime('kubernetes') returns a KubernetesRuntime."""
         result = create_runtime("kubernetes")
 
         assert isinstance(result, KubernetesRuntime)
-        mock_cleanup.assert_called_once()
 
     @patch("container_runtime.requests")
     @patch.dict("os.environ", {"CONTAINER_BRIDGE_TOKEN": "secret-token"})
@@ -1277,12 +1271,10 @@ class TestCreateRuntimeEnvDefault:
         assert isinstance(result, DockerRuntime)
         mock_client.ping.assert_called_once()
 
-    @patch("container_runtime.cleanup_orphaned_jobs")
     @patch("container_runtime.KubernetesRuntime.__init__", return_value=None)
     @patch.dict("os.environ", {"CONTAINER_RUNTIME": "kubernetes"})
-    def test_reads_env_var_for_kubernetes(self, mock_init, mock_cleanup):
+    def test_reads_env_var_for_kubernetes(self, mock_init):
         """create_runtime() with no args reads CONTAINER_RUNTIME env var."""
         result = create_runtime()
 
         assert isinstance(result, KubernetesRuntime)
-        mock_cleanup.assert_called_once()

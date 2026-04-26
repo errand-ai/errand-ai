@@ -8,6 +8,8 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from container_runtime import RuntimeHandle
 from task_manager import (
     HEARTBEAT_INTERVAL,
@@ -434,6 +436,70 @@ class TestPerTaskLifecycle:
             await tm._run_task(task, settings)
 
         assert heartbeat_cancelled
+
+
+# ---------------------------------------------------------------------------
+# CancelledError handler — fix-stuck-running-tasks
+# ---------------------------------------------------------------------------
+
+class TestCancelledErrorHandler:
+    """Verify _run_task handles asyncio.CancelledError correctly."""
+
+    async def test_cancelled_error_schedules_retry(self):
+        """When _process_task is cancelled, _schedule_retry is called and CancelledError re-raised."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+        }
+
+        tm = TaskManager()
+        tm._runtime = _make_mock_runtime()
+
+        async def cancelled_process_task(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        mock_retry = AsyncMock()
+
+        with patch.object(tm, "_heartbeat_loop", AsyncMock()), \
+             patch.object(tm, "_process_task", cancelled_process_task), \
+             patch.object(tm, "_schedule_retry", mock_retry):
+            with pytest.raises(asyncio.CancelledError):
+                await tm._run_task(task, settings)
+
+        mock_retry.assert_called_once()
+        call_args = mock_retry.call_args
+        assert call_args[0][0] is task
+        assert "cancelled" in call_args[1].get("output", "").lower()
+
+    async def test_cancelled_error_retry_failure_still_reraises(self):
+        """When _schedule_retry fails during CancelledError, CancelledError is still re-raised."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+        }
+
+        tm = TaskManager()
+        tm._runtime = _make_mock_runtime()
+
+        async def cancelled_process_task(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        mock_retry = AsyncMock(side_effect=Exception("DB connection closed"))
+
+        with patch.object(tm, "_heartbeat_loop", AsyncMock()), \
+             patch.object(tm, "_process_task", cancelled_process_task), \
+             patch.object(tm, "_schedule_retry", mock_retry):
+            with pytest.raises(asyncio.CancelledError):
+                await tm._run_task(task, settings)
+
+        # _schedule_retry was called even though it failed
+        mock_retry.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
