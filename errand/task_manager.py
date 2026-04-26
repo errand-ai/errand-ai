@@ -401,6 +401,12 @@ def parse_skills_from_directory(base_path: str) -> list[dict]:
                         description = line[len("description:"):].strip()
 
         files = []
+        # Include root-level dependency files (requirements.txt, package.json)
+        for dep_file in ("requirements.txt", "package.json"):
+            dep_path = os.path.join(skill_dir, dep_file)
+            if os.path.isfile(dep_path):
+                with open(dep_path, "r", encoding="utf-8") as f:
+                    files.append({"path": dep_file, "content": f.read()})
         for subdir in ("scripts", "references", "assets"):
             subdir_path = os.path.join(skill_dir, subdir)
             if not os.path.isdir(subdir_path):
