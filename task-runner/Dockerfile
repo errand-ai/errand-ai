@@ -38,7 +38,7 @@ RUN mkdir -p /staged-libs && \
       done ; \
     done
 
-FROM node:22-bookworm-slim AS node-builder
+FROM node:24-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
 # Stage npm for entrypoint-phase skill dependency installation
 RUN mkdir -p /npm-staging && cp -rL /usr/local/lib/node_modules/npm /npm-staging/lib && \
