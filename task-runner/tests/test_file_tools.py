@@ -282,3 +282,19 @@ async def test_mutation_queue_allows_different_paths(tmp_dir):
     start_indices = [order.index(s) for s in starts]
     end_indices = [order.index(e) for e in ends]
     assert max(start_indices) < min(end_indices)
+
+
+# ---------------------------------------------------------------------------
+# read_file — binary file returns actionable error message
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_file_binary_file_error(tmp_dir):
+    """read_file returns actionable binary file error for non-UTF-8 files."""
+    path = os.path.join(tmp_dir, "image.png")
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\xff\xfe" * 100)
+    result = await read_file(path)
+    assert "Binary file detected" in result
+    assert "file-path-based" in result
+    assert "context window" in result

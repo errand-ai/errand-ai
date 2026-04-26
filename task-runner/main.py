@@ -332,6 +332,7 @@ COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "120"))
 MAX_RETAINED_SCREENSHOTS = int(os.environ.get("MAX_RETAINED_SCREENSHOTS", "2"))
 MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "150000"))
 CHARS_PER_TOKEN = 3  # conservative: base64 images tokenize at ~2-3 chars/token
+MAX_TOOL_OUTPUT_CHARS = int(MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN * 0.25)
 KEEP_RECENT_TOKENS = 20_000  # tokens of recent messages to retain during compaction
 
 # Marker that identifies a compaction summary message (task 4.2)
@@ -426,6 +427,18 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
         output = "\n".join(output_parts) if output_parts else "(no output)"
         if result.returncode != 0:
             output = f"Command exited with code {result.returncode}\n{output}"
+        if len(output) > MAX_TOOL_OUTPUT_CHARS:
+            original_len = len(output)
+            output = output[:MAX_TOOL_OUTPUT_CHARS] + (
+                f"\n\n[OUTPUT TRUNCATED — was {original_len} characters, limit is {MAX_TOOL_OUTPUT_CHARS} characters]\n"
+                "This output exceeds the context window budget. For binary files (images, archives, etc.), "
+                "do not read contents into the conversation. Use file-path-based tools to upload or process "
+                "them directly (e.g., Google Drive upload_file with the file path)."
+            )
+            logger.warning(
+                "execute_command output truncated: %d -> %d characters (limit %d)",
+                original_len, len(output), MAX_TOOL_OUTPUT_CHARS,
+            )
         return output
     except subprocess.TimeoutExpired:
         return f"Command timed out after {COMMAND_TIMEOUT} seconds"
@@ -582,7 +595,14 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     """
     try:
         return await asyncio.to_thread(_read_file_sync, path, offset, limit)
-    except (OSError, UnicodeError) as exc:
+    except UnicodeDecodeError:
+        return (
+            f"Error: Binary file detected (not UTF-8 text): {path}. "
+            "Do not attempt to read binary file contents into the conversation — this will exceed "
+            "the context window. To work with this file, use execute_command for metadata "
+            "(e.g., file size, type) or use file-path-based upload tools to transfer it directly."
+        )
+    except OSError as exc:
         return f"Error: unable to read file {path}: {exc}"
 
 
