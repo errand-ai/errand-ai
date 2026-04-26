@@ -23,7 +23,7 @@ RUN <<EOF
   esac
   # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
   # Build them into wheels in stage 2 so stage 3 can install offline without setuptools.
-  pip wheel --no-cache-dir --no-deps -w /wheels feedparser sgmllib3k
+  pip wheel --no-cache-dir --no-deps -w /wheels "feedparser>=6.0,<7" sgmllib3k
   # Download remaining packages as binary wheels for the target platform
   grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
