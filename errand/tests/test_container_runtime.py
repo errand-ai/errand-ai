@@ -790,7 +790,6 @@ class TestCleanupOrphanedJobs:
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -935,7 +934,7 @@ class TestRecoverOrphanedTask:
 
         task = await _get_task(sf, task_id)
         assert task["status"] == "review"
-        assert "startup cleanup" in task["output"].lower()
+        assert "server startup cleanup" in task["output"].lower()
         assert task["heartbeat_at"] is None
         await engine.dispose()
         _os.unlink(db_path)

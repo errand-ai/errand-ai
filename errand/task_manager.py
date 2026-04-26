@@ -1180,8 +1180,10 @@ class TaskManager:
             except asyncio.CancelledError:
                 logger.warning("Task %s processing cancelled, scheduling retry", task.id)
                 try:
-                    await self._schedule_retry(task, output="Processing cancelled during shutdown")
-                except Exception:
+                    await asyncio.shield(
+                        self._schedule_retry(task, output="Processing cancelled during shutdown")
+                    )
+                except (asyncio.CancelledError, Exception):
                     logger.exception("Failed to schedule retry for cancelled task %s", task.id)
                 raise
 

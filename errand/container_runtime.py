@@ -747,7 +747,7 @@ class KubernetesRuntime(ContainerRuntime):
 
 
 async def cleanup_orphaned_jobs(runtime: KubernetesRuntime) -> None:
-    """Clean up orphaned task-runner Jobs and ConfigMaps on worker startup.
+    """Clean up orphaned task-runner Jobs and ConfigMaps on server startup.
 
     Cross-references each orphaned Job with the task database:
     - Running tasks: move to scheduled (with backoff) or review (if retries exhausted)
@@ -862,7 +862,7 @@ async def _recover_orphaned_task(task_id: str) -> None:
             )
             task.position = (pos_result.scalar() or 0) + 1
             task.output = (
-                f"Task recovered during worker startup cleanup. "
+                f"Task recovered during server startup cleanup. "
                 f"Retry count ({task.retry_count}) has reached the maximum ({MAX_RETRIES}). "
                 "Moved to review for manual inspection."
             )
