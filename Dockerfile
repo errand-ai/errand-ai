@@ -21,6 +21,9 @@ RUN <<EOF
     linux/amd64) PLATFORM="manylinux2014_x86_64" ;;
     linux/arm64) PLATFORM="manylinux2014_aarch64" ;;
   esac
+  # Download pure-Python packages that only publish source distributions first
+  pip download --no-cache-dir --no-binary=:all: -d /wheels sgmllib3k
+  # Download remaining packages as binary wheels for the target platform
   pip download --no-cache-dir \
     --only-binary=:all: \
     --platform "$PLATFORM" \
