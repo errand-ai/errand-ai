@@ -45,9 +45,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 # Map Docker's TARGETARCH to the gws release tarball target triple.
+# We use the *-unknown-linux-musl* targets because they ship a statically
+# linked binary that runs on any Linux base — the gnu builds require
+# GLIBC_2.39 which Debian 12 (the distroless base) does not provide.
 RUN case "${TARGETARCH}" in \
-      amd64) GWS_TARGET=x86_64-unknown-linux-gnu ;; \
-      arm64) GWS_TARGET=aarch64-unknown-linux-gnu ;; \
+      amd64) GWS_TARGET=x86_64-unknown-linux-musl ;; \
+      arm64) GWS_TARGET=aarch64-unknown-linux-musl ;; \
       *)     echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
     curl -fsSL "https://github.com/googleworkspace/cli/releases/download/v${GWS_VERSION}/google-workspace-cli-${GWS_TARGET}.tar.gz" \
