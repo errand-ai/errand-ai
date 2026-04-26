@@ -300,14 +300,16 @@ async def test_api_key_verifier_no_key_stored(db_session):
 # --- 5.3: MCP tool discovery ---
 
 
-async def test_mcp_server_has_fifteen_tools():
-    """The MCP server exposes exactly fifteen tools (7 task + 6 email + 2 search)."""
+async def test_mcp_server_tool_count():
+    """The MCP server exposes all expected tools."""
     from mcp_server import mcp
     tools = mcp._tool_manager.list_tools()
     tool_names = {t.name for t in tools}
     assert tool_names == {
         "new_task", "task_status", "task_output", "task_logs", "schedule_task", "list_tasks",
         "list_task_profiles", "list_skills", "upsert_skill", "delete_skill", "post_tweet",
+        "reply_to_tweet", "like_tweet", "retweet", "get_tweet_metrics", "get_my_recent_tweets",
+        "search_tweets", "read_rss_feed",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
     }
