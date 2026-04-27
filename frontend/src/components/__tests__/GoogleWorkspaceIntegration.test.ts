@@ -110,8 +110,10 @@ describe('GoogleWorkspaceIntegration', () => {
     const wrapper = mount(GoogleWorkspaceIntegration)
     await flushPromises()
 
+    // In the reauth state both Re-authorize and Disconnect are shown
+    // stacked — the user might want to fix the scope set OR walk away.
     expect(wrapper.find('[data-testid="google-workspace-reauthorize"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="google-workspace-disconnect"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="google-workspace-disconnect"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(true)
   })
 

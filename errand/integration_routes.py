@@ -39,12 +39,13 @@ GOOGLE_WORKSPACE_SCOPES = " ".join([
     "profile",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/chat.messages",
     "https://www.googleapis.com/auth/tasks",
-    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/contacts",
 ])
 
 
@@ -268,17 +269,20 @@ async def authorize(
     await ws.send(json.dumps({
         "type": "oauth_initiate",
         "state": state,
-        # Send the canonical Workspace name on the wire — errand-cloud accepts
-        # both, but we prefer the canonical so we eventually retire the alias.
-        "provider": to_wire_provider(provider),
+        # NB: send the legacy `provider` (e.g. `google_drive`) here, NOT the
+        # canonical wire name. errand-cloud was updated to accept both on
+        # `oauth_tokens` replies, but the `oauth_initiate` → `/oauth/{provider}/
+        # authorize` round-trip still compares strictly: it stores the provider
+        # from the WS frame and matches it against the URL-path provider on
+        # the redirect, so they must agree. The URL path is locked to
+        # `google_drive` because that is the only path errand-cloud has
+        # registered with Google as a redirect URI. Once errand-cloud fully
+        # aliases both names through that path, this can flip back to
+        # `to_wire_provider(provider)`.
+        "provider": provider,
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    # NB: keep the legacy `provider` (e.g. `google_drive`) in the HTTP path
-    # rather than the canonical wire name. errand-cloud's Google OAuth client
-    # has only the legacy `…/oauth/google_drive/callback` redirect URI
-    # registered — switching the path to `google_workspace` would cause
-    # `redirect_uri_mismatch` on the Google consent screen.
     return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
 
 
@@ -457,15 +461,17 @@ async def refresh_token(
     if not client:
         raise HTTPException(status_code=503, detail="No active cloud client")
 
-    wire_provider = to_wire_provider(provider)
+    # See note on `oauth_initiate` above: errand-cloud's strict provider
+    # comparison means we send the legacy name here too, until it fully
+    # normalises both names through every code path.
     result = await client.send_and_await(
         message={
             "type": "oauth_refresh",
-            "provider": wire_provider,
+            "provider": provider,
             "refresh_token": refresh_tok,
         },
         response_type="oauth_refresh_result",
-        provider=wire_provider,
+        provider=provider,
         timeout=30.0,
     )
 

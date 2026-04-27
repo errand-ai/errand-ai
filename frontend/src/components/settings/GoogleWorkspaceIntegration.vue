@@ -202,7 +202,7 @@ onBeforeUnmount(stopPolling)
             </div>
           </div>
 
-          <div>
+          <div class="flex flex-col items-end gap-2">
             <button
               v-if="isAvailable && !isConnected"
               @click="connect"
@@ -212,7 +212,7 @@ onBeforeUnmount(stopPolling)
               Connect
             </button>
             <button
-              v-else-if="isConnected && reauthRequired"
+              v-if="isConnected && reauthRequired"
               @click="connect"
               class="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700"
               data-testid="google-workspace-reauthorize"
@@ -220,7 +220,7 @@ onBeforeUnmount(stopPolling)
               Re-authorize
             </button>
             <button
-              v-else-if="isConnected"
+              v-if="isConnected"
               @click="disconnect"
               :disabled="disconnecting"
               class="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"

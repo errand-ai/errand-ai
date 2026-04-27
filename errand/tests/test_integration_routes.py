@@ -72,12 +72,16 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     # Expanded Google Workspace scopes — drive plus gmail/calendar/etc.
     assert "drive" in url
     assert "gmail.modify" in url
+    assert "gmail.send" in url
     assert "calendar" in url
     assert "spreadsheets" in url
     assert "documents" in url
     assert "chat.messages" in url
     assert "tasks" in url
-    assert "contacts.readonly" in url
+    # `contacts` (full) — NOT the narrower `contacts.readonly`. Asserted by
+    # the substring without the `.readonly` suffix tail.
+    assert "contacts" in url
+    assert "contacts.readonly" not in url
     assert "state=" in url
 
 
@@ -133,18 +137,18 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     url = data["redirect_url"]
-    # The HTTP path uses the legacy `google_drive` segment because that's the
-    # one errand-cloud's Google OAuth client has registered as a redirect URI.
-    # Only the WS frame's `provider` field uses the canonical name.
+    # Both the URL path and the WS frame's `provider` use the legacy
+    # `google_drive` name: errand-cloud strictly compares state-stored vs
+    # URL-path provider, and the URL path is locked to `google_drive` so the
+    # redirect_uri it forwards to Google matches the registered callback.
     assert "cloud.example.com/oauth/google_drive/authorize" in url
     assert "state=" in url
 
-    # Verify WS message was sent — canonical name on the wire.
     mock_ws.send.assert_called_once()
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])
     assert sent["type"] == "oauth_initiate"
-    assert sent["provider"] == "google_workspace"
+    assert sent["provider"] == "google_drive"
 
 
 @pytest.mark.anyio
@@ -531,9 +535,13 @@ async def test_status_exposes_full_granted_scopes_when_current(integration_clien
 
 
 @pytest.mark.anyio
-async def test_authorize_cloud_proxy_uses_canonical_provider(integration_client, monkeypatch):
-    """oauth_initiate WebSocket frame carries `provider=google_workspace` (canonical),
-    not the deprecated `google_drive` alias."""
+async def test_authorize_cloud_proxy_provider_name(integration_client, monkeypatch):
+    """oauth_initiate WebSocket frame carries the legacy `google_drive` provider
+    name. errand-cloud's strict state-vs-URL-path comparison forces both ends
+    to agree, and the URL path is locked to `google_drive` because that is the
+    name initially registered with Google's OAuth client. errand-cloud accepts
+    both names on inbound — once it fully aliases through the rest of the
+    flow, this can flip back to the canonical name (see `to_wire_provider`)."""
     client, session_factory, redis = integration_client
 
     async with session_factory() as session:
@@ -556,7 +564,7 @@ async def test_authorize_cloud_proxy_uses_canonical_provider(integration_client,
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])
     assert sent["type"] == "oauth_initiate"
-    assert sent["provider"] == "google_workspace"
+    assert sent["provider"] == "google_drive"
 
 
 @pytest.mark.anyio
