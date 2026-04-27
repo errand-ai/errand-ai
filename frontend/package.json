@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@errand-ai/ui-components": "^0.6.0",
+    "@errand-ai/ui-components": "^0.7.0",
     "dompurify": "^3.3.1",
     "marked": "^18.0.0",
     "pinia": "^3.0.0",
