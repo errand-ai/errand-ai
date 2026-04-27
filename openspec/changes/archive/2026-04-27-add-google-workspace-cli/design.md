@@ -34,13 +34,13 @@ The gws CLI reads `GOOGLE_WORKSPACE_CLI_TOKEN` from the environment. Instead of 
 
 **Alternative considered:** Wrapping gws in a custom MCP server for structured tool definitions. Rejected because (a) the agent already has shell access and gws outputs JSON, (b) the gws skills provide natural-language instructions that are equivalent to MCP tool schemas for LLM usage, and (c) adding an MCP wrapper increases complexity without clear benefit.
 
-### D2: Build-time skill generation via `gws generate-skills`
+### D2: Build-time skill bundling from upstream repo
 
-The `gws generate-skills` command fetches Google's Discovery API documents and generates SKILL.md files that match the current API surface. Google runs this hourly in their CI. Running it at image build time ensures skills match the `gws` binary version and reflect current API capabilities.
+The `googleworkspace/cli` repository ships ~100 pre-authored agent skills (SKILL.md files) under `skills/gws-*` that are versioned alongside the CLI binary. There is no separate `gws generate-skills` command — skills are pre-authored and tagged with each release. At image build time we download the `gws` binary from the GitHub release tarball (specifically the `*-unknown-linux-musl` target for the build's `TARGETARCH`) and clone the upstream repo at the matching `v${GWS_VERSION}` tag to copy `skills/gws-*` into the image. We use the musl-static target rather than the glibc one because the latter is built against `GLIBC_2.39`, which Debian 12 (and therefore the distroless `python3-debian12` base) does not provide; the musl binary is fully statically linked and runs on any Linux base. The release tarball is preferred over `npm install -g @googleworkspace/cli` because the distroless final image cannot run npm wrappers.
 
-**Alternative considered:** Copying pre-generated skills from the npm package or git repo. Rejected because `generate-skills` is the canonical source and ensures consistency with the installed binary version.
+**Alternative considered:** Installing skills via `npx skills add https://github.com/googleworkspace/cli`. Rejected because that command writes to user home directories at runtime, while we need a deterministic, repeatable build into a known path.
 
-**Trade-off:** Requires network access to `discovery.googleapis.com` during Docker build. This is acceptable since the build already downloads npm packages and other dependencies.
+**Trade-off:** Requires network access to `github.com` during Docker build. This is acceptable since the build already downloads npm packages and other dependencies.
 
 ### D3: System skills at `/opt/system-skills/` with runtime merge
 

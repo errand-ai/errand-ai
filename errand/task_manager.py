@@ -47,8 +47,8 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 TASK_RUNNER_IMAGE = os.environ.get("TASK_RUNNER_IMAGE", "errand-task-runner:latest")
 MAX_OUTPUT_BYTES = int(os.environ.get("MAX_OUTPUT_BYTES", str(1024 * 1024)))  # 1MB default
 PLAYWRIGHT_MCP_URL = os.environ.get("PLAYWRIGHT_MCP_URL", "")
-GDRIVE_MCP_URL = os.environ.get("GDRIVE_MCP_URL", "")
 ONEDRIVE_MCP_URL = os.environ.get("ONEDRIVE_MCP_URL", "")
+SYSTEM_SKILLS_DIR = os.environ.get("SYSTEM_SKILLS_DIR", "/app/system-skills")
 
 # Advisory lock ID for leader election (must fit in int4)
 LEADER_LOCK_ID = hash("errand_task_manager") & 0x7FFFFFFF
@@ -428,16 +428,98 @@ def parse_skills_from_directory(base_path: str) -> list[dict]:
     return skills
 
 
-def merge_skills(db_skills: list[dict], git_skills: list[dict]) -> list[dict]:
-    """Merge DB-managed and git-sourced skills. DB wins on name conflicts."""
-    db_names = {s["name"] for s in db_skills}
+def merge_skills(
+    db_skills: list[dict],
+    git_skills: list[dict],
+    system_skills: list[dict] | None = None,
+) -> list[dict]:
+    """Merge skills from DB, git, and system sources. Precedence: DB > git > system.
+
+    Higher-precedence sources win on name conflicts. System skills (e.g. gws skills
+    bundled in the image) are merged in last so they only appear if no DB or git
+    skill of the same name exists.
+    """
+    seen = {s["name"] for s in db_skills}
     merged = list(db_skills)
     for skill in git_skills:
-        if skill["name"] in db_names:
+        if skill["name"] in seen:
             logger.warning("Skill name conflict: '%s' exists in both DB and git — using DB version", skill["name"])
         else:
             merged.append(skill)
+            seen.add(skill["name"])
+    for skill in system_skills or []:
+        if skill["name"] in seen:
+            logger.info("System skill '%s' overridden by DB or git skill", skill["name"])
+        else:
+            merged.append(skill)
+            seen.add(skill["name"])
     return merged
+
+
+async def _load_cloud_storage_credentials(session: AsyncSession) -> dict[str, dict]:
+    """Load and refresh OAuth credentials for each cloud storage provider.
+
+    For every provider with stored credentials, calls `refresh_token_if_needed`
+    so that downstream consumers (env-var injection, MCP authorization headers)
+    see a non-expired access_token. Providers with no stored credentials, or
+    whose refresh fails, are simply omitted from the returned dict.
+    """
+    from platforms.credentials import load_credentials
+    from cloud_storage import refresh_token_if_needed
+
+    out: dict[str, dict] = {}
+    for provider in ("google_drive", "onedrive"):
+        try:
+            creds = await load_credentials(provider, session)
+            if not creds:
+                continue
+            refreshed = await refresh_token_if_needed(provider, creds, session)
+            if refreshed:
+                out[provider] = refreshed
+            else:
+                logger.warning(
+                    "Cloud storage token refresh failed for %s, skipping", provider,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to load cloud storage credentials for %s", provider, exc_info=True,
+            )
+    return out
+
+
+# Cache for parsed system skill sets. Keyed by (skill_set, base_dir) — the
+# on-disk content is baked into the image at build time and effectively
+# immutable for the process lifetime, so re-parsing on every task is wasted
+# work. Cleared by `_reset_system_skills_cache()` in tests.
+_SYSTEM_SKILLS_CACHE: dict[tuple[str, str], list[dict]] = {}
+
+
+def _reset_system_skills_cache() -> None:
+    """Test hook — clears the system-skills cache."""
+    _SYSTEM_SKILLS_CACHE.clear()
+
+
+def load_system_skills(skill_set: str, base_dir: str = SYSTEM_SKILLS_DIR) -> list[dict]:
+    """Load a system skill set (e.g. 'gws') from `<base_dir>/<skill_set>/`.
+
+    System skills are baked into the errand server image at build time, so the
+    parsed result is memoized for the process lifetime. Returns an empty list
+    if the directory does not exist (e.g. local dev).
+    """
+    cache_key = (skill_set, base_dir)
+    cached = _SYSTEM_SKILLS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    skill_dir = os.path.join(base_dir, skill_set)
+    if not os.path.isdir(skill_dir):
+        logger.debug("System skill set '%s' not present at %s — skipping", skill_set, skill_dir)
+        _SYSTEM_SKILLS_CACHE[cache_key] = []
+        return []
+    skills = parse_skills_from_directory(skill_dir)
+    logger.info("Loaded %d system skill(s) from %s", len(skills), skill_dir)
+    _SYSTEM_SKILLS_CACHE[cache_key] = skills
+    return skills
 
 
 def build_skills_archive(skills: list[dict]) -> bytes | None:
@@ -539,9 +621,7 @@ CLOUD_STORAGE_INSTRUCTIONS = """
 
 ## Cloud Storage
 
-You have access to cloud storage via MCP servers. Tools are prefixed by provider:
-- `gdrive_*` tools operate on Google Drive
-- `onedrive_*` tools operate on OneDrive
+You have access to OneDrive cloud storage via the `onedrive_*` MCP tools.
 
 Available operations: list files, read, write, delete, file info, create folder, move.
 Use path-based file access (e.g. `/Documents/report.docx`).
@@ -564,9 +644,26 @@ BINARY_FILE_INSTRUCTIONS = """
 Never read binary file contents (images, PDFs, archives, etc.) into the conversation.
 Binary data will exceed the context window and cause task failure. To upload or transfer
 binary files, use file-path-based tools that accept a file path argument (e.g.,
-cloud-storage upload tools such as `gdrive_upload_file` or `onedrive_upload_file`).
-To inspect binary files, use execute_command with tools like `file`,
-`ls -la`, or `identify` (for images).
+the OneDrive `onedrive_upload_file` tool, or the `gws drive` CLI when Google
+Workspace is connected). To inspect binary files, use execute_command with
+tools like `file`, `ls -la`, or `identify` (for images).
+"""
+
+GOOGLE_WORKSPACE_INSTRUCTIONS = """
+
+## Google Workspace
+
+You have access to Google Workspace via the `gws` CLI (`/usr/local/bin/gws`).
+The OAuth token is pre-injected via the `GOOGLE_WORKSPACE_CLI_TOKEN` env var,
+so commands authenticate automatically.
+
+`gws` covers Drive, Gmail, Calendar, Sheets, Docs, Chat, Tasks, and Contacts.
+For full reference, agent skills are installed at `/workspace/skills/gws-*/`.
+Read the relevant skill's `SKILL.md` (e.g. `gws-drive`, `gws-gmail`) before
+issuing commands.
+
+Run `gws --help` or `gws <service> --help` to discover subcommands. Outputs
+are JSON by default and can be piped to `jq` for filtering.
 """
 
 
@@ -953,21 +1050,9 @@ class TaskManager:
             except Exception:
                 logger.warning("Failed to load Jira credentials", exc_info=True)
 
-            # Load cloud storage credentials
-            cloud_storage_credentials = {}
-            for provider in ("google_drive", "onedrive"):
-                try:
-                    from platforms.credentials import load_credentials
-                    creds = await load_credentials(provider, session)
-                    if creds:
-                        from cloud_storage import refresh_token_if_needed
-                        refreshed = await refresh_token_if_needed(provider, creds, session)
-                        if refreshed:
-                            cloud_storage_credentials[provider] = refreshed
-                        else:
-                            logger.warning("Cloud storage token refresh failed for %s, skipping", provider)
-                except Exception:
-                    logger.warning("Failed to load cloud storage credentials for %s", provider, exc_info=True)
+            # Load cloud storage credentials (refresh expired tokens up-front so
+            # the worker injects fresh values into the task container).
+            cloud_storage_credentials = await _load_cloud_storage_credentials(session)
 
             # Set status to running with initial heartbeat
             task.status = "running"
@@ -1398,31 +1483,40 @@ class TaskManager:
                             "headers": litellm_headers,
                         }
 
-        # Inject cloud storage MCP servers
+        # Inject cloud storage MCP servers (OneDrive only — Google Workspace is via gws CLI env var)
         cloud_storage_injected = False
-        if cloud_storage_credentials:
-            for provider, url_var, mcp_name in [
-                ("google_drive", GDRIVE_MCP_URL, "google_drive"),
-                ("onedrive", ONEDRIVE_MCP_URL, "onedrive"),
-            ]:
-                if url_var and provider in cloud_storage_credentials:
-                    if profile_mcp_filter is not None and mcp_name not in profile_mcp_filter:
-                        continue
-                    creds = cloud_storage_credentials[provider]
-                    access_token = creds.get("access_token", "")
-                    if access_token:
-                        mcp_servers.setdefault("mcpServers", {})
-                        mcp_servers["mcpServers"][mcp_name] = {
-                            "url": url_var,
-                            "headers": {"Authorization": f"Bearer {access_token}"},
-                        }
-                        cloud_storage_injected = True
+        if cloud_storage_credentials and ONEDRIVE_MCP_URL and "onedrive" in cloud_storage_credentials:
+            if profile_mcp_filter is None or "onedrive" in profile_mcp_filter:
+                creds = cloud_storage_credentials["onedrive"]
+                access_token = creds.get("access_token", "")
+                if access_token:
+                    mcp_servers.setdefault("mcpServers", {})
+                    mcp_servers["mcpServers"]["onedrive"] = {
+                        "url": ONEDRIVE_MCP_URL,
+                        "headers": {"Authorization": f"Bearer {access_token}"},
+                    }
+                    cloud_storage_injected = True
 
         if cloud_storage_injected:
             system_prompt += CLOUD_STORAGE_INSTRUCTIONS
 
-        # Merge DB skills with git-sourced skills
-        skills = settings.get("skills", [])
+        # Google Workspace: inject the access token as GOOGLE_WORKSPACE_CLI_TOKEN
+        # so the gws CLI in the task-runner image is authenticated. The matching
+        # gws agent skills are added to the skills archive below.
+        # Note: GOOGLE_WORKSPACE_INSTRUCTIONS is appended later, after the
+        # profile skill filter, so the prompt only references skills that
+        # actually made it into the archive.
+        google_workspace_enabled = False
+        if cloud_storage_credentials and "google_drive" in cloud_storage_credentials:
+            google_creds = cloud_storage_credentials["google_drive"]
+            google_access_token = google_creds.get("access_token", "")
+            if google_access_token:
+                env_vars["GOOGLE_WORKSPACE_CLI_TOKEN"] = google_access_token
+                google_workspace_enabled = True
+
+        # Merge DB skills with git-sourced and system skills (DB > git > system)
+        db_skills = settings.get("skills", [])
+        git_skills: list[dict] = []
         skills_git_repo = settings.get("skills_git_repo")
         if skills_git_repo:
             clone_dir = await asyncio.get_event_loop().run_in_executor(
@@ -1435,15 +1529,35 @@ class TaskManager:
             base_path = os.path.join(clone_dir, skills_git_repo.get("path", ".").lstrip("/"))
             git_skills = parse_skills_from_directory(base_path)
             logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
-            skills = merge_skills(skills, git_skills)
 
-        # Apply profile skill filter: DB skills filtered by UUID, git skills by flag
+        system_skills: list[dict] = []
+        if google_workspace_enabled:
+            system_skills.extend(load_system_skills("gws"))
+
+        skills = merge_skills(db_skills, git_skills, system_skills)
+
+        # Apply profile skill filter: DB skills filtered by UUID, non-DB (git + system) skills by flag.
+        # The `_profile_include_git_skills` flag (sourced from the legacy `include_git_skills`
+        # profile column) gates ALL externally-sourced skills, not just git ones — system skills
+        # like `gws` follow the same external-vs-DB distinction.
         profile_skill_ids = settings.get("_profile_skill_ids")
         if profile_skill_ids is not None:
-            include_git = settings.get("_profile_include_git_skills", True)
-            db_skills = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
-            git_skills_filtered = [s for s in skills if not s.get("id")] if include_git else []
-            skills = db_skills + git_skills_filtered
+            include_external = settings.get("_profile_include_git_skills", True)
+            filtered_db = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
+            non_db = [s for s in skills if not s.get("id")] if include_external else []
+            skills = filtered_db + non_db
+
+        # Append Google Workspace prompt instructions only if at least one gws
+        # system skill survived filtering. Otherwise the prompt would tell the
+        # agent to read /workspace/skills/gws-*/SKILL.md files that aren't in
+        # the archive (e.g. when a profile sets include_git_skills=false).
+        # The token env var is still injected so the agent can use the binary
+        # if it knows about it, but we don't direct it to skills that aren't
+        # there.
+        if google_workspace_enabled and any(
+            s["name"].startswith("gws-") for s in skills
+        ):
+            system_prompt += GOOGLE_WORKSPACE_INSTRUCTIONS
 
         # Inject skill manifest
         if skills:

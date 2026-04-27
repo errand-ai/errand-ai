@@ -10,7 +10,7 @@ The Settings UI also needs restructuring: Google Drive should move out of "Cloud
 
 ## What Changes
 
-- **Install `gws` CLI in the task-runner Docker image** with build-time skill generation via `gws generate-skills` (fetches current Google Discovery API specs)
+- **Install `gws` CLI in the task-runner Docker image** by downloading the matching GitHub release tarball for the build's `TARGETARCH` and bundle the upstream `gws-*` agent skills from the `googleworkspace/cli` repo cloned at the matching version tag
 - **Remove `gdrive-mcp` container/service** from docker-compose files, Helm chart (deployment, service), and all related env vars
 - **Inject Google token as `GOOGLE_WORKSPACE_CLI_TOKEN` env var** on task-runner containers instead of MCP header injection, conditional on user having connected Google
 - **Inject gws skills into the task-runner skills archive** conditionally (only when Google token is present)

@@ -29,6 +29,31 @@ router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
 OAUTH_STATE_TTL = 600  # 10 minutes
 
+# Google Workspace OAuth scopes — covers Drive, Gmail, Calendar, Sheets, Docs,
+# Chat, Tasks, and Contacts so the gws CLI can operate across all services.
+# Stale-scope detection compares stored vs required as sets, so order does not
+# affect correctness here.
+GOOGLE_WORKSPACE_SCOPES = " ".join([
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts.readonly",
+])
+
+
+def _required_scopes(provider: str) -> set[str]:
+    """Return the set of scopes currently required for the provider."""
+    if provider == "google_drive":
+        return set(GOOGLE_WORKSPACE_SCOPES.split())
+    return set()
+
 
 async def _require_user(request: Request):
     """Auth dependency — late import to avoid circular import with main.py."""
@@ -58,7 +83,7 @@ def _init_providers():
             authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
             userinfo_url="https://www.googleapis.com/oauth2/v2/userinfo",
-            scopes="openid email profile https://www.googleapis.com/auth/drive",
+            scopes=GOOGLE_WORKSPACE_SCOPES,
             client_id_env="GOOGLE_CLIENT_ID",
             client_secret_env="GOOGLE_CLIENT_SECRET",
             extra_auth_params={"access_type": "offline", "prompt": "consent"},
@@ -112,9 +137,17 @@ def _has_local_credentials(config: ProviderConfig) -> bool:
 
 
 def _has_mcp_url(provider: str) -> bool:
-    """Check if the provider's MCP URL is configured."""
-    url_env = "GDRIVE_MCP_URL" if provider == "google_drive" else "ONEDRIVE_MCP_URL"
-    return bool(os.environ.get(url_env, ""))
+    """Check if the provider's MCP URL is configured.
+
+    Google Workspace no longer requires an MCP URL — access is provided via the
+    `gws` CLI in the task-runner image with a token-via-env-var. Only OneDrive
+    still gates on its MCP URL.
+    """
+    if provider == "google_drive":
+        return True
+    if provider == "onedrive":
+        return bool(os.environ.get("ONEDRIVE_MCP_URL", ""))
+    return False
 
 
 async def _provider_available(provider: str, session: AsyncSession) -> tuple[bool, str | None]:
@@ -282,6 +315,15 @@ async def callback(
     if not access_token:
         return _popup_close_response("No access token received", error=True)
 
+    # Authorization servers (Google in particular) may omit `refresh_token`
+    # on subsequent authorizations even when one is still valid server-side.
+    # Preserve the previously-stored refresh token in that case so re-auth
+    # doesn't accidentally disable background refreshes.
+    if not refresh_token:
+        existing_creds = await load_credentials(provider, session)
+        if existing_creds and existing_creds.get("refresh_token"):
+            refresh_token = existing_creds["refresh_token"]
+
     # Fetch user info
     user_email = ""
     user_name = ""
@@ -303,7 +345,11 @@ async def callback(
     except Exception:
         logger.warning("Failed to fetch user info for %s", provider, exc_info=True)
 
-    # Store credentials
+    # Store credentials. The `scope` claim returned by the token exchange holds
+    # the actually-granted scopes (may be narrower than requested if the user
+    # de-selected services on the consent screen). Persist for stale-scope
+    # detection.
+    granted_scopes = tokens.get("scope", "").split() if tokens.get("scope") else []
     credential_data = {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -311,6 +357,7 @@ async def callback(
         "token_type": tokens.get("token_type", "Bearer"),
         "user_email": user_email,
         "user_name": user_name,
+        "granted_scopes": granted_scopes,
     }
 
     encrypted = encrypt(credential_data)
@@ -426,10 +473,18 @@ async def integration_status(
             "available": available,
             "connected": connected,
             "mode": mode,
-            "mcp_configured": _has_mcp_url(provider),
         }
+        # `mcp_configured` is only meaningful for providers that gate on an MCP
+        # URL. Google Workspace uses the bundled `gws` CLI and does not require
+        # one, so the field is omitted to avoid misleading API consumers.
+        if provider != "google_drive":
+            entry["mcp_configured"] = _has_mcp_url(provider)
         if connected and creds:
             entry["user_email"] = creds.get("user_email", "")
             entry["user_name"] = creds.get("user_name", "")
+            required = _required_scopes(provider)
+            if required:
+                granted = set(creds.get("granted_scopes") or [])
+                entry["reauth_required"] = not required.issubset(granted)
         result[provider] = entry
     return result

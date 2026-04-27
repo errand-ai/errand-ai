@@ -73,13 +73,10 @@ credentialEncryption:
 twitter:
   existingSecret: ""
 
+# Google Workspace OAuth client credentials. The previous gdrive-mcp deployment
+# was removed in favour of the `gws` CLI bundled in the task-runner image, so
+# only the OAuth secret reference remains here.
 gdrive:
-  enabled: true
-  image:
-    repository: ghcr.io/devops-consultants/google-drive-mcp-server
-    tag: ""
-    pullPolicy: IfNotPresent
-  port: 8080
   existingSecret: ""
 
 onedrive:
