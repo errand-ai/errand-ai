@@ -101,10 +101,6 @@ spec:
             - name: MAX_CONCURRENT_TASKS
               value: {{ .Values.server.maxConcurrentTasks | quote }}
             {{- end }}
-            {{- if .Values.gdrive.enabled }}
-            - name: GDRIVE_MCP_URL
-              value: "http://{{ include "errand.fullname" . }}-gdrive-mcp:{{ .Values.gdrive.port }}/mcp"
-            {{- end }}
             {{- if .Values.onedrive.enabled }}
             - name: ONEDRIVE_MCP_URL
               value: "http://{{ include "errand.fullname" . }}-onedrive-mcp:{{ .Values.onedrive.port }}/mcp"

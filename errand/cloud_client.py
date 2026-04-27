@@ -228,12 +228,26 @@ class CloudWebSocketClient:
     async def _handle_oauth_tokens(self, message: dict) -> None:
         """Handle oauth_tokens message — store credentials and publish SSE event."""
         import time as _time
-        provider = message.get("provider", "")
+        from integration_routes import from_wire_provider
+
+        wire_provider = message.get("provider", "")
+        # errand-cloud may send the canonical `google_workspace` or the legacy
+        # `google_drive` alias — normalise to the internal name (`google_drive`)
+        # so DB rows and downstream consumers stay on a single identifier.
+        provider = from_wire_provider(wire_provider)
         access_token = message.get("access_token", "")
         refresh_token = message.get("refresh_token", "")
         expires_in = message.get("expires_in", 3600)
         user_email = message.get("user_email", "")
         user_name = message.get("user_name", "")
+        # Granted scopes from errand-cloud (best-effort — older cloud
+        # deployments may not include this field). Used by the Settings UI to
+        # render per-service badge state and detect partial grants.
+        granted_scopes_raw = message.get("granted_scopes") or message.get("scope") or ""
+        if isinstance(granted_scopes_raw, list):
+            granted_scopes = list(granted_scopes_raw)
+        else:
+            granted_scopes = granted_scopes_raw.split()
 
         if not provider or not access_token:
             logger.warning("Received oauth_tokens with missing provider or access_token")
@@ -246,6 +260,7 @@ class CloudWebSocketClient:
             "token_type": "Bearer",
             "user_email": user_email,
             "user_name": user_name,
+            "granted_scopes": granted_scopes,
         }
 
         try:
@@ -271,13 +286,19 @@ class CloudWebSocketClient:
 
     async def _handle_oauth_error(self, message: dict) -> None:
         """Handle oauth_error message — log and publish SSE event."""
-        provider = message.get("provider", "unknown")
+        from integration_routes import from_wire_provider
+
+        wire_provider = message.get("provider", "unknown")
+        provider = from_wire_provider(wire_provider)
         error = message.get("error", "unknown_error")
         state = message.get("state", "")
         logger.warning("OAuth error for %s (state=%s): %s", provider, state, error)
         await publish_event("cloud_storage_error", {"provider": provider, "error": error})
-        # Also resolve any pending response waiters
-        self._resolve_pending_response(message)
+        # Also resolve any pending response waiters. Pass the normalised
+        # provider so the pending-response key matches what the sender used.
+        normalised = dict(message)
+        normalised["provider"] = wire_provider  # keep wire form for waiter key
+        self._resolve_pending_response(normalised)
 
     # --- Pending response tracking (for send-and-await pattern) ---
 

@@ -38,6 +38,38 @@ RUN mkdir -p /staged-libs && \
       done ; \
     done
 
+FROM debian:bookworm-slim AS gws-builder
+ARG GWS_VERSION=0.22.5
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+# Map Docker's TARGETARCH to the gws release tarball target triple.
+# We use the *-unknown-linux-musl* targets because they ship a statically
+# linked binary that runs on any Linux base — the gnu builds require
+# GLIBC_2.39 which Debian 12 (the distroless base) does not provide.
+# Verify the tarball against the SHA256 published on the same release before
+# extracting, to mitigate MITM / compromised-artifact supply-chain risk.
+RUN case "${TARGETARCH}" in \
+      amd64) GWS_TARGET=x86_64-unknown-linux-musl ;; \
+      arm64) GWS_TARGET=aarch64-unknown-linux-musl ;; \
+      *)     echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    GWS_TARBALL="google-workspace-cli-${GWS_TARGET}.tar.gz" && \
+    GWS_BASE_URL="https://github.com/googleworkspace/cli/releases/download/v${GWS_VERSION}" && \
+    cd /tmp && \
+    curl -fsSL -o "${GWS_TARBALL}" "${GWS_BASE_URL}/${GWS_TARBALL}" && \
+    curl -fsSL -o "${GWS_TARBALL}.sha256" "${GWS_BASE_URL}/${GWS_TARBALL}.sha256" && \
+    sha256sum -c "${GWS_TARBALL}.sha256" && \
+    tar xzf "${GWS_TARBALL}" && \
+    install -m 0755 /tmp/gws /usr/local/bin/gws && \
+    rm -f "${GWS_TARBALL}" "${GWS_TARBALL}.sha256"
+# Clone the repo at the matching tag to obtain the bundled SKILL.md files
+# (skills are pre-authored under skills/gws-*, versioned alongside the binary).
+RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googleworkspace/cli.git /tmp/gws-cli && \
+    mkdir -p /gws-skills && \
+    cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
+
 FROM node:22-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
 # Stage npm for entrypoint-phase skill dependency installation
@@ -88,6 +120,10 @@ COPY --from=node-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=node-builder /usr/local/bin/openspec-sh /usr/local/bin/openspec
 # Copy staged npm for entrypoint-phase skill dependency installation
 COPY --from=node-builder --chown=65532:65532 /npm-staging /opt/npm-bootstrap
+
+# Copy gws CLI binary and bundled agent skills from gws-builder
+COPY --from=gws-builder /usr/local/bin/gws /usr/local/bin/gws
+COPY --from=gws-builder /gws-skills /opt/system-skills/gws
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.

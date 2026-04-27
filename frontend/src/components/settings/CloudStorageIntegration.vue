@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchCloudStorageStatus,
@@ -20,21 +20,43 @@ const providers = ref<ProviderCard[]>([])
 const loading = ref(true)
 const disconnecting = ref<string | null>(null)
 
+// Tracked so we can clear the popup poller deterministically on unmount or
+// after the OAuth state TTL elapses.
+const popupPoll = ref<ReturnType<typeof setInterval> | null>(null)
+const popupTimeout = ref<ReturnType<typeof setTimeout> | null>(null)
+const POPUP_MAX_WAIT_MS = 10 * 60 * 1000
+
+function stopPolling() {
+  if (popupPoll.value !== null) {
+    clearInterval(popupPoll.value)
+    popupPoll.value = null
+  }
+  if (popupTimeout.value !== null) {
+    clearTimeout(popupTimeout.value)
+    popupTimeout.value = null
+  }
+}
+
 const PROVIDER_META: Record<string, { label: string; icon: string }> = {
-  google_drive: { label: 'Google Drive', icon: '📁' },
   onedrive: { label: 'OneDrive', icon: '☁️' },
 }
+
+// Providers shown in the Cloud Storage section. Google Workspace has its own
+// dedicated section because the integration covers more than just storage.
+const CLOUD_STORAGE_PROVIDERS = ['onedrive']
 
 async function loadStatus() {
   loading.value = true
   try {
     const status = await fetchCloudStorageStatus()
-    providers.value = Object.entries(status).map(([id, providerStatus]) => ({
-      id,
-      label: PROVIDER_META[id]?.label ?? id,
-      icon: PROVIDER_META[id]?.icon ?? '📂',
-      status: providerStatus,
-    }))
+    providers.value = Object.entries(status)
+      .filter(([id]) => CLOUD_STORAGE_PROVIDERS.includes(id))
+      .map(([id, providerStatus]) => ({
+        id,
+        label: PROVIDER_META[id]?.label ?? id,
+        icon: PROVIDER_META[id]?.icon ?? '📂',
+        status: providerStatus,
+      }))
   } catch {
     toast.error('Failed to load cloud storage status.')
   } finally {
@@ -43,6 +65,9 @@ async function loadStatus() {
 }
 
 async function connect(providerId: string) {
+  // Clear any prior poller up-front so blocked-popup retries and authorize
+  // failures don't leave a stale interval running.
+  stopPolling()
   try {
     const data = await authorizeCloudStorage(providerId)
     const w = 500, h = 600
@@ -57,12 +82,13 @@ async function connect(providerId: string) {
       toast.error('Popup blocked — please allow popups for this site')
       return
     }
-    const poll = setInterval(async () => {
+    popupPoll.value = setInterval(() => {
       if (popup.closed) {
-        clearInterval(poll)
-        await loadStatus()
+        stopPolling()
+        loadStatus()
       }
     }, 500)
+    popupTimeout.value = setTimeout(stopPolling, POPUP_MAX_WAIT_MS)
   } catch {
     toast.error(`Failed to start ${PROVIDER_META[providerId]?.label ?? providerId} authorization`)
   }
@@ -88,6 +114,7 @@ watch(() => taskStore.cloudStorageChanged, () => {
 })
 
 onMounted(loadStatus)
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>

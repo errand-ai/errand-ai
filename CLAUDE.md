@@ -203,6 +203,8 @@ The `TaskManager` (`errand/task_manager.py`) runs as an asyncio background task 
   - Server needs a ServiceAccount with RBAC for jobs, configmaps, pods, pods/log, pods/exec
 - **Container runtime async interface**: Both sync and async methods on `ContainerRuntime` base class; KubernetesRuntime has native async overrides
 - **Playwright**: Configured via `PLAYWRIGHT_MCP_URL` env var (standalone service, no sidecar management)
+- **Google Workspace CLI (`gws`)**: Bundled in the task-runner image at `/usr/local/bin/gws`. When a user has connected Google Workspace, the access token is injected as `GOOGLE_WORKSPACE_CLI_TOKEN` and the matching agent skills are merged into `/workspace/skills/` from `/app/system-skills/gws/` on the server. Replaces the previous `gdrive-mcp` sidecar (removed; `GDRIVE_MCP_URL` is no longer used). Pinned via `GWS_VERSION` build arg.
+- **System skills**: `/app/system-skills/<set>/` contains skill sets baked into the server image at build time. The task manager loads them on demand (e.g. `gws` only when Google credentials exist) and merges them into the skills archive at the lowest precedence (DB > git > system).
 - **Local dev**: docker-compose uses `CONTAINER_RUNTIME=docker` (default)
 
 ## Kubernetes Deployment

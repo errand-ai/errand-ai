@@ -11,11 +11,12 @@ The repository SHALL include a `task-runner/Dockerfile` that produces a minimal,
 1. **python builder** (`python:3.11-slim`): Install Python dependencies via pip into a target directory. Additionally, install pip itself into a separate staging directory (`/pip-staging`) for use by the entrypoint script.
 2. **git-builder** (`debian:bookworm-slim`): Install `git`, `openssh-client`, `ca-certificates`, `busybox`, `curl`, and `jq` system packages. Download the `gh` CLI binary from the GitHub releases tarball for the target architecture (`TARGETARCH`) and place it at `/usr/local/bin/gh`. Stage shared libraries needed by git, ssh, busybox, curl, and jq. Create the `.ssh` directory at `/home/nonroot/.ssh` with permissions 700.
 3. **node-builder** (`node:22-bookworm-slim`): Run `npm install -g @fission-ai/openspec@latest` to install the openspec CLI globally. Stage npm itself into a separate directory (`/npm-staging`) for use by the entrypoint script. The node binary, global node_modules, openspec entry point, and staged npm SHALL be available for copying to the final stage.
-4. **final** (`gcr.io/distroless/python3-debian12:nonroot`): Copy Python packages from the python builder, staged pip to `/opt/pip-bootstrap/`, staged npm to `/opt/npm-bootstrap/`, staged binaries and libraries from git-builder (git, ssh, curl, jq, busybox, gh), and node binary plus openspec from node-builder. Copy `entrypoint.sh` to `/app/entrypoint.sh`. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["/bin/sh", "/app/entrypoint.sh"]`.
+4. **gws-builder** (`debian:bookworm-slim`): Download the Google Workspace CLI (`gws`) `*-unknown-linux-musl` release tarball from `github.com/googleworkspace/cli/releases` (matching `${GWS_VERSION}` and `TARGETARCH`) and clone the repository at the matching version tag to obtain the bundled agent skills (`skills/gws-*`). The musl-static target is required because the glibc target depends on `GLIBC_2.39`, which the distroless `python3-debian12` base does not provide. The `gws` binary and skill directories SHALL be available for copying to the final stage.
+5. **final** (`gcr.io/distroless/python3-debian12:nonroot`): Copy Python packages from the python builder, staged pip to `/opt/pip-bootstrap/`, staged npm to `/opt/npm-bootstrap/`, staged binaries and libraries from git-builder (git, ssh, curl, jq, busybox, gh), node binary plus openspec from node-builder, and `gws` binary plus bundled skills from gws-builder. The skills SHALL be placed at `/opt/system-skills/gws/`. Copy `entrypoint.sh` to `/app/entrypoint.sh`. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["/bin/sh", "/app/entrypoint.sh"]`.
 
-The `gh` version and `openspec` version SHALL be configurable via Docker build args with sensible defaults.
+The `gh` version, `openspec` version, and `gws` version SHALL be configurable via Docker build args with sensible defaults.
 
-The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `curl`, `jq`, `gh`, `node`, `openspec`, and busybox applets (`sh`, `cat`, `ls`, `grep`, etc.).
+The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `curl`, `jq`, `gh`, `node`, `openspec`, `gws`, and busybox applets (`sh`, `cat`, `ls`, `grep`, etc.).
 
 #### Scenario: Image builds successfully
 
@@ -81,3 +82,13 @@ The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh
 
 - **WHEN** the container starts
 - **THEN** running `which pip` returns no result
+
+#### Scenario: gws CLI is available
+
+- **WHEN** the container starts
+- **THEN** `gws --version` executes successfully and outputs a Google Workspace CLI version string
+
+#### Scenario: gws skills are bundled
+
+- **WHEN** the container starts
+- **THEN** `/opt/system-skills/gws/` contains SKILL.md files for Google Workspace services (sourced from the upstream `googleworkspace/cli` repository)

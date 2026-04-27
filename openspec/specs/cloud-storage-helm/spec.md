@@ -1,20 +1,8 @@
-## ADDED Requirements
+## Purpose
 
-### Requirement: Google Drive MCP server Helm deployment
+Helm chart support for cloud-storage MCP servers (currently OneDrive only) and the OAuth client credentials needed for the in-task `gws` CLI and OneDrive MCP integration.
 
-The Helm chart SHALL include a conditional Deployment and Service for the Google Drive MCP server, controlled by `gdrive.enabled` (default: `true`).
-
-When enabled, the chart SHALL inject `GDRIVE_MCP_URL` as an environment variable into both the server and worker deployments.
-
-#### Scenario: Google Drive enabled (default)
-- **WHEN** Helm chart is deployed with `gdrive.enabled: true`
-- **THEN** chart renders a Deployment and ClusterIP Service for the Google Drive MCP server
-- **AND** injects `GDRIVE_MCP_URL` into server and worker deployments pointing to the service
-
-#### Scenario: Google Drive disabled
-- **WHEN** Helm chart is deployed with `gdrive.enabled: false`
-- **THEN** chart does NOT render Google Drive resources
-- **AND** does NOT inject `GDRIVE_MCP_URL` into any deployment
+## Requirements
 
 ### Requirement: OneDrive MCP server Helm deployment
 

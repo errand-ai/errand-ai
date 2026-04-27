@@ -17,6 +17,8 @@ vi.mock('../../composables/useApi', () => ({
   disconnectCloudStorage: (...args: unknown[]) => mockDisconnectCloudStorage(...args),
 }))
 
+// CloudStorageIntegration now renders OneDrive only — Google Workspace
+// (formerly Google Drive) lives in its own dedicated section.
 describe('CloudStorageIntegration', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -33,22 +35,22 @@ describe('CloudStorageIntegration', () => {
     expect(wrapper.text()).toContain('Loading...')
   })
 
-  it('renders provider cards after loading', async () => {
+  it('renders only the OneDrive card after loading', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: { available: true, connected: false },
+      google_drive: { available: true, connected: true },
       onedrive: { available: true, connected: false },
     })
 
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="cloud-card-google_drive"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="cloud-card-onedrive"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Google Drive')
+    expect(wrapper.find('[data-testid="cloud-card-google_drive"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('OneDrive')
+    expect(wrapper.text()).not.toContain('Google Drive')
   })
 
-  it('shows Connect button when available but not connected', async () => {
+  it('shows Connect button when OneDrive is available but not connected', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
       google_drive: { available: true, connected: false },
       onedrive: { available: true, connected: false },
@@ -57,47 +59,32 @@ describe('CloudStorageIntegration', () => {
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="cloud-connect-google_drive"]').text()).toBe('Connect')
+    expect(wrapper.find('[data-testid="cloud-connect-onedrive"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cloud-connect-onedrive"]').text()).toBe('Connect')
   })
 
-  it('shows connected user info and Disconnect button when connected', async () => {
+  it('shows connected user info and Disconnect button when OneDrive is connected', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: {
+      google_drive: { available: false, connected: false },
+      onedrive: {
         available: true,
         connected: true,
-        user_email: 'user@gmail.com',
+        user_email: 'user@example.com',
         user_name: 'Test User',
       },
-      onedrive: { available: true, connected: false },
     })
 
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
-    expect(card.find('[data-testid="cloud-user-google_drive"]').text()).toContain('Test User')
-    expect(card.find('[data-testid="cloud-user-google_drive"]').text()).toContain('user@gmail.com')
-    expect(card.find('[data-testid="cloud-disconnect-google_drive"]').exists()).toBe(true)
-    expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(false)
+    const card = wrapper.find('[data-testid="cloud-card-onedrive"]')
+    expect(card.find('[data-testid="cloud-user-onedrive"]').text()).toContain('Test User')
+    expect(card.find('[data-testid="cloud-user-onedrive"]').text()).toContain('user@example.com')
+    expect(card.find('[data-testid="cloud-disconnect-onedrive"]').exists()).toBe(true)
+    expect(card.find('[data-testid="cloud-connect-onedrive"]').exists()).toBe(false)
   })
 
-  it('shows "MCP server URL not set" when not available and no MCP URL', async () => {
-    mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: { available: false, connected: false, mode: null, mcp_configured: false },
-      onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
-    })
-
-    const wrapper = mount(CloudStorageIntegration)
-    await flushPromises()
-
-    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
-    expect(card.classes()).toContain('opacity-60')
-    expect(card.text()).toContain('MCP server URL not set')
-    expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(false)
-  })
-
-  it('shows "configure credentials or connect to errand cloud" when MCP configured but no auth', async () => {
+  it('shows "MCP server URL not set" when OneDrive is unavailable with no MCP URL', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
       google_drive: { available: false, connected: false, mode: null, mcp_configured: true },
       onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
@@ -106,37 +93,38 @@ describe('CloudStorageIntegration', () => {
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
-    expect(card.text()).toContain('Configure credentials or connect to errand cloud')
+    const card = wrapper.find('[data-testid="cloud-card-onedrive"]')
+    expect(card.classes()).toContain('opacity-60')
+    expect(card.text()).toContain('MCP server URL not set')
+    expect(card.find('[data-testid="cloud-connect-onedrive"]').exists()).toBe(false)
   })
 
-  it('shows Connect button for cloud mode provider', async () => {
+  it('shows "configure credentials or connect to errand cloud" when OneDrive MCP configured but no auth', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: { available: true, connected: false, mode: 'cloud', mcp_configured: true },
-      onedrive: { available: false, connected: false, mode: null, mcp_configured: false },
+      google_drive: { available: false, connected: false, mode: null, mcp_configured: true },
+      onedrive: { available: false, connected: false, mode: null, mcp_configured: true },
     })
 
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    const card = wrapper.find('[data-testid="cloud-card-google_drive"]')
-    expect(card.find('[data-testid="cloud-connect-google_drive"]').exists()).toBe(true)
-    expect(card.find('[data-testid="cloud-connect-google_drive"]').text()).toBe('Connect')
+    const card = wrapper.find('[data-testid="cloud-card-onedrive"]')
+    expect(card.text()).toContain('Configure credentials or connect to errand cloud')
   })
 
   it('disconnect calls API and refreshes status', async () => {
     mockFetchCloudStorageStatus
       .mockResolvedValueOnce({
-        google_drive: {
+        google_drive: { available: false, connected: false },
+        onedrive: {
           available: true,
           connected: true,
-          user_email: 'user@gmail.com',
+          user_email: 'user@example.com',
           user_name: 'Test User',
         },
-        onedrive: { available: true, connected: false },
       })
       .mockResolvedValueOnce({
-        google_drive: { available: true, connected: false },
+        google_drive: { available: false, connected: false },
         onedrive: { available: true, connected: false },
       })
 
@@ -145,38 +133,43 @@ describe('CloudStorageIntegration', () => {
     const wrapper = mount(CloudStorageIntegration)
     await flushPromises()
 
-    await wrapper.find('[data-testid="cloud-disconnect-google_drive"]').trigger('click')
+    await wrapper.find('[data-testid="cloud-disconnect-onedrive"]').trigger('click')
     await flushPromises()
 
-    expect(mockDisconnectCloudStorage).toHaveBeenCalledWith('google_drive')
+    expect(mockDisconnectCloudStorage).toHaveBeenCalledWith('onedrive')
     expect(mockFetchCloudStorageStatus).toHaveBeenCalledTimes(2)
   })
 
   it('connect button opens OAuth popup', async () => {
     mockFetchCloudStorageStatus.mockResolvedValue({
-      google_drive: { available: true, connected: false },
+      google_drive: { available: false, connected: false },
       onedrive: { available: true, connected: false },
     })
     mockAuthorizeCloudStorage.mockResolvedValue({
-      redirect_url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
+      redirect_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=test',
     })
 
     const mockPopup = { closed: false }
     vi.spyOn(window, 'open').mockReturnValue(mockPopup as unknown as Window)
 
+    // connect() starts long-running timers that only clear when the popup
+    // closes; unmount in finally so they don't leak between tests.
     const wrapper = mount(CloudStorageIntegration)
-    await flushPromises()
+    try {
+      await flushPromises()
 
-    await wrapper.find('[data-testid="cloud-connect-google_drive"]').trigger('click')
-    await flushPromises()
+      await wrapper.find('[data-testid="cloud-connect-onedrive"]').trigger('click')
+      await flushPromises()
 
-    expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('google_drive')
-    expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
-      'cloud-storage-auth',
-      expect.stringContaining('width=500'),
-    )
-
-    vi.restoreAllMocks()
+      expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('onedrive')
+      expect(window.open).toHaveBeenCalledWith(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=test',
+        'cloud-storage-auth',
+        expect.stringContaining('width=500'),
+      )
+    } finally {
+      wrapper.unmount()
+      vi.restoreAllMocks()
+    }
   })
 })
