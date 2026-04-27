@@ -3249,7 +3249,12 @@ async def test_onedrive_mcp_and_google_token_both_injected():
 
     mock_runtime = _make_mock_runtime()
 
-    with patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"):
+    # Stub load_system_skills so the test runs even without a real /app/system-skills/
+    # directory present in the test environment. Without this, no gws skills land in
+    # the archive and the GW prompt is (correctly) suppressed.
+    fake_gws_skills = [{"name": "gws-drive", "description": "Drive", "instructions": "...", "files": []}]
+    with patch("task_manager.ONEDRIVE_MCP_URL", "http://onedrive:8080/mcp"), \
+         patch("task_manager.load_system_skills", return_value=fake_gws_skills):
         await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
@@ -3410,6 +3415,36 @@ async def test_load_cloud_storage_credentials_omits_provider_on_failed_refresh()
         result = await _load_cloud_storage_credentials(fake_session)
 
     assert "google_drive" not in result
+
+
+@pytest.mark.asyncio
+async def test_google_workspace_instructions_omitted_when_skills_filtered_out():
+    """When the profile excludes external skills, the GW instructions must not
+    direct the agent to /workspace/skills/gws-* files that aren't in the archive."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        # Profile filters skills: only DB skills with these IDs survive,
+        # and external (git+system) skills are excluded entirely.
+        "_profile_skill_ids": [],
+        "_profile_include_git_skills": False,
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+    await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    # Token still injected — agent can run gws if it knows about it.
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+    # But the prompt must NOT direct the agent to skills that were filtered out.
+    assert "Google Workspace" not in files["system_prompt.txt"]
 
 
 @pytest.mark.asyncio

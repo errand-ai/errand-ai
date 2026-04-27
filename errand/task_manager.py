@@ -1483,6 +1483,9 @@ class TaskManager:
         # Google Workspace: inject the access token as GOOGLE_WORKSPACE_CLI_TOKEN
         # so the gws CLI in the task-runner image is authenticated. The matching
         # gws agent skills are added to the skills archive below.
+        # Note: GOOGLE_WORKSPACE_INSTRUCTIONS is appended later, after the
+        # profile skill filter, so the prompt only references skills that
+        # actually made it into the archive.
         google_workspace_enabled = False
         if cloud_storage_credentials and "google_drive" in cloud_storage_credentials:
             google_creds = cloud_storage_credentials["google_drive"]
@@ -1490,7 +1493,6 @@ class TaskManager:
             if google_access_token:
                 env_vars["GOOGLE_WORKSPACE_CLI_TOKEN"] = google_access_token
                 google_workspace_enabled = True
-                system_prompt += GOOGLE_WORKSPACE_INSTRUCTIONS
 
         # Merge DB skills with git-sourced and system skills (DB > git > system)
         db_skills = settings.get("skills", [])
@@ -1524,6 +1526,18 @@ class TaskManager:
             filtered_db = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
             non_db = [s for s in skills if not s.get("id")] if include_external else []
             skills = filtered_db + non_db
+
+        # Append Google Workspace prompt instructions only if at least one gws
+        # system skill survived filtering. Otherwise the prompt would tell the
+        # agent to read /workspace/skills/gws-*/SKILL.md files that aren't in
+        # the archive (e.g. when a profile sets include_git_skills=false).
+        # The token env var is still injected so the agent can use the binary
+        # if it knows about it, but we don't direct it to skills that aren't
+        # there.
+        if google_workspace_enabled and any(
+            s["name"].startswith("gws-") for s in skills
+        ):
+            system_prompt += GOOGLE_WORKSPACE_INSTRUCTIONS
 
         # Inject skill manifest
         if skills:

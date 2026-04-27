@@ -71,6 +71,9 @@ async function loadStatus() {
 }
 
 async function connect() {
+  // Always clear any prior poller up-front, so blocked-popup retries (and
+  // network failures during authorize) don't leave a stale interval running.
+  stopPolling()
   try {
     const data = await authorizeCloudStorage(PROVIDER_ID)
     const w = 500, h = 600
@@ -85,9 +88,6 @@ async function connect() {
       toast.error('Popup blocked — please allow popups for this site')
       return
     }
-    // Replace any existing poll (e.g. from a previous click) so we never run
-    // two pollers concurrently.
-    stopPolling()
     popupPoll.value = setInterval(() => {
       if (popup.closed) {
         stopPolling()
