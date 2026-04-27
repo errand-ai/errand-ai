@@ -55,6 +55,37 @@ def _required_scopes(provider: str) -> set[str]:
     return set()
 
 
+# Provider name canonicalization for WebSocket OAuth flows.
+#
+# The errand server's internal naming for the Google integration is
+# `google_drive` (DB platform_id, HTTP path param, settings UI keys). errand-cloud
+# was updated 2026-04-27 to use the canonical name `google_workspace` over the
+# WebSocket relay (with `google_drive` retained as a deprecated alias). To stay
+# correct on both sides without forcing a DB migration, we translate at the
+# WebSocket boundary:
+#
+#   internal `google_drive`  <->  canonical `google_workspace` (on the wire)
+#
+# Other providers (e.g. `onedrive`) pass through unchanged.
+_WIRE_NAME_FOR_INTERNAL = {"google_drive": "google_workspace"}
+_INTERNAL_NAME_FOR_WIRE = {"google_workspace": "google_drive"}
+
+
+def to_wire_provider(internal: str) -> str:
+    """Map an internal provider name to the canonical name used on the WebSocket."""
+    return _WIRE_NAME_FOR_INTERNAL.get(internal, internal)
+
+
+def from_wire_provider(wire: str) -> str:
+    """Map a wire (canonical or alias) provider name to the internal name.
+
+    Accepts both the canonical name (`google_workspace`) and the deprecated
+    alias (`google_drive`) for backwards compatibility with older cloud
+    deployments.
+    """
+    return _INTERNAL_NAME_FOR_WIRE.get(wire, wire)
+
+
 async def _require_user(request: Request):
     """Auth dependency — late import to avoid circular import with main.py."""
     from main import get_current_user
@@ -237,11 +268,13 @@ async def authorize(
     await ws.send(json.dumps({
         "type": "oauth_initiate",
         "state": state,
-        "provider": provider,
+        # Send the canonical Workspace name on the wire — errand-cloud accepts
+        # both, but we prefer the canonical so we eventually retire the alias.
+        "provider": to_wire_provider(provider),
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
+    return {"redirect_url": f"{cloud_service_url}/oauth/{to_wire_provider(provider)}/authorize?state={state}"}
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
@@ -419,14 +452,15 @@ async def refresh_token(
     if not client:
         raise HTTPException(status_code=503, detail="No active cloud client")
 
+    wire_provider = to_wire_provider(provider)
     result = await client.send_and_await(
         message={
             "type": "oauth_refresh",
-            "provider": provider,
+            "provider": wire_provider,
             "refresh_token": refresh_tok,
         },
         response_type="oauth_refresh_result",
-        provider=provider,
+        provider=wire_provider,
         timeout=30.0,
     )
 
@@ -484,7 +518,10 @@ async def integration_status(
             entry["user_name"] = creds.get("user_name", "")
             required = _required_scopes(provider)
             if required:
-                granted = set(creds.get("granted_scopes") or [])
-                entry["reauth_required"] = not required.issubset(granted)
+                granted = list(creds.get("granted_scopes") or [])
+                # Surface the granted scopes so the frontend can derive
+                # per-service badge state without re-implementing scope logic.
+                entry["granted_scopes"] = granted
+                entry["reauth_required"] = not required.issubset(set(granted))
         result[provider] = entry
     return result

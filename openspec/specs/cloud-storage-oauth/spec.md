@@ -70,3 +70,44 @@ The existing direct flow SHALL remain unchanged when local credentials are prese
 Token refresh SHALL route through errand-cloud when local client credentials are not configured. The worker SHALL send an `oauth_refresh` WebSocket message and await the response before proceeding with task execution.
 
 When local client credentials are configured, the existing direct refresh flow SHALL remain unchanged.
+
+### Requirement: Canonical Google Workspace OAuth provider name on the WebSocket relay
+
+The errand server SHALL use the canonical provider name `google_workspace` in any `oauth_initiate` or `oauth_refresh` WebSocket frame relayed to errand-cloud for the Google integration. The errand server's HTTP API and DB platform_id retain the legacy internal name `google_drive`; the canonical/internal mapping happens only at the WebSocket boundary.
+
+#### Scenario: Canonical OAuth initiation
+- **WHEN** the cloud-proxy authorize flow runs for the Google integration
+- **THEN** the `oauth_initiate` WebSocket frame carries `provider: "google_workspace"`
+- **AND** the redirect URL targets `<cloud_service_url>/oauth/google_workspace/authorize?state=...`
+
+#### Scenario: Canonical OAuth refresh
+- **WHEN** the worker triggers a token refresh for the Google integration via the cloud proxy
+- **THEN** the `oauth_refresh` WebSocket frame carries `provider: "google_workspace"`
+
+### Requirement: Tolerant `oauth_tokens` reply receiver
+
+The dispatcher for inbound `oauth_tokens` (and `oauth_error`) WebSocket replies SHALL accept either `provider: "google_workspace"` (canonical) OR `provider: "google_drive"` (deprecated alias kept by errand-cloud for backward compatibility). It SHALL normalize the provider name to the internal `"google_drive"` before storing credentials or publishing SSE events, so DB rows and downstream consumers stay on a single identifier.
+
+The dispatcher SHALL additionally capture the granted scopes from the `oauth_tokens` payload (either `granted_scopes` array or space-separated `scope` string) and persist them on the `PlatformCredential` for stale-scope and per-service badge derivation.
+
+#### Scenario: Canonical reply
+- **WHEN** an `oauth_tokens` reply arrives carrying `provider: "google_workspace"`
+- **THEN** the dispatcher accepts the message
+- **AND** stores the credential under `platform_id="google_drive"`
+- **AND** publishes `cloud_storage_connected` with `provider="google_drive"`
+
+#### Scenario: Legacy alias reply
+- **WHEN** an `oauth_tokens` reply arrives carrying `provider: "google_drive"`
+- **THEN** the dispatcher accepts the message and stores credentials identically to the canonical case
+
+#### Scenario: Granted scopes captured
+- **WHEN** the `oauth_tokens` payload includes `granted_scopes` (array) or `scope` (space-separated)
+- **THEN** the persisted credential's `granted_scopes` field reflects every granted scope verbatim
+
+### Requirement: Granted scopes surfaced in integration status
+
+The `/api/integrations/status` response SHALL include the `granted_scopes` list for the Google integration when credentials exist, so the UI can derive per-service badge state without re-implementing scope logic.
+
+#### Scenario: Granted scopes surfaced
+- **WHEN** the integration status endpoint is called and Google credentials with stored `granted_scopes` exist
+- **THEN** the `google_drive` entry in the response includes a `granted_scopes` array carrying every persisted scope

@@ -15,17 +15,20 @@ interface Service {
   key: string
   label: string
   icon: string
+  /** OAuth scopes that satisfy this service. The badge renders active when at
+   *  least one of these is present in the user's granted scope set. */
+  scopes: string[]
 }
 
 const SERVICES: Service[] = [
-  { key: 'drive', label: 'Drive', icon: '📁' },
-  { key: 'gmail', label: 'Gmail', icon: '📧' },
-  { key: 'calendar', label: 'Calendar', icon: '📅' },
-  { key: 'sheets', label: 'Sheets', icon: '📊' },
-  { key: 'docs', label: 'Docs', icon: '📄' },
-  { key: 'chat', label: 'Chat', icon: '💬' },
-  { key: 'tasks', label: 'Tasks', icon: '✅' },
-  { key: 'contacts', label: 'Contacts', icon: '👥' },
+  { key: 'drive',    label: 'Drive',    icon: '📁', scopes: ['https://www.googleapis.com/auth/drive'] },
+  { key: 'gmail',    label: 'Gmail',    icon: '📧', scopes: ['https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/gmail.send'] },
+  { key: 'calendar', label: 'Calendar', icon: '📅', scopes: ['https://www.googleapis.com/auth/calendar'] },
+  { key: 'sheets',   label: 'Sheets',   icon: '📊', scopes: ['https://www.googleapis.com/auth/spreadsheets'] },
+  { key: 'docs',     label: 'Docs',     icon: '📄', scopes: ['https://www.googleapis.com/auth/documents'] },
+  { key: 'chat',     label: 'Chat',     icon: '💬', scopes: ['https://www.googleapis.com/auth/chat.messages'] },
+  { key: 'tasks',    label: 'Tasks',    icon: '✅', scopes: ['https://www.googleapis.com/auth/tasks'] },
+  { key: 'contacts', label: 'Contacts', icon: '👥', scopes: ['https://www.googleapis.com/auth/contacts', 'https://www.googleapis.com/auth/contacts.readonly'] },
 ]
 
 const status = ref<CloudStorageProviderStatus | null>(null)
@@ -53,9 +56,38 @@ function stopPolling() {
   }
 }
 
-const reauthRequired = computed(() => status.value?.reauth_required === true)
 const isConnected = computed(() => status.value?.connected === true)
 const isAvailable = computed(() => status.value?.available === true)
+
+/** OAuth scopes that the most recent authorization actually granted. Empty
+ *  set when not connected (no granted_scopes field). */
+const grantedScopes = computed<Set<string>>(() => new Set(status.value?.granted_scopes ?? []))
+
+/** Per-service active-state map. A service is active when at least one of
+ *  its candidate scopes is present in the granted set AND we're connected. */
+const serviceActive = computed<Record<string, boolean>>(() => {
+  if (!isConnected.value) {
+    return Object.fromEntries(SERVICES.map(s => [s.key, false]))
+  }
+  const granted = grantedScopes.value
+  return Object.fromEntries(
+    SERVICES.map(s => [s.key, s.scopes.some(scope => granted.has(scope))]),
+  )
+})
+
+/** True when at least one advertised service's required scope is missing.
+ *  Catches partial-grant states that the coarse `reauth_required` boolean
+ *  alone would miss (e.g. user de-selected Gmail on the consent screen). */
+const anyServiceMissing = computed(() => {
+  if (!isConnected.value) return false
+  return SERVICES.some(s => !serviceActive.value[s.key])
+})
+
+/** Re-authorization is required when either the backend says so OR the
+ *  per-scope check shows a partial grant. */
+const reauthRequired = computed(
+  () => isConnected.value && (status.value?.reauth_required === true || anyServiceMissing.value),
+)
 
 async function loadStatus() {
   loading.value = true
@@ -204,10 +236,11 @@ onBeforeUnmount(stopPolling)
             v-for="svc in SERVICES"
             :key="svc.key"
             class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs"
-            :class="isConnected && !reauthRequired
+            :class="serviceActive[svc.key]
               ? 'border-blue-200 bg-blue-50 text-blue-700'
               : 'border-gray-200 bg-gray-50 text-gray-400'"
             :data-testid="`google-service-${svc.key}`"
+            :data-active="serviceActive[svc.key] ? 'true' : 'false'"
           >
             <span aria-hidden="true">{{ svc.icon }}</span>
             {{ svc.label }}

@@ -415,6 +415,89 @@ class TestOAuthHandlers:
         mock_publish.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_handle_oauth_tokens_normalises_canonical_provider(self):
+        """oauth_tokens with provider='google_workspace' is stored under internal 'google_drive'."""
+        from cloud_client import CloudWebSocketClient
+        from platforms.credentials import decrypt as decrypt_credentials
+
+        client = CloudWebSocketClient()
+        captured: dict = {}
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.commit = AsyncMock()
+
+        def capture_add(row):
+            captured["row"] = row
+        mock_session.add = MagicMock(side_effect=capture_add)
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        message = {
+            "type": "oauth_tokens",
+            "state": "test-state",
+            "provider": "google_workspace",  # canonical wire name
+            "access_token": "ya29.test",
+            "refresh_token": "1//refresh",
+            "expires_in": 3600,
+            "user_email": "user@example.com",
+            "user_name": "Test User",
+            "granted_scopes": [
+                "openid",
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        }
+
+        with patch("cloud_client.async_session", return_value=mock_ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_oauth_tokens(message)
+
+        # SSE event uses the internal name so frontend lookups remain correct.
+        mock_publish.assert_called_once_with("cloud_storage_connected", {"provider": "google_drive"})
+        # DB row stored under internal name.
+        assert captured["row"].platform_id == "google_drive"
+        # granted_scopes captured from the wire payload.
+        creds = decrypt_credentials(captured["row"].encrypted_data)
+        assert "https://www.googleapis.com/auth/drive" in creds["granted_scopes"]
+        assert "https://www.googleapis.com/auth/gmail.modify" in creds["granted_scopes"]
+
+    @pytest.mark.asyncio
+    async def test_handle_oauth_tokens_accepts_legacy_alias(self):
+        """oauth_tokens with provider='google_drive' (legacy alias) still works."""
+        from cloud_client import CloudWebSocketClient
+
+        client = CloudWebSocketClient()
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        message = {
+            "type": "oauth_tokens",
+            "provider": "google_drive",  # deprecated alias
+            "access_token": "ya29.test",
+            "refresh_token": "1//refresh",
+            "expires_in": 3600,
+            "user_email": "user@example.com",
+            "user_name": "Test User",
+        }
+
+        with patch("cloud_client.async_session", return_value=mock_ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_oauth_tokens(message)
+
+        mock_session.add.assert_called_once()
+        mock_publish.assert_called_once_with("cloud_storage_connected", {"provider": "google_drive"})
+
+    @pytest.mark.asyncio
     async def test_handle_oauth_error_publishes_event(self):
         """oauth_error message should log and publish SSE event."""
         client = CloudWebSocketClient()

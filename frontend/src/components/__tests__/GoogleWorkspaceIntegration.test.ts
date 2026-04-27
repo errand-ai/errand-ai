@@ -70,6 +70,19 @@ describe('GoogleWorkspaceIntegration', () => {
         user_email: 'user@gmail.com',
         user_name: 'Test User',
         reauth_required: false,
+        // Full Workspace scope set — necessary for the "Disconnect" path now
+        // that the UI gates on per-badge scope coverage, not just the boolean.
+        granted_scopes: [
+          'openid', 'email', 'profile',
+          'https://www.googleapis.com/auth/drive',
+          'https://www.googleapis.com/auth/gmail.modify',
+          'https://www.googleapis.com/auth/calendar',
+          'https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/documents',
+          'https://www.googleapis.com/auth/chat.messages',
+          'https://www.googleapis.com/auth/tasks',
+          'https://www.googleapis.com/auth/contacts.readonly',
+        ],
       },
       onedrive: { available: false, connected: false },
     })
@@ -100,6 +113,118 @@ describe('GoogleWorkspaceIntegration', () => {
     expect(wrapper.find('[data-testid="google-workspace-reauthorize"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="google-workspace-disconnect"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(true)
+  })
+
+  // --- Per-service badge state derived from granted_scopes ---
+
+  const FULL_WORKSPACE_SCOPES = [
+    'openid', 'email', 'profile',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/chat.messages',
+    'https://www.googleapis.com/auth/tasks',
+    'https://www.googleapis.com/auth/contacts.readonly',
+  ]
+
+  const ALL_BADGES = ['drive', 'gmail', 'calendar', 'sheets', 'docs', 'chat', 'tasks', 'contacts']
+
+  function badgeActive(wrapper: ReturnType<typeof mount>, key: string): boolean {
+    return wrapper.find(`[data-testid="google-service-${key}"]`).attributes('data-active') === 'true'
+  }
+
+  it('renders every badge active when full Workspace scope set is granted', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: {
+        available: true,
+        connected: true,
+        user_email: 'user@gmail.com',
+        reauth_required: false,
+        granted_scopes: FULL_WORKSPACE_SCOPES,
+      },
+      onedrive: { available: false, connected: false },
+    })
+
+    const wrapper = mount(GoogleWorkspaceIntegration)
+    await flushPromises()
+
+    for (const key of ALL_BADGES) {
+      expect(badgeActive(wrapper, key)).toBe(true)
+    }
+    expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="google-workspace-disconnect"]').exists()).toBe(true)
+  })
+
+  it('keeps non-Drive badges muted when only auth/drive is granted', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: {
+        available: true,
+        connected: true,
+        user_email: 'user@gmail.com',
+        reauth_required: true,
+        granted_scopes: ['openid', 'https://www.googleapis.com/auth/drive'],
+      },
+      onedrive: { available: false, connected: false },
+    })
+
+    const wrapper = mount(GoogleWorkspaceIntegration)
+    await flushPromises()
+
+    expect(badgeActive(wrapper, 'drive')).toBe(true)
+    for (const key of ALL_BADGES.filter(k => k !== 'drive')) {
+      expect(badgeActive(wrapper, key)).toBe(false)
+    }
+    // Warning visible because the other services' scopes are missing.
+    expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="google-workspace-reauthorize"]').exists()).toBe(true)
+  })
+
+  it('renders partial-grant set with warning still visible', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: {
+        available: true,
+        connected: true,
+        user_email: 'user@gmail.com',
+        // Backend reports false because the required set is satisfied for
+        // its check, but the UI still finds gaps via the per-badge mapping.
+        reauth_required: false,
+        granted_scopes: [
+          'https://www.googleapis.com/auth/drive',
+          'https://www.googleapis.com/auth/gmail.modify',
+          'https://www.googleapis.com/auth/calendar',
+        ],
+      },
+      onedrive: { available: false, connected: false },
+    })
+
+    const wrapper = mount(GoogleWorkspaceIntegration)
+    await flushPromises()
+
+    for (const key of ['drive', 'gmail', 'calendar']) {
+      expect(badgeActive(wrapper, key)).toBe(true)
+    }
+    for (const key of ['sheets', 'docs', 'chat', 'tasks', 'contacts']) {
+      expect(badgeActive(wrapper, key)).toBe(false)
+    }
+    // Tightened warning condition: any missing badge → warning shown.
+    expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(true)
+  })
+
+  it('renders all badges muted when not connected', async () => {
+    mockFetchCloudStorageStatus.mockResolvedValue({
+      google_drive: { available: true, connected: false },
+      onedrive: { available: false, connected: false },
+    })
+
+    const wrapper = mount(GoogleWorkspaceIntegration)
+    await flushPromises()
+
+    for (const key of ALL_BADGES) {
+      expect(badgeActive(wrapper, key)).toBe(false)
+    }
+    expect(wrapper.find('[data-testid="google-workspace-reauth-warning"]').exists()).toBe(false)
   })
 
   it('connect button opens OAuth popup', async () => {
@@ -144,6 +269,7 @@ describe('GoogleWorkspaceIntegration', () => {
           connected: true,
           user_email: 'user@gmail.com',
           reauth_required: false,
+          granted_scopes: FULL_WORKSPACE_SCOPES,
         },
         onedrive: { available: false, connected: false },
       })

@@ -133,7 +133,9 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     url = data["redirect_url"]
-    assert "cloud.example.com/oauth/google_drive/authorize" in url
+    # Cloud OAuth URL uses the canonical wire name `google_workspace` so
+    # errand-cloud's new endpoint requests the full Workspace scope set.
+    assert "cloud.example.com/oauth/google_workspace/authorize" in url
     assert "state=" in url
 
     # Verify WS message was sent
@@ -141,7 +143,7 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])
     assert sent["type"] == "oauth_initiate"
-    assert sent["provider"] == "google_drive"
+    assert sent["provider"] == "google_workspace"
 
 
 @pytest.mark.anyio
@@ -493,6 +495,67 @@ async def test_status_google_workspace_reauth_required(integration_client, monke
     data = resp.json()
     assert data["google_drive"]["connected"] is True
     assert data["google_drive"]["reauth_required"] is True
+    # Surface the granted scopes so the frontend can render per-badge state.
+    assert data["google_drive"]["granted_scopes"] == [
+        "openid", "email", "profile",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+
+@pytest.mark.anyio
+async def test_status_exposes_full_granted_scopes_when_current(integration_client, monkeypatch):
+    """When all required scopes are granted, the full list still surfaces for per-badge UI."""
+    from integration_routes import GOOGLE_WORKSPACE_SCOPES
+
+    client, session_factory, _ = integration_client
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    full_scopes = GOOGLE_WORKSPACE_SCOPES.split()
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="google_drive",
+            encrypted_data=encrypt({
+                "access_token": "test",
+                "granted_scopes": full_scopes,
+            }),
+            status="connected",
+        ))
+        await session.commit()
+
+    resp = await client.get("/api/integrations/status")
+    data = resp.json()
+    assert data["google_drive"]["reauth_required"] is False
+    assert set(data["google_drive"]["granted_scopes"]) == set(full_scopes)
+
+
+@pytest.mark.anyio
+async def test_authorize_cloud_proxy_uses_canonical_provider(integration_client, monkeypatch):
+    """oauth_initiate WebSocket frame carries `provider=google_workspace` (canonical),
+    not the deprecated `google_drive` alias."""
+    client, session_factory, redis = integration_client
+
+    async with session_factory() as session:
+        from models import Setting
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        session.add(Setting(key="cloud_service_url", value="https://cloud.example.com"))
+        await session.commit()
+
+    mock_ws = AsyncMock()
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_ws", return_value=mock_ws):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 200
+    mock_ws.send.assert_called_once()
+    import json
+    sent = json.loads(mock_ws.send.call_args[0][0])
+    assert sent["type"] == "oauth_initiate"
+    assert sent["provider"] == "google_workspace"
 
 
 @pytest.mark.anyio

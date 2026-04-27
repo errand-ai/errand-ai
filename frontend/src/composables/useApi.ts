@@ -369,6 +369,10 @@ export interface CloudStorageProviderStatus {
   /** True when stored OAuth scopes are narrower than the currently required set
    *  (Google Workspace only — OneDrive does not include this field). */
   reauth_required?: boolean
+  /** OAuth scopes actually granted on the most recent authorization. The
+   *  Google Workspace section uses this for per-badge active-state rendering
+   *  (a partial grant should leave non-granted badges muted). */
+  granted_scopes?: string[]
 }
 
 export interface CloudStorageStatus {
