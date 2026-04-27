@@ -7,7 +7,7 @@ The system SHALL define a `PlatformCapability` string enum with values: `POST`, 
 #### Scenario: Platform declares capabilities
 
 - **WHEN** a `TwitterPlatform` is instantiated
-- **THEN** its `info().capabilities` includes `PlatformCapability.POST` and `PlatformCapability.MEDIA`
+- **THEN** its `info().capabilities` includes `PlatformCapability.POST`, `PlatformCapability.MEDIA`, `PlatformCapability.ANALYTICS`, and `PlatformCapability.SEARCH`
 
 #### Scenario: Email capability available
 
