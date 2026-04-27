@@ -152,19 +152,24 @@ describe('CloudStorageIntegration', () => {
     const mockPopup = { closed: false }
     vi.spyOn(window, 'open').mockReturnValue(mockPopup as unknown as Window)
 
+    // connect() starts long-running timers that only clear when the popup
+    // closes; unmount in finally so they don't leak between tests.
     const wrapper = mount(CloudStorageIntegration)
-    await flushPromises()
+    try {
+      await flushPromises()
 
-    await wrapper.find('[data-testid="cloud-connect-onedrive"]').trigger('click')
-    await flushPromises()
+      await wrapper.find('[data-testid="cloud-connect-onedrive"]').trigger('click')
+      await flushPromises()
 
-    expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('onedrive')
-    expect(window.open).toHaveBeenCalledWith(
-      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=test',
-      'cloud-storage-auth',
-      expect.stringContaining('width=500'),
-    )
-
-    vi.restoreAllMocks()
+      expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('onedrive')
+      expect(window.open).toHaveBeenCalledWith(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=test',
+        'cloud-storage-auth',
+        expect.stringContaining('width=500'),
+      )
+    } finally {
+      wrapper.unmount()
+      vi.restoreAllMocks()
+    }
   })
 })

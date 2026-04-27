@@ -114,20 +114,26 @@ describe('GoogleWorkspaceIntegration', () => {
     const mockPopup = { closed: false }
     vi.spyOn(window, 'open').mockReturnValue(mockPopup as unknown as Window)
 
+    // connect() starts a 500 ms poller and a 10-min timeout that don't clear
+    // until the popup closes. Always unmount in finally so vitest doesn't
+    // leak active timers between tests.
     const wrapper = mount(GoogleWorkspaceIntegration)
-    await flushPromises()
+    try {
+      await flushPromises()
 
-    await wrapper.find('[data-testid="google-workspace-connect"]').trigger('click')
-    await flushPromises()
+      await wrapper.find('[data-testid="google-workspace-connect"]').trigger('click')
+      await flushPromises()
 
-    expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('google_drive')
-    expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
-      'google-workspace-auth',
-      expect.stringContaining('width=500'),
-    )
-
-    vi.restoreAllMocks()
+      expect(mockAuthorizeCloudStorage).toHaveBeenCalledWith('google_drive')
+      expect(window.open).toHaveBeenCalledWith(
+        'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
+        'google-workspace-auth',
+        expect.stringContaining('width=500'),
+      )
+    } finally {
+      wrapper.unmount()
+      vi.restoreAllMocks()
+    }
   })
 
   it('disconnect calls API and refreshes status', async () => {

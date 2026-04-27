@@ -487,18 +487,38 @@ async def _load_cloud_storage_credentials(session: AsyncSession) -> dict[str, di
     return out
 
 
+# Cache for parsed system skill sets. Keyed by (skill_set, base_dir) — the
+# on-disk content is baked into the image at build time and effectively
+# immutable for the process lifetime, so re-parsing on every task is wasted
+# work. Cleared by `_reset_system_skills_cache()` in tests.
+_SYSTEM_SKILLS_CACHE: dict[tuple[str, str], list[dict]] = {}
+
+
+def _reset_system_skills_cache() -> None:
+    """Test hook — clears the system-skills cache."""
+    _SYSTEM_SKILLS_CACHE.clear()
+
+
 def load_system_skills(skill_set: str, base_dir: str = SYSTEM_SKILLS_DIR) -> list[dict]:
     """Load a system skill set (e.g. 'gws') from `<base_dir>/<skill_set>/`.
 
-    System skills are baked into the errand server image at build time.
-    Returns an empty list if the directory does not exist (e.g. local dev).
+    System skills are baked into the errand server image at build time, so the
+    parsed result is memoized for the process lifetime. Returns an empty list
+    if the directory does not exist (e.g. local dev).
     """
+    cache_key = (skill_set, base_dir)
+    cached = _SYSTEM_SKILLS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     skill_dir = os.path.join(base_dir, skill_set)
     if not os.path.isdir(skill_dir):
         logger.debug("System skill set '%s' not present at %s — skipping", skill_set, skill_dir)
+        _SYSTEM_SKILLS_CACHE[cache_key] = []
         return []
     skills = parse_skills_from_directory(skill_dir)
     logger.info("Loaded %d system skill(s) from %s", len(skills), skill_dir)
+    _SYSTEM_SKILLS_CACHE[cache_key] = skills
     return skills
 
 

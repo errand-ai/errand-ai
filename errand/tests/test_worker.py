@@ -1939,6 +1939,7 @@ async def test_read_settings_skills_empty_by_default(worker_session: AsyncSessio
 from task_manager import (
     refresh_git_clone, parse_skills_from_directory, merge_skills,
     load_system_skills, _load_cloud_storage_credentials,
+    _reset_system_skills_cache,
     GitSkillsError, MAX_GIT_RETRIES,
 )
 
@@ -2276,6 +2277,9 @@ class TestMergeSkills:
 class TestLoadSystemSkills:
     """Tests for load_system_skills()."""
 
+    def setup_method(self) -> None:
+        _reset_system_skills_cache()
+
     def test_loads_skills_from_directory(self, tmp_path):
         gws = tmp_path / "gws"
         gws.mkdir()
@@ -2294,6 +2298,26 @@ class TestLoadSystemSkills:
         """Missing system skill directory is not an error — returns []."""
         result = load_system_skills("gws", base_dir=str(tmp_path))
         assert result == []
+
+    def test_result_is_memoized(self, tmp_path):
+        """Repeat calls with the same args don't re-parse the on-disk skills."""
+        gws = tmp_path / "gws"
+        gws.mkdir()
+        skill_dir = gws / "gws-drive"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: gws-drive\ndescription: First\n---\n\nBody"
+        )
+
+        first = load_system_skills("gws", base_dir=str(tmp_path))
+
+        # Mutate the file to prove the cached result is used (not re-read).
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: gws-drive\ndescription: Second\n---\n\nBody"
+        )
+        second = load_system_skills("gws", base_dir=str(tmp_path))
+        assert first[0]["description"] == "First"
+        assert second[0]["description"] == "First"
 
 
 import os
