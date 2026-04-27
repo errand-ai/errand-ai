@@ -75,10 +75,12 @@ When local client credentials are configured, the existing direct refresh flow S
 
 The errand server SHALL use the canonical provider name `google_workspace` in any `oauth_initiate` or `oauth_refresh` WebSocket frame relayed to errand-cloud for the Google integration. The errand server's HTTP API and DB platform_id retain the legacy internal name `google_drive`; the canonical/internal mapping happens only at the WebSocket boundary.
 
+The cloud-proxy authorize redirect URL returned to the browser SHALL use the legacy `google_drive` path segment (e.g. `https://service.errand.cloud/oauth/google_drive/authorize?state=...`). errand-cloud's Google OAuth client has only the `…/oauth/google_drive/callback` redirect URI registered with Google; switching the path to the canonical name would trigger a `redirect_uri_mismatch` error on the consent screen.
+
 #### Scenario: Canonical OAuth initiation
 - **WHEN** the cloud-proxy authorize flow runs for the Google integration
 - **THEN** the `oauth_initiate` WebSocket frame carries `provider: "google_workspace"`
-- **AND** the redirect URL targets `<cloud_service_url>/oauth/google_workspace/authorize?state=...`
+- **AND** the redirect URL returned to the browser uses the legacy `google_drive` path segment so the redirect_uri Google sees matches the registered one
 
 #### Scenario: Canonical OAuth refresh
 - **WHEN** the worker triggers a token refresh for the Google integration via the cloud proxy

@@ -133,12 +133,13 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     url = data["redirect_url"]
-    # Cloud OAuth URL uses the canonical wire name `google_workspace` so
-    # errand-cloud's new endpoint requests the full Workspace scope set.
-    assert "cloud.example.com/oauth/google_workspace/authorize" in url
+    # The HTTP path uses the legacy `google_drive` segment because that's the
+    # one errand-cloud's Google OAuth client has registered as a redirect URI.
+    # Only the WS frame's `provider` field uses the canonical name.
+    assert "cloud.example.com/oauth/google_drive/authorize" in url
     assert "state=" in url
 
-    # Verify WS message was sent
+    # Verify WS message was sent — canonical name on the wire.
     mock_ws.send.assert_called_once()
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])

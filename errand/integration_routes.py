@@ -274,7 +274,12 @@ async def authorize(
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return {"redirect_url": f"{cloud_service_url}/oauth/{to_wire_provider(provider)}/authorize?state={state}"}
+    # NB: keep the legacy `provider` (e.g. `google_drive`) in the HTTP path
+    # rather than the canonical wire name. errand-cloud's Google OAuth client
+    # has only the legacy `…/oauth/google_drive/callback` redirect URI
+    # registered — switching the path to `google_workspace` would cause
+    # `redirect_uri_mismatch` on the Google consent screen.
+    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
