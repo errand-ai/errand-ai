@@ -154,14 +154,16 @@ async def _cloud_proxy_refresh(
         if is_connected():
             client = get_client()
             if client:
+                from integration_routes import to_wire_provider
+                wire_provider = to_wire_provider(provider)
                 result = await client.send_and_await(
                     message={
                         "type": "oauth_refresh",
-                        "provider": provider,
+                        "provider": wire_provider,
                         "refresh_token": refresh_token,
                     },
                     response_type="oauth_refresh_result",
-                    provider=provider,
+                    provider=wire_provider,
                     timeout=30.0,
                 )
                 if result and result.get("access_token"):

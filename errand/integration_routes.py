@@ -266,14 +266,15 @@ async def authorize(
             status_code=503,
             detail="Cloud service not connected — try again later",
         )
+    wire_provider = to_wire_provider(provider)
     await ws.send(json.dumps({
         "type": "oauth_initiate",
         "state": state,
-        "provider": to_wire_provider(provider),
+        "provider": wire_provider,
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return {"redirect_url": f"{cloud_service_url}/oauth/{to_wire_provider(provider)}/authorize?state={state}"}
+    return {"redirect_url": f"{cloud_service_url}/oauth/{wire_provider}/authorize?state={state}"}
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
@@ -451,14 +452,15 @@ async def refresh_token(
     if not client:
         raise HTTPException(status_code=503, detail="No active cloud client")
 
+    wire_provider = to_wire_provider(provider)
     result = await client.send_and_await(
         message={
             "type": "oauth_refresh",
-            "provider": to_wire_provider(provider),
+            "provider": wire_provider,
             "refresh_token": refresh_tok,
         },
         response_type="oauth_refresh_result",
-        provider=to_wire_provider(provider),
+        provider=wire_provider,
         timeout=30.0,
     )
 

@@ -705,3 +705,41 @@ async def test_status_mcp_configured_field(integration_client, monkeypatch):
     data = resp.json()
     assert "mcp_configured" not in data["google_drive"]
     assert data["onedrive"]["mcp_configured"] is True
+
+
+@pytest.mark.anyio
+async def test_refresh_token_uses_canonical_wire_provider(integration_client):
+    """`/api/integrations/google_drive/refresh` MUST send `oauth_refresh` with
+    `provider: google_workspace` and key the `send_and_await` waiter with the
+    same canonical name — errand-cloud always replies with the canonical
+    provider, so a legacy `google_drive` waiter key would never resolve.
+    """
+    client, session_factory, _ = integration_client
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="google_drive",
+            encrypted_data=encrypt({
+                "access_token": "old-token",
+                "refresh_token": "1//refresh-tok",
+            }),
+            status="connected",
+        ))
+        await session.commit()
+
+    fake_client = AsyncMock()
+    fake_client.send_and_await.return_value = {
+        "access_token": "new-token",
+        "expires_in": 3600,
+    }
+
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_client", return_value=fake_client):
+        resp = await client.post("/api/integrations/google_drive/refresh")
+
+    assert resp.status_code == 200
+    fake_client.send_and_await.assert_awaited_once()
+    kwargs = fake_client.send_and_await.call_args.kwargs
+    assert kwargs["message"]["type"] == "oauth_refresh"
+    assert kwargs["message"]["provider"] == "google_workspace"
+    assert kwargs["provider"] == "google_workspace"

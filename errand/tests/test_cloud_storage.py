@@ -268,6 +268,14 @@ async def test_cloud_proxy_refresh_success(db_session):
     assert result["access_token"] == "cloud-refreshed-token"
     assert result["expires_at"] > time.time()
 
+    # Both the `oauth_refresh` frame and the `send_and_await` waiter key MUST
+    # use the canonical `google_workspace` wire name. errand-cloud always
+    # replies with the canonical provider, so a legacy `google_drive` key
+    # would never resolve and the call would time out.
+    kwargs = mock_client.send_and_await.call_args.kwargs
+    assert kwargs["message"]["provider"] == "google_workspace"
+    assert kwargs["provider"] == "google_workspace"
+
     # Verify DB was updated
     db_result = await db_session.execute(
         select(PlatformCredential).where(PlatformCredential.platform_id == "google_drive")
