@@ -35,8 +35,8 @@ OAUTH_STATE_TTL = 600  # 10 minutes
 # affect correctness here.
 GOOGLE_WORKSPACE_SCOPES = " ".join([
     "openid",
-    "email",
-    "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
@@ -269,21 +269,11 @@ async def authorize(
     await ws.send(json.dumps({
         "type": "oauth_initiate",
         "state": state,
-        # NB: send the legacy `provider` (e.g. `google_drive`) here, NOT the
-        # canonical wire name. errand-cloud was updated to accept both on
-        # `oauth_tokens` replies, but the `oauth_initiate` → `/oauth/{provider}/
-        # authorize` round-trip still compares strictly: it stores the provider
-        # from the WS frame and matches it against the URL-path provider on
-        # the redirect, so they must agree. The URL path is locked to
-        # `google_drive` because that is the only path errand-cloud has
-        # registered with Google as a redirect URI. Once errand-cloud fully
-        # aliases both names through that path, this can flip back to
-        # `to_wire_provider(provider)`.
-        "provider": provider,
+        "provider": to_wire_provider(provider),
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
+    return {"redirect_url": f"{cloud_service_url}/oauth/{to_wire_provider(provider)}/authorize?state={state}"}
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
@@ -461,17 +451,14 @@ async def refresh_token(
     if not client:
         raise HTTPException(status_code=503, detail="No active cloud client")
 
-    # See note on `oauth_initiate` above: errand-cloud's strict provider
-    # comparison means we send the legacy name here too, until it fully
-    # normalises both names through every code path.
     result = await client.send_and_await(
         message={
             "type": "oauth_refresh",
-            "provider": provider,
+            "provider": to_wire_provider(provider),
             "refresh_token": refresh_tok,
         },
         response_type="oauth_refresh_result",
-        provider=provider,
+        provider=to_wire_provider(provider),
         timeout=30.0,
     )
 

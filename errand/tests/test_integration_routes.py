@@ -69,6 +69,11 @@ async def test_authorize_google_drive(integration_client, monkeypatch):
     assert url.startswith("https://accounts.google.com/")
     assert "goog-client-id" in url
     assert "access_type=offline" in url
+    # Canonical OIDC URIs — Google rewrites `email` / `profile` to these on the
+    # token response, so we request them in the canonical form up-front to keep
+    # the request and the persisted required-set string-equal.
+    assert "userinfo.email" in url
+    assert "userinfo.profile" in url
     # Expanded Google Workspace scopes — drive plus gmail/calendar/etc.
     assert "drive" in url
     assert "gmail.modify" in url
@@ -137,18 +142,16 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     url = data["redirect_url"]
-    # Both the URL path and the WS frame's `provider` use the legacy
-    # `google_drive` name: errand-cloud strictly compares state-stored vs
-    # URL-path provider, and the URL path is locked to `google_drive` so the
-    # redirect_uri it forwards to Google matches the registered callback.
-    assert "cloud.example.com/oauth/google_drive/authorize" in url
+    # Canonical wire name on both the URL path and the WS frame — errand-cloud
+    # has `…/oauth/google_workspace/callback` registered with Google.
+    assert "cloud.example.com/oauth/google_workspace/authorize" in url
     assert "state=" in url
 
     mock_ws.send.assert_called_once()
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])
     assert sent["type"] == "oauth_initiate"
-    assert sent["provider"] == "google_drive"
+    assert sent["provider"] == "google_workspace"
 
 
 @pytest.mark.anyio
@@ -534,14 +537,40 @@ async def test_status_exposes_full_granted_scopes_when_current(integration_clien
     assert set(data["google_drive"]["granted_scopes"]) == set(full_scopes)
 
 
+def test_required_scopes_subset_of_google_granted():
+    """Regression for the OIDC short-scope mismatch (Bug 1).
+
+    Google's token endpoint rewrites the short OIDC scopes `email` and
+    `profile` to canonical Drive-style URIs in the response `scope` claim. If
+    `_required_scopes` still uses the short forms, `issubset` returns False and
+    `reauth_required` flips on permanently. This test pins the required set to
+    what Google actually returns after a full Workspace consent.
+    """
+    from integration_routes import _required_scopes
+
+    granted = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/tasks",
+        "https://www.googleapis.com/auth/contacts",
+    ]
+    assert _required_scopes("google_drive").issubset(set(granted))
+
+
 @pytest.mark.anyio
-async def test_authorize_cloud_proxy_provider_name(integration_client, monkeypatch):
-    """oauth_initiate WebSocket frame carries the legacy `google_drive` provider
-    name. errand-cloud's strict state-vs-URL-path comparison forces both ends
-    to agree, and the URL path is locked to `google_drive` because that is the
-    name initially registered with Google's OAuth client. errand-cloud accepts
-    both names on inbound — once it fully aliases through the rest of the
-    flow, this can flip back to the canonical name (see `to_wire_provider`)."""
+async def test_authorize_cloud_proxy_uses_canonical_provider(integration_client, monkeypatch):
+    """oauth_initiate WebSocket frame and the cloud-proxy redirect URL both use
+    the canonical `google_workspace` name. errand-cloud has the canonical
+    callback registered with Google and `_resolve_pending_response` keys by the
+    canonical name, so request and response stay in agreement."""
     client, session_factory, redis = integration_client
 
     async with session_factory() as session:
@@ -560,11 +589,13 @@ async def test_authorize_cloud_proxy_provider_name(integration_client, monkeypat
         resp = await client.get("/api/integrations/google_drive/authorize")
 
     assert resp.status_code == 200
+    data = resp.json()
+    assert "cloud.example.com/oauth/google_workspace/authorize" in data["redirect_url"]
     mock_ws.send.assert_called_once()
     import json
     sent = json.loads(mock_ws.send.call_args[0][0])
     assert sent["type"] == "oauth_initiate"
-    assert sent["provider"] == "google_drive"
+    assert sent["provider"] == "google_workspace"
 
 
 @pytest.mark.anyio
