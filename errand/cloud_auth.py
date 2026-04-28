@@ -18,7 +18,7 @@ async def exchange_code(cloud_url: str, code: str) -> dict:
     Raises httpx.HTTPStatusError on failure.
     """
     url = f"{cloud_url.rstrip('/')}/auth/tenant/token"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         resp = await client.post(url, json={"code": code})
         resp.raise_for_status()
         return resp.json()
@@ -31,7 +31,7 @@ async def refresh_token(cloud_url: str, refresh_token_value: str) -> dict:
     Raises httpx.HTTPStatusError on failure.
     """
     url = f"{cloud_url.rstrip('/')}/auth/tenant/refresh"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         resp = await client.post(url, json={"refresh_token": refresh_token_value})
         resp.raise_for_status()
         return resp.json()
