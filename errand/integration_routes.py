@@ -35,8 +35,8 @@ OAUTH_STATE_TTL = 600  # 10 minutes
 # affect correctness here.
 GOOGLE_WORKSPACE_SCOPES = " ".join([
     "openid",
-    "email",
-    "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
@@ -56,35 +56,10 @@ def _required_scopes(provider: str) -> set[str]:
     return set()
 
 
-# Provider name canonicalization for WebSocket OAuth flows.
-#
-# The errand server's internal naming for the Google integration is
-# `google_drive` (DB platform_id, HTTP path param, settings UI keys). errand-cloud
-# was updated 2026-04-27 to use the canonical name `google_workspace` over the
-# WebSocket relay (with `google_drive` retained as a deprecated alias). To stay
-# correct on both sides without forcing a DB migration, we translate at the
-# WebSocket boundary:
-#
-#   internal `google_drive`  <->  canonical `google_workspace` (on the wire)
-#
-# Other providers (e.g. `onedrive`) pass through unchanged.
-_WIRE_NAME_FOR_INTERNAL = {"google_drive": "google_workspace"}
-_INTERNAL_NAME_FOR_WIRE = {"google_workspace": "google_drive"}
-
-
-def to_wire_provider(internal: str) -> str:
-    """Map an internal provider name to the canonical name used on the WebSocket."""
-    return _WIRE_NAME_FOR_INTERNAL.get(internal, internal)
-
-
-def from_wire_provider(wire: str) -> str:
-    """Map a wire (canonical or alias) provider name to the internal name.
-
-    Accepts both the canonical name (`google_workspace`) and the deprecated
-    alias (`google_drive`) for backwards compatibility with older cloud
-    deployments.
-    """
-    return _INTERNAL_NAME_FOR_WIRE.get(wire, wire)
+# Provider name canonicalization lives in `provider_names` so low-level
+# utilities (cloud_storage, cloud_client) can import the mapping without
+# pulling in this FastAPI routes module.
+from provider_names import to_wire_provider
 
 
 async def _require_user(request: Request):
@@ -266,24 +241,15 @@ async def authorize(
             status_code=503,
             detail="Cloud service not connected — try again later",
         )
+    wire_provider = to_wire_provider(provider)
     await ws.send(json.dumps({
         "type": "oauth_initiate",
         "state": state,
-        # NB: send the legacy `provider` (e.g. `google_drive`) here, NOT the
-        # canonical wire name. errand-cloud was updated to accept both on
-        # `oauth_tokens` replies, but the `oauth_initiate` → `/oauth/{provider}/
-        # authorize` round-trip still compares strictly: it stores the provider
-        # from the WS frame and matches it against the URL-path provider on
-        # the redirect, so they must agree. The URL path is locked to
-        # `google_drive` because that is the only path errand-cloud has
-        # registered with Google as a redirect URI. Once errand-cloud fully
-        # aliases both names through that path, this can flip back to
-        # `to_wire_provider(provider)`.
-        "provider": provider,
+        "provider": wire_provider,
     }))
 
     cloud_service_url = await _get_cloud_service_url(session)
-    return {"redirect_url": f"{cloud_service_url}/oauth/{provider}/authorize?state={state}"}
+    return {"redirect_url": f"{cloud_service_url}/oauth/{wire_provider}/authorize?state={state}"}
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
@@ -461,17 +427,15 @@ async def refresh_token(
     if not client:
         raise HTTPException(status_code=503, detail="No active cloud client")
 
-    # See note on `oauth_initiate` above: errand-cloud's strict provider
-    # comparison means we send the legacy name here too, until it fully
-    # normalises both names through every code path.
+    wire_provider = to_wire_provider(provider)
     result = await client.send_and_await(
         message={
             "type": "oauth_refresh",
-            "provider": provider,
+            "provider": wire_provider,
             "refresh_token": refresh_tok,
         },
         response_type="oauth_refresh_result",
-        provider=provider,
+        provider=wire_provider,
         timeout=30.0,
     )
 
