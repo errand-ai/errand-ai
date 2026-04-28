@@ -255,7 +255,9 @@ async def test_cloud_proxy_refresh_success(db_session):
     mock_client = AsyncMock()
     mock_client.send_and_await = AsyncMock(return_value={
         "type": "oauth_refresh_result",
-        "provider": "google_drive",
+        # errand-cloud always replies with the canonical provider name,
+        # regardless of which alias was sent on `oauth_refresh`.
+        "provider": "google_workspace",
         "access_token": "cloud-refreshed-token",
         "expires_in": 3600,
     })

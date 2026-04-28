@@ -31,5 +31,5 @@
 
 ### Spec + version
 
-- [x] Update `openspec/changes/fix-google-oauth-scope-and-refresh/specs/cloud-storage-oauth/spec.md` with the canonical OIDC scope list and the canonical-on-the-wire requirement.
+- [x] Update `openspec/specs/cloud-storage-oauth/spec.md` with the canonical OIDC scope list and the canonical-on-the-wire requirement.
 - [x] Bump `VERSION` (patch — bug fix).
