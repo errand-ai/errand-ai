@@ -59,7 +59,7 @@ def _required_scopes(provider: str) -> set[str]:
 # Provider name canonicalization lives in `provider_names` so low-level
 # utilities (cloud_storage, cloud_client) can import the mapping without
 # pulling in this FastAPI routes module.
-from provider_names import to_wire_provider, from_wire_provider  # noqa: F401
+from provider_names import to_wire_provider
 
 
 async def _require_user(request: Request):
