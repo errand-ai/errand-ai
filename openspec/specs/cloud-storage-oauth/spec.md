@@ -47,17 +47,40 @@ The Google Workspace status SHALL additionally include a `reauth_required` field
 
 ### Requirement: Google OAuth scopes
 
-The Google OAuth authorization flow SHALL request the following scopes: `openid`, `email`, `profile`, `https://www.googleapis.com/auth/drive`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/calendar`, `https://www.googleapis.com/auth/spreadsheets`, `https://www.googleapis.com/auth/documents`, `https://www.googleapis.com/auth/chat.messages`, `https://www.googleapis.com/auth/tasks`, `https://www.googleapis.com/auth/contacts.readonly`.
+The Google OAuth authorization flow SHALL request the following scopes, using the canonical Drive-style URIs for the OpenID Connect identity scopes (Google rewrites the short forms `email` and `profile` to these canonical URIs in its token-response `scope` claim — requesting them up-front keeps the request and the persisted required-set string-equal so stale-scope detection works):
 
-The granted scopes SHALL be stored in the `PlatformCredential` metadata for stale-scope detection.
+```
+openid
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/drive
+https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/calendar
+https://www.googleapis.com/auth/spreadsheets
+https://www.googleapis.com/auth/documents
+https://www.googleapis.com/auth/chat.messages
+https://www.googleapis.com/auth/tasks
+https://www.googleapis.com/auth/contacts
+```
 
-#### Scenario: Authorization requests expanded scopes
-- **WHEN** a user initiates Google Workspace authorization
-- **THEN** the OAuth request includes all required scopes
+The granted scopes SHALL be stored in the `PlatformCredential` metadata for stale-scope detection. `_required_scopes("google_drive")` SHALL return the same canonical set.
 
-#### Scenario: Granted scopes stored
-- **WHEN** the OAuth callback completes successfully
-- **THEN** the granted scopes are stored in the credential metadata
+#### Scenario: Authorization requests canonical OIDC URIs
+- **WHEN** a user initiates Google Workspace authorization via the direct flow
+- **THEN** the authorize URL's `scope` parameter contains `https://www.googleapis.com/auth/userinfo.email` and `https://www.googleapis.com/auth/userinfo.profile` (NOT the short `email` / `profile` forms)
+- **AND** every Workspace scope listed above
+
+#### Scenario: Granted set satisfies required after a successful re-auth
+- **WHEN** Google's token response includes the canonical URIs for OIDC scopes
+- **AND** every Workspace scope advertised in the consent screen
+- **THEN** `_required_scopes("google_drive").issubset(set(granted_scopes))` is `True`
+- **AND** the integration status endpoint returns `reauth_required: false`
+
+#### Scenario: Pre-existing credential with short-form OIDC scopes
+- **WHEN** a credential persisted by an older version of errand-server has `email` and `profile` in `granted_scopes` instead of the canonical URIs
+- **THEN** `reauth_required` remains `true` until the user re-authorises (no migration is performed)
+- **AND** the next re-auth populates the canonical URIs and the warning clears for good
 
 ### Requirement: OAuth authorize endpoint
 
@@ -73,18 +96,27 @@ When local client credentials are configured, the existing direct refresh flow S
 
 ### Requirement: Canonical Google Workspace OAuth provider name on the WebSocket relay
 
-The errand server SHALL use the canonical provider name `google_workspace` in any `oauth_initiate` or `oauth_refresh` WebSocket frame relayed to errand-cloud for the Google integration. The errand server's HTTP API and DB platform_id retain the legacy internal name `google_drive`; the canonical/internal mapping happens only at the WebSocket boundary.
+The errand server SHALL use the canonical provider name `google_workspace` in any `oauth_initiate` or `oauth_refresh` WebSocket frame relayed to errand-cloud for the Google integration. The errand server's HTTP API and DB platform_id retain the legacy internal name `google_drive`; the canonical/internal mapping happens only at the WebSocket boundary via `to_wire_provider()` / `from_wire_provider()`.
 
-The cloud-proxy authorize redirect URL returned to the browser SHALL use the legacy `google_drive` path segment (e.g. `https://service.errand.cloud/oauth/google_drive/authorize?state=...`). errand-cloud's Google OAuth client has only the `…/oauth/google_drive/callback` redirect URI registered with Google; switching the path to the canonical name would trigger a `redirect_uri_mismatch` error on the consent screen.
+The cloud-proxy authorize redirect URL returned to the browser SHALL use the canonical `google_workspace` path segment (e.g. `https://service.errand.cloud/oauth/google_workspace/authorize?state=...`). errand-cloud's Google OAuth client has the canonical `…/oauth/google_workspace/callback` redirect URI registered with Google, and errand-cloud builds the redirect_uri sent to Google from the canonical name regardless of which alias the URL path uses.
+
+The pending-response waiter on `client.send_and_await(...)` for `oauth_refresh_result` SHALL be keyed by the canonical provider name so it matches errand-cloud's response (which always uses canonical, regardless of the inbound provider name on `oauth_refresh`).
 
 #### Scenario: Canonical OAuth initiation
 - **WHEN** the cloud-proxy authorize flow runs for the Google integration
 - **THEN** the `oauth_initiate` WebSocket frame carries `provider: "google_workspace"`
-- **AND** the redirect URL returned to the browser uses the legacy `google_drive` path segment so the redirect_uri Google sees matches the registered one
+- **AND** the redirect URL returned to the browser is `<cloud_service_url>/oauth/google_workspace/authorize?state=...`
 
 #### Scenario: Canonical OAuth refresh
 - **WHEN** the worker triggers a token refresh for the Google integration via the cloud proxy
 - **THEN** the `oauth_refresh` WebSocket frame carries `provider: "google_workspace"`
+- **AND** the pending-response waiter is registered at key `oauth_refresh_result:google_workspace`
+- **AND** errand-cloud's reply with `provider: "google_workspace"` resolves the waiter without timeout
+
+#### Scenario: Refresh failure when waiter mismatch (regression guard)
+- **WHEN** the wire frame uses any value that does not match what errand-cloud echoes back on the response
+- **THEN** the `client.send_and_await` future is never resolved and the call times out, surfacing as `Cloud proxy refresh failed` and `Cloud storage token refresh failed for google_drive, skipping`
+- **THIS** is the symptom that this requirement prevents
 
 ### Requirement: Tolerant `oauth_tokens` reply receiver
 
