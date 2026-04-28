@@ -154,7 +154,7 @@ async def _cloud_proxy_refresh(
         if is_connected():
             client = get_client()
             if client:
-                from integration_routes import to_wire_provider
+                from provider_names import to_wire_provider
                 wire_provider = to_wire_provider(provider)
                 result = await client.send_and_await(
                     message={

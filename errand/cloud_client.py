@@ -228,7 +228,7 @@ class CloudWebSocketClient:
     async def _handle_oauth_tokens(self, message: dict) -> None:
         """Handle oauth_tokens message — store credentials and publish SSE event."""
         import time as _time
-        from integration_routes import from_wire_provider
+        from provider_names import from_wire_provider
 
         wire_provider = message.get("provider", "")
         # errand-cloud may send the canonical `google_workspace` or the legacy
@@ -286,7 +286,7 @@ class CloudWebSocketClient:
 
     async def _handle_oauth_error(self, message: dict) -> None:
         """Handle oauth_error message — log and publish SSE event."""
-        from integration_routes import from_wire_provider
+        from provider_names import from_wire_provider
 
         wire_provider = message.get("provider", "unknown")
         provider = from_wire_provider(wire_provider)
