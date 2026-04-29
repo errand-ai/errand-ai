@@ -5,3 +5,6 @@ dist/
 .env
 *.egg-info/
 .venv/
+.playwright-mcp/
+screenshots/
+.DS_Store
