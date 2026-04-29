@@ -32,6 +32,6 @@
 
 ## 6. Documentation and release
 
-- [x] 6.1 Bump `VERSION` per semver (minor — backwards-compatible feature) — bumped 0.115.9 → 0.116.0
+- [x] 6.1 Bump `VERSION` per semver (minor — backwards-compatible feature) — bumped 0.115.9 → 0.116.0; further bumped to 0.116.1 (patch) for review-fix redeploy
 - [x] 6.2 Note the new admin settings (`task_log_buffer_max_entries`, `task_log_buffer_ttl_seconds`) in the admin settings UI/help text if applicable — exposed via `settings_registry.SETTINGS_REGISTRY` so they appear in the `/api/settings` response with sensible defaults; surfacing them in the Task Management settings UI is left as a follow-up since these are advanced operator tunables that rarely need adjustment
 - [ ] 6.3 PR description references this change directory and links the modified specs — **deferred to user**: PR not yet created

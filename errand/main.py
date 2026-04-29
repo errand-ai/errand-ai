@@ -2483,8 +2483,12 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
     if valkey is None:
         raise HTTPException(status_code=503, detail="Event bus unavailable")
 
-    log_channel = f"task_logs:{task_id}"
-    buffer_key = f"task_logs_buffer:{task_id}"
+    # Normalize via str(task_uuid) so equivalent UUID representations
+    # (uppercase, no hyphens, etc.) hit the same channel/key the publisher
+    # writes to in task_manager._process_task.
+    normalized_task_id = str(task_uuid)
+    log_channel = f"task_logs:{normalized_task_id}"
+    buffer_key = f"task_logs_buffer:{normalized_task_id}"
 
     async def log_stream():
         pubsub = valkey.pubsub()
