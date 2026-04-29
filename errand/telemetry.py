@@ -529,7 +529,7 @@ class TelemetryReporter:
                 "health": health,
             }
 
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                 resp = await client.post(TELEMETRY_URL, json=payload)
                 if resp.status_code >= 400:
                     logger.warning(
