@@ -1100,13 +1100,13 @@ class TaskManager:
                     self._semaphore = asyncio.Semaphore(new_max)
 
                 buf_max_setting = db_settings.get("task_log_buffer_max_entries")
-                new_buf_max = int(buf_max_setting) if buf_max_setting else 5000
+                new_buf_max = max(1, int(buf_max_setting)) if buf_max_setting else 5000
                 if new_buf_max != self._task_log_buffer_max_entries:
                     logger.info("Updating task_log_buffer_max_entries: %d -> %d", self._task_log_buffer_max_entries, new_buf_max)
                     self._task_log_buffer_max_entries = new_buf_max
 
                 buf_ttl_setting = db_settings.get("task_log_buffer_ttl_seconds")
-                new_buf_ttl = int(buf_ttl_setting) if buf_ttl_setting else 86400
+                new_buf_ttl = max(1, int(buf_ttl_setting)) if buf_ttl_setting else 86400
                 if new_buf_ttl != self._task_log_buffer_ttl_seconds:
                     logger.info("Updating task_log_buffer_ttl_seconds: %d -> %d", self._task_log_buffer_ttl_seconds, new_buf_ttl)
                     self._task_log_buffer_ttl_seconds = new_buf_ttl
@@ -1674,16 +1674,25 @@ class TaskManager:
                                 msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
                         except (json.JSONDecodeError, ValueError):
                             msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                        publish_ok = False
                         try:
                             await valkey.publish(log_channel, msg)
+                            publish_ok = True
                         except Exception:
                             logger.warning("Failed to publish log line to Valkey", exc_info=True)
-                        try:
-                            await valkey.rpush(buffer_key, msg)
-                            await valkey.ltrim(buffer_key, -self._task_log_buffer_max_entries, -1)
-                            await valkey.expire(buffer_key, self._task_log_buffer_ttl_seconds)
-                        except Exception:
-                            logger.warning("Failed to append log line to Valkey buffer", exc_info=True)
+                        # Only mirror to the replay buffer when the live publish
+                        # succeeded — keeps the buffer in sync with what
+                        # subscribers actually received. Pipelined to avoid 3
+                        # round-trips per event.
+                        if publish_ok:
+                            try:
+                                pipe = valkey.pipeline(transaction=False)
+                                pipe.rpush(buffer_key, msg)
+                                pipe.ltrim(buffer_key, -self._task_log_buffer_max_entries, -1)
+                                pipe.expire(buffer_key, self._task_log_buffer_ttl_seconds)
+                                await pipe.execute()
+                            except Exception:
+                                logger.warning("Failed to append log line to Valkey buffer", exc_info=True)
             except Exception:
                 logger.warning("Error during log streaming for task %s", task.id, exc_info=True)
 

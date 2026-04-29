@@ -2506,7 +2506,7 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
                         yield "event: task_log_end\ndata: {}\n\n"
                         return
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    pass  # Not JSON or not the end sentinel — fall through to yield as log line
                 yield f"data: {entry}\n\n"
 
             while True:

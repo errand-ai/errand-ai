@@ -576,12 +576,13 @@ class CloudWebSocketClient:
 
     async def _get_cloud_ws_url(self) -> str:
         """Get the WebSocket URL for the cloud service."""
+        from settings_registry import SETTINGS_REGISTRY
         async with async_session() as session:
             result = await session.execute(
                 select(Setting).where(Setting.key == "cloud_service_url")
             )
             setting = result.scalar_one_or_none()
-            cloud_url = setting.value if setting and setting.value else "https://errand.cloud"
+            cloud_url = setting.value if setting and setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
         # Convert https:// to wss://
         ws_url = cloud_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -606,11 +607,12 @@ class CloudWebSocketClient:
                     return False
 
                 # Get cloud service URL
+                from settings_registry import SETTINGS_REGISTRY
                 result = await session.execute(
                     select(Setting).where(Setting.key == "cloud_service_url")
                 )
                 url_setting = result.scalar_one_or_none()
-                cloud_url = url_setting.value if url_setting and url_setting.value else "https://errand.cloud"
+                cloud_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
                 tokens = await refresh_token(cloud_url, refresh_token_value)
 

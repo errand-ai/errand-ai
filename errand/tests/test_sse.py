@@ -148,13 +148,11 @@ class FakeValkeyWithPubSub:
     def __init__(self, messages, buffers=None):
         self._messages = messages
         self._buffers = buffers or {}
-        self.lrange_call_order = []
 
     def pubsub(self):
         return FakePubSub(self._messages)
 
     async def lrange(self, key, start, stop):
-        self.lrange_call_order.append(key)
         entries = self._buffers.get(key, [])
         if stop == -1:
             return list(entries[start:])
