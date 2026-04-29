@@ -581,7 +581,7 @@ class CloudWebSocketClient:
                 select(Setting).where(Setting.key == "cloud_service_url")
             )
             setting = result.scalar_one_or_none()
-            cloud_url = setting.value if setting and setting.value else "https://service.errand.cloud"
+            cloud_url = setting.value if setting and setting.value else "https://errand.cloud"
 
         # Convert https:// to wss://
         ws_url = cloud_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -610,7 +610,7 @@ class CloudWebSocketClient:
                     select(Setting).where(Setting.key == "cloud_service_url")
                 )
                 url_setting = result.scalar_one_or_none()
-                cloud_url = url_setting.value if url_setting and url_setting.value else "https://service.errand.cloud"
+                cloud_url = url_setting.value if url_setting and url_setting.value else "https://errand.cloud"
 
                 tokens = await refresh_token(cloud_url, refresh_token_value)
 

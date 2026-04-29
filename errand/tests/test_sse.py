@@ -139,13 +139,26 @@ class FakePubSub:
 
 
 class FakeValkeyWithPubSub:
-    """Fake Valkey that returns a FakePubSub with predefined messages."""
+    """Fake Valkey that returns a FakePubSub with predefined messages.
 
-    def __init__(self, messages):
+    Optionally accepts a per-key buffer dict so the SSE endpoint can LRANGE
+    pre-seeded log buffers.
+    """
+
+    def __init__(self, messages, buffers=None):
         self._messages = messages
+        self._buffers = buffers or {}
+        self.lrange_call_order = []
 
     def pubsub(self):
         return FakePubSub(self._messages)
+
+    async def lrange(self, key, start, stop):
+        self.lrange_call_order.append(key)
+        entries = self._buffers.get(key, [])
+        if stop == -1:
+            return list(entries[start:])
+        return list(entries[start:stop + 1])
 
 
 @pytest.fixture()
@@ -373,6 +386,84 @@ async def test_sse_logs_still_accepts_jwt(sse_app):
         resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={valid_token}")
         assert resp.status_code == 200
         assert "event: task_log_end" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_replays_buffer_before_live(sse_app):
+    """Buffered events are replayed in order before any live pub/sub messages."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "running")
+
+    buffered = [
+        json.dumps({"event": "task_event", "type": "raw", "data": {"line": "buffered-1\n"}}),
+        json.dumps({"event": "task_event", "type": "raw", "data": {"line": "buffered-2\n"}}),
+    ]
+    live = [
+        json.dumps({"event": "task_event", "type": "raw", "data": {"line": "live-1\n"}}),
+        json.dumps({"event": "task_log_end"}),
+    ]
+    events_module._valkey = FakeValkeyWithPubSub(
+        live, buffers={f"task_logs_buffer:{task_id}": buffered}
+    )
+    valid_token = _make_local_token()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={valid_token}")
+        assert resp.status_code == 200
+        body = resp.text
+        # Buffered entries appear before the live entry
+        assert body.index("buffered-1") < body.index("buffered-2") < body.index("live-1")
+        assert "event: task_log_end" in body
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_empty_buffer_falls_through(sse_app):
+    """Empty/missing buffer doesn't error; live messages still forwarded."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "running")
+
+    live = [
+        json.dumps({"event": "task_event", "type": "raw", "data": {"line": "only-live\n"}}),
+        json.dumps({"event": "task_log_end"}),
+    ]
+    events_module._valkey = FakeValkeyWithPubSub(live)  # no buffers seeded
+    valid_token = _make_local_token()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={valid_token}")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "only-live" in body
+        assert "event: task_log_end" in body
+
+
+@pytest.mark.asyncio
+async def test_sse_logs_buffer_with_end_sentinel_short_circuits(sse_app):
+    """task_log_end found inside the replayed buffer ends the stream."""
+    test_app, _, test_session = sse_app
+    task_id = str(uuid.uuid4())
+    await _insert_task(test_session, task_id, "running")
+
+    buffered = [
+        json.dumps({"event": "task_event", "type": "raw", "data": {"line": "buffered\n"}}),
+        json.dumps({"event": "task_log_end"}),
+    ]
+    # Live messages would have a "should-not-appear" line — but the end
+    # sentinel in the buffer should short-circuit replay before reaching live.
+    live = [json.dumps({"event": "task_event", "type": "raw", "data": {"line": "should-not-appear\n"}})]
+    events_module._valkey = FakeValkeyWithPubSub(
+        live, buffers={f"task_logs_buffer:{task_id}": buffered}
+    )
+    valid_token = _make_local_token()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/tasks/{task_id}/logs/stream?token={valid_token}")
+        body = resp.text
+        assert "buffered" in body
+        assert "event: task_log_end" in body
+        assert "should-not-appear" not in body
 
 
 @pytest.mark.asyncio

@@ -1249,6 +1249,88 @@ async def test_process_task_publishes_end_sentinel():
     assert published_msg == {"event": "task_log_end"}
 
 
+# --- Per-task log buffer in Valkey ---
+
+
+@pytest.mark.asyncio
+async def test_process_task_appends_to_log_buffer():
+    """Each published log event is also rpush'd to the per-task buffer with trim+expire."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+
+    tool_call_event = json.dumps({"type": "tool_call", "data": {"tool": "ls", "args": {}}})
+    raw_event = "Traceback (most recent call last):"
+    mock_runtime = _make_mock_runtime(log_lines=[tool_call_event, raw_event])
+    mock_redis = AsyncMock()
+
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
+
+    buffer_key = f"task_logs_buffer:{task.id}"
+    rpush_calls = [c for c in mock_redis.rpush.call_args_list if c[0][0] == buffer_key]
+    # Two events streamed → two rpush calls
+    assert len(rpush_calls) == 2
+    first_event = json.loads(rpush_calls[0][0][1])
+    assert first_event["event"] == "task_event"
+    assert first_event["type"] == "tool_call"
+
+    # Each push followed by ltrim to default cap (5000) and expire to default TTL (86400)
+    ltrim_calls = [c for c in mock_redis.ltrim.call_args_list if c[0][0] == buffer_key]
+    assert len(ltrim_calls) == 2
+    assert ltrim_calls[0][0][1:] == (-5000, -1)
+    expire_calls = [c for c in mock_redis.expire.call_args_list if c[0][0] == buffer_key]
+    assert len(expire_calls) == 2
+    assert expire_calls[0][0][1] == 86400
+
+
+@pytest.mark.asyncio
+async def test_process_task_deletes_log_buffer_on_end():
+    """After publishing task_log_end, the buffer key is deleted."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+    mock_runtime = _make_mock_runtime()
+    mock_redis = AsyncMock()
+
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
+
+    buffer_key = f"task_logs_buffer:{task.id}"
+    delete_calls = [c for c in mock_redis.delete.call_args_list if c[0][0] == buffer_key]
+    assert len(delete_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_process_task_buffer_write_failure_does_not_block_publish():
+    """A failing rpush is logged and the live publish still happens."""
+    task = _make_mock_task(description="Run a job")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "system_prompt": "",
+    }
+    mock_runtime = _make_mock_runtime(log_lines=[json.dumps({"type": "tool_call", "data": {}})])
+    mock_redis = AsyncMock()
+    mock_redis.rpush = AsyncMock(side_effect=RuntimeError("buffer down"))
+
+    with patch.dict("os.environ", {"OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}):
+        await _run_process_task(task, settings, mock_runtime, mock_valkey=mock_redis)
+
+    # Live publish must have happened despite the buffer failure
+    publish_event_calls = [c for c in mock_redis.publish.call_args_list if "task_event" in str(c)]
+    assert len(publish_event_calls) >= 1
+
+
 # --- Structured output parsing ---
 
 

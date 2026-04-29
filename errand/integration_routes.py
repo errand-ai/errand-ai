@@ -181,7 +181,7 @@ async def _get_cloud_service_url(session: AsyncSession) -> str:
         select(Setting).where(Setting.key == "cloud_service_url")
     )
     setting = result.scalar_one_or_none()
-    return setting.value if setting and setting.value else "https://service.errand.cloud"
+    return setting.value if setting and setting.value else "https://errand.cloud"
 
 
 @router.get("/{provider}/authorize")
