@@ -177,11 +177,12 @@ async def _provider_available(provider: str, session: AsyncSession) -> tuple[boo
 
 async def _get_cloud_service_url(session: AsyncSession) -> str:
     """Get the cloud service URL from settings."""
+    from settings_registry import SETTINGS_REGISTRY
     result = await session.execute(
         select(Setting).where(Setting.key == "cloud_service_url")
     )
     setting = result.scalar_one_or_none()
-    return setting.value if setting and setting.value else "https://service.errand.cloud"
+    return setting.value if setting and setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
 
 @router.get("/{provider}/authorize")

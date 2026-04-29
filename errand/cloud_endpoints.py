@@ -38,7 +38,7 @@ async def register_cloud_endpoints(
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.post(
                 api_url,
                 json={
@@ -110,7 +110,7 @@ async def revoke_cloud_endpoints(cloud_creds: dict, cloud_service_url: str) -> N
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration=slack"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.delete(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -135,7 +135,7 @@ async def check_existing_endpoints(cloud_creds: dict, cloud_service_url: str) ->
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration=slack"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -252,7 +252,7 @@ async def register_webhook_trigger_endpoint(
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.post(
                 api_url,
                 json={
@@ -288,7 +288,7 @@ async def deregister_webhook_trigger_endpoint(
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration={integration}&trigger_id={trigger_id}"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.delete(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -362,7 +362,7 @@ async def fetch_subscription_status(
     api_url = f"{cloud_service_url.rstrip('/')}/api/subscription"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},

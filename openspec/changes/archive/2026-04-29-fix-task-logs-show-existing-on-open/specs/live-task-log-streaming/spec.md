@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Frontend live log viewer modal that streams task runner events over SSE in live mode and renders pre-captured `runner_logs` in static mode, using a shared rendering pipeline so both modes look and feel the same.
-## Requirements
 ### Requirement: Live log viewer modal
 
 The frontend SHALL provide a `TaskLogModal` component that displays task runner events. The modal SHALL support two modes:
@@ -81,4 +79,3 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 
 - **WHEN** the `runnerLogs` string contains a `tool_call` event followed by a `tool_result` event with a matching tool name
 - **THEN** the tool_result is appended to the preceding tool_call event card rather than rendered as a separate event
-

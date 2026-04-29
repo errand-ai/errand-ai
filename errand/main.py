@@ -2483,12 +2483,36 @@ async def sse_task_logs(task_id: str, token: str = Query(default=None)):
     if valkey is None:
         raise HTTPException(status_code=503, detail="Event bus unavailable")
 
-    log_channel = f"task_logs:{task_id}"
+    # Normalize via str(task_uuid) so equivalent UUID representations
+    # (uppercase, no hyphens, etc.) hit the same channel/key the publisher
+    # writes to in task_manager._process_task.
+    normalized_task_id = str(task_uuid)
+    log_channel = f"task_logs:{normalized_task_id}"
+    buffer_key = f"task_logs_buffer:{normalized_task_id}"
 
     async def log_stream():
         pubsub = valkey.pubsub()
+        # Subscribe BEFORE reading the buffer so events published between
+        # LRANGE and SUBSCRIBE are not lost. Duplicate events at the boundary
+        # are tolerated by the renderer.
         await pubsub.subscribe(log_channel)
         try:
+            # Replay any buffered events before forwarding live messages.
+            try:
+                buffered = await valkey.lrange(buffer_key, 0, -1)
+            except Exception:
+                logger.warning("Failed to read log buffer for task %s", task_id, exc_info=True)
+                buffered = []
+            for entry in buffered or []:
+                try:
+                    parsed = json.loads(entry)
+                    if isinstance(parsed, dict) and parsed.get("event") == "task_log_end":
+                        yield "event: task_log_end\ndata: {}\n\n"
+                        return
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Not JSON or not the end sentinel — fall through to yield as log line
+                yield f"data: {entry}\n\n"
+
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if msg and msg["type"] == "message":

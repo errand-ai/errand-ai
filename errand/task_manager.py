@@ -883,7 +883,10 @@ class TaskManager:
         self._tasks: set[asyncio.Task] = set()
         self._semaphore = asyncio.Semaphore(3)
         self._stop_event = asyncio.Event()
-        self._max_concurrent_tasks = 3
+        from settings_registry import SETTINGS_REGISTRY
+        self._max_concurrent_tasks = SETTINGS_REGISTRY["max_concurrent_tasks"]["default"]
+        self._task_log_buffer_max_entries = SETTINGS_REGISTRY["task_log_buffer_max_entries"]["default"]
+        self._task_log_buffer_ttl_seconds = SETTINGS_REGISTRY["task_log_buffer_ttl_seconds"]["default"]
         self._runtime: ContainerRuntime | None = None
         self._leader_connection = None
         self._leader_lock_contended = False
@@ -1074,25 +1077,46 @@ class TaskManager:
         async_task.add_done_callback(self._tasks.discard)
 
     async def _update_concurrency_setting(self):
-        """Read max_concurrent_tasks from settings DB and update semaphore if changed."""
+        """Read tunable settings from DB and update internal state if changed."""
+        from settings_registry import SETTINGS_REGISTRY
+        concurrency_default = SETTINGS_REGISTRY["max_concurrent_tasks"]["default"]
+        buf_max_default = SETTINGS_REGISTRY["task_log_buffer_max_entries"]["default"]
+        buf_ttl_default = SETTINGS_REGISTRY["task_log_buffer_ttl_seconds"]["default"]
         try:
             async with async_session() as session:
                 result = await session.execute(
-                    select(Setting).where(Setting.key == "max_concurrent_tasks")
+                    select(Setting).where(Setting.key.in_([
+                        "max_concurrent_tasks",
+                        "task_log_buffer_max_entries",
+                        "task_log_buffer_ttl_seconds",
+                    ]))
                 )
-                setting = result.scalar_one_or_none()
-                if setting is not None:
-                    new_max = int(setting.value) if setting.value else 3
+                db_settings = {s.key: s.value for s in result.scalars().all()}
+
+                concurrency_setting = db_settings.get("max_concurrent_tasks")
+                if concurrency_setting is not None:
+                    new_max = int(concurrency_setting) if concurrency_setting else concurrency_default
                 else:
-                    # Check env var fallback
-                    new_max = int(os.environ.get("MAX_CONCURRENT_TASKS", "3"))
+                    new_max = int(os.environ.get("MAX_CONCURRENT_TASKS", str(concurrency_default)))
 
                 if new_max != self._max_concurrent_tasks:
                     logger.info("Updating max_concurrent_tasks: %d -> %d", self._max_concurrent_tasks, new_max)
                     self._max_concurrent_tasks = new_max
                     self._semaphore = asyncio.Semaphore(new_max)
+
+                buf_max_setting = db_settings.get("task_log_buffer_max_entries")
+                new_buf_max = max(1, int(buf_max_setting)) if buf_max_setting else buf_max_default
+                if new_buf_max != self._task_log_buffer_max_entries:
+                    logger.info("Updating task_log_buffer_max_entries: %d -> %d", self._task_log_buffer_max_entries, new_buf_max)
+                    self._task_log_buffer_max_entries = new_buf_max
+
+                buf_ttl_setting = db_settings.get("task_log_buffer_ttl_seconds")
+                new_buf_ttl = max(1, int(buf_ttl_setting)) if buf_ttl_setting else buf_ttl_default
+                if new_buf_ttl != self._task_log_buffer_ttl_seconds:
+                    logger.info("Updating task_log_buffer_ttl_seconds: %d -> %d", self._task_log_buffer_ttl_seconds, new_buf_ttl)
+                    self._task_log_buffer_ttl_seconds = new_buf_ttl
         except Exception:
-            logger.debug("Failed to read max_concurrent_tasks setting", exc_info=True)
+            logger.debug("Failed to read tunable settings", exc_info=True)
 
     async def _run_task(
         self,
@@ -1631,6 +1655,7 @@ class TaskManager:
         try:
             # Stream logs asynchronously, publishing to Valkey
             log_channel = f"task_logs:{task.id}"
+            buffer_key = f"task_logs_buffer:{task.id}"
             valkey = get_valkey()
 
             last_token_refresh = time.monotonic()
@@ -1654,10 +1679,25 @@ class TaskManager:
                                 msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
                         except (json.JSONDecodeError, ValueError):
                             msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
+                        publish_ok = False
                         try:
                             await valkey.publish(log_channel, msg)
+                            publish_ok = True
                         except Exception:
                             logger.warning("Failed to publish log line to Valkey", exc_info=True)
+                        # Only mirror to the replay buffer when the live publish
+                        # succeeded — keeps the buffer in sync with what
+                        # subscribers actually received. Pipelined to avoid 3
+                        # round-trips per event.
+                        if publish_ok:
+                            try:
+                                pipe = valkey.pipeline(transaction=False)
+                                pipe.rpush(buffer_key, msg)
+                                pipe.ltrim(buffer_key, -self._task_log_buffer_max_entries, -1)
+                                pipe.expire(buffer_key, self._task_log_buffer_ttl_seconds)
+                                await pipe.execute()
+                            except Exception:
+                                logger.warning("Failed to append log line to Valkey buffer", exc_info=True)
             except Exception:
                 logger.warning("Error during log streaming for task %s", task.id, exc_info=True)
 
@@ -1667,6 +1707,10 @@ class TaskManager:
                     await valkey.publish(log_channel, json.dumps({"event": "task_log_end"}))
                 except Exception:
                     logger.warning("Failed to publish task_log_end to Valkey", exc_info=True)
+                try:
+                    await valkey.delete(buffer_key)
+                except Exception:
+                    logger.warning("Failed to delete Valkey log buffer for task %s", task.id, exc_info=True)
 
             # Prefer callback result from Valkey; fall back to runtime stdout
             callback_result = await asyncio.get_event_loop().run_in_executor(

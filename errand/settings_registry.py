@@ -25,10 +25,12 @@ SETTINGS_REGISTRY = {
     "oidc_roles_claim": {"env_var": "OIDC_ROLES_CLAIM", "sensitive": False, "default": "resource_access.errand.roles"},
     "litellm_mcp_servers": {"env_var": None, "sensitive": False, "default": []},
     "llm_timeout": {"env_var": None, "sensitive": False, "default": 30},
-    "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://service.errand.cloud"},
+    "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://errand.cloud"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
     "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
     "max_concurrent_tasks": {"env_var": "MAX_CONCURRENT_TASKS", "sensitive": False, "default": 3},
+    "task_log_buffer_max_entries": {"env_var": None, "sensitive": False, "default": 5000},
+    "task_log_buffer_ttl_seconds": {"env_var": None, "sensitive": False, "default": 86400},
 }
 
 # Keys excluded from API responses
