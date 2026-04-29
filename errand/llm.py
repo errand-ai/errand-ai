@@ -39,9 +39,14 @@ async def _get_timeout_setting(session: AsyncSession, key: str) -> float:
     setting = result.scalar_one_or_none()
     if setting and setting.value is not None:
         try:
-            return float(setting.value)
+            parsed = float(setting.value)
         except (TypeError, ValueError):
             return DEFAULT_LLM_TIMEOUT
+        import math
+        if math.isfinite(parsed) and parsed > 0:
+            return parsed
+        logger.warning("Ignoring non-positive %s setting: %r", key, setting.value)
+        return DEFAULT_LLM_TIMEOUT
     return DEFAULT_LLM_TIMEOUT
 
 

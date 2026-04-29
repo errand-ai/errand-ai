@@ -741,9 +741,14 @@ async def _read_settings(session: AsyncSession) -> dict:
             settings["hot_tools"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_processing_timeout":
             try:
-                settings["task_processing_timeout"] = int(setting.value) if setting.value is not None else None
+                parsed_timeout = int(setting.value) if setting.value is not None else None
             except (TypeError, ValueError):
-                settings["task_processing_timeout"] = None
+                logger.warning("Ignoring invalid task_processing_timeout setting: %r", setting.value)
+                parsed_timeout = None
+            if parsed_timeout is not None and parsed_timeout <= 0:
+                logger.warning("Ignoring non-positive task_processing_timeout setting: %r", setting.value)
+                parsed_timeout = None
+            settings["task_processing_timeout"] = parsed_timeout
 
     # Query skills from dedicated tables
     skill_result = await session.execute(

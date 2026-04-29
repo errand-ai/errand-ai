@@ -69,7 +69,7 @@ const overrideSummary = computed(() => {
     if (profile.system_prompt) overrides.push('Prompt')
     if (profile.max_turns != null) overrides.push('Max turns')
     if (profile.reasoning_effort) overrides.push('Reasoning')
-    if (profile.llm_timeout != null) overrides.push(`Timeout: ${profile.llm_timeout}s`)
+    overrides.push(profile.llm_timeout != null ? `Timeout: ${profile.llm_timeout}s` : 'Timeout: (default)')
     if (profile.mcp_servers != null) overrides.push('MCP')
     if (profile.litellm_mcp_servers != null) overrides.push('LiteLLM')
     if (profile.skill_ids != null) {
@@ -277,7 +277,15 @@ function buildPayload(): Record<string, unknown> {
   if (formReasoningEffort.value) payload.reasoning_effort = formReasoningEffort.value
   else payload.reasoning_effort = null
   const llmTimeoutRaw = String(formLlmTimeout.value ?? '').trim()
-  payload.llm_timeout = llmTimeoutRaw ? parseInt(llmTimeoutRaw, 10) : null
+  if (llmTimeoutRaw) {
+    const parsed = Number(llmTimeoutRaw)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error('LLM Timeout must be a positive integer (seconds).')
+    }
+    payload.llm_timeout = parsed
+  } else {
+    payload.llm_timeout = null
+  }
 
   if (formMcpMode.value === 'inherit') payload.mcp_servers = null
   else if (formMcpMode.value === 'none') payload.mcp_servers = []
