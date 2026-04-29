@@ -1,10 +1,12 @@
-## MODIFIED Requirements
+## Purpose
 
+Frontend live log viewer modal that streams task runner events over SSE in live mode and renders pre-captured `runner_logs` in static mode, using a shared rendering pipeline so both modes look and feel the same.
+## Requirements
 ### Requirement: Live log viewer modal
 
 The frontend SHALL provide a `TaskLogModal` component that displays task runner events. The modal SHALL support two modes:
 
-1. **Live mode**: When mounted with a `taskId` prop and no `runnerLogs` prop, the modal SHALL open an SSE connection to `/api/tasks/{task_id}/logs/stream` and stream events in real time. The header SHALL display "Live Logs: {title}".
+1. **Live mode**: When mounted with a `taskId` prop and no `runnerLogs` prop, the modal SHALL open an SSE connection to `/api/tasks/{task_id}/logs/stream` and stream events in real time. On connect, the SSE stream SHALL replay any events buffered for the task before forwarding new live events; the modal SHALL render replayed events using the same code path as live events. The header SHALL display "Live Logs: {title}".
 2. **Static mode**: When mounted with a `runnerLogs` prop (newline-delimited JSON string), the modal SHALL parse the string into structured events and render them immediately without an SSE connection. The header SHALL display "Task Logs: {title}".
 
 In both modes, the modal SHALL render events using the `TaskEventLog` component in a scrollable dark-themed container.
@@ -13,6 +15,12 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 
 - **WHEN** the log viewer modal is opened for a running task (live mode) and the SSE stream receives a log line with `{"event": "task_event", "type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls"}}}`
 - **THEN** the modal appends a tool_call event to the displayed log output
+
+#### Scenario: Modal renders buffered events on open
+
+- **WHEN** the log viewer modal is opened for a running task that has already produced events
+- **THEN** the modal renders the replayed events delivered by the SSE stream as soon as they arrive
+- **AND** the "Waiting for logs..." placeholder is no longer shown once the first replayed event has been rendered
 
 #### Scenario: Auto-scroll follows new output
 
@@ -31,7 +39,7 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 
 #### Scenario: Empty log state in live mode
 
-- **WHEN** the log viewer modal opens in live mode and no log lines have been received yet
+- **WHEN** the log viewer modal opens in live mode and no log lines (buffered or live) have been received yet
 - **THEN** the modal displays "Waiting for logs..."
 
 #### Scenario: Modal uses terminal-style presentation
@@ -73,3 +81,4 @@ In both modes, the modal SHALL render events using the `TaskEventLog` component 
 
 - **WHEN** the `runnerLogs` string contains a `tool_call` event followed by a `tool_result` event with a matching tool name
 - **THEN** the tool_result is appended to the preceding tool_call event card rather than rendered as a separate event
+

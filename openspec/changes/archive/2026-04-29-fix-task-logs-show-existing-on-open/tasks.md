@@ -26,12 +26,12 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Local docker-compose: start a long-running task (e.g., one with a slow agent step), open the modal partway through, confirm previously-emitted events appear immediately and live events continue to flow — **deferred to user**: requires running docker-compose with a real long-running task
-- [ ] 5.2 Confirm the buffer key is removed from Valkey after the task ends (`redis-cli KEYS 'task_logs_buffer:*'` returns nothing for finished tasks) — **deferred to user**: same docker-compose dependency
-- [ ] 5.3 Confirm `task_log_buffer_max_entries` setting is honoured by emitting more than the cap and verifying only the latest N entries replay — **deferred to user**; trim/expire behaviour is unit-tested in 3.1
+- [x] 5.1 Local docker-compose: start a long-running task (e.g., one with a slow agent step), open the modal partway through, confirm previously-emitted events appear immediately and live events continue to flow — confirmed manually by user
+- [x] 5.2 Confirm the buffer key is removed from Valkey after the task ends (`redis-cli KEYS 'task_logs_buffer:*'` returns nothing for finished tasks) — confirmed manually by user
+- [x] 5.3 Confirm `task_log_buffer_max_entries` setting is honoured by emitting more than the cap and verifying only the latest N entries replay — confirmed manually by user (trim/expire also unit-tested in 3.1)
 
 ## 6. Documentation and release
 
 - [x] 6.1 Bump `VERSION` per semver (minor — backwards-compatible feature) — bumped 0.115.9 → 0.116.0; further bumped to 0.116.1 (patch) for review-fix redeploy
 - [x] 6.2 Note the new admin settings (`task_log_buffer_max_entries`, `task_log_buffer_ttl_seconds`) in the admin settings UI/help text if applicable — exposed via `settings_registry.SETTINGS_REGISTRY` so they appear in the `/api/settings` response with sensible defaults; surfacing them in the Task Management settings UI is left as a follow-up since these are advanced operator tunables that rarely need adjustment
-- [ ] 6.3 PR description references this change directory and links the modified specs — **deferred to user**: PR not yet created
+- [x] 6.3 PR description references this change directory and links the modified specs — done in PR #171 body (links to change dir, proposal, design, and both spec deltas)
