@@ -689,6 +689,7 @@ async def _read_settings(session: AsyncSession) -> dict:
         "hindsight_bank_id": "",
         "litellm_mcp_servers": [],
         "hot_tools": "",
+        "task_processing_timeout": None,
     }
 
     result = await session.execute(
@@ -698,7 +699,7 @@ async def _read_settings(session: AsyncSession) -> dict:
                 "system_prompt", "task_runner_log_level", "mcp_api_key",
                 "ssh_private_key", "git_ssh_hosts", "skills_git_repo",
                 "hindsight_url", "hindsight_bank_id", "litellm_mcp_servers",
-                "hot_tools",
+                "hot_tools", "task_processing_timeout",
             ])
         )
     )
@@ -738,6 +739,11 @@ async def _read_settings(session: AsyncSession) -> dict:
             settings["litellm_mcp_servers"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "hot_tools":
             settings["hot_tools"] = str(setting.value) if setting.value else ""
+        elif setting.key == "task_processing_timeout":
+            try:
+                settings["task_processing_timeout"] = int(setting.value) if setting.value is not None else None
+            except (TypeError, ValueError):
+                settings["task_processing_timeout"] = None
 
     # Query skills from dedicated tables
     skill_result = await session.execute(
@@ -778,6 +784,8 @@ async def _resolve_profile(session: AsyncSession, task: Task, settings: dict) ->
         resolved["_profile_max_turns"] = str(profile.max_turns)
     if profile.reasoning_effort is not None:
         resolved["_profile_reasoning_effort"] = profile.reasoning_effort
+    if profile.llm_timeout is not None:
+        resolved["_profile_llm_timeout"] = profile.llm_timeout
 
     if profile.mcp_servers is not None:
         resolved["_profile_mcp_servers"] = profile.mcp_servers
@@ -1401,6 +1409,14 @@ class TaskManager:
         profile_reasoning = settings.get("_profile_reasoning_effort")
         if profile_reasoning:
             env_vars["REASONING_EFFORT"] = profile_reasoning
+
+        # LLM request timeout: profile override > global setting > built-in default (30s)
+        effective_llm_timeout = settings.get("_profile_llm_timeout")
+        if effective_llm_timeout is None:
+            effective_llm_timeout = settings.get("task_processing_timeout")
+        if effective_llm_timeout is None:
+            effective_llm_timeout = 30
+        env_vars["LLM_REQUEST_TIMEOUT"] = str(effective_llm_timeout)
 
         # Hot tools for lazy MCP tool loading
         hot_tools = settings.get("hot_tools", "")

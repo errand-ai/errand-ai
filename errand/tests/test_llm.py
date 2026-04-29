@@ -446,8 +446,8 @@ async def test_create_task_immediate_sets_execute_at(client: AsyncClient):
 
 
 async def test_generate_title_uses_custom_timeout(db_session: AsyncSession):
-    """generate_title uses llm_timeout setting when it exists."""
-    db_session.add(Setting(key="llm_timeout", value="60"))
+    """generate_title uses title_generation_timeout setting when it exists."""
+    db_session.add(Setting(key="title_generation_timeout", value="60"))
     await db_session.commit()
 
     mock_client = AsyncMock()
@@ -636,3 +636,38 @@ async def test_generate_title_no_warning_without_reasoning_content(db_session: A
     # Should not have the reasoning-specific warning
     for call in mock_logger.warning.call_args_list:
         assert "reasoning_content" not in str(call)
+
+
+
+# --- Per-role timeout helpers ---
+
+
+async def test_get_task_processing_timeout_uses_setting(db_session: AsyncSession):
+    from llm import _get_task_processing_timeout
+    db_session.add(Setting(key="task_processing_timeout", value="180"))
+    await db_session.commit()
+    assert await _get_task_processing_timeout(db_session) == 180.0
+
+
+async def test_get_task_processing_timeout_default(db_session: AsyncSession):
+    from llm import _get_task_processing_timeout
+    assert await _get_task_processing_timeout(db_session) == DEFAULT_LLM_TIMEOUT
+
+
+async def test_get_transcription_timeout_uses_setting(db_session: AsyncSession):
+    from llm import _get_transcription_timeout
+    db_session.add(Setting(key="transcription_timeout", value="45"))
+    await db_session.commit()
+    assert await _get_transcription_timeout(db_session) == 45.0
+
+
+async def test_get_transcription_timeout_default(db_session: AsyncSession):
+    from llm import _get_transcription_timeout
+    assert await _get_transcription_timeout(db_session) == DEFAULT_LLM_TIMEOUT
+
+
+async def test_get_title_generation_timeout_uses_setting(db_session: AsyncSession):
+    from llm import _get_title_generation_timeout
+    db_session.add(Setting(key="title_generation_timeout", value="15"))
+    await db_session.commit()
+    assert await _get_title_generation_timeout(db_session) == 15.0

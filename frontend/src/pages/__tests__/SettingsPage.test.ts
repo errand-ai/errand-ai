@@ -28,7 +28,9 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     saveLlmModel: vi.fn().mockResolvedValue({}),
     saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
     saveTranscriptionModel: vi.fn().mockResolvedValue({}),
-    saveLlmTimeout: vi.fn().mockResolvedValue({}),
+    saveTitleGenerationTimeout: vi.fn().mockResolvedValue({}),
+    saveTaskProcessingTimeout: vi.fn().mockResolvedValue({}),
+    saveTranscriptionTimeout: vi.fn().mockResolvedValue({}),
     fetchPlatforms: vi.fn().mockResolvedValue([]),
     savePlatformCredentials: vi.fn().mockResolvedValue({ status: 'connected' }),
     deletePlatformCredentials: vi.fn().mockResolvedValue(undefined),
@@ -36,7 +38,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   }
 })
 
-import { fetchProviders, fetchProviderModels, saveLlmModel, saveLlmTimeout, saveTaskProcessingModel, saveTranscriptionModel } from '../../composables/useApi'
+import { fetchProviders, fetchProviderModels, saveLlmModel, saveTitleGenerationTimeout, saveTaskProcessingTimeout, saveTranscriptionTimeout, saveTaskProcessingModel, saveTranscriptionModel } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -796,7 +798,7 @@ describe('SettingsPage', () => {
 
       expect(wrapper.text()).toContain('LLM Models')
       expect(wrapper.text()).toContain('Title Generation Model')
-      expect(wrapper.text()).toContain('Default Model')
+      expect(wrapper.text()).toContain('Default Task Processing Model')
     })
 
     it('shows provider options in provider dropdowns', async () => {
@@ -1138,48 +1140,61 @@ describe('SettingsPage', () => {
       expect(wrapper.find('[data-testid="task-non-reasoning-warning"]').exists()).toBe(false)
     })
 
-    // --- LLM Timeout ---
+    // --- Per-role timeouts ---
 
-    it('renders LLM Timeout input with default value of 30', async () => {
+    it('renders three timeout inputs adjacent to model selectors with defaults of 30', async () => {
       setupProviderMocks()
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
-      expect(timeoutInput.exists()).toBe(true)
-      expect((timeoutInput.element as HTMLInputElement).value).toBe('30')
+      const titleInput = wrapper.find('[data-testid="title-generation-timeout-input"]')
+      const taskInput = wrapper.find('[data-testid="task-processing-timeout-input"]')
+      const transcInput = wrapper.find('[data-testid="transcription-timeout-input"]')
+      expect(titleInput.exists()).toBe(true)
+      expect(taskInput.exists()).toBe(true)
+      expect(transcInput.exists()).toBe(true)
+      expect((titleInput.element as HTMLInputElement).value).toBe('30')
+      expect((taskInput.element as HTMLInputElement).value).toBe('30')
+      expect((transcInput.element as HTMLInputElement).value).toBe('30')
     })
 
-    it('loads LLM timeout from settings', async () => {
+    it('loads each timeout independently from settings', async () => {
       setupProviderMocks()
-      fetchMock = mockSettingsAndSkills({ llm_timeout: 60 })
+      fetchMock = mockSettingsAndSkills({
+        title_generation_timeout: 15,
+        task_processing_timeout: 180,
+        transcription_timeout: 45,
+      })
       vi.stubGlobal('fetch', fetchMock)
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
-      expect((timeoutInput.element as HTMLInputElement).value).toBe('60')
+      expect((wrapper.find('[data-testid="title-generation-timeout-input"]').element as HTMLInputElement).value).toBe('15')
+      expect((wrapper.find('[data-testid="task-processing-timeout-input"]').element as HTMLInputElement).value).toBe('180')
+      expect((wrapper.find('[data-testid="transcription-timeout-input"]').element as HTMLInputElement).value).toBe('45')
     })
 
-    it('saves LLM timeout on Save click', async () => {
+    it('saves all three timeouts on Save click', async () => {
       setupProviderMocks()
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
-      await timeoutInput.setValue(120)
+      await wrapper.find('[data-testid="title-generation-timeout-input"]').setValue(20)
+      await wrapper.find('[data-testid="task-processing-timeout-input"]').setValue(180)
+      await wrapper.find('[data-testid="transcription-timeout-input"]').setValue(45)
 
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveLlmTimeout).toHaveBeenCalledWith(120)
+      expect(saveTitleGenerationTimeout).toHaveBeenCalledWith(20)
+      expect(saveTaskProcessingTimeout).toHaveBeenCalledWith(180)
+      expect(saveTranscriptionTimeout).toHaveBeenCalledWith(45)
     })
 
-    it('shows unsaved changes when timeout is modified', async () => {
+    it('shows unsaved changes when any timeout is modified', async () => {
       setupProviderMocks([], [])
-      // Use ModelSetting objects so the immediate watcher doesn't create a mismatch
       fetchMock = mockSettingsAndSkills({
         llm_model: { provider_id: null, model: '' },
         task_processing_model: { provider_id: null, model: '' },
@@ -1192,10 +1207,15 @@ describe('SettingsPage', () => {
       const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
       expect(llmSection!.text()).not.toContain('Unsaved changes')
 
-      const timeoutInput = wrapper.find('[data-testid="llm-timeout-input"]')
-      await timeoutInput.setValue(60)
+      await wrapper.find('[data-testid="task-processing-timeout-input"]').setValue(60)
 
       expect(llmSection!.text()).toContain('Unsaved changes')
+    })
+
+    it('does not render the legacy generic LLM Timeout input', async () => {
+      setupProviderMocks()
+      const { wrapper } = await mountSettings('/settings/tasks')
+      expect(wrapper.find('[data-testid="llm-timeout-input"]').exists()).toBe(false)
     })
 
     // --- Task Management Card ---

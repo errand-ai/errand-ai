@@ -34,8 +34,8 @@ async def _get_timezone(session: AsyncSession) -> str:
 DEFAULT_LLM_TIMEOUT = 30.0
 
 
-async def _get_llm_timeout(session: AsyncSession) -> float:
-    result = await session.execute(select(Setting).where(Setting.key == "llm_timeout"))
+async def _get_timeout_setting(session: AsyncSession, key: str) -> float:
+    result = await session.execute(select(Setting).where(Setting.key == key))
     setting = result.scalar_one_or_none()
     if setting and setting.value is not None:
         try:
@@ -43,6 +43,18 @@ async def _get_llm_timeout(session: AsyncSession) -> float:
         except (TypeError, ValueError):
             return DEFAULT_LLM_TIMEOUT
     return DEFAULT_LLM_TIMEOUT
+
+
+async def _get_title_generation_timeout(session: AsyncSession) -> float:
+    return await _get_timeout_setting(session, "title_generation_timeout")
+
+
+async def _get_task_processing_timeout(session: AsyncSession) -> float:
+    return await _get_timeout_setting(session, "task_processing_timeout")
+
+
+async def _get_transcription_timeout(session: AsyncSession) -> float:
+    return await _get_timeout_setting(session, "transcription_timeout")
 
 
 def _fallback_title(description: str) -> str:
@@ -144,7 +156,7 @@ async def generate_title(
         return LLMResult(title=_fallback_title(description), success=False)
 
     tz = await _get_timezone(session)
-    timeout = await _get_llm_timeout(session)
+    timeout = await _get_title_generation_timeout(session)
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Look up model metadata for dynamic max_tokens
@@ -247,8 +259,10 @@ async def transcribe_audio(file, session: AsyncSession) -> str:
     content = await file.read()
     filename = getattr(file, "filename", "audio.webm") or "audio.webm"
     content_type = getattr(file, "content_type", "audio/webm") or "audio/webm"
+    timeout = await _get_transcription_timeout(session)
     response = await client.audio.transcriptions.create(
         model=model,
         file=(filename, content, content_type),
+        timeout=timeout,
     )
     return response.text

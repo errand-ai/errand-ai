@@ -60,6 +60,59 @@ async def test_create_profile_valid_reasoning_effort(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_create_profile_with_llm_timeout(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "slow-local", "llm_timeout": 300},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["llm_timeout"] == 300
+
+
+@pytest.mark.asyncio
+async def test_create_profile_without_llm_timeout(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "default-timeout"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["llm_timeout"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_profile_llm_timeout_zero_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "bad-zero", "llm_timeout": 0},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_profile_llm_timeout_negative_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "bad-neg", "llm_timeout": -5},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_profile_clears_llm_timeout(admin_client):
+    create = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "clear-me", "llm_timeout": 120},
+    )
+    pid = create.json()["id"]
+    resp = await admin_client.put(
+        f"/api/task-profiles/{pid}",
+        json={"llm_timeout": None},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["llm_timeout"] is None
+
+
+@pytest.mark.asyncio
 async def test_list_profiles_ordered_by_name(admin_client):
     await admin_client.post("/api/task-profiles", json={"name": "zebra"})
     await admin_client.post("/api/task-profiles", json={"name": "alpha"})
@@ -322,6 +375,7 @@ async def mcp_db_session(fake_valkey):
             system_prompt TEXT,
             max_turns INTEGER,
             reasoning_effort TEXT,
+            llm_timeout INTEGER,
             mcp_servers TEXT,
             litellm_mcp_servers TEXT,
             skill_ids TEXT,
@@ -474,6 +528,7 @@ async def worker_db_session():
                 system_prompt TEXT,
                 max_turns INTEGER,
                 reasoning_effort TEXT,
+                llm_timeout INTEGER,
                 mcp_servers TEXT,
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
@@ -673,6 +728,52 @@ async def test_resolve_profile_override_max_turns(worker_db_session):
     settings = {}
     resolved = await resolve_profile(session, task, settings)
     assert resolved["_profile_max_turns"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_override_llm_timeout(worker_db_session):
+    """Profile llm_timeout is stored as _profile_llm_timeout."""
+    from task_manager import _resolve_profile as resolve_profile
+
+    session = worker_db_session
+
+    profile = TaskProfile(name="timeout-override", llm_timeout=300)
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+
+    task = Task(title="Test", status="pending", category="immediate")
+    task.profile_id = profile.id
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    settings = {}
+    resolved = await resolve_profile(session, task, settings)
+    assert resolved["_profile_llm_timeout"] == 300
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_null_llm_timeout_does_not_set_key(worker_db_session):
+    """Profile with null llm_timeout does not add _profile_llm_timeout key (inherit)."""
+    from task_manager import _resolve_profile as resolve_profile
+
+    session = worker_db_session
+
+    profile = TaskProfile(name="timeout-inherit", llm_timeout=None)
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+
+    task = Task(title="Test", status="pending", category="immediate")
+    task.profile_id = profile.id
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    settings = {}
+    resolved = await resolve_profile(session, task, settings)
+    assert "_profile_llm_timeout" not in resolved
 
 
 @pytest.mark.asyncio
