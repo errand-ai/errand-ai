@@ -330,6 +330,34 @@ def test_llm_request_timeout_negative_returns_none():
         assert get_llm_request_timeout() is None
 
 
+def _build_async_openai_kwargs():
+    """Replicate the AsyncOpenAI kwargs-construction logic from main()."""
+    client_kwargs: dict = {"base_url": "http://example", "api_key": "key"}
+    request_timeout = get_llm_request_timeout()
+    if request_timeout is not None:
+        client_kwargs["timeout"] = request_timeout
+    return client_kwargs
+
+
+def test_async_openai_kwargs_include_timeout_when_env_set():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "120"}):
+        kwargs = _build_async_openai_kwargs()
+    assert kwargs.get("timeout") == 120.0
+
+
+def test_async_openai_kwargs_omit_timeout_when_env_unset():
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LLM_REQUEST_TIMEOUT", None)
+        kwargs = _build_async_openai_kwargs()
+    assert "timeout" not in kwargs
+
+
+def test_async_openai_kwargs_omit_timeout_when_env_invalid():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "abc"}):
+        kwargs = _build_async_openai_kwargs()
+    assert "timeout" not in kwargs
+
+
 def test_reasoning_effort_case_insensitive():
     """REASONING_EFFORT is case-insensitive."""
     with patch.dict(os.environ, {"REASONING_EFFORT": "HIGH"}):

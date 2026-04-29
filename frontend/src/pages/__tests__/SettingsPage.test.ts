@@ -25,12 +25,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
     ...actual,
     fetchProviders: vi.fn().mockResolvedValue([]),
     fetchProviderModels: vi.fn().mockResolvedValue([]),
-    saveLlmModel: vi.fn().mockResolvedValue({}),
-    saveTaskProcessingModel: vi.fn().mockResolvedValue({}),
-    saveTranscriptionModel: vi.fn().mockResolvedValue({}),
-    saveTitleGenerationTimeout: vi.fn().mockResolvedValue({}),
-    saveTaskProcessingTimeout: vi.fn().mockResolvedValue({}),
-    saveTranscriptionTimeout: vi.fn().mockResolvedValue({}),
+    saveLlmModelsAndTimeouts: vi.fn().mockResolvedValue({}),
     fetchPlatforms: vi.fn().mockResolvedValue([]),
     savePlatformCredentials: vi.fn().mockResolvedValue({ status: 'connected' }),
     deletePlatformCredentials: vi.fn().mockResolvedValue(undefined),
@@ -38,7 +33,7 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   }
 })
 
-import { fetchProviders, fetchProviderModels, saveLlmModel, saveTitleGenerationTimeout, saveTaskProcessingTimeout, saveTranscriptionTimeout, saveTaskProcessingModel, saveTranscriptionModel } from '../../composables/useApi'
+import { fetchProviders, fetchProviderModels, saveLlmModelsAndTimeouts } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
@@ -111,9 +106,7 @@ describe('SettingsPage', () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.mocked(fetchProviders).mockResolvedValue([])
     vi.mocked(fetchProviderModels).mockResolvedValue([])
-    vi.mocked(saveLlmModel).mockResolvedValue({})
-    vi.mocked(saveTaskProcessingModel).mockResolvedValue({})
-    vi.mocked(saveTranscriptionModel).mockResolvedValue({})
+    vi.mocked(saveLlmModelsAndTimeouts).mockResolvedValue({})
     toastMock.success.mockClear()
     toastMock.error.mockClear()
   })
@@ -862,7 +855,9 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveLlmModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'gpt-4o' })
+      expect(saveLlmModelsAndTimeouts).toHaveBeenCalledWith(expect.objectContaining({
+        llm_model: { provider_id: 'prov-1', model: 'gpt-4o' },
+      }))
       expect(toastMock.success).toHaveBeenCalledWith('Model settings saved.')
     })
 
@@ -931,7 +926,9 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTaskProcessingModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'gpt-4o' })
+      expect(saveLlmModelsAndTimeouts).toHaveBeenCalledWith(expect.objectContaining({
+        task_processing_model: { provider_id: 'prov-1', model: 'gpt-4o' },
+      }))
     })
 
     it('disables model dropdowns when no provider is selected', async () => {
@@ -1015,7 +1012,9 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTranscriptionModel).toHaveBeenCalledWith({ provider_id: 'prov-1', model: 'whisper-1' })
+      expect(saveLlmModelsAndTimeouts).toHaveBeenCalledWith(expect.objectContaining({
+        transcription_model: { provider_id: 'prov-1', model: 'whisper-1' },
+      }))
     })
 
     it('sends null when no transcription provider/model selected on Save', async () => {
@@ -1028,7 +1027,9 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTranscriptionModel).toHaveBeenCalledWith(null)
+      expect(saveLlmModelsAndTimeouts).toHaveBeenCalledWith(expect.objectContaining({
+        transcription_model: null,
+      }))
     })
 
     it('disables transcription model dropdown when no provider selected', async () => {
@@ -1188,9 +1189,11 @@ describe('SettingsPage', () => {
       await saveBtn!.trigger('click')
       await flushPromises()
 
-      expect(saveTitleGenerationTimeout).toHaveBeenCalledWith(20)
-      expect(saveTaskProcessingTimeout).toHaveBeenCalledWith(180)
-      expect(saveTranscriptionTimeout).toHaveBeenCalledWith(45)
+      expect(saveLlmModelsAndTimeouts).toHaveBeenCalledWith(expect.objectContaining({
+        title_generation_timeout: 20,
+        task_processing_timeout: 180,
+        transcription_timeout: 45,
+      }))
     })
 
     it('shows unsaved changes when any timeout is modified', async () => {

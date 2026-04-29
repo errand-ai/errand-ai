@@ -2130,7 +2130,9 @@ def _profile_to_dict(p: TaskProfile) -> dict:
 def _validate_llm_timeout(value):
     """Validate llm_timeout value: None or positive integer.
 
-    Raises HTTPException 422 if invalid. Returns the coerced int or None.
+    Raises HTTPException 422 for any other type or non-positive value
+    (no string-to-int coercion is attempted). Returns the value unchanged
+    when it is None or a positive int.
     """
     if value is None:
         return None

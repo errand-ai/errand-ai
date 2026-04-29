@@ -3,12 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchProviderModels,
-  saveLlmModel,
-  saveTaskProcessingModel,
-  saveTaskProcessingTimeout,
-  saveTitleGenerationTimeout,
-  saveTranscriptionModel,
-  saveTranscriptionTimeout,
+  saveLlmModelsAndTimeouts,
   type LlmProviderData,
   type ModelInfo,
   type ModelSetting,
@@ -145,12 +140,15 @@ async function save() {
       ? { provider_id: transcriptionProviderId.value, model: transcriptionModelName.value }
       : null
 
-    await saveLlmModel(llmSetting)
-    await saveTaskProcessingModel(taskSetting)
-    await saveTranscriptionModel(transcSetting)
-    await saveTitleGenerationTimeout(localTitleTimeout.value)
-    await saveTaskProcessingTimeout(localTaskTimeout.value)
-    await saveTranscriptionTimeout(localTranscriptionTimeout.value)
+    // Single PUT for atomic save — avoids partial-update state if any field fails.
+    await saveLlmModelsAndTimeouts({
+      llm_model: llmSetting,
+      task_processing_model: taskSetting,
+      transcription_model: transcSetting,
+      title_generation_timeout: localTitleTimeout.value,
+      task_processing_timeout: localTaskTimeout.value,
+      transcription_timeout: localTranscriptionTimeout.value,
+    })
 
     emit('update:llmModel', llmSetting)
     emit('update:taskProcessingModel', taskSetting)

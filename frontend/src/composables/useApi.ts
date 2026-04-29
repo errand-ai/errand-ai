@@ -271,6 +271,25 @@ export async function saveTranscriptionTimeout(timeout: number): Promise<Record<
   return res.json()
 }
 
+export interface LlmModelsAndTimeouts {
+  llm_model: ModelSetting
+  task_processing_model: ModelSetting
+  transcription_model: ModelSetting | null
+  title_generation_timeout: number
+  task_processing_timeout: number
+  transcription_timeout: number
+}
+
+export async function saveLlmModelsAndTimeouts(payload: LlmModelsAndTimeouts): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`Failed to save model settings: ${res.status}`)
+  return res.json()
+}
+
 export async function saveTaskProcessingModel(setting: ModelSetting): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
