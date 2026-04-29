@@ -32,6 +32,7 @@ export interface TaskProfile {
   system_prompt: string | null
   max_turns: number | null
   reasoning_effort: string | null
+  llm_timeout: number | null
   mcp_servers: string[] | null
   litellm_mcp_servers: string[] | null
   skill_ids: string[] | null
@@ -240,13 +241,52 @@ export async function saveLlmModel(setting: ModelSetting): Promise<Record<string
   return res.json()
 }
 
-export async function saveLlmTimeout(timeout: number): Promise<Record<string, unknown>> {
+export async function saveTitleGenerationTimeout(timeout: number): Promise<Record<string, unknown>> {
   const res = await authFetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ llm_timeout: timeout }),
+    body: JSON.stringify({ title_generation_timeout: timeout }),
   })
-  if (!res.ok) throw new Error(`Failed to save timeout: ${res.status}`)
+  if (!res.ok) throw new Error(`Failed to save title-generation timeout: ${res.status}`)
+  return res.json()
+}
+
+export async function saveTaskProcessingTimeout(timeout: number): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_processing_timeout: timeout }),
+  })
+  if (!res.ok) throw new Error(`Failed to save task-processing timeout: ${res.status}`)
+  return res.json()
+}
+
+export async function saveTranscriptionTimeout(timeout: number): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcription_timeout: timeout }),
+  })
+  if (!res.ok) throw new Error(`Failed to save transcription timeout: ${res.status}`)
+  return res.json()
+}
+
+export interface LlmModelsAndTimeouts {
+  llm_model: ModelSetting
+  task_processing_model: ModelSetting
+  transcription_model: ModelSetting | null
+  title_generation_timeout: number
+  task_processing_timeout: number
+  transcription_timeout: number
+}
+
+export async function saveLlmModelsAndTimeouts(payload: LlmModelsAndTimeouts): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`Failed to save model settings: ${res.status}`)
   return res.json()
 }
 

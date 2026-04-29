@@ -63,6 +63,7 @@ async def test_transcribe_audio_success(db_session: AsyncSession):
     mock_client.audio.transcriptions.create.assert_called_once_with(
         model="whisper-large-v3",
         file=("recording.webm", b"fake audio data", "audio/webm"),
+        timeout=30.0,
     )
 
 

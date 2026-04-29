@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Server-side LLM call sites for title generation, audio transcription, and supporting helpers.
-## Requirements
 ### Requirement: LLM title generation from task description
 When a new task is created with an input longer than 5 words, the backend SHALL call the LLM to generate a short title (2-5 words), categorise the task as `immediate`, `scheduled`, or `repeating`, extract timing information, and produce a cleaned task description with scheduling/timing references removed. The LLM call SHALL use the `chat.completions.create` method with the model and provider from the `llm_model` setting (stored as `{"provider_id": "<uuid>", "model": "<model-id>"}`). If the setting is empty or the provider no longer exists, the fallback title SHALL be used. The system SHALL resolve the provider ID to an `AsyncOpenAI` client via the client pool (`get_client_for_provider`). The system prompt SHALL instruct the model to return a JSON object with fields: `title` (string, 2-5 words), `category` (immediate|scheduled|repeating), `execute_at` (ISO 8601 datetime string or null), `repeat_interval` (string like "15m", "1h", "1d", or crontab expression, or null), `repeat_until` (ISO 8601 datetime string or null), `description` (string: the task description with all scheduling and timing references removed, containing only what needs to be done). The call SHALL use a timeout read from the `title_generation_timeout` setting (in seconds). If no `title_generation_timeout` setting exists, the timeout SHALL default to `30` seconds.
 
@@ -76,6 +74,8 @@ The `_parse_llm_response` function SHALL extract the `description` field from th
 - **WHEN** `generate_title` is called and the response has empty `content` and no `reasoning_content`
 - **THEN** the fallback title is used with `success=False` (existing behavior, no additional warning)
 
+## ADDED Requirements
+
 ### Requirement: Per-role LLM timeout settings
 The backend SHALL expose three independent timeout settings, each scoped to a single LLM call site:
 
@@ -118,4 +118,3 @@ The task-runner SHALL construct its `AsyncOpenAI` client with a request timeout 
 #### Scenario: Env var invalid
 - **WHEN** the runner starts with `LLM_REQUEST_TIMEOUT=abc`
 - **THEN** the runner logs a warning and `AsyncOpenAI` is constructed without an explicit timeout argument
-

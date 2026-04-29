@@ -1,9 +1,7 @@
 ## Purpose
 
 Frontend settings page for managing task profiles — listing, creating, editing, and deleting profiles.
-
 ## Requirements
-
 ### Requirement: Task Profiles settings sub-page
 The frontend SHALL have a "Task Profiles" settings sub-page at `/settings/profiles`. The page SHALL display a list of all custom task profiles with their name, description, model override, and tool selection summary. Each profile SHALL have Edit and Delete actions.
 
@@ -16,7 +14,7 @@ The frontend SHALL have a "Task Profiles" settings sub-page at `/settings/profil
 - **THEN** the page shows an empty state message and an "Add Profile" button
 
 ### Requirement: Add Profile button and form
-The page SHALL have an "Add Profile" button that opens a form (modal or inline) for creating a new task profile. The form SHALL include fields for: name (text input), description (text input), match rules (textarea), model (dropdown or blank to inherit), system prompt (textarea or blank to inherit), max turns (number input or blank to inherit), reasoning effort (dropdown: low/medium/high or blank to inherit), MCP servers (selection), LiteLLM MCP servers (selection), and skills (selection).
+The page SHALL have an "Add Profile" button that opens a form (modal or inline) for creating a new task profile. The form SHALL include fields for: name (text input), description (text input), match rules (textarea), model (dropdown or blank to inherit), system prompt (textarea or blank to inherit), max turns (number input or blank to inherit), reasoning effort (dropdown: low/medium/high or blank to inherit), LLM timeout (number input in seconds, or blank to inherit), MCP servers (selection), LiteLLM MCP servers (selection), and skills (selection). The LLM timeout input SHALL accept positive integers only (`min=1`, integer step). A blank value SHALL be sent to the API as `null` to indicate inheritance from the global `task_processing_timeout` setting.
 
 #### Scenario: Create a profile
 - **WHEN** an admin fills in the form with name "email-triage", model "claude-haiku-4-5-20251001", and clicks Save
@@ -25,6 +23,22 @@ The page SHALL have an "Add Profile" button that opens a form (modal or inline) 
 #### Scenario: Validation error on duplicate name
 - **WHEN** an admin tries to create a profile with a name that already exists
 - **THEN** an error toast is shown with the conflict message
+
+#### Scenario: Create profile with explicit LLM timeout override
+- **WHEN** an admin enters `300` in the LLM timeout field and saves
+- **THEN** the profile is saved with `llm_timeout: 300`
+
+#### Scenario: Create profile inheriting LLM timeout
+- **WHEN** an admin leaves the LLM timeout field blank and saves
+- **THEN** the profile is saved with `llm_timeout: null`
+
+#### Scenario: Editing a profile loads existing LLM timeout
+- **WHEN** an admin edits a profile with `llm_timeout: 120`
+- **THEN** the form's LLM timeout input is pre-populated with `120`
+
+#### Scenario: Editing a profile loads inherit state
+- **WHEN** an admin edits a profile with `llm_timeout: null`
+- **THEN** the form's LLM timeout input is blank
 
 ### Requirement: List field selection UI
 For MCP servers, LiteLLM MCP servers, and skills, the form SHALL provide a three-state selection: "Inherit from default" (saves null), "None" (saves empty array), or "Select specific" (saves the selected items as an array). The "Select specific" option SHALL show checkboxes for available items. When the skills mode is "Select specific" or "None", the form SHALL additionally display an "Include Git Repository Skills" checkbox that controls the `include_git_skills` profile field. The checkbox SHALL default to checked. When the skills mode is "Inherit from default", the git skills checkbox SHALL be hidden.
@@ -81,3 +95,15 @@ Each profile card SHALL display a summary showing which fields override the defa
 #### Scenario: Profile with mixed overrides
 - **WHEN** a profile has `model: "claude-haiku-4-5"`, `mcp_servers: ["gmail"]`, `skills: null`
 - **THEN** the card shows "Model: claude-haiku-4-5 · MCP: gmail · Skills: (default)"
+
+### Requirement: Profile summary displays LLM timeout
+Each profile card's summary SHALL display the `llm_timeout` value when set, using the same convention as other scalar fields: `"(default)"` when the value is null, otherwise the value followed by `"s"`.
+
+#### Scenario: Profile with explicit timeout shown in summary
+- **WHEN** a profile has `llm_timeout: 180`
+- **THEN** the card summary includes "Timeout: 180s"
+
+#### Scenario: Profile inheriting timeout shown as default
+- **WHEN** a profile has `llm_timeout: null`
+- **THEN** the card summary includes "Timeout: (default)"
+

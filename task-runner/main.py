@@ -615,6 +615,26 @@ def get_reasoning_effort() -> str:
     return effort
 
 
+def get_llm_request_timeout() -> float | None:
+    """Read LLM_REQUEST_TIMEOUT env var as a positive float of seconds.
+
+    Returns None when the var is unset or fails to parse, so the caller can
+    fall back to the OpenAI SDK default. Logs a warning on invalid input.
+    """
+    raw = os.environ.get("LLM_REQUEST_TIMEOUT", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = float(raw)
+    except ValueError:
+        logger.warning("Invalid LLM_REQUEST_TIMEOUT '%s' (not a number), using SDK default", raw)
+        return None
+    if parsed <= 0:
+        logger.warning("Invalid LLM_REQUEST_TIMEOUT '%s' (must be positive), using SDK default", raw)
+        return None
+    return parsed
+
+
 def _estimate_tokens(messages: list) -> int:
     """Rough token estimate: total chars / CHARS_PER_TOKEN."""
     return len(json.dumps(messages, default=str)) // CHARS_PER_TOKEN
@@ -1075,6 +1095,11 @@ def _compact_context(messages: list) -> list:
         )
         return _trim_context_window(messages)
 
+    # Compaction has its own dedicated timeout (COMPACTION_TIMEOUT_SECONDS) and
+    # deliberately does NOT inherit LLM_REQUEST_TIMEOUT: compaction is a single
+    # non-streaming summarisation call with much tighter latency expectations
+    # than the streaming agent loop. Tuning them together would force users to
+    # accept either a too-loose compaction timeout or a too-tight agent timeout.
     compaction_timeout = 30.0
     timeout_raw = os.environ.get("COMPACTION_TIMEOUT_SECONDS", "").strip()
     if timeout_raw:
@@ -1259,7 +1284,12 @@ async def main():
     # Use Chat Completions API instead of Responses API — LiteLLM's /responses
     # endpoint does not pass through function tools (github.com/BerriAI/litellm/issues/15371)
     set_default_openai_api("chat_completions")
-    client = AsyncOpenAI(base_url=env["OPENAI_BASE_URL"], api_key=env["OPENAI_API_KEY"])
+    client_kwargs: dict = {"base_url": env["OPENAI_BASE_URL"], "api_key": env["OPENAI_API_KEY"]}
+    request_timeout = get_llm_request_timeout()
+    if request_timeout is not None:
+        client_kwargs["timeout"] = request_timeout
+        logger.info("LLM request timeout set to %.1fs from LLM_REQUEST_TIMEOUT", request_timeout)
+    client = AsyncOpenAI(**client_kwargs)
     set_default_openai_client(client)
 
     # 4. Parse MCP config and connect to servers with lazy tool loading

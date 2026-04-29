@@ -3,10 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   fetchProviderModels,
-  saveLlmModel,
-  saveLlmTimeout,
-  saveTaskProcessingModel,
-  saveTranscriptionModel,
+  saveLlmModelsAndTimeouts,
   type LlmProviderData,
   type ModelInfo,
   type ModelSetting,
@@ -16,7 +13,9 @@ const props = defineProps<{
   llmModel: ModelSetting
   taskProcessingModel: ModelSetting
   transcriptionModel: ModelSetting
-  llmTimeout: number
+  titleGenerationTimeout: number
+  taskProcessingTimeout: number
+  transcriptionTimeout: number
   providers: LlmProviderData[]
 }>()
 
@@ -24,7 +23,9 @@ const emit = defineEmits<{
   'update:llmModel': [value: ModelSetting]
   'update:taskProcessingModel': [value: ModelSetting]
   'update:transcriptionModel': [value: ModelSetting]
-  'update:llmTimeout': [value: number]
+  'update:titleGenerationTimeout': [value: number]
+  'update:taskProcessingTimeout': [value: number]
+  'update:transcriptionTimeout': [value: number]
 }>()
 
 // Local state for each model selector
@@ -34,7 +35,9 @@ const taskProviderId = ref(props.taskProcessingModel.provider_id || '')
 const taskModelName = ref(props.taskProcessingModel.model || '')
 const transcriptionProviderId = ref(props.transcriptionModel.provider_id || '')
 const transcriptionModelName = ref(props.transcriptionModel.model || '')
-const localLlmTimeout = ref(props.llmTimeout)
+const localTitleTimeout = ref(props.titleGenerationTimeout)
+const localTaskTimeout = ref(props.taskProcessingTimeout)
+const localTranscriptionTimeout = ref(props.transcriptionTimeout)
 
 // Models lists per role
 const llmModels = ref<ModelInfo[]>([])
@@ -112,10 +115,23 @@ const isDirty = computed(() => {
     || taskModelName.value !== (props.taskProcessingModel.model || '')
     || transcriptionProviderId.value !== (props.transcriptionModel.provider_id || '')
     || transcriptionModelName.value !== (props.transcriptionModel.model || '')
-    || localLlmTimeout.value !== props.llmTimeout
+    || localTitleTimeout.value !== props.titleGenerationTimeout
+    || localTaskTimeout.value !== props.taskProcessingTimeout
+    || localTranscriptionTimeout.value !== props.transcriptionTimeout
 })
 
+function isPositiveInt(value: number): boolean {
+  return Number.isInteger(value) && value >= 1
+}
+
 async function save() {
+  if (!isPositiveInt(localTitleTimeout.value)
+    || !isPositiveInt(localTaskTimeout.value)
+    || !isPositiveInt(localTranscriptionTimeout.value)
+  ) {
+    toast.error('Timeouts must be positive integers (seconds).')
+    return
+  }
   saving.value = true
   try {
     const llmSetting: ModelSetting = { provider_id: llmProviderId.value || null, model: llmModelName.value }
@@ -124,15 +140,22 @@ async function save() {
       ? { provider_id: transcriptionProviderId.value, model: transcriptionModelName.value }
       : null
 
-    await saveLlmModel(llmSetting)
-    await saveTaskProcessingModel(taskSetting)
-    await saveTranscriptionModel(transcSetting)
-    await saveLlmTimeout(localLlmTimeout.value)
+    // Single PUT for atomic save — avoids partial-update state if any field fails.
+    await saveLlmModelsAndTimeouts({
+      llm_model: llmSetting,
+      task_processing_model: taskSetting,
+      transcription_model: transcSetting,
+      title_generation_timeout: localTitleTimeout.value,
+      task_processing_timeout: localTaskTimeout.value,
+      transcription_timeout: localTranscriptionTimeout.value,
+    })
 
     emit('update:llmModel', llmSetting)
     emit('update:taskProcessingModel', taskSetting)
     emit('update:transcriptionModel', transcSetting || { provider_id: null, model: '' })
-    emit('update:llmTimeout', localLlmTimeout.value)
+    emit('update:titleGenerationTimeout', localTitleTimeout.value)
+    emit('update:taskProcessingTimeout', localTaskTimeout.value)
+    emit('update:transcriptionTimeout', localTranscriptionTimeout.value)
     toast.success('Model settings saved.')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'Failed to save model settings.')
@@ -152,8 +175,8 @@ defineExpose({ isDirty })
       No providers configured. Add a provider above to select models.
     </div>
 
-    <!-- Title Generation Model -->
-    <div class="mb-4">
+    <!-- Title Generation -->
+    <div class="mb-6">
       <label class="block text-sm font-medium text-gray-700 mb-1">Title Generation Model</label>
       <div class="flex gap-2">
         <select
@@ -187,11 +210,22 @@ defineExpose({ isDirty })
       >
         This is a reasoning model. It may be slower and less reliable for structured output tasks like title generation. Consider using a non-reasoning model.
       </p>
+      <div class="mt-2">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (seconds)</label>
+        <input
+          v-model.number="localTitleTimeout"
+          type="number"
+          min="1"
+          step="1"
+          class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          data-testid="title-generation-timeout-input"
+        />
+      </div>
     </div>
 
-    <!-- Default Model (Task Processing) -->
-    <div class="mb-4">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Default Model</label>
+    <!-- Default Task Processing -->
+    <div class="mb-6">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Default Task Processing Model</label>
       <div class="flex gap-2">
         <select
           v-model="taskProviderId"
@@ -224,9 +258,21 @@ defineExpose({ isDirty })
       >
         This is not a reasoning model. Reasoning models are recommended for task processing to support complex workflows and tool calling. Consider using a reasoning model.
       </p>
+      <div class="mt-2">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (seconds)</label>
+        <input
+          v-model.number="localTaskTimeout"
+          type="number"
+          min="1"
+          step="1"
+          class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          data-testid="task-processing-timeout-input"
+        />
+        <p class="mt-1 text-xs text-gray-500">Per-profile overrides supersede this default.</p>
+      </div>
     </div>
 
-    <!-- Transcription Model -->
+    <!-- Transcription -->
     <div class="mb-4">
       <label class="block text-sm font-medium text-gray-700 mb-1">Transcription Model</label>
       <div class="flex gap-2">
@@ -255,19 +301,17 @@ defineExpose({ isDirty })
           <option v-for="m in transcriptionModels" :key="m.id" :value="m.id">{{ m.id }}</option>
         </select>
       </div>
-    </div>
-
-    <!-- LLM Timeout -->
-    <div class="mb-4">
-      <label class="block text-sm font-medium text-gray-700 mb-1">LLM Timeout (seconds)</label>
-      <input
-        v-model.number="localLlmTimeout"
-        type="number"
-        min="1"
-        class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-        data-testid="llm-timeout-input"
-      />
-      <p class="mt-1 text-xs text-gray-500">How long to wait for LLM responses. Increase for local models that need loading time.</p>
+      <div class="mt-2">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (seconds)</label>
+        <input
+          v-model.number="localTranscriptionTimeout"
+          type="number"
+          min="1"
+          step="1"
+          class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          data-testid="transcription-timeout-input"
+        />
+      </div>
     </div>
 
     <div class="flex items-center gap-3">

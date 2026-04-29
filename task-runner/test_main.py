@@ -17,7 +17,7 @@ from conftest import MockCallModelData as _MockCallModelData
 from main import (
     read_env_vars, _read_startup_file, parse_mcp_config, TaskRunnerOutput,
     execute_command, StreamEventEmitter, _truncate, TOOL_RESULT_MAX_LENGTH,
-    emit_event, get_reasoning_effort, extract_json,
+    emit_event, get_reasoning_effort, get_llm_request_timeout, extract_json,
     filter_model_input, _strip_screenshots, _trim_context_window,
     _sanitize_tool_calls, _repair_truncated_json, _classify_error,
     _estimate_tokens, MAX_RETAINED_SCREENSHOTS, MAX_CONTEXT_TOKENS,
@@ -295,6 +295,67 @@ def test_reasoning_effort_invalid_falls_back():
     """Invalid REASONING_EFFORT falls back to 'medium'."""
     with patch.dict(os.environ, {"REASONING_EFFORT": "extreme"}):
         assert get_reasoning_effort() == "medium"
+
+
+def test_llm_request_timeout_unset_returns_none():
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LLM_REQUEST_TIMEOUT", None)
+        assert get_llm_request_timeout() is None
+
+
+def test_llm_request_timeout_blank_returns_none():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "   "}):
+        assert get_llm_request_timeout() is None
+
+
+def test_llm_request_timeout_valid_returns_float():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "120"}):
+        assert get_llm_request_timeout() == 120.0
+
+
+def test_llm_request_timeout_invalid_logs_warning_and_returns_none(caplog):
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "abc"}):
+        with caplog.at_level(logging.WARNING):
+            assert get_llm_request_timeout() is None
+    assert any("Invalid LLM_REQUEST_TIMEOUT 'abc'" in r.message for r in caplog.records)
+
+
+def test_llm_request_timeout_zero_returns_none():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "0"}):
+        assert get_llm_request_timeout() is None
+
+
+def test_llm_request_timeout_negative_returns_none():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "-10"}):
+        assert get_llm_request_timeout() is None
+
+
+def _build_async_openai_kwargs():
+    """Replicate the AsyncOpenAI kwargs-construction logic from main()."""
+    client_kwargs: dict = {"base_url": "http://example", "api_key": "key"}
+    request_timeout = get_llm_request_timeout()
+    if request_timeout is not None:
+        client_kwargs["timeout"] = request_timeout
+    return client_kwargs
+
+
+def test_async_openai_kwargs_include_timeout_when_env_set():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "120"}):
+        kwargs = _build_async_openai_kwargs()
+    assert kwargs.get("timeout") == 120.0
+
+
+def test_async_openai_kwargs_omit_timeout_when_env_unset():
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("LLM_REQUEST_TIMEOUT", None)
+        kwargs = _build_async_openai_kwargs()
+    assert "timeout" not in kwargs
+
+
+def test_async_openai_kwargs_omit_timeout_when_env_invalid():
+    with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "abc"}):
+        kwargs = _build_async_openai_kwargs()
+    assert "timeout" not in kwargs
 
 
 def test_reasoning_effort_case_insensitive():

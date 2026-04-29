@@ -30,6 +30,7 @@ const availableModels = ref<ModelInfo[]>([])
 const defaultModel = ref('')
 const defaultMaxTurns = ref<string>('')
 const defaultReasoningEffort = ref('')
+const defaultLlmTimeout = ref<string>('')
 const availableMcpServers = ref<string[]>([])
 const availableLitellmServers = ref<string[]>([])
 const availableSkills = ref<{ id: string; name: string }[]>([])
@@ -43,6 +44,7 @@ const formModelName = ref('')
 const formSystemPrompt = ref('')
 const formMaxTurns = ref<string>('')
 const formReasoningEffort = ref('')
+const formLlmTimeout = ref<string>('')
 
 // Three-state: 'inherit' | 'none' | 'select'
 const formMcpMode = ref<'inherit' | 'none' | 'select'>('inherit')
@@ -67,6 +69,7 @@ const overrideSummary = computed(() => {
     if (profile.system_prompt) overrides.push('Prompt')
     if (profile.max_turns != null) overrides.push('Max turns')
     if (profile.reasoning_effort) overrides.push('Reasoning')
+    overrides.push(profile.llm_timeout != null ? `Timeout: ${profile.llm_timeout}s` : 'Timeout: (default)')
     if (profile.mcp_servers != null) overrides.push('MCP')
     if (profile.litellm_mcp_servers != null) overrides.push('LiteLLM')
     if (profile.skill_ids != null) {
@@ -109,6 +112,7 @@ async function loadOptions() {
     if (settingsRes.ok) {
       const data = await settingsRes.json()
       defaultModel.value = extractSettingValue(data, 'task_processing_model', '')
+      defaultLlmTimeout.value = String(extractSettingValue(data, 'task_processing_timeout', '30'))
       const mcpRaw = data.mcp_servers?.value ?? data.mcp_servers
       if (mcpRaw && typeof mcpRaw === 'object') {
         const servers = mcpRaw.mcpServers
@@ -177,6 +181,7 @@ function resetForm() {
   formSystemPrompt.value = ''
   formMaxTurns.value = ''
   formReasoningEffort.value = ''
+  formLlmTimeout.value = ''
   formMcpMode.value = 'inherit'
   formMcpSelected.value = []
   formLitellmMode.value = 'inherit'
@@ -209,6 +214,7 @@ function openEdit(profile: TaskProfile) {
   formSystemPrompt.value = profile.system_prompt || ''
   formMaxTurns.value = profile.max_turns != null ? String(profile.max_turns) : ''
   formReasoningEffort.value = profile.reasoning_effort || ''
+  formLlmTimeout.value = profile.llm_timeout != null ? String(profile.llm_timeout) : ''
 
   if (profile.mcp_servers === null) {
     formMcpMode.value = 'inherit'
@@ -270,6 +276,16 @@ function buildPayload(): Record<string, unknown> {
   else payload.max_turns = null
   if (formReasoningEffort.value) payload.reasoning_effort = formReasoningEffort.value
   else payload.reasoning_effort = null
+  const llmTimeoutRaw = String(formLlmTimeout.value ?? '').trim()
+  if (llmTimeoutRaw) {
+    const parsed = Number(llmTimeoutRaw)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error('LLM Timeout must be a positive integer (seconds).')
+    }
+    payload.llm_timeout = parsed
+  } else {
+    payload.llm_timeout = null
+  }
 
   if (formMcpMode.value === 'inherit') payload.mcp_servers = null
   else if (formMcpMode.value === 'none') payload.mcp_servers = []
@@ -524,6 +540,19 @@ onMounted(() => {
                 class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 :placeholder="defaultMaxTurns ? `Use default (${defaultMaxTurns})` : 'Use default (not set)'"
                 data-testid="profile-max-turns-input"
+              />
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">LLM Timeout (seconds)</label>
+              <input
+                v-model="formLlmTimeout"
+                type="number"
+                min="1"
+                step="1"
+                class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                :placeholder="defaultLlmTimeout ? `Use default (${defaultLlmTimeout}s)` : 'Use default (30s)'"
+                data-testid="profile-llm-timeout-input"
               />
             </div>
           </div>

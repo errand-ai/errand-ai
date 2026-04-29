@@ -11,7 +11,9 @@ const {
   llmModel,
   taskProcessingModel,
   transcriptionModel,
-  llmTimeout,
+  titleGenerationTimeout,
+  taskProcessingTimeout,
+  transcriptionTimeout,
   timezoneValue,
   archiveAfterDays,
   maxConcurrentTasks,
@@ -80,12 +82,16 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     :llm-model="toModelSetting(llmModel)"
     :task-processing-model="toModelSetting(taskProcessingModel)"
     :transcription-model="toModelSetting(transcriptionModel)"
-    :llm-timeout="llmTimeout"
+    :title-generation-timeout="titleGenerationTimeout"
+    :task-processing-timeout="taskProcessingTimeout"
+    :transcription-timeout="transcriptionTimeout"
     :providers="providers"
     @update:llm-model="llmModel = $event"
     @update:task-processing-model="taskProcessingModel = $event"
     @update:transcription-model="transcriptionModel = $event"
-    @update:llm-timeout="llmTimeout = $event"
+    @update:title-generation-timeout="titleGenerationTimeout = $event"
+    @update:task-processing-timeout="taskProcessingTimeout = $event"
+    @update:transcription-timeout="transcriptionTimeout = $event"
   />
 
   <TaskManagementSettings

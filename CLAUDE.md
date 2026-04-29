@@ -206,6 +206,19 @@ The `TaskManager` (`errand/task_manager.py`) runs as an asyncio background task 
 - **Google Workspace CLI (`gws`)**: Bundled in the task-runner image at `/usr/local/bin/gws`. When a user has connected Google Workspace, the access token is injected as `GOOGLE_WORKSPACE_CLI_TOKEN` and the matching agent skills are merged into `/workspace/skills/` from `/app/system-skills/gws/` on the server. Replaces the previous `gdrive-mcp` sidecar (removed; `GDRIVE_MCP_URL` is no longer used). Pinned via `GWS_VERSION` build arg.
 - **System skills**: `/app/system-skills/<set>/` contains skill sets baked into the server image at build time. The task manager loads them on demand (e.g. `gws` only when Google credentials exist) and merges them into the skills archive at the lowest precedence (DB > git > system).
 - **Local dev**: docker-compose uses `CONTAINER_RUNTIME=docker` (default)
+- **LLM request timeout**: The task manager resolves the per-task LLM timeout (`profile.llm_timeout` → `task_processing_timeout` setting → `30`s default) and passes it to the runner via the `LLM_REQUEST_TIMEOUT` env var. The runner constructs `AsyncOpenAI(..., timeout=...)` with the value. Compaction has a separate `COMPACTION_TIMEOUT_SECONDS` env var that does NOT inherit from `LLM_REQUEST_TIMEOUT`.
+
+## LLM Timeouts
+
+There are three independent timeout settings, each scoped to one call site, plus a per-profile override:
+
+| Setting key | Used by | Default |
+|---|---|---|
+| `title_generation_timeout` | `errand/llm.py:generate_title()` | 30s |
+| `task_processing_timeout` | task-runner agent loop (via `LLM_REQUEST_TIMEOUT` env) | 30s |
+| `transcription_timeout` | `errand/llm.py:transcribe_audio()` | 30s |
+
+Per-profile override: `task_profiles.llm_timeout` (nullable integer). When non-null on the profile attached to a task, it supersedes `task_processing_timeout` for that task only. The renamed `title_generation_timeout` was previously called `llm_timeout`; migration `026` renames the row in place.
 
 ## Kubernetes Deployment
 

@@ -2117,6 +2117,7 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "system_prompt": p.system_prompt,
         "max_turns": p.max_turns,
         "reasoning_effort": p.reasoning_effort,
+        "llm_timeout": p.llm_timeout,
         "mcp_servers": p.mcp_servers,
         "litellm_mcp_servers": p.litellm_mcp_servers,
         "skill_ids": p.skill_ids,
@@ -2124,6 +2125,28 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
+
+
+def _validate_llm_timeout(value):
+    """Validate llm_timeout value: None or positive integer.
+
+    Raises HTTPException 422 for any other type or non-positive value
+    (no string-to-int coercion is attempted). Returns the value unchanged
+    when it is None or a positive int.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise HTTPException(
+            status_code=422,
+            detail="llm_timeout must be a positive integer or null",
+        )
+    if value < 1:
+        raise HTTPException(
+            status_code=422,
+            detail="llm_timeout must be a positive integer or null",
+        )
+    return value
 
 
 @app.get("/api/task-profiles")
@@ -2153,6 +2176,8 @@ async def create_task_profile(
             detail=f"Invalid reasoning_effort '{reasoning_effort}'. Must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}",
         )
 
+    llm_timeout = _validate_llm_timeout(body.get("llm_timeout"))
+
     # Check name uniqueness
     result = await session.execute(select(TaskProfile).where(TaskProfile.name == name))
     if result.scalar_one_or_none():
@@ -2166,6 +2191,7 @@ async def create_task_profile(
         system_prompt=body.get("system_prompt"),
         max_turns=body.get("max_turns"),
         reasoning_effort=reasoning_effort,
+        llm_timeout=llm_timeout,
         mcp_servers=body.get("mcp_servers"),
         litellm_mcp_servers=body.get("litellm_mcp_servers"),
         skill_ids=body.get("skill_ids"),
@@ -2227,6 +2253,9 @@ async def update_task_profile(
         if val is not None and not isinstance(val, bool):
             raise HTTPException(status_code=422, detail="include_git_skills must be a boolean")
         profile.include_git_skills = val is not False
+
+    if "llm_timeout" in body:
+        profile.llm_timeout = _validate_llm_timeout(body["llm_timeout"])
 
     for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
         if field in body:

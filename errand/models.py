@@ -194,6 +194,7 @@ class TaskProfile(Base):
     system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     max_turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     reasoning_effort: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    llm_timeout: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     litellm_mcp_servers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     skill_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)

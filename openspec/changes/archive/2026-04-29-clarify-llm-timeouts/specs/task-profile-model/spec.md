@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-TaskProfile database model and Alembic migration for custom agent configuration profiles.
-## Requirements
 ### Requirement: TaskProfile database model
 The backend SHALL have a `TaskProfile` SQLAlchemy model mapped to the `task_profiles` table with the following columns: `id` (UUID, primary key, server-default), `name` (Text, unique, not null), `description` (Text, nullable), `match_rules` (Text, nullable), `model` (Text, nullable), `system_prompt` (Text, nullable), `max_turns` (Integer, nullable), `reasoning_effort` (Text, nullable), `llm_timeout` (Integer, nullable), `mcp_servers` (JSON, nullable), `litellm_mcp_servers` (JSON, nullable), `skill_ids` (JSON, nullable), `include_git_skills` (Boolean, not null, server-default true), `created_at` (DateTime with timezone, server-default), `updated_at` (DateTime with timezone, server-default, onupdate).
 
@@ -20,28 +18,6 @@ The backend SHALL have a `TaskProfile` SQLAlchemy model mapped to the `task_prof
 #### Scenario: Existing profiles get null llm_timeout
 - **WHEN** the migration that adds the `llm_timeout` column runs against a database with existing task profiles
 - **THEN** all existing profiles have `llm_timeout = NULL`
-
-### Requirement: Alembic migration for task_profiles table and profile_id column
-An Alembic migration SHALL create the `task_profiles` table with all columns defined in the model. The same migration SHALL add a `profile_id` column (UUID, nullable) to the `tasks` table with a foreign key to `task_profiles.id` and `ON DELETE SET NULL`. The migration SHALL be reversible.
-
-#### Scenario: Migration creates table and column
-- **WHEN** the migration runs
-- **THEN** the `task_profiles` table is created and the `tasks` table gains a `profile_id` column
-
-#### Scenario: Existing tasks get null profile_id
-- **WHEN** the migration runs against a database with existing tasks
-- **THEN** all existing tasks have `profile_id = NULL`
-
-#### Scenario: Migration is reversible
-- **WHEN** the migration is downgraded
-- **THEN** the `profile_id` column is dropped from `tasks` and the `task_profiles` table is dropped
-
-### Requirement: Profile deletion sets task profile_id to NULL
-When a task profile is deleted, any tasks referencing that profile SHALL have their `profile_id` set to NULL (reverting to the default profile). This SHALL be enforced by the `ON DELETE SET NULL` foreign key constraint.
-
-#### Scenario: Delete profile with referencing tasks
-- **WHEN** a task profile is deleted and 3 tasks have `profile_id` pointing to it
-- **THEN** those 3 tasks have `profile_id` set to NULL
 
 ### Requirement: CRUD API for task profiles
 The backend SHALL expose the following admin-only endpoints:
@@ -114,20 +90,7 @@ All endpoints SHALL require admin role. The create and update endpoints SHALL va
 - **WHEN** an admin calls `POST /api/task-profiles` with `{"name": "bad", "llm_timeout": -10}`
 - **THEN** the response is HTTP 422 with a validation error
 
-### Requirement: Three-state list field semantics
-For JSON list fields (`mcp_servers`, `litellm_mcp_servers`, `skill_ids`), the API SHALL accept three states: `null` (or field omitted) means inherit from default settings, `[]` (empty array) means explicitly none, and a non-empty array means use only those specific values. The database SHALL store SQL NULL for inherit and a JSON array (empty or populated) for explicit values.
-
-#### Scenario: Null means inherit
-- **WHEN** a profile is created with `mcp_servers: null`
-- **THEN** the database stores SQL NULL for `mcp_servers`, and resolution at execution time inherits all default MCP servers
-
-#### Scenario: Empty array means none
-- **WHEN** a profile is created with `mcp_servers: []`
-- **THEN** the database stores an empty JSON array, and resolution at execution time provides no user-configured MCP servers
-
-#### Scenario: Explicit array means subset
-- **WHEN** a profile is created with `mcp_servers: ["gmail", "errand"]`
-- **THEN** the database stores `["gmail", "errand"]`, and resolution at execution time provides only those MCP servers
+## ADDED Requirements
 
 ### Requirement: Alembic migration adds `llm_timeout` column to task_profiles
 An Alembic migration SHALL add a nullable `llm_timeout` integer column to the `task_profiles` table. The migration SHALL be reversible.
@@ -143,4 +106,3 @@ An Alembic migration SHALL add a nullable `llm_timeout` integer column to the `t
 #### Scenario: Migration is reversible
 - **WHEN** the migration is downgraded
 - **THEN** the `llm_timeout` column is dropped from `task_profiles`
-

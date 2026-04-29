@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS task_profiles (
     system_prompt TEXT,
     max_turns INTEGER,
     reasoning_effort TEXT,
+    llm_timeout INTEGER,
     mcp_servers TEXT,
     litellm_mcp_servers TEXT,
     skill_ids TEXT,
