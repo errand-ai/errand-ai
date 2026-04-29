@@ -1,9 +1,7 @@
 ## Purpose
 
 Worker-side resolution of task profiles at execution time, applying field-level overrides to global settings.
-
 ## Requirements
-
 ### Requirement: Worker resolves task profile at execution time
 When the worker dequeues a task with a non-null `profile_id`, it SHALL read the corresponding `TaskProfile` row from the database. The worker SHALL then resolve the agent configuration by applying the profile's overrides to the global settings using the inheritance rules.
 
@@ -20,7 +18,7 @@ When the worker dequeues a task with a non-null `profile_id`, it SHALL read the 
 - **THEN** the worker logs a warning and uses global settings (default profile behavior)
 
 ### Requirement: Scalar field inheritance
-For scalar profile fields (`model`, `system_prompt`, `max_turns`, `reasoning_effort`), a non-null value SHALL override the corresponding global setting. A null value SHALL inherit the global setting.
+For scalar profile fields (`model`, `system_prompt`, `max_turns`, `reasoning_effort`, `llm_timeout`), a non-null value SHALL override the corresponding global setting. A null value SHALL inherit the global setting. The `llm_timeout` field inherits from the global `task_processing_timeout` setting (default `30` seconds when no global value is set).
 
 #### Scenario: Model overridden
 - **WHEN** the profile has `model: "claude-haiku-4-5-20251001"` and the global `task_processing_model` is "claude-sonnet-4-5-20250929"
@@ -41,6 +39,18 @@ For scalar profile fields (`model`, `system_prompt`, `max_turns`, `reasoning_eff
 #### Scenario: Reasoning effort overridden
 - **WHEN** the profile has `reasoning_effort: "low"`
 - **THEN** the REASONING_EFFORT environment variable is set to "low" for the container
+
+#### Scenario: LLM timeout overridden by profile
+- **WHEN** the profile has `llm_timeout: 300` and the global `task_processing_timeout` is `60`
+- **THEN** the `LLM_REQUEST_TIMEOUT` environment variable is set to "300" for the container
+
+#### Scenario: LLM timeout inherited from global setting
+- **WHEN** the profile has `llm_timeout: null` and the global `task_processing_timeout` is `120`
+- **THEN** the `LLM_REQUEST_TIMEOUT` environment variable is set to "120" for the container
+
+#### Scenario: LLM timeout inherited and global setting absent
+- **WHEN** the profile has `llm_timeout: null` and no `task_processing_timeout` setting exists in the database
+- **THEN** the `LLM_REQUEST_TIMEOUT` environment variable is set to "30" for the container (built-in default)
 
 ### Requirement: List field inheritance with three states
 For list profile fields (`mcp_servers`, `litellm_mcp_servers`, `skill_ids`), SQL NULL SHALL inherit all values from global settings, an empty JSON array SHALL result in no values (explicitly empty), and a non-empty JSON array SHALL use only those specific values. When `skill_ids` is not null, the `include_git_skills` Boolean flag SHALL control whether git-sourced skills are included alongside the selected managed skills.
@@ -91,3 +101,19 @@ The worker's task dequeue and processing logic SHALL eagerly load the task's `pr
 #### Scenario: Profile loaded during task processing
 - **WHEN** the worker processes a task with `profile_id = "abc-123"`
 - **THEN** the worker queries `SELECT * FROM task_profiles WHERE id = 'abc-123'` and uses the result for configuration resolution
+
+### Requirement: Worker propagates resolved LLM timeout to runner
+For every task — whether a profile is attached or not — the worker SHALL set the `LLM_REQUEST_TIMEOUT` environment variable on the runner container. The value SHALL be the integer-second resolution of `profile.llm_timeout → task_processing_timeout setting → 30`.
+
+#### Scenario: Task with no profile uses global default
+- **WHEN** the worker dequeues a task with `profile_id = null` and `task_processing_timeout = 90`
+- **THEN** the runner container is started with `LLM_REQUEST_TIMEOUT=90`
+
+#### Scenario: Task with no profile and no global setting uses 30
+- **WHEN** the worker dequeues a task with `profile_id = null` and no `task_processing_timeout` setting
+- **THEN** the runner container is started with `LLM_REQUEST_TIMEOUT=30`
+
+#### Scenario: Task with profile override
+- **WHEN** the worker dequeues a task whose profile has `llm_timeout = 600`
+- **THEN** the runner container is started with `LLM_REQUEST_TIMEOUT=600` regardless of the global setting
+

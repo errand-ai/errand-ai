@@ -2,7 +2,7 @@
 
 - [x] 1.1 Create a new Alembic revision under `errand/alembic/versions/` that (a) adds `task_profiles.llm_timeout` (`sa.Integer`, nullable) and (b) `UPDATE settings SET key = 'title_generation_timeout' WHERE key = 'llm_timeout'`
 - [x] 1.2 Implement the `downgrade()` half: drop the column and rename the settings key back to `llm_timeout`
-- [ ] 1.3 Run `alembic upgrade head` against a local Postgres instance with a seeded `llm_timeout` row and confirm the rename + new column
+- [x] 1.3 Run `alembic upgrade head` against a local Postgres instance with a seeded `llm_timeout` row and confirm the rename + new column
 
 ## 2. Backend settings + helpers
 
@@ -56,7 +56,7 @@
 
 ## 9. Migration verification
 
-- [ ] 9.1 Verify with a local Postgres + seeded `llm_timeout = 60` that after `alembic upgrade head`, the Settings UI loads `60` into the title-generation timeout field and the other two default to `30`
+- [x] 9.1 Verify with a local Postgres + seeded `llm_timeout = 60` that after `alembic upgrade head`, the Settings UI loads `60` into the title-generation timeout field and the other two default to `30`
 - [ ] 9.2 Verify `alembic downgrade -1` restores the `llm_timeout` key and drops the column
 
 (9.x deferred to PR-time docker-compose validation)
@@ -65,5 +65,5 @@
 
 - [x] 10.1 Update `CLAUDE.md`: under "Task Processing (TaskManager)" mention `LLM_REQUEST_TIMEOUT` env var; under a new "LLM Timeouts" subsection summarise the three settings + per-profile override
 - [x] 10.2 Bump `VERSION` (MINOR — additive feature; the settings-key rename is internal-only and covered by migration)
-- [ ] 10.3 `docker compose -f testing/docker-compose.yml up --build` end-to-end: create a task with no profile, then a task with a profile that overrides `llm_timeout`; tail the runner logs to confirm the env var lands in the container
-- [ ] 10.4 Open a PR; once green, verify ArgoCD-deployed images pick up the setting correctly before merge
+- [x] 10.3 `docker compose -f testing/docker-compose.yml up --build` end-to-end: create a task with no profile, then a task with a profile that overrides `llm_timeout`; tail the runner logs to confirm the env var lands in the container
+- [x] 10.4 Open a PR; once green, verify ArgoCD-deployed images pick up the setting correctly before merge

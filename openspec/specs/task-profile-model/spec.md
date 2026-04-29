@@ -1,11 +1,9 @@
 ## Purpose
 
 TaskProfile database model and Alembic migration for custom agent configuration profiles.
-
 ## Requirements
-
 ### Requirement: TaskProfile database model
-The backend SHALL have a `TaskProfile` SQLAlchemy model mapped to the `task_profiles` table with the following columns: `id` (UUID, primary key, server-default), `name` (Text, unique, not null), `description` (Text, nullable), `match_rules` (Text, nullable), `model` (Text, nullable), `system_prompt` (Text, nullable), `max_turns` (Integer, nullable), `reasoning_effort` (Text, nullable), `mcp_servers` (JSON, nullable), `litellm_mcp_servers` (JSON, nullable), `skill_ids` (JSON, nullable), `include_git_skills` (Boolean, not null, server-default true), `created_at` (DateTime with timezone, server-default), `updated_at` (DateTime with timezone, server-default, onupdate).
+The backend SHALL have a `TaskProfile` SQLAlchemy model mapped to the `task_profiles` table with the following columns: `id` (UUID, primary key, server-default), `name` (Text, unique, not null), `description` (Text, nullable), `match_rules` (Text, nullable), `model` (Text, nullable), `system_prompt` (Text, nullable), `max_turns` (Integer, nullable), `reasoning_effort` (Text, nullable), `llm_timeout` (Integer, nullable), `mcp_servers` (JSON, nullable), `litellm_mcp_servers` (JSON, nullable), `skill_ids` (JSON, nullable), `include_git_skills` (Boolean, not null, server-default true), `created_at` (DateTime with timezone, server-default), `updated_at` (DateTime with timezone, server-default, onupdate).
 
 #### Scenario: Create a task profile
 - **WHEN** a TaskProfile row is inserted with `name="email-triage"`, `model="claude-haiku-4-5-20251001"`, `mcp_servers=["gmail"]`
@@ -18,6 +16,10 @@ The backend SHALL have a `TaskProfile` SQLAlchemy model mapped to the `task_prof
 #### Scenario: Existing profiles get include_git_skills true
 - **WHEN** the migration runs against a database with existing task profiles
 - **THEN** all existing profiles have `include_git_skills = true`
+
+#### Scenario: Existing profiles get null llm_timeout
+- **WHEN** the migration that adds the `llm_timeout` column runs against a database with existing task profiles
+- **THEN** all existing profiles have `llm_timeout = NULL`
 
 ### Requirement: Alembic migration for task_profiles table and profile_id column
 An Alembic migration SHALL create the `task_profiles` table with all columns defined in the model. The same migration SHALL add a `profile_id` column (UUID, nullable) to the `tasks` table with a foreign key to `task_profiles.id` and `ON DELETE SET NULL`. The migration SHALL be reversible.
@@ -45,12 +47,12 @@ When a task profile is deleted, any tasks referencing that profile SHALL have th
 The backend SHALL expose the following admin-only endpoints:
 
 - `GET /api/task-profiles` — list all profiles, ordered by name
-- `POST /api/task-profiles` — create a new profile (body: name, description, match_rules, model, system_prompt, max_turns, reasoning_effort, mcp_servers, litellm_mcp_servers, skill_ids, include_git_skills)
+- `POST /api/task-profiles` — create a new profile (body: name, description, match_rules, model, system_prompt, max_turns, reasoning_effort, llm_timeout, mcp_servers, litellm_mcp_servers, skill_ids, include_git_skills)
 - `GET /api/task-profiles/{id}` — get a single profile by UUID
 - `PUT /api/task-profiles/{id}` — update a profile (full replacement of provided fields)
 - `DELETE /api/task-profiles/{id}` — delete a profile
 
-All endpoints SHALL require admin role. The create and update endpoints SHALL validate that `name` is non-empty and unique. The create and update endpoints SHALL validate that `reasoning_effort`, if provided, is one of `low`, `medium`, `high`. The `include_git_skills` field SHALL default to `true` if not provided.
+All endpoints SHALL require admin role. The create and update endpoints SHALL validate that `name` is non-empty and unique. The create and update endpoints SHALL validate that `reasoning_effort`, if provided, is one of `low`, `medium`, `high`. The create and update endpoints SHALL validate that `llm_timeout`, if provided and non-null, is a positive integer (≥ 1). The `include_git_skills` field SHALL default to `true` if not provided.
 
 #### Scenario: List profiles
 - **WHEN** an admin calls `GET /api/task-profiles` with 2 profiles in the database
@@ -92,6 +94,26 @@ All endpoints SHALL require admin role. The create and update endpoints SHALL va
 - **WHEN** an admin calls `PUT /api/task-profiles/{id}` with `{"include_git_skills": false}`
 - **THEN** the profile's `include_git_skills` is updated to false
 
+#### Scenario: Create profile with explicit llm_timeout override
+- **WHEN** an admin calls `POST /api/task-profiles` with `{"name": "slow-local", "llm_timeout": 300}`
+- **THEN** the profile is created with `llm_timeout = 300`
+
+#### Scenario: Create profile with null llm_timeout (inherit)
+- **WHEN** an admin calls `POST /api/task-profiles` with `{"name": "default-timeout"}` and no `llm_timeout` field
+- **THEN** the profile is created with `llm_timeout = NULL`
+
+#### Scenario: Update llm_timeout to null clears override
+- **WHEN** an admin calls `PUT /api/task-profiles/{id}` with `{"llm_timeout": null}` against a profile that previously had `llm_timeout = 300`
+- **THEN** the profile is updated with `llm_timeout = NULL`
+
+#### Scenario: Invalid llm_timeout (zero)
+- **WHEN** an admin calls `POST /api/task-profiles` with `{"name": "bad", "llm_timeout": 0}`
+- **THEN** the response is HTTP 422 with a validation error
+
+#### Scenario: Invalid llm_timeout (negative)
+- **WHEN** an admin calls `POST /api/task-profiles` with `{"name": "bad", "llm_timeout": -10}`
+- **THEN** the response is HTTP 422 with a validation error
+
 ### Requirement: Three-state list field semantics
 For JSON list fields (`mcp_servers`, `litellm_mcp_servers`, `skill_ids`), the API SHALL accept three states: `null` (or field omitted) means inherit from default settings, `[]` (empty array) means explicitly none, and a non-empty array means use only those specific values. The database SHALL store SQL NULL for inherit and a JSON array (empty or populated) for explicit values.
 
@@ -106,3 +128,19 @@ For JSON list fields (`mcp_servers`, `litellm_mcp_servers`, `skill_ids`), the AP
 #### Scenario: Explicit array means subset
 - **WHEN** a profile is created with `mcp_servers: ["gmail", "errand"]`
 - **THEN** the database stores `["gmail", "errand"]`, and resolution at execution time provides only those MCP servers
+
+### Requirement: Alembic migration adds `llm_timeout` column to task_profiles
+An Alembic migration SHALL add a nullable `llm_timeout` integer column to the `task_profiles` table. The migration SHALL be reversible.
+
+#### Scenario: Migration adds column
+- **WHEN** the migration runs
+- **THEN** the `task_profiles` table gains an `llm_timeout` integer column with NULL default
+
+#### Scenario: Existing rows unaffected
+- **WHEN** the migration runs against a database with existing task profile rows
+- **THEN** all existing rows have `llm_timeout = NULL`
+
+#### Scenario: Migration is reversible
+- **WHEN** the migration is downgraded
+- **THEN** the `llm_timeout` column is dropped from `task_profiles`
+
