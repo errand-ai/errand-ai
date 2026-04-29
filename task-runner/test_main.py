@@ -314,7 +314,6 @@ def test_llm_request_timeout_valid_returns_float():
 
 
 def test_llm_request_timeout_invalid_logs_warning_and_returns_none(caplog):
-    import logging
     with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT": "abc"}):
         with caplog.at_level(logging.WARNING):
             assert get_llm_request_timeout() is None

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -42,7 +43,6 @@ async def _get_timeout_setting(session: AsyncSession, key: str) -> float:
             parsed = float(setting.value)
         except (TypeError, ValueError):
             return DEFAULT_LLM_TIMEOUT
-        import math
         if math.isfinite(parsed) and parsed > 0:
             return parsed
         logger.warning("Ignoring non-positive %s setting: %r", key, setting.value)
