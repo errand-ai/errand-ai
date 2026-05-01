@@ -626,6 +626,203 @@ async def _load_twitter_credentials() -> dict | None:
     return credentials
 
 
+# --- Slack outbound messaging tools ----------------------------------------
+#
+# slack_message and slack_reply let the task-runner originate Slack messages.
+# They are server-mediated: the bot token never leaves the server. Targets are
+# resolved to Slack IDs server-side, the workspace allowlist is enforced, and
+# rate-limit / not-in-channel responses are translated into structured errors.
+#
+# Decision (5.2): both tools are registered as ordinary MCP tools and surface
+# through the lazy-load catalog; they are NOT in DEFAULT_HOT_TOOLS. Promote to
+# the hot list later if usage shows the LLM rarely discovers them in time.
+
+
+async def _load_slack_bot_token() -> str | None:
+    """Load the Slack bot token from encrypted credentials."""
+    from platforms.credentials import load_credentials
+    try:
+        async with async_session() as session:
+            credentials = await load_credentials("slack", session)
+    except Exception:
+        logger.exception("Failed to load Slack credentials")
+        return None
+    if not credentials:
+        return None
+    token = credentials.get("bot_token", "")
+    return token or None
+
+
+async def _load_slack_outbound_allowlist() -> list[str]:
+    """Load the slack_outbound_allowlist setting (empty list = unrestricted)."""
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Setting.value).where(Setting.key == "slack_outbound_allowlist")
+            )
+            value = result.scalar_one_or_none()
+    except Exception:
+        logger.exception("Failed to load slack_outbound_allowlist setting")
+        return []
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
+def _audit_slack_outbound(
+    *,
+    tool: str,
+    client_id: str,
+    target: str | None,
+    resolved_id: str | None,
+    thread_ts: str | None,
+    result: dict,
+) -> None:
+    """Emit an info-level audit log entry for an outbound Slack call."""
+    if result.get("ok"):
+        logger.info(
+            "slack outbound: tool=%s client=%s target=%s resolved=%s thread_ts=%s ts=%s",
+            tool, client_id, target, resolved_id, thread_ts, result.get("ts"),
+        )
+    else:
+        logger.info(
+            "slack outbound: tool=%s client=%s target=%s resolved=%s thread_ts=%s error=%s",
+            tool, client_id, target, resolved_id, thread_ts, result.get("error"),
+        )
+
+
+@mcp.tool()
+async def slack_message(
+    target: str,
+    text: str,
+    blocks: list | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Post a new Slack message to a channel or DM a user.
+
+    Returns JSON with `{ok, channel, ts}` on success or `{ok: false, error}` on failure.
+    The `ts` value can be passed to `slack_reply` to start a thread.
+
+    Args:
+        target: Channel ID (`C12345`), channel name (`#ai-agent`), user ID (`U12345`),
+            username (`@rob`), or email. Bare names that match both a channel and a
+            user are rejected as ambiguous.
+        text: Message body in Slack mrkdwn. Used as the notification fallback when
+            `blocks` are also supplied.
+        blocks: Optional Block Kit list. When provided, used directly; otherwise
+            `text` is wrapped in a single section block.
+    """
+    from platforms.slack.client import SlackClient
+    from platforms.slack.allowlist import check_outbound_allowlist
+    from platforms.slack.identity import TargetResolutionError, resolve_slack_target
+    from platforms.slack.outbound import post_message_with_policy
+
+    client_id = _get_client_id(ctx)
+
+    if not target or not target.strip():
+        return json.dumps({"ok": False, "channel": "", "ts": "", "error": "target is required"})
+    if not text or not text.strip():
+        return json.dumps({"ok": False, "channel": "", "ts": "", "error": "text is required"})
+
+    bot_token = await _load_slack_bot_token()
+    if not bot_token:
+        return json.dumps({"ok": False, "channel": "", "ts": "", "error": "Slack credentials not configured"})
+
+    try:
+        kind, resolved_id = await resolve_slack_target(target, bot_token)
+    except TargetResolutionError as exc:
+        result = {"ok": False, "channel": "", "ts": "", "error": str(exc)}
+        _audit_slack_outbound(
+            tool="slack_message", client_id=client_id, target=target,
+            resolved_id=None, thread_ts=None, result=result,
+        )
+        return json.dumps(result)
+
+    allowlist = await _load_slack_outbound_allowlist()
+    if not await check_outbound_allowlist(bot_token, resolved_id, allowlist):
+        result = {
+            "ok": False, "channel": resolved_id, "ts": "",
+            "error": "target not in slack_outbound_allowlist",
+        }
+        _audit_slack_outbound(
+            tool="slack_message", client_id=client_id, target=target,
+            resolved_id=resolved_id, thread_ts=None, result=result,
+        )
+        return json.dumps(result)
+
+    slack_client = SlackClient()
+    result = await post_message_with_policy(
+        slack_client, bot_token, resolved_id, text=text, blocks=blocks,
+    )
+    _audit_slack_outbound(
+        tool="slack_message", client_id=client_id, target=target,
+        resolved_id=resolved_id, thread_ts=None, result=result,
+    )
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def slack_reply(
+    channel: str,
+    thread_ts: str,
+    text: str,
+    blocks: list | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Reply in an existing Slack thread.
+
+    Returns JSON with `{ok, channel, ts}` on success or `{ok: false, error}` on failure.
+
+    Args:
+        channel: Channel ID where the parent message lives. Get this from a previous
+            `slack_message` return value or from the original Slack event.
+        thread_ts: Timestamp of the parent message (its `ts` field).
+        text: Reply body in Slack mrkdwn. Used as the notification fallback when
+            `blocks` are also supplied.
+        blocks: Optional Block Kit list.
+    """
+    from platforms.slack.client import SlackClient
+    from platforms.slack.allowlist import check_outbound_allowlist
+    from platforms.slack.outbound import post_message_with_policy
+
+    client_id = _get_client_id(ctx)
+
+    if not channel or not channel.strip():
+        return json.dumps({"ok": False, "channel": "", "ts": "", "error": "channel is required"})
+    if not thread_ts or not thread_ts.strip():
+        return json.dumps({"ok": False, "channel": channel, "ts": "", "error": "thread_ts is required"})
+    if not text or not text.strip():
+        return json.dumps({"ok": False, "channel": channel, "ts": "", "error": "text is required"})
+
+    bot_token = await _load_slack_bot_token()
+    if not bot_token:
+        return json.dumps({"ok": False, "channel": channel, "ts": "", "error": "Slack credentials not configured"})
+
+    allowlist = await _load_slack_outbound_allowlist()
+    if not await check_outbound_allowlist(bot_token, channel, allowlist):
+        result = {
+            "ok": False, "channel": channel, "ts": "",
+            "error": "channel not in slack_outbound_allowlist",
+        }
+        _audit_slack_outbound(
+            tool="slack_reply", client_id=client_id, target=channel,
+            resolved_id=channel, thread_ts=thread_ts, result=result,
+        )
+        return json.dumps(result)
+
+    slack_client = SlackClient()
+    result = await post_message_with_policy(
+        slack_client, bot_token, channel, text=text, blocks=blocks, thread_ts=thread_ts,
+    )
+    _audit_slack_outbound(
+        tool="slack_reply", client_id=client_id, target=channel,
+        resolved_id=channel, thread_ts=thread_ts, result=result,
+    )
+    return json.dumps(result)
+
+
 @mcp.tool()
 async def post_tweet(message: str) -> str:
     """Post a tweet to Twitter/X. Message must be 1-280 characters."""

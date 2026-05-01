@@ -9,10 +9,14 @@ from platforms.slack import identity
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    """Clear the module-level email cache before each test."""
+    """Clear the module-level identity caches before each test."""
     identity._email_cache.clear()
+    identity._channel_name_cache.clear()
+    identity._user_name_cache.clear()
     yield
     identity._email_cache.clear()
+    identity._channel_name_cache.clear()
+    identity._user_name_cache.clear()
 
 
 def _mock_client(email: str | None = "user@example.com"):
@@ -84,3 +88,130 @@ async def test_api_error_returns_none():
     assert result is None
     # Errors should NOT be cached (no entry in cache)
     assert "UERR" not in identity._email_cache
+
+
+# --- resolve_slack_target tests --------------------------------------------
+
+
+def _patch_client(**method_returns):
+    """Build a mock AsyncWebClient where each kwarg method is an AsyncMock."""
+    client = AsyncMock()
+    for name, value in method_returns.items():
+        setattr(client, name, AsyncMock(return_value=value))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_target_channel_id_passes_through():
+    # No client should be needed for ID pass-through
+    with patch("platforms.slack.identity.AsyncWebClient") as ctor:
+        kind, resolved = await identity.resolve_slack_target("C0123ABCDEF", "xoxb-token")
+    assert (kind, resolved) == ("channel", "C0123ABCDEF")
+    ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_target_user_id_passes_through():
+    with patch("platforms.slack.identity.AsyncWebClient") as ctor:
+        kind, resolved = await identity.resolve_slack_target("U0123ABCDEF", "xoxb-token")
+    assert (kind, resolved) == ("user", "U0123ABCDEF")
+    ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_target_email_resolves_to_user():
+    client = _patch_client(users_lookupByEmail={"user": {"id": "U999"}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        kind, resolved = await identity.resolve_slack_target("rob@example.com", "xoxb-token")
+    assert (kind, resolved) == ("user", "U999")
+    client.users_lookupByEmail.assert_called_once_with(email="rob@example.com")
+
+
+@pytest.mark.asyncio
+async def test_target_channel_name_resolves():
+    client = _patch_client(conversations_list={
+        "channels": [{"id": "C111", "name": "general"}, {"id": "C222", "name": "ai-agent"}],
+        "response_metadata": {"next_cursor": ""},
+    })
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        kind, resolved = await identity.resolve_slack_target("#ai-agent", "xoxb-token")
+    assert (kind, resolved) == ("channel", "C222")
+
+
+@pytest.mark.asyncio
+async def test_target_username_resolves():
+    client = _patch_client(users_list={
+        "members": [{"id": "U001", "name": "alice"}, {"id": "U002", "name": "rob"}],
+        "response_metadata": {"next_cursor": ""},
+    })
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        kind, resolved = await identity.resolve_slack_target("@rob", "xoxb-token")
+    assert (kind, resolved) == ("user", "U002")
+
+
+@pytest.mark.asyncio
+async def test_target_bare_name_ambiguous_raises():
+    # Bare name matches both a channel and a user
+    client = AsyncMock()
+    client.conversations_list = AsyncMock(return_value={
+        "channels": [{"id": "C123", "name": "rob"}],
+        "response_metadata": {"next_cursor": ""},
+    })
+    client.users_list = AsyncMock(return_value={
+        "members": [{"id": "U777", "name": "rob"}],
+        "response_metadata": {"next_cursor": ""},
+    })
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        with pytest.raises(identity.TargetResolutionError, match="Ambiguous"):
+            await identity.resolve_slack_target("rob", "xoxb-token")
+
+
+@pytest.mark.asyncio
+async def test_target_bare_name_channel_only():
+    client = AsyncMock()
+    client.conversations_list = AsyncMock(return_value={
+        "channels": [{"id": "C500", "name": "release-notes"}],
+        "response_metadata": {"next_cursor": ""},
+    })
+    client.users_list = AsyncMock(return_value={
+        "members": [],
+        "response_metadata": {"next_cursor": ""},
+    })
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        kind, resolved = await identity.resolve_slack_target("release-notes", "xoxb-token")
+    assert (kind, resolved) == ("channel", "C500")
+
+
+@pytest.mark.asyncio
+async def test_target_no_match_raises():
+    client = AsyncMock()
+    client.conversations_list = AsyncMock(return_value={"channels": [], "response_metadata": {"next_cursor": ""}})
+    client.users_list = AsyncMock(return_value={"members": [], "response_metadata": {"next_cursor": ""}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        with pytest.raises(identity.TargetResolutionError, match="No Slack channel or user"):
+            await identity.resolve_slack_target("nonexistent", "xoxb-token")
+
+
+@pytest.mark.asyncio
+async def test_channel_name_cache_hit_skips_api():
+    identity._channel_name_cache["ai-agent"] = ("C222", time.time())
+    with patch("platforms.slack.identity.AsyncWebClient") as ctor:
+        kind, resolved = await identity.resolve_slack_target("#ai-agent", "xoxb-token")
+    assert (kind, resolved) == ("channel", "C222")
+    ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evict_channel_cache_entry_clears_by_id():
+    identity._channel_name_cache["old-name"] = ("C123", time.time())
+    identity._channel_name_cache["other"] = ("C999", time.time())
+    identity.evict_channel_cache_entry("C123")
+    assert "old-name" not in identity._channel_name_cache
+    assert "other" in identity._channel_name_cache
+
+
+@pytest.mark.asyncio
+async def test_evict_channel_cache_entry_clears_by_name():
+    identity._channel_name_cache["ai-agent"] = ("C222", time.time())
+    identity.evict_channel_cache_entry("#ai-agent")
+    assert "ai-agent" not in identity._channel_name_cache

@@ -249,6 +249,21 @@ Per-profile override: `task_profiles.llm_timeout` (nullable integer). When non-n
 - MCP SDK dependency cascade: upgrading `mcp` can require bumping `pydantic`, `PyJWT`, and `uvicorn` minimum versions — check for conflicts when updating.
 - Helm deploys Twitter secrets via `envFrom`/`secretRef` — K8s secret keys must match env var names exactly (e.g. `TWITTER_API_KEY`).
 
+## Slack outbound messaging
+
+The task-runner can post to Slack via two MCP tools on `errand/mcp_server.py`:
+
+- `slack_message(target, text, blocks?)` — post to a channel or DM a user. `target` accepts a channel ID, `#channel`, user ID, `@user`, or email. Returns `{ok, channel, ts, error?}`.
+- `slack_reply(channel, thread_ts, text, blocks?)` — reply in an existing thread. Use the `ts` returned from a previous `slack_message` (or `slack_reply`) to chain follow-ons.
+
+The bot token is loaded server-side from encrypted credentials and is never sent to the task-runner. Posts go through `errand/platforms/slack/outbound.py` which handles auto-join for public channels (`C…` IDs only — private/DM are not auto-joined), translates HTTP 429 into a structured error, and surfaces Slack errors verbatim.
+
+**Allowlist setting**: `slack_outbound_allowlist` (key in `settings` table, value is a JSON list). Empty / unset = unrestricted within the workspace; non-empty = strict allowlist of channel/user identifiers in any accepted form. Allowlist entries are resolved to Slack IDs and compared against the resolved target.
+
+**Bot scopes** (audit before re-installing the Slack app): `chat:write`, `chat:write.public`, `im:write`, `users:read`, `users:read.email`, `channels:read`, `groups:read`, `channels:join`.
+
+Both tools are catalog-only (not in `DEFAULT_HOT_TOOLS`); the task-runner discovers them via `discover_tools`.
+
 ## Frontend Layout
 
 - App.vue `<main>` has no max-width — content fills viewport width
