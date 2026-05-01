@@ -313,6 +313,7 @@ async def test_mcp_server_tool_count():
         "search_tweets", "read_rss_feed",
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
+        "slack_message", "slack_reply",
     }
 
 

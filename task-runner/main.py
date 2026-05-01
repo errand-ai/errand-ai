@@ -306,6 +306,13 @@ async def connect_mcp_servers(config: dict, stack: AsyncExitStack) -> list:
         if not isinstance(headers, dict):
             headers = {}
 
+        # Tag every outgoing MCP request with the current task id so server-side
+        # tools (e.g. the slack outbound audit log) can attribute calls to the
+        # task that made them. Skip if mcp.json already supplied an X-Client-Id.
+        task_id = os.environ.get("_TASK_ID", "")
+        if task_id and not any(k.lower() == "x-client-id" for k in headers):
+            headers = {**headers, "X-Client-Id": f"task:{task_id}"}
+
         try:
             params = {"url": url, "timeout": 300, "sse_read_timeout": 600}
             if headers:
