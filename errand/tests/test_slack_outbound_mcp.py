@@ -14,10 +14,12 @@ def clear_caches():
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
     yield
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
 
 
 @pytest.fixture
@@ -72,12 +74,26 @@ async def test_slack_message_post_by_channel_name(patched_token, patched_empty_a
 
 
 @pytest.mark.asyncio
-async def test_slack_message_dm_by_user_id(patched_token, patched_empty_allowlist):
-    with _patch_post({"ok": True, "channel": "U777", "ts": "3.3"}) as mock_post:
+async def test_slack_message_dm_by_user_id_opens_dm_channel(patched_token, patched_empty_allowlist):
+    """User targets must be posted to a D… DM channel, opened via conversations.open."""
+    with patch("platforms.slack.identity.open_dm_channel", AsyncMock(return_value="D999IM")), \
+            _patch_post({"ok": True, "channel": "D999IM", "ts": "3.3"}) as mock_post:
         result = await mcp_server.slack_message(target="U0123ABCDE", text="dm")
     assert json.loads(result)["ok"] is True
+    # Post must target the DM channel, not the user ID directly
     args, _ = mock_post.await_args
-    assert args[2] == "U0123ABCDE"
+    assert args[2] == "D999IM"
+
+
+@pytest.mark.asyncio
+async def test_slack_message_dm_open_failure_returns_error(patched_token, patched_empty_allowlist):
+    with patch("platforms.slack.identity.open_dm_channel", AsyncMock(return_value=None)), \
+            _patch_post({"ok": True}) as mock_post:
+        result = await mcp_server.slack_message(target="U0123ABCDE", text="dm")
+    parsed = json.loads(result)
+    assert parsed["ok"] is False
+    assert "could not open DM channel" in parsed["error"]
+    mock_post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -88,9 +104,12 @@ async def test_slack_message_dm_by_username(patched_token, patched_empty_allowli
         "response_metadata": {"next_cursor": ""},
     })
     with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
-            _patch_post({"ok": True, "channel": "U777", "ts": "4.4"}):
+            patch("platforms.slack.identity.open_dm_channel", AsyncMock(return_value="D777")), \
+            _patch_post({"ok": True, "channel": "D777", "ts": "4.4"}) as mock_post:
         result = await mcp_server.slack_message(target="@rob", text="hi")
-    assert json.loads(result)["channel"] == "U777"
+    assert json.loads(result)["channel"] == "D777"
+    args, _ = mock_post.await_args
+    assert args[2] == "D777"
 
 
 @pytest.mark.asyncio
@@ -98,9 +117,10 @@ async def test_slack_message_dm_by_email(patched_token, patched_empty_allowlist)
     client = AsyncMock()
     client.users_lookupByEmail = AsyncMock(return_value={"user": {"id": "U999"}})
     with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
-            _patch_post({"ok": True, "channel": "U999", "ts": "5.5"}):
+            patch("platforms.slack.identity.open_dm_channel", AsyncMock(return_value="D999")), \
+            _patch_post({"ok": True, "channel": "D999", "ts": "5.5"}):
         result = await mcp_server.slack_message(target="rob@example.com", text="hi")
-    assert json.loads(result)["channel"] == "U999"
+    assert json.loads(result)["channel"] == "D999"
 
 
 @pytest.mark.asyncio
@@ -238,8 +258,27 @@ async def test_successful_post_emits_audit_log(patched_token, patched_empty_allo
     assert audit, "expected an audit log entry for the successful post"
     msg = audit[-1].getMessage()
     assert "tool=slack_message" in msg
+    assert "kind=channel" in msg
     assert "resolved=C0123ABCDE" in msg
     assert "ts=1700000000.000100" in msg
+
+
+@pytest.mark.asyncio
+async def test_audit_log_does_not_leak_email_target(patched_token, patched_empty_allowlist, caplog):
+    """Email targets must not appear in audit logs (PII)."""
+    client = AsyncMock()
+    client.users_lookupByEmail = AsyncMock(return_value={"user": {"id": "U999"}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
+            patch("platforms.slack.identity.open_dm_channel", AsyncMock(return_value="D999")), \
+            caplog.at_level(logging.INFO, logger="mcp_server"), \
+            _patch_post({"ok": True, "channel": "D999", "ts": "1.1"}):
+        await mcp_server.slack_message(target="rob@example.com", text="hi")
+
+    audit_msgs = [r.getMessage() for r in caplog.records if "slack outbound" in r.getMessage()]
+    assert audit_msgs, "expected an audit log entry"
+    # Resolved id is safe to log; raw email is not
+    assert any("resolved=U999" in m for m in audit_msgs)
+    assert all("rob@example.com" not in m for m in audit_msgs)
 
 
 @pytest.mark.asyncio

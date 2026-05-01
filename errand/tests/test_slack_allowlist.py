@@ -11,10 +11,12 @@ def clear_caches():
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
     yield
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
 
 
 @pytest.mark.asyncio

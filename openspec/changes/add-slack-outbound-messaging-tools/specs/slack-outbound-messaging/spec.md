@@ -70,8 +70,8 @@ Resolved name→ID mappings SHALL be cached in-memory per resolution kind with a
 - **THEN** the tool returns `{ok: false, error: "ambiguous target ..."}`
 
 #### Scenario: Stale cache entry
-- **WHEN** a cached channel name resolves to an ID that Slack now reports as `channel_not_found`
-- **THEN** the server SHALL evict the stale cache entry and retry resolution once
+- **WHEN** a post against a cached channel ID is rejected by Slack with `channel_not_found`
+- **THEN** the server SHALL evict the stale cache entry and surface the `channel_not_found` error to the caller; the next call that re-resolves the same name will hit Slack and pick up the renamed channel
 
 ### Requirement: Workspace allowlist enforcement
 The server SHALL check every outbound call against the `slack_outbound_allowlist` setting. The setting is a list of identifiers in any accepted target form. The check SHALL use resolved IDs on both sides. An empty or unset list SHALL be interpreted as "unrestricted within the workspace" — every reachable channel and user is allowed.

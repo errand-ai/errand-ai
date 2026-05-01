@@ -675,21 +675,27 @@ def _audit_slack_outbound(
     *,
     tool: str,
     client_id: str,
-    target: str | None,
+    kind: str | None,
     resolved_id: str | None,
     thread_ts: str | None,
     result: dict,
 ) -> None:
-    """Emit an info-level audit log entry for an outbound Slack call."""
+    """Emit an info-level audit log entry for an outbound Slack call.
+
+    The original ``target`` string is intentionally NOT logged: it can be an email
+    address or username, which would leak PII into logs. Instead we log ``kind``
+    (channel|user|None) plus the resolved Slack ID, which is sufficient for
+    attribution while staying identifier-agnostic.
+    """
     if result.get("ok"):
         logger.info(
-            "slack outbound: tool=%s client=%s target=%s resolved=%s thread_ts=%s ts=%s",
-            tool, client_id, target, resolved_id, thread_ts, result.get("ts"),
+            "slack outbound: tool=%s client=%s kind=%s resolved=%s thread_ts=%s ts=%s",
+            tool, client_id, kind, resolved_id, thread_ts, result.get("ts"),
         )
     else:
         logger.info(
-            "slack outbound: tool=%s client=%s target=%s resolved=%s thread_ts=%s error=%s",
-            tool, client_id, target, resolved_id, thread_ts, result.get("error"),
+            "slack outbound: tool=%s client=%s kind=%s resolved=%s thread_ts=%s error=%s",
+            tool, client_id, kind, resolved_id, thread_ts, result.get("error"),
         )
 
 
@@ -716,7 +722,7 @@ async def slack_message(
     """
     from platforms.slack.client import SlackClient
     from platforms.slack.allowlist import check_outbound_allowlist
-    from platforms.slack.identity import TargetResolutionError, resolve_slack_target
+    from platforms.slack.identity import TargetResolutionError, open_dm_channel, resolve_slack_target
     from platforms.slack.outbound import post_message_with_policy
 
     client_id = _get_client_id(ctx)
@@ -735,11 +741,13 @@ async def slack_message(
     except TargetResolutionError as exc:
         result = {"ok": False, "channel": "", "ts": "", "error": str(exc)}
         _audit_slack_outbound(
-            tool="slack_message", client_id=client_id, target=target,
+            tool="slack_message", client_id=client_id, kind=None,
             resolved_id=None, thread_ts=None, result=result,
         )
         return json.dumps(result)
 
+    # Allowlist is keyed on the stable user/channel ID even when the post target
+    # will be a different DM channel ID (see the kind=="user" branch below).
     allowlist = await _load_slack_outbound_allowlist()
     if not await check_outbound_allowlist(bot_token, resolved_id, allowlist):
         result = {
@@ -747,17 +755,35 @@ async def slack_message(
             "error": "target not in slack_outbound_allowlist",
         }
         _audit_slack_outbound(
-            tool="slack_message", client_id=client_id, target=target,
+            tool="slack_message", client_id=client_id, kind=kind,
             resolved_id=resolved_id, thread_ts=None, result=result,
         )
         return json.dumps(result)
 
+    # For user targets, open (or look up) the IM conversation to get a D… channel ID.
+    # chat.postMessage to a user ID works in some cases but conversations.open is the
+    # documented path for DMs and avoids edge-case failures.
+    post_channel = resolved_id
+    if kind == "user":
+        dm_channel = await open_dm_channel(resolved_id, bot_token)
+        if dm_channel is None:
+            result = {
+                "ok": False, "channel": resolved_id, "ts": "",
+                "error": "could not open DM channel (check im:write scope)",
+            }
+            _audit_slack_outbound(
+                tool="slack_message", client_id=client_id, kind=kind,
+                resolved_id=resolved_id, thread_ts=None, result=result,
+            )
+            return json.dumps(result)
+        post_channel = dm_channel
+
     slack_client = SlackClient()
     result = await post_message_with_policy(
-        slack_client, bot_token, resolved_id, text=text, blocks=blocks,
+        slack_client, bot_token, post_channel, text=text, blocks=blocks,
     )
     _audit_slack_outbound(
-        tool="slack_message", client_id=client_id, target=target,
+        tool="slack_message", client_id=client_id, kind=kind,
         resolved_id=resolved_id, thread_ts=None, result=result,
     )
     return json.dumps(result)
@@ -807,7 +833,7 @@ async def slack_reply(
             "error": "channel not in slack_outbound_allowlist",
         }
         _audit_slack_outbound(
-            tool="slack_reply", client_id=client_id, target=channel,
+            tool="slack_reply", client_id=client_id, kind="channel",
             resolved_id=channel, thread_ts=thread_ts, result=result,
         )
         return json.dumps(result)
@@ -817,7 +843,7 @@ async def slack_reply(
         slack_client, bot_token, channel, text=text, blocks=blocks, thread_ts=thread_ts,
     )
     _audit_slack_outbound(
-        tool="slack_reply", client_id=client_id, target=channel,
+        tool="slack_reply", client_id=client_id, kind="channel",
         resolved_id=channel, thread_ts=thread_ts, result=result,
     )
     return json.dumps(result)

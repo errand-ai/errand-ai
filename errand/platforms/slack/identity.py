@@ -73,7 +73,12 @@ async def resolve_slack_email(user_id: str, bot_token: str) -> str | None:
 
 
 async def _resolve_user_by_email(email: str, bot_token: str) -> str | None:
-    """Look up a user ID by email via users.lookupByEmail. Cached."""
+    """Look up a user ID by email via users.lookupByEmail. Cached on success only.
+
+    A transient API failure (network, 5xx, rate limit) does NOT poison the cache —
+    the next call will retry. Successful "user not found" results ARE cached so we
+    don't keep hammering Slack for known-missing emails.
+    """
     hit, cached = _cache_get(_email_cache, f"email:{email}")
     if hit:
         return cached
@@ -83,13 +88,17 @@ async def _resolve_user_by_email(email: str, bot_token: str) -> str | None:
         user_id = resp.get("user", {}).get("id")
     except Exception:
         logger.exception("Failed to resolve Slack user by email %s", email)
-        user_id = None
+        return None
     _cache_put(_email_cache, f"email:{email}", user_id)
     return user_id
 
 
 async def _resolve_channel_by_name(name: str, bot_token: str) -> str | None:
-    """Look up a channel ID by its name (without leading #). Cached."""
+    """Look up a channel ID by its name (without leading #). Cached on success only.
+
+    Transient errors are not cached so retries can succeed; "channel not found" IS
+    cached to avoid repeated full-pagination scans for known-missing names.
+    """
     hit, cached = _cache_get(_channel_name_cache, name)
     if hit:
         return cached
@@ -114,13 +123,17 @@ async def _resolve_channel_by_name(name: str, bot_token: str) -> str | None:
                 break
     except Exception:
         logger.exception("Failed to resolve Slack channel by name %s", name)
+        return None
 
     _cache_put(_channel_name_cache, name, found_id)
     return found_id
 
 
 async def _resolve_user_by_username(username: str, bot_token: str) -> str | None:
-    """Look up a user ID by username (without leading @). Cached."""
+    """Look up a user ID by username (without leading @). Cached on success only.
+
+    Transient errors are not cached; "user not found" IS cached.
+    """
     hit, cached = _cache_get(_user_name_cache, username)
     if hit:
         return cached
@@ -147,9 +160,36 @@ async def _resolve_user_by_username(username: str, bot_token: str) -> str | None
                 break
     except Exception:
         logger.exception("Failed to resolve Slack user by username %s", username)
+        return None
 
     _cache_put(_user_name_cache, username, found_id)
     return found_id
+
+
+# In-memory cache: user_id -> (D… channel_id_or_none, timestamp)
+_dm_channel_cache: dict[str, tuple[str | None, float]] = {}
+
+
+async def open_dm_channel(user_id: str, bot_token: str) -> str | None:
+    """Open (or find) the IM conversation with a user and return its D… channel ID.
+
+    ``chat.postMessage`` with a user ID as ``channel`` works in many cases but is not
+    documented as the canonical path; ``conversations.open`` is the supported way to
+    materialize a DM channel ID. Cached for 1 hour because IM channel IDs are stable
+    once opened.
+    """
+    hit, cached = _cache_get(_dm_channel_cache, user_id)
+    if hit:
+        return cached
+    try:
+        client = AsyncWebClient(token=bot_token)
+        resp = await client.conversations_open(users=user_id)
+        channel_id = resp.get("channel", {}).get("id")
+    except Exception:
+        logger.exception("Failed to open DM channel for user %s", user_id)
+        return None
+    _cache_put(_dm_channel_cache, user_id, channel_id)
+    return channel_id
 
 
 class TargetResolutionError(Exception):

@@ -13,10 +13,12 @@ def clear_cache():
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
     yield
     identity._email_cache.clear()
     identity._channel_name_cache.clear()
     identity._user_name_cache.clear()
+    identity._dm_channel_cache.clear()
 
 
 def _mock_client(email: str | None = "user@example.com"):
@@ -215,3 +217,82 @@ async def test_evict_channel_cache_entry_clears_by_name():
     identity._channel_name_cache["ai-agent"] = ("C222", time.time())
     identity.evict_channel_cache_entry("#ai-agent")
     assert "ai-agent" not in identity._channel_name_cache
+
+
+# --- Cache-on-exception behavior (transient errors must not poison cache) ---
+
+
+@pytest.mark.asyncio
+async def test_email_lookup_does_not_cache_on_exception():
+    client = AsyncMock()
+    client.users_lookupByEmail = AsyncMock(side_effect=Exception("Slack down"))
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        result = await identity._resolve_user_by_email("a@example.com", "xoxb")
+    assert result is None
+    assert "email:a@example.com" not in identity._email_cache
+
+
+@pytest.mark.asyncio
+async def test_channel_name_lookup_does_not_cache_on_exception():
+    client = AsyncMock()
+    client.conversations_list = AsyncMock(side_effect=Exception("Slack down"))
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        result = await identity._resolve_channel_by_name("ai-agent", "xoxb")
+    assert result is None
+    assert "ai-agent" not in identity._channel_name_cache
+
+
+@pytest.mark.asyncio
+async def test_username_lookup_does_not_cache_on_exception():
+    client = AsyncMock()
+    client.users_list = AsyncMock(side_effect=Exception("Slack down"))
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        result = await identity._resolve_user_by_username("rob", "xoxb")
+    assert result is None
+    assert "rob" not in identity._user_name_cache
+
+
+@pytest.mark.asyncio
+async def test_email_not_found_is_cached():
+    """Successful 'not found' replies SHOULD cache so we don't keep asking."""
+    client = AsyncMock()
+    client.users_lookupByEmail = AsyncMock(return_value={"user": {}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        await identity._resolve_user_by_email("ghost@example.com", "xoxb")
+        await identity._resolve_user_by_email("ghost@example.com", "xoxb")
+    assert client.users_lookupByEmail.call_count == 1
+
+
+# --- open_dm_channel ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_dm_channel_returns_channel_id():
+    identity._dm_channel_cache.clear()
+    client = AsyncMock()
+    client.conversations_open = AsyncMock(return_value={"channel": {"id": "D999"}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        result = await identity.open_dm_channel("U999", "xoxb")
+    assert result == "D999"
+    client.conversations_open.assert_awaited_once_with(users="U999")
+
+
+@pytest.mark.asyncio
+async def test_open_dm_channel_cached():
+    identity._dm_channel_cache.clear()
+    identity._dm_channel_cache["U999"] = ("D999", time.time())
+    with patch("platforms.slack.identity.AsyncWebClient") as ctor:
+        result = await identity.open_dm_channel("U999", "xoxb")
+    assert result == "D999"
+    ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_open_dm_channel_does_not_cache_on_exception():
+    identity._dm_channel_cache.clear()
+    client = AsyncMock()
+    client.conversations_open = AsyncMock(side_effect=Exception("Slack down"))
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client):
+        result = await identity.open_dm_channel("U999", "xoxb")
+    assert result is None
+    assert "U999" not in identity._dm_channel_cache
