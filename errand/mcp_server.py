@@ -847,12 +847,11 @@ async def slack_reply(
 
     client_id = _get_client_id(ctx)
 
-    import re as _re
-    _CHANNEL_ID_RE = _re.compile(r"^[CDG][A-Z0-9]{8,}$")
+    from platforms.slack.identity import is_conversation_id
 
     if not channel or not channel.strip():
         return json.dumps({"ok": False, "channel": "", "ts": "", "error": "channel is required"})
-    if not _CHANNEL_ID_RE.match(channel.strip()):
+    if not is_conversation_id(channel.strip()):
         # slack_reply requires a conversation ID — names/emails would silently fail
         # the allowlist comparison and the chat.postMessage call. Make this explicit.
         return json.dumps({

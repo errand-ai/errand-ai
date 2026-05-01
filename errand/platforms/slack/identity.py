@@ -21,6 +21,15 @@ _USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
+def is_conversation_id(value: str) -> bool:
+    """Return True if `value` looks like a Slack conversation ID (C…/D…/G…).
+
+    Public for use by other modules (e.g. the slack_reply MCP tool) so the
+    pattern lives in exactly one place.
+    """
+    return bool(value) and bool(_CHANNEL_ID_RE.match(value))
+
+
 def _cache_get(cache: dict, key: str) -> tuple[bool, str | None]:
     """Return (hit, value). hit=False means caller must resolve."""
     entry = cache.get(key)
