@@ -245,8 +245,11 @@ async def test_email_lookup_exception_log_redacts_email(caplog):
     assert msgs, "expected an error log"
     # Local part of the email must NOT appear in operational logs
     assert all("leaky.user" not in m for m in msgs)
-    # Domain is logged for triage
-    assert any("example.com" in m for m in msgs)
+    # Domain is logged for triage — assert against the full redacted token
+    # (`domain=…`) rather than a bare substring so this is unambiguously a
+    # log-format check, not something a static analyzer would treat as a
+    # hostname allowlist.
+    assert any("domain=example.com" in m for m in msgs)
 
 
 @pytest.mark.asyncio

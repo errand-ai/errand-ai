@@ -112,7 +112,10 @@ async def test_unresolvable_entry_warning_does_not_leak_email(caplog):
     msgs = [r.getMessage() for r in caplog.records]
     assert msgs, "expected a warning log"
     assert all("leaky.user" not in m for m in msgs)
-    assert any("example.com" in m for m in msgs)
+    # Assert against the full redacted token (not just the bare domain) so this
+    # check is a log-format assertion, not something a static analyzer could
+    # mistake for a hostname allowlist check.
+    assert any("<email:example.com>" in m for m in msgs)
 
 
 @pytest.mark.asyncio
