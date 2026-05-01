@@ -233,6 +233,23 @@ async def test_email_lookup_does_not_cache_on_exception():
 
 
 @pytest.mark.asyncio
+async def test_email_lookup_exception_log_redacts_email(caplog):
+    import logging
+    client = AsyncMock()
+    client.users_lookupByEmail = AsyncMock(side_effect=Exception("Slack down"))
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
+            caplog.at_level(logging.ERROR, logger="platforms.slack.identity"):
+        await identity._resolve_user_by_email("leaky.user@example.com", "xoxb")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert msgs, "expected an error log"
+    # Local part of the email must NOT appear in operational logs
+    assert all("leaky.user" not in m for m in msgs)
+    # Domain is logged for triage
+    assert any("example.com" in m for m in msgs)
+
+
+@pytest.mark.asyncio
 async def test_channel_name_lookup_does_not_cache_on_exception():
     client = AsyncMock()
     client.conversations_list = AsyncMock(side_effect=Exception("Slack down"))

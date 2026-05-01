@@ -227,7 +227,7 @@ async def test_slack_reply_missing_channel_returns_error():
 @pytest.mark.asyncio
 async def test_slack_reply_no_credentials_returns_error():
     with patch.object(mcp_server, "_load_slack_bot_token", AsyncMock(return_value=None)):
-        result = await mcp_server.slack_reply(channel="C123", thread_ts="9.9", text="hi")
+        result = await mcp_server.slack_reply(channel="C0123ABCDE", thread_ts="9.9", text="hi")
     parsed = json.loads(result)
     assert parsed["ok"] is False
     assert "Slack credentials not configured" in parsed["error"]
@@ -306,6 +306,81 @@ async def test_slack_reply_emits_audit_log_with_thread_ts(patched_token, patched
     assert "tool=slack_reply" in msg
     assert "thread_ts=9.9" in msg
     assert "ts=10.0" in msg
+
+
+# --- Fail-closed allowlist load + sanitized resolution audit + slack_reply ID validation ---
+
+
+@pytest.mark.asyncio
+async def test_slack_message_fails_closed_when_allowlist_load_fails(patched_token, caplog):
+    """If the allowlist setting can't be loaded, refuse to send (don't fall back to unrestricted)."""
+    with patch.object(
+        mcp_server, "_load_slack_outbound_allowlist",
+        AsyncMock(side_effect=mcp_server.AllowlistLoadError("db down")),
+    ), caplog.at_level(logging.INFO, logger="mcp_server"), \
+            _patch_post({"ok": True}) as mock_post:
+        result = await mcp_server.slack_message(target="C0123ABCDE", text="hi")
+
+    parsed = json.loads(result)
+    assert parsed["ok"] is False
+    assert "allowlist unavailable" in parsed["error"]
+    mock_post.assert_not_called()
+    audit = [r.getMessage() for r in caplog.records if "slack outbound" in r.getMessage()]
+    assert any("error=allowlist_load_failed" in m for m in audit)
+
+
+@pytest.mark.asyncio
+async def test_slack_reply_fails_closed_when_allowlist_load_fails(patched_token, caplog):
+    with patch.object(
+        mcp_server, "_load_slack_outbound_allowlist",
+        AsyncMock(side_effect=mcp_server.AllowlistLoadError("db down")),
+    ), caplog.at_level(logging.INFO, logger="mcp_server"), \
+            _patch_post({"ok": True}) as mock_post:
+        result = await mcp_server.slack_reply(channel="C0123ABCDE", thread_ts="9.9", text="hi")
+
+    parsed = json.loads(result)
+    assert parsed["ok"] is False
+    assert "allowlist unavailable" in parsed["error"]
+    mock_post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolution_failure_audit_log_redacts_email(patched_token, patched_empty_allowlist, caplog):
+    """A failed email resolution emits a sanitized audit code, not the raw email."""
+    client = AsyncMock()
+    client.users_lookupByEmail = AsyncMock(return_value={"user": {}})  # successful "not found"
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
+            caplog.at_level(logging.INFO, logger="mcp_server"):
+        result = await mcp_server.slack_message(target="ghost@example.com", text="hi")
+
+    parsed = json.loads(result)
+    assert parsed["ok"] is False
+    # Detailed message goes to the runner
+    assert "ghost@example.com" in parsed["error"] or "No Slack user found" in parsed["error"]
+    # Audit log must NOT contain the email
+    audit = [r.getMessage() for r in caplog.records if "slack outbound" in r.getMessage()]
+    assert audit
+    assert all("ghost@example.com" not in m for m in audit)
+    assert any("error=resolution_failed" in m for m in audit)
+
+
+@pytest.mark.asyncio
+async def test_slack_reply_rejects_non_id_channel():
+    """slack_reply requires a conversation ID; #name or @user would silently fail downstream."""
+    for bad in ("#general", "@rob", "general", "rob@example.com"):
+        result = await mcp_server.slack_reply(channel=bad, thread_ts="9.9", text="hi")
+        parsed = json.loads(result)
+        assert parsed["ok"] is False, f"expected rejection for channel={bad!r}"
+        assert "conversation ID" in parsed["error"]
+
+
+@pytest.mark.asyncio
+async def test_slack_reply_accepts_dm_and_private_channel_ids(patched_token, patched_empty_allowlist):
+    """D… (DM) and G… (private) IDs must also be accepted, not just C… ."""
+    for chan in ("C0123ABCDE", "D0123ABCDE", "G0123ABCDE"):
+        with _patch_post({"ok": True, "channel": chan, "ts": "1.1"}):
+            result = await mcp_server.slack_reply(channel=chan, thread_ts="9.9", text="hi")
+        assert json.loads(result)["ok"] is True, f"expected acceptance for channel={chan!r}"
 
 
 @pytest.mark.asyncio

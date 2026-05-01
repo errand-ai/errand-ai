@@ -9,6 +9,7 @@ Any reachable channel or user can be targeted. Workspaces wanting strict
 control populate the list explicitly.
 """
 import logging
+import re
 
 from platforms.slack.identity import (
     TargetResolutionError,
@@ -16,6 +17,27 @@ from platforms.slack.identity import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _redact_for_log(entry: str) -> str:
+    """Redact identifiers that may carry PII before they hit operational logs.
+
+    Slack IDs (C…/U…/D…/G…), channel names (#…), and the leading-@ usernames
+    are safe to log directly — they are workspace-scoped identifiers, not PII.
+    Emails and bare strings (which could be a username or anything else) are
+    rendered as a kind hint plus a short fingerprint so log readers can still
+    correlate without seeing the underlying value.
+    """
+    if not isinstance(entry, str) or not entry:
+        return "<empty>"
+    if entry.startswith("#") or entry.startswith("@") or re.match(r"^[CDGUW][A-Z0-9]{8,}$", entry):
+        return entry
+    if _EMAIL_RE.match(entry):
+        # Keep just the domain — useful for triage, not enough to identify the user
+        return f"<email:{entry.split('@', 1)[1]}>"
+    return f"<opaque:{len(entry)}chars>"
 
 
 async def check_outbound_allowlist(
@@ -40,10 +62,10 @@ async def check_outbound_allowlist(
         try:
             _, entry_id = await resolve_slack_target(entry, bot_token)
         except TargetResolutionError:
-            logger.warning("Allowlist entry %r could not be resolved; skipping", entry)
+            logger.warning("Allowlist entry %s could not be resolved; skipping", _redact_for_log(entry))
             continue
         except Exception:
-            logger.exception("Unexpected error resolving allowlist entry %r", entry)
+            logger.exception("Unexpected error resolving allowlist entry %s", _redact_for_log(entry))
             continue
         if entry_id == resolved_id:
             return True

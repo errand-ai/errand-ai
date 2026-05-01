@@ -74,6 +74,47 @@ async def test_allowlist_skips_unresolvable_entries():
     assert result is False
 
 
+def test_redact_for_log_passes_safe_identifiers():
+    assert allowlist._redact_for_log("#ai-agent") == "#ai-agent"
+    assert allowlist._redact_for_log("@rob") == "@rob"
+    assert allowlist._redact_for_log("C0123ABCDE") == "C0123ABCDE"
+    assert allowlist._redact_for_log("U0123ABCDE") == "U0123ABCDE"
+
+
+def test_redact_for_log_strips_email_local_part():
+    out = allowlist._redact_for_log("rob@example.com")
+    assert "rob" not in out
+    assert "<email:example.com>" == out
+
+
+def test_redact_for_log_opaque_for_bare_strings():
+    # Bare strings (could be a username or anything) — never log raw
+    out = allowlist._redact_for_log("possibly-pii-bare-string")
+    assert out.startswith("<opaque:")
+    assert "possibly-pii" not in out
+
+
+def test_redact_for_log_handles_empty():
+    assert allowlist._redact_for_log("") == "<empty>"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_entry_warning_does_not_leak_email(caplog):
+    import logging
+    client = AsyncMock()
+    # Force resolution to fail (no match)
+    client.users_lookupByEmail = AsyncMock(return_value={"user": {}})
+    with patch("platforms.slack.identity.AsyncWebClient", return_value=client), \
+            caplog.at_level(logging.WARNING, logger="platforms.slack.allowlist"):
+        await allowlist.check_outbound_allowlist(
+            "xoxb", "C9999", ["leaky.user@example.com"],
+        )
+    msgs = [r.getMessage() for r in caplog.records]
+    assert msgs, "expected a warning log"
+    assert all("leaky.user" not in m for m in msgs)
+    assert any("example.com" in m for m in msgs)
+
+
 @pytest.mark.asyncio
 async def test_allowlist_user_match_by_username():
     client = AsyncMock()

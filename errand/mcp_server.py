@@ -653,17 +653,32 @@ async def _load_slack_bot_token() -> str | None:
     return token or None
 
 
+class AllowlistLoadError(Exception):
+    """Raised when the slack_outbound_allowlist setting cannot be loaded.
+
+    Distinguished from "unrestricted within workspace" (empty list) so callers
+    can fail closed: if we cannot prove a target is permitted, we refuse to send.
+    """
+
+
 async def _load_slack_outbound_allowlist() -> list[str]:
-    """Load the slack_outbound_allowlist setting (empty list = unrestricted)."""
+    """Load the slack_outbound_allowlist setting.
+
+    Returns an empty list when the setting is unset or empty (which means
+    "unrestricted within the workspace" by design). Raises AllowlistLoadError
+    on DB failure so the caller can fail closed — silently returning [] would
+    treat a transient DB outage as "unrestricted", which is unsafe when a
+    strict allowlist is configured.
+    """
     try:
         async with async_session() as session:
             result = await session.execute(
                 select(Setting.value).where(Setting.key == "slack_outbound_allowlist")
             )
             value = result.scalar_one_or_none()
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to load slack_outbound_allowlist setting")
-        return []
+        raise AllowlistLoadError(str(exc)) from exc
     if not value:
         return []
     if isinstance(value, list):
@@ -739,16 +754,33 @@ async def slack_message(
     try:
         kind, resolved_id = await resolve_slack_target(target, bot_token)
     except TargetResolutionError as exc:
+        # Detailed message goes to the runner so the LLM can self-correct;
+        # audit log records only a sanitized error code so PII (email, username)
+        # in the exception message does not land in info-level logs.
         result = {"ok": False, "channel": "", "ts": "", "error": str(exc)}
         _audit_slack_outbound(
             tool="slack_message", client_id=client_id, kind=None,
-            resolved_id=None, thread_ts=None, result=result,
+            resolved_id=None, thread_ts=None,
+            result={"ok": False, "error": "resolution_failed"},
         )
         return json.dumps(result)
 
     # Allowlist is keyed on the stable user/channel ID even when the post target
     # will be a different DM channel ID (see the kind=="user" branch below).
-    allowlist = await _load_slack_outbound_allowlist()
+    # Fail closed: if the allowlist setting can't be loaded, refuse to send.
+    try:
+        allowlist = await _load_slack_outbound_allowlist()
+    except AllowlistLoadError:
+        result = {
+            "ok": False, "channel": resolved_id, "ts": "",
+            "error": "allowlist unavailable; refusing to send",
+        }
+        _audit_slack_outbound(
+            tool="slack_message", client_id=client_id, kind=kind,
+            resolved_id=resolved_id, thread_ts=None,
+            result={"ok": False, "error": "allowlist_load_failed"},
+        )
+        return json.dumps(result)
     if not await check_outbound_allowlist(bot_token, resolved_id, allowlist):
         result = {
             "ok": False, "channel": resolved_id, "ts": "",
@@ -815,8 +847,18 @@ async def slack_reply(
 
     client_id = _get_client_id(ctx)
 
+    import re as _re
+    _CHANNEL_ID_RE = _re.compile(r"^[CDG][A-Z0-9]{8,}$")
+
     if not channel or not channel.strip():
         return json.dumps({"ok": False, "channel": "", "ts": "", "error": "channel is required"})
+    if not _CHANNEL_ID_RE.match(channel.strip()):
+        # slack_reply requires a conversation ID — names/emails would silently fail
+        # the allowlist comparison and the chat.postMessage call. Make this explicit.
+        return json.dumps({
+            "ok": False, "channel": channel, "ts": "",
+            "error": "channel must be a conversation ID (C…/D…/G…); resolve names via slack_message first",
+        })
     if not thread_ts or not thread_ts.strip():
         return json.dumps({"ok": False, "channel": channel, "ts": "", "error": "thread_ts is required"})
     if not text or not text.strip():
@@ -826,7 +868,19 @@ async def slack_reply(
     if not bot_token:
         return json.dumps({"ok": False, "channel": channel, "ts": "", "error": "Slack credentials not configured"})
 
-    allowlist = await _load_slack_outbound_allowlist()
+    try:
+        allowlist = await _load_slack_outbound_allowlist()
+    except AllowlistLoadError:
+        result = {
+            "ok": False, "channel": channel, "ts": "",
+            "error": "allowlist unavailable; refusing to send",
+        }
+        _audit_slack_outbound(
+            tool="slack_reply", client_id=client_id, kind="channel",
+            resolved_id=channel, thread_ts=thread_ts,
+            result={"ok": False, "error": "allowlist_load_failed"},
+        )
+        return json.dumps(result)
     if not await check_outbound_allowlist(bot_token, channel, allowlist):
         result = {
             "ok": False, "channel": channel, "ts": "",

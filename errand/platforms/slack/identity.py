@@ -87,7 +87,9 @@ async def _resolve_user_by_email(email: str, bot_token: str) -> str | None:
         resp = await client.users_lookupByEmail(email=email)
         user_id = resp.get("user", {}).get("id")
     except Exception:
-        logger.exception("Failed to resolve Slack user by email %s", email)
+        # Log only the domain — the local-part is PII and usually unhelpful for triage
+        domain = email.split("@", 1)[1] if "@" in email else "?"
+        logger.exception("Failed to resolve Slack user by email (domain=%s)", domain)
         return None
     _cache_put(_email_cache, f"email:{email}", user_id)
     return user_id
