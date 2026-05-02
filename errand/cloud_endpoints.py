@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import PlatformCredential, Setting
+from models import PlatformCredential, Setting, WebhookTrigger
 from platforms.credentials import decrypt as decrypt_credentials
 
 logger = logging.getLogger(__name__)
@@ -300,15 +300,14 @@ async def deregister_webhook_trigger_endpoint(
         logger.exception("Cloud webhook trigger deregistration failed for trigger %s", trigger_id)
 
 
-async def try_register_trigger_endpoint(trigger_id: str, integration: str, webhook_secret: str, label: str, session: AsyncSession) -> None:
-    """Register a trigger endpoint with cloud if connected."""
+async def _resolve_cloud_context(session: AsyncSession) -> tuple[dict, str] | None:
+    """Resolve (cloud_creds, cloud_service_url) when cloud is connected. Returns None otherwise."""
     result = await session.execute(
         select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
     )
     cloud_cred = result.scalar_one_or_none()
     if not cloud_cred or cloud_cred.status != "connected":
-        logger.debug("Cloud not connected, skipping trigger endpoint registration for %s", trigger_id)
-        return
+        return None
 
     cloud_creds = decrypt_credentials(cloud_cred.encrypted_data)
 
@@ -318,33 +317,149 @@ async def try_register_trigger_endpoint(trigger_id: str, integration: str, webho
     )
     url_setting = result.scalar_one_or_none()
     cloud_service_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
-
-    await register_webhook_trigger_endpoint(
-        cloud_creds, cloud_service_url, trigger_id, integration, webhook_secret, label,
-    )
+    return cloud_creds, cloud_service_url
 
 
-async def try_deregister_trigger_endpoint(trigger_id: str, integration: str, session: AsyncSession) -> None:
-    """Deregister a trigger endpoint from cloud if connected."""
-    result = await session.execute(
-        select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
-    )
-    cloud_cred = result.scalar_one_or_none()
-    if not cloud_cred or cloud_cred.status != "connected":
+async def register_webhook_trigger_with_cloud(
+    trigger: WebhookTrigger, session: AsyncSession
+) -> None:
+    """Register a webhook trigger with errand-cloud and persist the URL/token.
+
+    Best-effort: on cloud disconnected, returns silently. On HTTP failure, logs
+    the error, stores the detail in `cloud_endpoint_error` Setting, leaves the
+    trigger's cloud columns unchanged, and does NOT raise.
+    """
+    ctx = await _resolve_cloud_context(session)
+    if ctx is None:
+        logger.debug("Cloud not connected, skipping trigger endpoint registration for %s", trigger.id)
+        return
+    cloud_creds, cloud_service_url = ctx
+
+    if not trigger.webhook_secret:
+        logger.debug("Trigger %s has no webhook_secret, skipping cloud registration", trigger.id)
         return
 
-    cloud_creds = decrypt_credentials(cloud_cred.encrypted_data)
+    try:
+        secret_data = decrypt_credentials(trigger.webhook_secret)
+        plaintext_secret = secret_data.get("secret", "")
+    except Exception:
+        logger.exception("Failed to decrypt webhook_secret for trigger %s", trigger.id)
+        return
 
-    from settings_registry import SETTINGS_REGISTRY
-    result = await session.execute(
-        select(Setting).where(Setting.key == "cloud_service_url")
-    )
-    url_setting = result.scalar_one_or_none()
-    cloud_service_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
+    if not plaintext_secret:
+        logger.debug("Empty webhook_secret for trigger %s, skipping cloud registration", trigger.id)
+        return
 
-    await deregister_webhook_trigger_endpoint(
-        cloud_creds, cloud_service_url, trigger_id, integration,
-    )
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return
+
+    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints"
+    body = {
+        "integration": trigger.source,
+        "endpoint_type": "webhook",
+        "trigger_id": str(trigger.id),
+        "webhook_secret": plaintext_secret,
+        "label": trigger.name,
+    }
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.post(
+                api_url,
+                json=body,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30,
+            )
+            if not resp.is_success:
+                level = logging.WARNING if resp.status_code == 403 else logging.ERROR
+                logger.log(
+                    level,
+                    "Cloud webhook trigger registration failed for %s: %s %s — body: %s",
+                    trigger.id, resp.status_code, resp.reason_phrase, resp.text,
+                )
+                try:
+                    error_detail = resp.json().get("detail", resp.text)
+                except Exception:
+                    error_detail = resp.text
+                await _store_endpoint_error(session, error_detail)
+                return
+            data = resp.json()
+    except Exception:
+        logger.exception("Cloud webhook trigger registration API call failed for %s", trigger.id)
+        await _store_endpoint_error(session, "Cloud endpoint registration failed (network or server error)")
+        return
+
+    url = data.get("url")
+    token = data.get("token")
+    if not url or not token:
+        logger.error("Cloud webhook trigger registration response missing url/token for %s: %s", trigger.id, data)
+        await _store_endpoint_error(session, "Cloud endpoint registration response missing url/token")
+        return
+
+    trigger.cloud_webhook_url = url
+    trigger.cloud_endpoint_token = token
+    await _clear_endpoint_error(session)
+    await session.commit()
+    logger.info("Registered cloud webhook endpoint for trigger %s (%s)", trigger.id, trigger.source)
+
+
+async def revoke_webhook_trigger_in_cloud(
+    trigger: WebhookTrigger, session: AsyncSession
+) -> None:
+    """Revoke a webhook trigger endpoint in errand-cloud.
+
+    Prefers DELETE /api/endpoints/{token} when token is known; falls back to the
+    bulk-delete query form otherwise. Best-effort — failures are logged and swallowed.
+    """
+    ctx = await _resolve_cloud_context(session)
+    if ctx is None:
+        return
+    cloud_creds, cloud_service_url = ctx
+
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return
+
+    base = cloud_service_url.rstrip("/")
+    if trigger.cloud_endpoint_token:
+        api_url = f"{base}/api/endpoints/{trigger.cloud_endpoint_token}"
+    else:
+        api_url = f"{base}/api/endpoints?integration={trigger.source}&trigger_id={trigger.id}"
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.delete(
+                api_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info("Revoked cloud endpoint for trigger %s", trigger.id)
+    except Exception:
+        logger.exception("Cloud webhook trigger revocation failed for trigger %s", trigger.id)
+
+
+async def revoke_cloud_endpoints_for_integration(
+    cloud_creds: dict, cloud_service_url: str, integration: str
+) -> None:
+    """Bulk-revoke all cloud endpoints for a given integration (e.g. "jira", "github")."""
+    access_token = cloud_creds.get("access_token", "")
+    if not access_token:
+        return
+
+    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration={integration}"
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.delete(
+                api_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info("Revoked cloud endpoints for integration %s", integration)
+    except Exception:
+        logger.exception("Cloud endpoint revocation failed for integration %s", integration)
 
 
 async def fetch_subscription_status(

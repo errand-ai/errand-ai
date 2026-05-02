@@ -1730,15 +1730,30 @@ async def cloud_auth_disconnect(
         from cloud_client import stop_cloud_client
         await stop_cloud_client()
 
-        # Revoke cloud endpoints
+        # Revoke cloud endpoints (Slack + Jira/GitHub webhook triggers)
         try:
             cred_data = decrypt_credentials(cred.encrypted_data)
-            from cloud_endpoints import revoke_cloud_endpoints
+            from cloud_endpoints import (
+                revoke_cloud_endpoints,
+                revoke_cloud_endpoints_for_integration,
+            )
             cloud_url = await _get_cloud_url(session)
             if cloud_url:
                 await revoke_cloud_endpoints(cred_data, cloud_url)
+                for integration in ("jira", "github"):
+                    await revoke_cloud_endpoints_for_integration(cred_data, cloud_url, integration)
         except Exception:
             logger.exception("Cloud endpoint revocation failed during disconnect")
+
+        # Clear cloud_webhook_url and cloud_endpoint_token on all webhook triggers
+        # for jira and github sources.
+        from sqlalchemy import update as _sa_update
+        from models import WebhookTrigger
+        await session.execute(
+            _sa_update(WebhookTrigger)
+            .where(WebhookTrigger.source.in_(("jira", "github")))
+            .values(cloud_webhook_url=None, cloud_endpoint_token=None)
+        )
 
         # Delete credentials
         await session.delete(cred)

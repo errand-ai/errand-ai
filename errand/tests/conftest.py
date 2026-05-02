@@ -198,6 +198,8 @@ CREATE TABLE IF NOT EXISTS webhook_triggers (
     actions TEXT DEFAULT '{}' NOT NULL,
     task_prompt TEXT,
     webhook_secret TEXT,
+    cloud_webhook_url TEXT,
+    cloud_endpoint_token TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )
@@ -299,8 +301,8 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture()
-async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
-    """Client authenticated as an admin user."""
+async def admin_client_with_session(fake_valkey) -> AsyncGenerator[tuple[AsyncClient, async_sessionmaker], None]:
+    """Admin client paired with the session_maker for direct DB access in tests."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     await _create_tables(engine)
 
@@ -329,10 +331,17 @@ async def admin_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+        yield ac, test_session
 
     app.dependency_overrides.clear()
     await engine.dispose()
+
+
+@pytest.fixture()
+async def admin_client(admin_client_with_session) -> AsyncGenerator[AsyncClient, None]:
+    """Client authenticated as an admin user."""
+    client, _ = admin_client_with_session
+    yield client
 
 
 @pytest.fixture()
