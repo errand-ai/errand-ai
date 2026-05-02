@@ -242,7 +242,10 @@ onMounted(async () => {
     </div>
 
     <!-- Cloud Endpoints -->
-    <div v-if="isConnected" class="rounded-lg bg-white p-6 shadow">
+    <div
+      v-if="isConnected || webhookTriggers.length > 0"
+      class="rounded-lg bg-white p-6 shadow"
+    >
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Cloud Endpoints</h3>
 
       <div v-if="hasEndpoints" class="space-y-3 mt-4" data-testid="cloud-endpoints">
@@ -289,11 +292,18 @@ onMounted(async () => {
               {{ trigger.cloud_webhook_url }}
             </p>
             <p
+              v-else-if="!isConnected"
+              class="mt-1 text-sm italic text-gray-500"
+              data-testid="trigger-cloud-not-connected"
+            >
+              Cloud not connected
+            </p>
+            <p
               v-else
               class="mt-1 text-sm italic text-amber-600"
               data-testid="trigger-registration-failed"
             >
-              Registration failed — re-save trigger to retry<span v-if="cloudStatus.endpoint_error?.detail">: {{ cloudStatus.endpoint_error.detail }}</span>
+              Registration failed — re-save trigger to retry
             </p>
           </div>
           <button

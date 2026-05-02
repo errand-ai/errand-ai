@@ -252,7 +252,12 @@ async function save() {
       editingTrigger.value = updated
       toast.success('Trigger updated')
     } else {
-      await createWebhookTrigger(data)
+      const created = await createWebhookTrigger(data)
+      // Switch to edit mode for the freshly-created trigger so the user can see
+      // and copy the cloud webhook URL right away. Otherwise they'd be stuck on
+      // a stale "New Trigger" form with no way to discover the URL.
+      editingId.value = created.id
+      editingTrigger.value = created
       toast.success('Trigger created')
     }
 
@@ -720,8 +725,10 @@ onMounted(loadData)
             Connect to Errand Cloud →
           </router-link>
         </div>
-        <div v-else data-testid="webhook-url-registering">
-          <p class="text-sm text-amber-600">Registering with cloud...</p>
+        <div v-else data-testid="webhook-url-registration-failed">
+          <p class="text-sm text-amber-600">
+            Registration with Errand Cloud did not complete. Click Retry, or check the Cloud Service settings page for the error detail.
+          </p>
           <button
             @click="retryRegistration"
             :disabled="retryingRegistration"

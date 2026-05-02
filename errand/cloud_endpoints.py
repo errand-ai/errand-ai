@@ -399,7 +399,11 @@ async def register_webhook_trigger_with_cloud(
 
     trigger.cloud_webhook_url = url
     trigger.cloud_endpoint_token = token
-    await _clear_endpoint_error(session)
+    # Note: cloud_endpoint_error is a global Setting shared with Slack registration
+    # and other triggers. Do NOT clear it here — a single trigger's success doesn't
+    # mean unrelated failures (Slack registration, another trigger's 403) are gone.
+    # Clearing is owned by the Slack registration helper, which is the canonical
+    # consumer of this setting.
     await session.commit()
     logger.info("Registered cloud webhook endpoint for trigger %s (%s)", trigger.id, trigger.source)
 

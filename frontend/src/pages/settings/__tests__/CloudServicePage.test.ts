@@ -152,6 +152,27 @@ describe('CloudServicePage', () => {
     expect(wrapper.findAll('[data-testid="copy-trigger-url-btn"]').length).toBe(2)
   })
 
+  it('shows "Cloud not connected" placeholder for trigger when not connected to cloud', async () => {
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: null,
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({ status: 'not_configured' }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-cloud-not-connected"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trigger-registration-failed"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(false)
+  })
+
   it('shows "Registration failed" placeholder for trigger without cloud_webhook_url when connected', async () => {
     mockFetchWebhookTriggers.mockResolvedValueOnce([
       {

@@ -1,5 +1,4 @@
 """Tests for cloud endpoint management."""
-import os
 import uuid
 
 import pytest

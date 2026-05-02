@@ -423,7 +423,7 @@ describe('WebhookTriggersSection', () => {
       expect(wrapper.find('[data-testid="copy-webhook-url-btn"]').exists()).toBe(false)
     })
 
-    it('shows "Registering..." with Retry button when cloud connected but URL missing', async () => {
+    it('shows "Registration failed" with Retry button when cloud connected but URL missing', async () => {
       const wrapper = await openEditWithStatus(
         {
           id: 't1', name: 'My Trigger', source: 'jira', enabled: true,
@@ -432,8 +432,32 @@ describe('WebhookTriggersSection', () => {
         },
         'connected',
       )
-      expect(wrapper.find('[data-testid="webhook-url-registering"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="webhook-url-registration-failed"]').exists()).toBe(true)
       expect(wrapper.find('[data-testid="retry-registration-btn"]').exists()).toBe(true)
     })
+  })
+
+  it('switches to edit mode after a successful create so the user can see the cloud URL', async () => {
+    mockCreateTrigger.mockResolvedValueOnce({
+      id: 'new-id', name: 'Fresh', source: 'jira', enabled: true, has_secret: true,
+      filters: {}, actions: {}, profile_id: null, task_prompt: null,
+      cloud_webhook_url: 'https://cloud.test/hook/fresh',
+    })
+    mockFetchTriggers.mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      id: 'new-id', name: 'Fresh', source: 'jira', enabled: true, has_secret: true,
+      filters: {}, actions: {}, profile_id: null, task_prompt: null,
+      cloud_webhook_url: 'https://cloud.test/hook/fresh',
+    }])
+
+    const wrapper = await mountComponent()
+    await wrapper.find('[data-testid="add-trigger-btn"]').trigger('click')
+    await wrapper.find('[data-testid="trigger-name"]').setValue('Fresh')
+    await wrapper.find('[data-testid="trigger-save-btn"]').trigger('click')
+    await flushPromises()
+
+    // Form remains open in edit mode showing the new trigger's webhook URL
+    expect(wrapper.find('[data-testid="webhook-url-shown"]').exists()).toBe(true)
+    const input = wrapper.find('[data-testid="webhook-url-input"]').element as HTMLInputElement
+    expect(input.value).toBe('https://cloud.test/hook/fresh')
   })
 })
