@@ -21,7 +21,7 @@ The Cloud Service settings page SHALL display the cloud webhook endpoint URLs wh
 #### Scenario: Trigger exists but registration failed
 - **WHEN** a Jira or GitHub webhook trigger exists, the user is connected to errand-cloud, but `cloud_webhook_url` is null because the most recent registration attempt failed
 - **THEN** the trigger's row SHALL display "Registration failed — re-save trigger to retry"
-- **THEN** the inline error message SHALL include the `endpoint_error.detail` from the cloud status response when present
+- The per-row text SHALL NOT include `endpoint_error.detail` — that Setting is global (shared with Slack registration and other triggers) and would mis-attribute unrelated failures to the wrong trigger row. The detail SHALL be surfaced once at section level via the persistent endpoint-error banner instead.
 
 #### Scenario: Endpoints hidden when no integrations are configured
 - **WHEN** the user is connected to errand-cloud AND no Slack credentials, Jira triggers, or GitHub triggers exist

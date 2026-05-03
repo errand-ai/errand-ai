@@ -6,7 +6,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -180,6 +180,13 @@ async def _ensure_github_column_options(filters: dict, actions: dict, session: A
 
 
 class TriggerCreate(BaseModel):
+    # Reject unknown fields. Older clients that still POST `webhook_secret`
+    # (which is now server-generated) must see a clear 422 — silently
+    # ignoring the field would leave them with a different secret than the
+    # one they configured externally and break signature verification with
+    # no validation error pointing at the cause.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     source: str
     enabled: bool = True
@@ -190,6 +197,8 @@ class TriggerCreate(BaseModel):
 
 
 class TriggerUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     source: Optional[str] = None
     enabled: Optional[bool] = None

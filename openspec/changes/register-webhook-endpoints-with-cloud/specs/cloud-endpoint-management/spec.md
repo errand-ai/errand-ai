@@ -41,7 +41,7 @@ The backend SHALL automatically register per-trigger webhook endpoints with erra
 - **WHEN** a webhook trigger is created but no cloud connection is active
 - **THEN** the backend SHALL skip cloud registration and log a debug message
 - **THEN** the trigger SHALL be created locally with `cloud_webhook_url` and `cloud_endpoint_token` set to null
-- **THEN** registration SHALL be retried on the next trigger update or when the cloud connection is established
+- **THEN** registration SHALL be attempted on the next trigger update (the user must re-save the trigger to retry — the system does NOT auto-backfill on cloud reconnect; per `design.md` "Backfilling existing triggers" is a non-goal)
 
 #### Scenario: Registration API call fails
 - **WHEN** the `POST /api/endpoints` call fails (network error, HTTP 4xx other than 401, HTTP 5xx)

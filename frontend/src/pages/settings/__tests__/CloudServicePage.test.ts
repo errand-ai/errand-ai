@@ -265,9 +265,39 @@ describe('CloudServicePage', () => {
     const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="cloud-endpoint-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cloud-endpoint-error-banner"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Active subscription required')
     expect(wrapper.find('[data-testid="cloud-registering"]').exists()).toBe(false)
+  })
+
+  it('keeps the global endpoint-error banner visible when triggers exist (regression)', async () => {
+    // Previous behavior hid the section-level error block whenever any trigger
+    // row rendered, so users lost the only persistent error detail. The banner
+    // now sits above the rows and is always shown when endpoint_error is set.
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: null,
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      endpoint_error: { detail: 'Active subscription required' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-endpoint-error-banner"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Active subscription required')
+    // Trigger rows still render too — banner is additive, not exclusive.
+    expect(wrapper.find('[data-testid="trigger-endpoint-row"]').exists()).toBe(true)
   })
 
   it('fires toast on endpoint registration error', async () => {

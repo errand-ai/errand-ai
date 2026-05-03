@@ -13,10 +13,11 @@ The trigger detail view SHALL display the webhook URL that must be configured in
 - **THEN** the URL field SHALL display "Cloud not connected" with no Copy button
 - **THEN** a link SHALL direct the user to the Cloud Service settings page to connect
 
-#### Scenario: Registration not yet complete
-- **WHEN** the user views a trigger detail, the instance is connected to cloud, but `cloud_webhook_url` is null because registration is in progress or failed
-- **THEN** the URL field SHALL display "Registering with cloud..." or the failure detail (whichever applies)
+#### Scenario: Registration did not complete
+- **WHEN** the user views a trigger detail, the instance is connected to cloud, but `cloud_webhook_url` is null
+- **THEN** the URL field SHALL display a message indicating registration with Errand Cloud did not complete and direct the user to the Cloud Service settings page for the error detail
 - **THEN** a "Retry" button SHALL be available to re-trigger registration
+- Note: registration is synchronous within the create/update request, so there is no separate "registering in progress" state — a null URL while cloud is connected always means the last attempt failed.
 
 #### Scenario: Webhook secret not displayed
 - **WHEN** the user views a trigger detail

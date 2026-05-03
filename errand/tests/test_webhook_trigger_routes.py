@@ -28,16 +28,20 @@ class TestWebhookTriggerCRUD:
         assert data["cloud_webhook_url"] is None
         assert "id" in data
 
-    async def test_webhook_secret_not_user_settable(self, admin_client):
-        # webhook_secret in request body is ignored; server auto-generates
+    async def test_webhook_secret_in_request_is_rejected(self, admin_client):
+        # webhook_secret is server-generated only; older clients sending it must
+        # see a clear 422 rather than silently getting a different server-generated
+        # secret that breaks their external webhook signature config.
         resp = await admin_client.post("/api/webhook-triggers", json={
             "name": "Secret Trigger",
             "source": "jira",
-            "webhook_secret": "should-be-ignored",
+            "webhook_secret": "client-supplied-would-be-ignored",
         })
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["has_secret"] is True
+        assert resp.status_code == 422
+        # Confirm trigger was NOT created (no silent partial success).
+        listing = await admin_client.get("/api/webhook-triggers")
+        names = [t["name"] for t in listing.json()]
+        assert "Secret Trigger" not in names
 
     async def test_list_triggers(self, admin_client):
         await admin_client.post("/api/webhook-triggers", json={"name": "T1", "source": "jira"})

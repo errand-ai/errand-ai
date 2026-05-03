@@ -248,6 +248,17 @@ onMounted(async () => {
     >
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Cloud Endpoints</h3>
 
+      <!-- Persistent banner for the global endpoint registration error.
+           Shown above the rows so it stays visible even when trigger rows exist
+           but no URLs have been registered (the previous v-else-if hid this). -->
+      <p
+        v-if="hasEndpointError"
+        class="mt-3 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700"
+        data-testid="cloud-endpoint-error-banner"
+      >
+        Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
+      </p>
+
       <div v-if="hasEndpoints" class="space-y-3 mt-4" data-testid="cloud-endpoints">
         <div
           v-for="ep in cloudStatus.endpoints"
@@ -317,21 +328,19 @@ onMounted(async () => {
         </div>
       </div>
 
-      <p v-else-if="hasEndpointError" class="text-sm text-red-600 mt-4" data-testid="cloud-endpoint-error">
-        Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
-      </p>
+      <template v-else-if="!hasEndpointError">
+        <p v-if="subscriptionInactive" class="text-sm text-gray-500 mt-4" data-testid="cloud-subscription-inactive">
+          Endpoint registration is unavailable while your subscription is inactive.
+        </p>
 
-      <p v-else-if="subscriptionInactive" class="text-sm text-gray-500 mt-4" data-testid="cloud-subscription-inactive">
-        Endpoint registration is unavailable while your subscription is inactive.
-      </p>
+        <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">
+          Endpoints are being registered with Errand Cloud...
+        </p>
 
-      <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">
-        Endpoints are being registered with Errand Cloud...
-      </p>
-
-      <p v-else class="text-sm text-gray-500 mt-4" data-testid="cloud-no-slack">
-        Configure Slack, Jira, or GitHub in Integrations to see cloud webhook endpoints.
-      </p>
+        <p v-else class="text-sm text-gray-500 mt-4" data-testid="cloud-no-slack">
+          Configure Slack, Jira, or GitHub in Integrations to see cloud webhook endpoints.
+        </p>
+      </template>
     </div>
   </div>
 </template>
