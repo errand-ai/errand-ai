@@ -69,16 +69,33 @@ def _coerce(raw: Any, default: Any) -> Any:
         if isinstance(raw, bool):
             return raw
         if isinstance(raw, str):
-            return json.loads(raw)
-        return bool(raw)
+            normalised = raw.strip().lower()
+            if normalised in ("true", "1"):
+                return True
+            if normalised in ("false", "0"):
+                return False
+            raise ValueError(f"cannot coerce {raw!r} to bool")
+        raise TypeError(f"cannot coerce {type(raw).__name__} to bool")
     if target is int:
+        if isinstance(raw, bool):
+            raise TypeError("refusing to coerce bool to int")
         return int(raw)
     if target is str:
         return raw if isinstance(raw, str) else str(raw)
-    if target in (dict, list):
-        if isinstance(raw, (dict, list)):
+    if target is dict:
+        if isinstance(raw, dict):
             return raw
-        return json.loads(raw)
+        decoded = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(decoded, dict):
+            raise TypeError(f"expected dict, got {type(decoded).__name__}")
+        return decoded
+    if target is list:
+        if isinstance(raw, list):
+            return raw
+        decoded = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(decoded, list):
+            raise TypeError(f"expected list, got {type(decoded).__name__}")
+        return decoded
     return raw
 
 

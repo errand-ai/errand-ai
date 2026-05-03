@@ -915,11 +915,14 @@ class TaskManager:
         self._running = False
         self._tasks: set[asyncio.Task] = set()
         self._stop_event = asyncio.Event()
-        # Resolve initial values via the same env→DB→default pipeline used at runtime.
-        # __init__ is sync; use a synchronous read of env+default only (DB rows are not
-        # available without an event loop) by passing an empty db_rows mapping.
+        # __init__ is sync and runs before an event loop exists; resolve via env→default
+        # only (the DB pass happens later in _update_concurrency_setting). All three
+        # tunables are clamped to >=1 to avoid stalling the semaphore / disabling the
+        # log buffer if a deployment ships an out-of-range value.
         from settings_registry import SETTINGS_REGISTRY, _coerce
-        self._max_concurrent_tasks = _resolve_init_value("max_concurrent_tasks", SETTINGS_REGISTRY, _coerce)
+        self._max_concurrent_tasks = max(
+            1, _resolve_init_value("max_concurrent_tasks", SETTINGS_REGISTRY, _coerce)
+        )
         self._task_log_buffer_max_entries = max(
             1, _resolve_init_value("task_log_buffer_max_entries", SETTINGS_REGISTRY, _coerce)
         )
@@ -1129,7 +1132,17 @@ class TaskManager:
                 result = await session.execute(select(Setting).where(Setting.key.in_(keys)))
                 db_rows = {s.key: s.value for s in result.scalars().all()}
 
-                new_max, max_source = await resolve_setting_value(session, "max_concurrent_tasks", db_rows=db_rows)
+                resolved_max, max_source = await resolve_setting_value(
+                    session, "max_concurrent_tasks", db_rows=db_rows,
+                )
+                # Clamp to >=1: a 0 or negative value would create a Semaphore that
+                # never permits any task to start, deadlocking the manager.
+                new_max = max(1, resolved_max)
+                if new_max != resolved_max:
+                    logger.warning(
+                        "max_concurrent_tasks resolved to %r (source=%s); clamped to %d",
+                        resolved_max, max_source, new_max,
+                    )
                 if new_max != self._max_concurrent_tasks:
                     logger.info(
                         "Updating max_concurrent_tasks: %d -> %d (source=%s)",

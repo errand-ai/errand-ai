@@ -185,6 +185,39 @@ def test_coerce_int_failure_raises():
         _coerce("abc", 3)
 
 
+def test_coerce_bool_rejects_non_bool_json():
+    """json.loads('0') returns int 0 — must not silently coerce to bool."""
+    # Stricter than bare json.loads: explicit form required
+    assert _coerce("0", True) is False  # explicit lowercase form
+    assert _coerce("1", True) is True
+    with pytest.raises(ValueError):
+        _coerce("yes", True)
+    with pytest.raises(ValueError):
+        _coerce('"false"', True)  # JSON-encoded string, not the form we accept
+
+
+def test_coerce_dict_rejects_list():
+    """A list value must not pass when default is a dict."""
+    with pytest.raises(TypeError):
+        _coerce(["a", "b"], {"k": 1})
+    with pytest.raises(TypeError):
+        _coerce("[1, 2]", {"k": 1})
+
+
+def test_coerce_list_rejects_dict():
+    """A dict value must not pass when default is a list."""
+    with pytest.raises(TypeError):
+        _coerce({"k": 1}, [])
+    with pytest.raises(TypeError):
+        _coerce('{"k": 1}', [])
+
+
+def test_coerce_int_rejects_bool():
+    """bool is a subclass of int but should not silently pass."""
+    with pytest.raises(TypeError):
+        _coerce(True, 3)
+
+
 # --- resolve_setting_value ---
 
 

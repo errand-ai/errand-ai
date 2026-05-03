@@ -377,6 +377,37 @@ class TestConcurrencyControl:
         assert tm._max_concurrent_tasks == 11
         assert tm._semaphore._value == 11
 
+    def test_init_clamps_max_concurrent_to_one(self):
+        """MAX_CONCURRENT_TASKS=0 must not produce a deadlocked Semaphore(0)."""
+        with patch.dict("os.environ", {"MAX_CONCURRENT_TASKS": "0"}):
+            tm = TaskManager()
+        assert tm._max_concurrent_tasks == 1
+        assert tm._semaphore._value == 1
+
+    async def test_update_concurrency_clamps_zero_to_one(self):
+        """A DB row of 0 for max_concurrent_tasks must be clamped, not deadlock the semaphore."""
+        tm = TaskManager()
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_setting = MagicMock()
+        mock_setting.key = "max_concurrent_tasks"
+        mock_setting.value = "0"
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_setting]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        with patch("task_manager.async_session", return_value=mock_session):
+            os.environ.pop("MAX_CONCURRENT_TASKS", None)
+            await tm._update_concurrency_setting()
+
+        assert tm._max_concurrent_tasks == 1
+        assert tm._semaphore._value == 1
+
     async def test_semaphore_limits_concurrent_execution(self):
         """Only max_concurrent_tasks tasks can execute simultaneously."""
         tm = TaskManager()
