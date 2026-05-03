@@ -247,7 +247,12 @@ class TestRegisterWebhookTriggerWithCloud:
 
     @pytest.mark.asyncio
     async def test_persists_url_and_token_on_success(self):
-        """5.1 — trigger create with cloud connected: helper called with correct body; URL+token persisted."""
+        """5.1 — trigger create with cloud connected: helper called with correct body; URL+token persisted.
+
+        The cloud returns the URL/token inside an `endpoints` array (the same
+        envelope it uses for Slack registration). The helper must extract them
+        from there.
+        """
         trigger = _make_trigger(source="jira", name="My Jira Trigger")
         session = _FakeAsyncSession(
             cloud_cred=_connected_cloud_cred(),
@@ -257,8 +262,11 @@ class TestRegisterWebhookTriggerWithCloud:
         mock_response = MagicMock()
         mock_response.is_success = True
         mock_response.json.return_value = {
-            "url": "https://cloud.test/hook/abc123",
-            "token": "abc123",
+            "integration": "jira",
+            "label": "My Jira Trigger",
+            "endpoints": [
+                {"type": "webhook", "url": "https://cloud.test/hook/abc123", "token": "abc123"},
+            ],
         }
 
         with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
@@ -284,7 +292,7 @@ class TestRegisterWebhookTriggerWithCloud:
 
     @pytest.mark.asyncio
     async def test_persists_url_and_token_on_success_github(self):
-        """5.7 — GitHub variant of the success case."""
+        """5.7 — GitHub variant of the success case (nested-endpoints response shape)."""
         trigger = _make_trigger(source="github", name="GH Trigger")
         session = _FakeAsyncSession(
             cloud_cred=_connected_cloud_cred(),
@@ -294,8 +302,11 @@ class TestRegisterWebhookTriggerWithCloud:
         mock_response = MagicMock()
         mock_response.is_success = True
         mock_response.json.return_value = {
-            "url": "https://cloud.test/hook/gh1",
-            "token": "gh1",
+            "integration": "github",
+            "label": "GH Trigger",
+            "endpoints": [
+                {"type": "webhook", "url": "https://cloud.test/hook/gh1", "token": "gh1"},
+            ],
         }
 
         with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
@@ -309,6 +320,34 @@ class TestRegisterWebhookTriggerWithCloud:
 
         assert trigger.cloud_webhook_url == "https://cloud.test/hook/gh1"
         assert trigger.cloud_endpoint_token == "gh1"
+
+    @pytest.mark.asyncio
+    async def test_accepts_top_level_url_token_for_forward_compat(self):
+        """If a future cloud version flattens the response (`{url, token}` at top
+        level instead of nested under `endpoints[]`), we still extract correctly."""
+        trigger = _make_trigger(source="jira")
+        session = _FakeAsyncSession(
+            cloud_cred=_connected_cloud_cred(),
+            url_setting=_url_setting(),
+        )
+
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "url": "https://cloud.test/hook/flat",
+            "token": "flat",
+        }
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await register_webhook_trigger_with_cloud(trigger, session)
+
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/flat"
+        assert trigger.cloud_endpoint_token == "flat"
 
     @pytest.mark.asyncio
     async def test_403_logs_warning_and_stores_subscription_error(self, caplog):

@@ -390,8 +390,17 @@ async def register_webhook_trigger_with_cloud(
         await _store_endpoint_error(session, "Cloud endpoint registration failed (network or server error)")
         return
 
+    # Cloud returns the URL/token under `endpoints: [{type, url, token}]` (the same
+    # envelope as the Slack registration). Fall back to top-level `url`/`token` for
+    # forward-compatibility in case the cloud response shape ever flattens.
     url = data.get("url")
     token = data.get("token")
+    if not (url and token):
+        for ep in data.get("endpoints", []) or []:
+            if ep.get("type") == "webhook" and ep.get("url") and ep.get("token"):
+                url = ep["url"]
+                token = ep["token"]
+                break
     if not url or not token:
         logger.error("Cloud webhook trigger registration response missing url/token for %s: %s", trigger.id, data)
         await _store_endpoint_error(session, "Cloud endpoint registration response missing url/token")
