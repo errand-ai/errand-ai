@@ -374,7 +374,8 @@ async def test_telemetry_enabled_env_override():
         async with factory() as session:
             result = await resolve_settings(session)
 
-    assert result["telemetry_enabled"]["value"] == "false"
+    # Env value is coerced via the registered default's type (bool).
+    assert result["telemetry_enabled"]["value"] is False
     assert result["telemetry_enabled"]["source"] == "env"
     assert result["telemetry_enabled"]["readonly"] is True
 

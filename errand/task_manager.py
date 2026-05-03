@@ -884,6 +884,26 @@ def _read_callback_result(task_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_init_value(key: str, registry: dict, coerce):
+    """Sync env→default resolution for TaskManager.__init__ (DB unavailable).
+
+    Mirrors the env path of `settings_registry.resolve_setting_value` so that
+    initial values match the steady-state code path. Falls back to the
+    registered default on coercion failure.
+    """
+    meta = registry[key]
+    default = meta["default"]
+    env_var = meta["env_var"]
+    env_value = os.environ.get(env_var) if env_var else None
+    if env_value is not None and env_value != "":
+        try:
+            return coerce(env_value, default)
+        except Exception:
+            logger.warning("Failed to coerce env value for %s on init; using default", key)
+            return default
+    return default
+
+
 class TaskManager:
     """Async task manager that runs inside the FastAPI server process.
 
@@ -894,12 +914,19 @@ class TaskManager:
     def __init__(self):
         self._running = False
         self._tasks: set[asyncio.Task] = set()
-        self._semaphore = asyncio.Semaphore(3)
         self._stop_event = asyncio.Event()
-        from settings_registry import SETTINGS_REGISTRY
-        self._max_concurrent_tasks = SETTINGS_REGISTRY["max_concurrent_tasks"]["default"]
-        self._task_log_buffer_max_entries = SETTINGS_REGISTRY["task_log_buffer_max_entries"]["default"]
-        self._task_log_buffer_ttl_seconds = SETTINGS_REGISTRY["task_log_buffer_ttl_seconds"]["default"]
+        # Resolve initial values via the same env→DB→default pipeline used at runtime.
+        # __init__ is sync; use a synchronous read of env+default only (DB rows are not
+        # available without an event loop) by passing an empty db_rows mapping.
+        from settings_registry import SETTINGS_REGISTRY, _coerce
+        self._max_concurrent_tasks = _resolve_init_value("max_concurrent_tasks", SETTINGS_REGISTRY, _coerce)
+        self._task_log_buffer_max_entries = max(
+            1, _resolve_init_value("task_log_buffer_max_entries", SETTINGS_REGISTRY, _coerce)
+        )
+        self._task_log_buffer_ttl_seconds = max(
+            1, _resolve_init_value("task_log_buffer_ttl_seconds", SETTINGS_REGISTRY, _coerce)
+        )
+        self._semaphore = asyncio.Semaphore(self._max_concurrent_tasks)
         self._runtime: ContainerRuntime | None = None
         self._leader_connection = None
         self._leader_lock_contended = False
@@ -1090,43 +1117,47 @@ class TaskManager:
         async_task.add_done_callback(self._tasks.discard)
 
     async def _update_concurrency_setting(self):
-        """Read tunable settings from DB and update internal state if changed."""
-        from settings_registry import SETTINGS_REGISTRY
-        concurrency_default = SETTINGS_REGISTRY["max_concurrent_tasks"]["default"]
-        buf_max_default = SETTINGS_REGISTRY["task_log_buffer_max_entries"]["default"]
-        buf_ttl_default = SETTINGS_REGISTRY["task_log_buffer_ttl_seconds"]["default"]
+        """Read tunable settings via the canonical env→DB→default resolver and update state if changed."""
+        from settings_registry import resolve_setting_value
+        keys = (
+            "max_concurrent_tasks",
+            "task_log_buffer_max_entries",
+            "task_log_buffer_ttl_seconds",
+        )
         try:
             async with async_session() as session:
-                result = await session.execute(
-                    select(Setting).where(Setting.key.in_([
-                        "max_concurrent_tasks",
-                        "task_log_buffer_max_entries",
-                        "task_log_buffer_ttl_seconds",
-                    ]))
-                )
-                db_settings = {s.key: s.value for s in result.scalars().all()}
+                result = await session.execute(select(Setting).where(Setting.key.in_(keys)))
+                db_rows = {s.key: s.value for s in result.scalars().all()}
 
-                concurrency_setting = db_settings.get("max_concurrent_tasks")
-                if concurrency_setting is not None:
-                    new_max = int(concurrency_setting) if concurrency_setting else concurrency_default
-                else:
-                    new_max = int(os.environ.get("MAX_CONCURRENT_TASKS", str(concurrency_default)))
-
+                new_max, max_source = await resolve_setting_value(session, "max_concurrent_tasks", db_rows=db_rows)
                 if new_max != self._max_concurrent_tasks:
-                    logger.info("Updating max_concurrent_tasks: %d -> %d", self._max_concurrent_tasks, new_max)
+                    logger.info(
+                        "Updating max_concurrent_tasks: %d -> %d (source=%s)",
+                        self._max_concurrent_tasks, new_max, max_source,
+                    )
                     self._max_concurrent_tasks = new_max
                     self._semaphore = asyncio.Semaphore(new_max)
 
-                buf_max_setting = db_settings.get("task_log_buffer_max_entries")
-                new_buf_max = max(1, int(buf_max_setting)) if buf_max_setting else buf_max_default
+                buf_max, buf_max_source = await resolve_setting_value(
+                    session, "task_log_buffer_max_entries", db_rows=db_rows
+                )
+                new_buf_max = max(1, buf_max)
                 if new_buf_max != self._task_log_buffer_max_entries:
-                    logger.info("Updating task_log_buffer_max_entries: %d -> %d", self._task_log_buffer_max_entries, new_buf_max)
+                    logger.info(
+                        "Updating task_log_buffer_max_entries: %d -> %d (source=%s)",
+                        self._task_log_buffer_max_entries, new_buf_max, buf_max_source,
+                    )
                     self._task_log_buffer_max_entries = new_buf_max
 
-                buf_ttl_setting = db_settings.get("task_log_buffer_ttl_seconds")
-                new_buf_ttl = max(1, int(buf_ttl_setting)) if buf_ttl_setting else buf_ttl_default
+                buf_ttl, buf_ttl_source = await resolve_setting_value(
+                    session, "task_log_buffer_ttl_seconds", db_rows=db_rows
+                )
+                new_buf_ttl = max(1, buf_ttl)
                 if new_buf_ttl != self._task_log_buffer_ttl_seconds:
-                    logger.info("Updating task_log_buffer_ttl_seconds: %d -> %d", self._task_log_buffer_ttl_seconds, new_buf_ttl)
+                    logger.info(
+                        "Updating task_log_buffer_ttl_seconds: %d -> %d (source=%s)",
+                        self._task_log_buffer_ttl_seconds, new_buf_ttl, buf_ttl_source,
+                    )
                     self._task_log_buffer_ttl_seconds = new_buf_ttl
         except Exception:
             logger.debug("Failed to read tunable settings", exc_info=True)

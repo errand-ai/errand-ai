@@ -5,6 +5,7 @@ Covers tasks: 1.4, 9.1–9.7 from the merge-worker-into-server change.
 """
 
 import asyncio
+import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -290,6 +291,91 @@ class TestConcurrencyControl:
             await tm._update_concurrency_setting()
 
         assert tm._max_concurrent_tasks == 7
+
+    async def test_env_overrides_stale_db_row(self):
+        """Regression: env var beats a stale DB row for max_concurrent_tasks."""
+        tm = TaskManager()
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        # DB row says 4, env says 7 — env must win.
+        mock_setting = MagicMock()
+        mock_setting.key = "max_concurrent_tasks"
+        mock_setting.value = "4"
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_setting]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        with patch("task_manager.async_session", return_value=mock_session), \
+             patch.dict("os.environ", {"MAX_CONCURRENT_TASKS": "7"}):
+            await tm._update_concurrency_setting()
+
+        assert tm._max_concurrent_tasks == 7
+        assert tm._semaphore._value == 7
+
+    async def test_update_concurrency_setting_logs_source(self, caplog):
+        """Info log line on change includes source=<env|database|default>."""
+        import logging as _logging
+
+        tm = TaskManager()
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_setting = MagicMock()
+        mock_setting.key = "max_concurrent_tasks"
+        mock_setting.value = "5"
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_setting]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        caplog.set_level(_logging.INFO, logger="task_manager")
+        with patch("task_manager.async_session", return_value=mock_session), \
+             patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("MAX_CONCURRENT_TASKS", None)
+            await tm._update_concurrency_setting()
+
+        assert tm._max_concurrent_tasks == 5
+        assert any("source=database" in rec.getMessage() for rec in caplog.records)
+
+    async def test_update_concurrency_setting_clamps_buffer(self):
+        """Buffer settings are clamped to >= 1 after resolution."""
+        tm = TaskManager()
+        tm._task_log_buffer_max_entries = 5000
+        tm._task_log_buffer_ttl_seconds = 86400
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        s1 = MagicMock(); s1.key = "task_log_buffer_max_entries"; s1.value = "0"
+        s2 = MagicMock(); s2.key = "task_log_buffer_ttl_seconds"; s2.value = "0"
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [s1, s2]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        with patch("task_manager.async_session", return_value=mock_session):
+            os.environ.pop("MAX_CONCURRENT_TASKS", None)
+            await tm._update_concurrency_setting()
+
+        assert tm._task_log_buffer_max_entries == 1
+        assert tm._task_log_buffer_ttl_seconds == 1
+
+    def test_init_uses_env_for_max_concurrent(self):
+        """TaskManager.__init__ honours MAX_CONCURRENT_TASKS env var."""
+        with patch.dict("os.environ", {"MAX_CONCURRENT_TASKS": "11"}):
+            tm = TaskManager()
+        assert tm._max_concurrent_tasks == 11
+        assert tm._semaphore._value == 11
 
     async def test_semaphore_limits_concurrent_execution(self):
         """Only max_concurrent_tasks tasks can execute simultaneously."""
