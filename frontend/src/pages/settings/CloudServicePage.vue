@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { useAuthStore } from '../../stores/auth'
 import { useTaskStore } from '../../stores/tasks'
+import { fetchWebhookTriggers, type WebhookTrigger } from '../../composables/useApi'
 
 const auth = useAuthStore()
 const taskStore = useTaskStore()
@@ -30,11 +31,17 @@ interface CloudStatus {
 const cloudStatus = ref<CloudStatus>({ status: 'not_configured' })
 const loading = ref(true)
 const disconnecting = ref(false)
+const triggers = ref<WebhookTrigger[]>([])
 
 const isConnected = computed(() => cloudStatus.value.status === 'connected' || cloudStatus.value.status === 'disconnected')
 const isError = computed(() => cloudStatus.value.status === 'error')
 const isNotConfigured = computed(() => cloudStatus.value.status === 'not_configured')
-const hasEndpoints = computed(() => (cloudStatus.value.endpoints?.length ?? 0) > 0)
+const webhookTriggers = computed(() =>
+  triggers.value.filter((t) => t.source === 'jira' || t.source === 'github'),
+)
+const hasEndpoints = computed(
+  () => (cloudStatus.value.endpoints?.length ?? 0) > 0 || webhookTriggers.value.length > 0,
+)
 const hasEndpointError = computed(() => !!cloudStatus.value.endpoint_error?.detail)
 const subscriptionExpiry = computed(() => {
   const expiresAt = cloudStatus.value.subscription?.expires_at
@@ -58,11 +65,15 @@ async function apiFetch(url: string, options: RequestInit = {}): Promise<Respons
 async function fetchStatus() {
   loading.value = true
   try {
-    const resp = await apiFetch('/api/cloud/status')
-    if (resp.ok) {
-      cloudStatus.value = await resp.json()
+    const [statusResp, triggersResp] = await Promise.all([
+      apiFetch('/api/cloud/status'),
+      fetchWebhookTriggers().catch(() => [] as WebhookTrigger[]),
+    ])
+    if (statusResp.ok) {
+      cloudStatus.value = await statusResp.json()
       taskStore.cloudStatus = cloudStatus.value.status
     }
+    triggers.value = triggersResp
   } catch {
     // Silent failure — status display is best-effort
   } finally {
@@ -231,8 +242,22 @@ onMounted(async () => {
     </div>
 
     <!-- Cloud Endpoints -->
-    <div v-if="isConnected" class="rounded-lg bg-white p-6 shadow">
+    <div
+      v-if="isConnected || webhookTriggers.length > 0"
+      class="rounded-lg bg-white p-6 shadow"
+    >
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Cloud Endpoints</h3>
+
+      <!-- Persistent banner for the global endpoint registration error.
+           Shown above the rows so it stays visible even when trigger rows exist
+           but no URLs have been registered (the previous v-else-if hid this). -->
+      <p
+        v-if="hasEndpointError"
+        class="mt-3 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700"
+        data-testid="cloud-endpoint-error-banner"
+      >
+        Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
+      </p>
 
       <div v-if="hasEndpoints" class="space-y-3 mt-4" data-testid="cloud-endpoints">
         <div
@@ -256,23 +281,66 @@ onMounted(async () => {
             Copy
           </button>
         </div>
+
+        <!-- Per-trigger Jira/GitHub webhook URLs -->
+        <div
+          v-for="trigger in webhookTriggers"
+          :key="`trigger-${trigger.id}`"
+          class="flex items-center justify-between rounded-md border border-gray-200 px-4 py-3"
+          data-testid="trigger-endpoint-row"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-medium text-gray-500 uppercase">{{ trigger.source }}</span>
+              <span class="text-xs text-gray-400">/</span>
+              <span class="text-xs font-medium text-gray-500">{{ trigger.name }}</span>
+            </div>
+            <p
+              v-if="trigger.cloud_webhook_url"
+              class="mt-1 truncate text-sm font-mono text-gray-700"
+              :data-testid="`trigger-url-${trigger.id}`"
+            >
+              {{ trigger.cloud_webhook_url }}
+            </p>
+            <p
+              v-else-if="!isConnected"
+              class="mt-1 text-sm italic text-gray-500"
+              data-testid="trigger-cloud-not-connected"
+            >
+              Cloud not connected
+            </p>
+            <p
+              v-else
+              class="mt-1 text-sm italic text-amber-600"
+              data-testid="trigger-registration-failed"
+            >
+              Registration failed — re-save trigger to retry
+            </p>
+          </div>
+          <button
+            v-if="trigger.cloud_webhook_url"
+            class="ml-4 rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-200"
+            data-testid="copy-trigger-url-btn"
+            @click="copyUrl(trigger.cloud_webhook_url)"
+          >
+            Copy
+          </button>
+        </div>
       </div>
 
-      <p v-else-if="hasEndpointError" class="text-sm text-red-600 mt-4" data-testid="cloud-endpoint-error">
-        Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
-      </p>
+      <template v-else-if="!hasEndpointError">
+        <p v-if="subscriptionInactive" class="text-sm text-gray-500 mt-4" data-testid="cloud-subscription-inactive">
+          Endpoint registration is unavailable while your subscription is inactive.
+        </p>
 
-      <p v-else-if="subscriptionInactive" class="text-sm text-gray-500 mt-4" data-testid="cloud-subscription-inactive">
-        Endpoint registration is unavailable while your subscription is inactive.
-      </p>
+        <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">
+          Endpoints are being registered with Errand Cloud...
+        </p>
 
-      <p v-else-if="cloudStatus.slack_configured" class="text-sm text-gray-500 mt-4" data-testid="cloud-registering">
-        Endpoints are being registered with Errand Cloud...
-      </p>
-
-      <p v-else class="text-sm text-gray-500 mt-4" data-testid="cloud-no-slack">
-        Enable Slack in Integrations to configure cloud webhook endpoints.
-      </p>
+        <p v-else class="text-sm text-gray-500 mt-4" data-testid="cloud-no-slack">
+          Configure Slack, Jira, or GitHub in Integrations to see cloud webhook endpoints.
+        </p>
+      </template>
     </div>
   </div>
 </template>

@@ -128,20 +128,12 @@ describe('WebhookTriggersSection', () => {
     expect(toastMock.success).toHaveBeenCalledWith('Trigger created')
   })
 
-  it('generates a webhook secret', async () => {
-    // Mock crypto.getRandomValues
-    const mockValues = new Uint8Array(32).fill(0xab)
-    vi.stubGlobal('crypto', { getRandomValues: (arr: Uint8Array) => { arr.set(mockValues); return arr } })
-
+  it('does not display webhook secret in the form', async () => {
+    // Per spec: webhook_secret is server-internal, never shown in any form.
     const wrapper = await mountComponent()
     await wrapper.find('[data-testid="add-trigger-btn"]').trigger('click')
-    await wrapper.find('[data-testid="generate-secret-btn"]').trigger('click')
-
-    const secretInput = wrapper.find('[data-testid="trigger-secret"]').element as HTMLInputElement
-    expect(secretInput.value).toHaveLength(64) // 32 bytes hex
-    expect(secretInput.value).toBe('ab'.repeat(32))
-
-    vi.unstubAllGlobals()
+    expect(wrapper.find('[data-testid="trigger-secret"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="generate-secret-btn"]').exists()).toBe(false)
   })
 
   it('shows delete confirmation modal', async () => {
@@ -377,5 +369,95 @@ describe('WebhookTriggersSection', () => {
       const triggerCol = wrapper.find('[data-testid="github-trigger-column"]').element as HTMLSelectElement
       expect(triggerCol.value).toBe('Ready')
     })
+  })
+
+  describe('Trigger detail view — webhook URL states (5.8)', () => {
+    async function openEditWithStatus(trigger: any, cloudStatus: string) {
+      mockFetchTriggers.mockResolvedValue([trigger])
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      const router = createTestRouter()
+      router.push('/')
+      await router.isReady()
+
+      const wrapper = mount(WebhookTriggersSection, {
+        global: { plugins: [pinia, router] },
+      })
+      await flushPromises()
+
+      // Set cloudStatus on the task store
+      const { useTaskStore } = await import('../../stores/tasks')
+      const store = useTaskStore()
+      store.cloudStatus = cloudStatus as any
+
+      await wrapper.find('[data-testid="trigger-row"]').trigger('click')
+      await flushPromises()
+      return wrapper
+    }
+
+    it('shows the cloud webhook URL with Copy button when populated', async () => {
+      const wrapper = await openEditWithStatus(
+        {
+          id: 't1', name: 'My Trigger', source: 'jira', enabled: true,
+          has_secret: true, filters: {}, actions: {}, profile_id: null, task_prompt: null,
+          cloud_webhook_url: 'https://cloud.test/hook/abc',
+        },
+        'connected',
+      )
+      expect(wrapper.find('[data-testid="webhook-url-shown"]').exists()).toBe(true)
+      const input = wrapper.find('[data-testid="webhook-url-input"]').element as HTMLInputElement
+      expect(input.value).toBe('https://cloud.test/hook/abc')
+      expect(wrapper.find('[data-testid="copy-webhook-url-btn"]').exists()).toBe(true)
+    })
+
+    it('shows "Cloud not connected" when not connected to cloud', async () => {
+      const wrapper = await openEditWithStatus(
+        {
+          id: 't1', name: 'My Trigger', source: 'jira', enabled: true,
+          has_secret: true, filters: {}, actions: {}, profile_id: null, task_prompt: null,
+          cloud_webhook_url: null,
+        },
+        'not_configured',
+      )
+      expect(wrapper.find('[data-testid="webhook-url-cloud-not-connected"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="copy-webhook-url-btn"]').exists()).toBe(false)
+    })
+
+    it('shows "Registration failed" with Retry button when cloud connected but URL missing', async () => {
+      const wrapper = await openEditWithStatus(
+        {
+          id: 't1', name: 'My Trigger', source: 'jira', enabled: true,
+          has_secret: true, filters: {}, actions: {}, profile_id: null, task_prompt: null,
+          cloud_webhook_url: null,
+        },
+        'connected',
+      )
+      expect(wrapper.find('[data-testid="webhook-url-registration-failed"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="retry-registration-btn"]').exists()).toBe(true)
+    })
+  })
+
+  it('switches to edit mode after a successful create so the user can see the cloud URL', async () => {
+    mockCreateTrigger.mockResolvedValueOnce({
+      id: 'new-id', name: 'Fresh', source: 'jira', enabled: true, has_secret: true,
+      filters: {}, actions: {}, profile_id: null, task_prompt: null,
+      cloud_webhook_url: 'https://cloud.test/hook/fresh',
+    })
+    mockFetchTriggers.mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      id: 'new-id', name: 'Fresh', source: 'jira', enabled: true, has_secret: true,
+      filters: {}, actions: {}, profile_id: null, task_prompt: null,
+      cloud_webhook_url: 'https://cloud.test/hook/fresh',
+    }])
+
+    const wrapper = await mountComponent()
+    await wrapper.find('[data-testid="add-trigger-btn"]').trigger('click')
+    await wrapper.find('[data-testid="trigger-name"]').setValue('Fresh')
+    await wrapper.find('[data-testid="trigger-save-btn"]').trigger('click')
+    await flushPromises()
+
+    // Form remains open in edit mode showing the new trigger's webhook URL
+    expect(wrapper.find('[data-testid="webhook-url-shown"]').exists()).toBe(true)
+    const input = wrapper.find('[data-testid="webhook-url-input"]').element as HTMLInputElement
+    expect(input.value).toBe('https://cloud.test/hook/fresh')
   })
 })

@@ -538,6 +538,7 @@ export interface WebhookTrigger {
   actions: Record<string, any>
   task_prompt: string | null
   has_secret: boolean
+  cloud_webhook_url: string | null
   created_at: string | null
   updated_at: string | null
 }
@@ -562,7 +563,6 @@ export async function createWebhookTrigger(data: {
   filters?: Record<string, unknown>
   actions?: Record<string, unknown>
   task_prompt?: string | null
-  webhook_secret?: string | null
 }): Promise<WebhookTrigger> {
   const res = await authFetch(`${BASE}/webhook-triggers`, {
     method: 'POST',
@@ -584,7 +584,6 @@ export async function updateWebhookTrigger(id: string, data: Partial<{
   filters: Record<string, unknown>
   actions: Record<string, unknown>
   task_prompt: string | null
-  webhook_secret: string | null
 }>): Promise<WebhookTrigger> {
   const res = await authFetch(`${BASE}/webhook-triggers/${id}`, {
     method: 'PUT',

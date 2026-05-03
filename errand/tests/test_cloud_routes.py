@@ -76,6 +76,24 @@ CREATE TABLE IF NOT EXISTS task_profiles (
 )
 """
 
+_WEBHOOK_TRIGGERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS webhook_triggers (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1 NOT NULL,
+    source TEXT NOT NULL,
+    profile_id VARCHAR(36) REFERENCES task_profiles(id) ON DELETE SET NULL,
+    filters TEXT DEFAULT '{}' NOT NULL,
+    actions TEXT DEFAULT '{}' NOT NULL,
+    task_prompt TEXT,
+    webhook_secret TEXT,
+    cloud_webhook_url TEXT,
+    cloud_endpoint_token TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 FERNET_KEY = Fernet.generate_key().decode()
 
 
@@ -85,6 +103,7 @@ async def _create_tables(engine):
         await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
         await conn.execute(text(_TASKS_TABLE_SQL))
         await conn.execute(text(_TASK_PROFILES_TABLE_SQL))
+        await conn.execute(text(_WEBHOOK_TRIGGERS_TABLE_SQL))
 
 
 @pytest.fixture()
@@ -277,6 +296,7 @@ class TestCloudDisconnect:
 
         with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints_for_integration", new_callable=AsyncMock), \
              patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
              patch("main.publish_event", new_callable=AsyncMock) as mock_publish:
             resp = await client.post("/api/cloud/auth/disconnect")
@@ -458,6 +478,7 @@ class TestCloudDisconnectCleansEndpointError:
 
         with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
              patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints_for_integration", new_callable=AsyncMock), \
              patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
              patch("main.publish_event", new_callable=AsyncMock):
             resp = await client.post("/api/cloud/auth/disconnect")
@@ -469,6 +490,60 @@ class TestCloudDisconnectCleansEndpointError:
                 select(Setting).where(Setting.key == "cloud_endpoint_error")
             )
             assert result.scalar_one_or_none() is None
+
+
+class TestCloudDisconnectClearsTriggerCloudColumns:
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_cloud_columns_for_jira_and_github(self, cloud_client):
+        """5.6 — cloud disconnect clears cloud_webhook_url and cloud_endpoint_token on every
+        webhook_triggers row whose source is jira or github."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, WebhookTrigger
+        from sqlalchemy import select
+        import uuid as _uuid
+
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            jira_tid = _uuid.uuid4()
+            github_tid = _uuid.uuid4()
+            session.add(WebhookTrigger(
+                id=jira_tid, name="J1", source="jira",
+                cloud_webhook_url="https://cloud.test/hook/j1",
+                cloud_endpoint_token="j1tok",
+            ))
+            session.add(WebhookTrigger(
+                id=github_tid, name="G1", source="github",
+                cloud_webhook_url="https://cloud.test/hook/g1",
+                cloud_endpoint_token="g1tok",
+            ))
+            await session.commit()
+
+        with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints_for_integration", new_callable=AsyncMock) as mock_bulk, \
+             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
+             patch("main.publish_event", new_callable=AsyncMock):
+            resp = await client.post("/api/cloud/auth/disconnect")
+
+        assert resp.status_code == 200
+
+        # Bulk revoke called for both jira and github
+        called_integrations = sorted(call.args[2] for call in mock_bulk.call_args_list)
+        assert called_integrations == ["github", "jira"]
+
+        async with session_maker() as session:
+            for tid in (jira_tid, github_tid):
+                row = (await session.execute(
+                    select(WebhookTrigger).where(WebhookTrigger.id == tid)
+                )).scalar_one()
+                assert row.cloud_webhook_url is None
+                assert row.cloud_endpoint_token is None
 
 
 class TestCloudEndpointErrorPersistence:

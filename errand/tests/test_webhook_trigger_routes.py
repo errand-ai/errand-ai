@@ -22,18 +22,26 @@ class TestWebhookTriggerCRUD:
         assert data["name"] == "Jira Bugs"
         assert data["source"] == "jira"
         assert data["enabled"] is True
-        assert data["has_secret"] is False
+        # Server auto-generates webhook_secret on insert
+        assert data["has_secret"] is True
+        # Cloud not connected in tests, so cloud_webhook_url remains null
+        assert data["cloud_webhook_url"] is None
         assert "id" in data
 
-    async def test_create_trigger_with_secret(self, admin_client):
+    async def test_webhook_secret_in_request_is_rejected(self, admin_client):
+        # webhook_secret is server-generated only; older clients sending it must
+        # see a clear 422 rather than silently getting a different server-generated
+        # secret that breaks their external webhook signature config.
         resp = await admin_client.post("/api/webhook-triggers", json={
             "name": "Secret Trigger",
             "source": "jira",
-            "webhook_secret": "my-secret-123",
+            "webhook_secret": "client-supplied-would-be-ignored",
         })
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["has_secret"] is True
+        assert resp.status_code == 422
+        # Confirm trigger was NOT created (no silent partial success).
+        listing = await admin_client.get("/api/webhook-triggers")
+        names = [t["name"] for t in listing.json()]
+        assert "Secret Trigger" not in names
 
     async def test_list_triggers(self, admin_client):
         await admin_client.post("/api/webhook-triggers", json={"name": "T1", "source": "jira"})
@@ -137,6 +145,22 @@ class TestWebhookTriggerCRUD:
         resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"filters": {"bad_key": ["x"]}})
         assert resp.status_code == 422
 
+    async def test_invalid_source_rejected_on_create(self, admin_client):
+        # Only `jira` and `github` are wired through the cloud-registration and
+        # disconnect-cleanup paths. Accepting an arbitrary source would leave
+        # a half-registered, half-cleaned-up trigger orphaned in the system.
+        resp = await admin_client.post("/api/webhook-triggers", json={
+            "name": "Slack Trigger", "source": "slack",
+        })
+        assert resp.status_code == 422
+        assert "Invalid source" in resp.json()["detail"]
+
+    async def test_invalid_source_rejected_on_update(self, admin_client):
+        create = await admin_client.post("/api/webhook-triggers", json={"name": "T", "source": "jira"})
+        tid = create.json()["id"]
+        resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"source": "slack"})
+        assert resp.status_code == 422
+
     async def test_invalid_uuid_returns_422(self, admin_client):
         resp = await admin_client.get("/api/webhook-triggers/not-a-uuid")
         assert resp.status_code == 422
@@ -145,3 +169,109 @@ class TestWebhookTriggerCRUD:
     async def test_delete_invalid_uuid_returns_422(self, admin_client):
         resp = await admin_client.delete("/api/webhook-triggers/bad-id")
         assert resp.status_code == 422
+
+    async def test_update_preserves_existing_webhook_secret(self, admin_client_with_session):
+        """5.4 — update preserves the existing webhook_secret (not regenerated)."""
+        import uuid as _uuid
+        from sqlalchemy import select
+        from models import WebhookTrigger
+
+        client, session_maker = admin_client_with_session
+
+        create = await client.post("/api/webhook-triggers", json={"name": "Preserve Me", "source": "jira"})
+        tid = create.json()["id"]
+        tid_uuid = _uuid.UUID(tid)
+
+        async with session_maker() as session:
+            trigger = (await session.execute(
+                select(WebhookTrigger).where(WebhookTrigger.id == tid_uuid)
+            )).scalar_one()
+            original_secret = trigger.webhook_secret
+            assert original_secret  # server-generated on insert
+
+        resp = await client.put(f"/api/webhook-triggers/{tid}", json={"name": "Renamed"})
+        assert resp.status_code == 200
+
+        async with session_maker() as session:
+            trigger = (await session.execute(
+                select(WebhookTrigger).where(WebhookTrigger.id == tid_uuid)
+            )).scalar_one()
+            assert trigger.webhook_secret == original_secret
+
+
+class TestCloudRegistrationOnTriggerCreate:
+    """5.1 / 5.7 — trigger create with cloud connected calls helper with correct trigger."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["jira", "github"])
+    async def test_create_invokes_cloud_registration(self, admin_client, source, monkeypatch):
+        from unittest.mock import AsyncMock
+        import cloud_endpoints
+
+        called: list = []
+
+        async def stub(trigger, session):
+            called.append((str(trigger.id), trigger.source, trigger.name))
+
+        monkeypatch.setattr(cloud_endpoints, "register_webhook_trigger_with_cloud", stub)
+
+        body = {"name": f"T-{source}", "source": source}
+        if source == "github":
+            body["filters"] = {"project_node_id": "PVT_x", "trigger_column": "Todo"}
+
+        resp = await admin_client.post("/api/webhook-triggers", json=body)
+        assert resp.status_code == 201
+        assert len(called) == 1
+        assert called[0][1] == source
+        assert called[0][2] == f"T-{source}"
+
+    @pytest.mark.asyncio
+    async def test_enabled_toggle_does_not_reregister(self, admin_client, monkeypatch):
+        """Toggling `enabled` should not round-trip cloud — name/source/filters/actions
+        are the only fields that affect the cloud endpoint or its label."""
+        import cloud_endpoints
+
+        registrations: list = []
+
+        async def reg_stub(trigger, session):
+            registrations.append(str(trigger.id))
+
+        monkeypatch.setattr(cloud_endpoints, "register_webhook_trigger_with_cloud", reg_stub)
+
+        create = await admin_client.post("/api/webhook-triggers", json={"name": "ToggleMe", "source": "jira"})
+        tid = create.json()["id"]
+        # 1 call from create
+        assert len(registrations) == 1
+
+        resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"enabled": False})
+        assert resp.status_code == 200
+        # No additional call from enabled-only update
+        assert len(registrations) == 1
+
+        # Updating name DOES re-register
+        resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"name": "Renamed"})
+        assert resp.status_code == 200
+        assert len(registrations) == 2
+
+    @pytest.mark.asyncio
+    async def test_delete_invokes_cloud_revocation(self, admin_client, monkeypatch):
+        from unittest.mock import AsyncMock
+        import cloud_endpoints
+
+        revoked: list = []
+
+        async def stub(trigger, session):
+            revoked.append((str(trigger.id), trigger.source))
+
+        monkeypatch.setattr(cloud_endpoints, "revoke_webhook_trigger_in_cloud", stub)
+        # Also stub the registration call so it doesn't error
+        async def reg_stub(trigger, session):
+            return None
+        monkeypatch.setattr(cloud_endpoints, "register_webhook_trigger_with_cloud", reg_stub)
+
+        create = await admin_client.post("/api/webhook-triggers", json={"name": "DelMe", "source": "jira"})
+        tid = create.json()["id"]
+        resp = await admin_client.delete(f"/api/webhook-triggers/{tid}")
+        assert resp.status_code == 204
+        assert len(revoked) == 1
+        assert revoked[0][0] == tid

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { toast } from 'vue-sonner'
+import { useTaskStore } from '../../stores/tasks'
 import {
   fetchWebhookTriggers,
   createWebhookTrigger,
@@ -14,11 +15,15 @@ import {
   type TaskProfile,
 } from '../../composables/useApi'
 
+const taskStore = useTaskStore()
 const loading = ref(true)
 const triggers = ref<WebhookTrigger[]>([])
 const profiles = ref<TaskProfile[]>([])
 const jiraConnected = ref(false)
 const githubConnected = ref(false)
+const cloudConnected = computed(
+  () => taskStore.cloudStatus === 'connected' || taskStore.cloudStatus === 'disconnected',
+)
 
 // GitHub-specific state
 const formGithubOrg = ref('')
@@ -49,8 +54,7 @@ const formSource = ref('jira')
 const formEnabled = ref(true)
 const formProfileId = ref('')
 const formTaskPrompt = ref('')
-const formWebhookSecret = ref('')
-const formSecretSaved = ref(false)
+const retryingRegistration = ref(false)
 
 // Filters
 const formEventTypes = ref<string[]>([])
@@ -107,8 +111,6 @@ function resetForm() {
   formEnabled.value = true
   formProfileId.value = ''
   formTaskPrompt.value = ''
-  formWebhookSecret.value = ''
-  formSecretSaved.value = false
   formEventTypes.value = []
   formIssueTypes.value = []
   formLabels.value = ''
@@ -147,8 +149,6 @@ function openEdit(trigger: WebhookTrigger) {
   formEnabled.value = trigger.enabled
   formProfileId.value = trigger.profile_id || ''
   formTaskPrompt.value = trigger.task_prompt || ''
-  formWebhookSecret.value = ''
-  formSecretSaved.value = trigger.has_secret
 
   // Filters
   formEventTypes.value = trigger.filters?.event_types || []
@@ -233,17 +233,11 @@ function validate(): boolean {
   return true
 }
 
-function generateSecret() {
-  const array = new Uint8Array(32)
-  crypto.getRandomValues(array)
-  formWebhookSecret.value = Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 async function save() {
   if (!validate()) return
   saving.value = true
   try {
-    const data: any = {
+    const data = {
       name: formName.value.trim(),
       source: formSource.value,
       enabled: formEnabled.value,
@@ -252,23 +246,68 @@ async function save() {
       actions: buildActions(),
       task_prompt: formTaskPrompt.value.trim() || null,
     }
-    if (formWebhookSecret.value) data.webhook_secret = formWebhookSecret.value
 
     if (isEditing.value) {
-      await updateWebhookTrigger(editingId.value!, data)
+      const updated = await updateWebhookTrigger(editingId.value!, data)
+      editingTrigger.value = updated
       toast.success('Trigger updated')
     } else {
-      await createWebhookTrigger(data)
+      const created = await createWebhookTrigger(data)
+      // Switch to edit mode for the freshly-created trigger so the user can see
+      // and copy the cloud webhook URL right away. Otherwise they'd be stuck on
+      // a stale "New Trigger" form with no way to discover the URL.
+      editingId.value = created.id
+      editingTrigger.value = created
       toast.success('Trigger created')
     }
 
-    showForm.value = false
-    resetForm()
     await loadData()
   } catch (err: any) {
     toast.error(err.message || 'Failed to save trigger')
   } finally {
     saving.value = false
+  }
+}
+
+async function retryRegistration() {
+  if (!editingId.value || !editingTrigger.value) return
+  if (!validate()) return
+  retryingRegistration.value = true
+  try {
+    // Submit the *current* form values, not the persisted ones — if the user
+    // corrected fields (e.g. renamed the trigger) before clicking Retry, those
+    // edits should reach cloud, not be silently dropped. Mirrors what `save()`
+    // sends so the cloud upsert sees a consistent picture.
+    const updated = await updateWebhookTrigger(editingId.value, {
+      name: formName.value.trim(),
+      enabled: formEnabled.value,
+      profile_id: formProfileId.value || null,
+      filters: buildFilters(),
+      actions: buildActions(),
+      task_prompt: formTaskPrompt.value.trim() || null,
+    })
+    editingTrigger.value = updated
+    if (updated.cloud_webhook_url) {
+      toast.success('Registered with Errand Cloud')
+    } else {
+      toast.error('Registration still pending — check the Cloud Service settings page')
+    }
+    await loadData()
+  } catch (err: any) {
+    toast.error(err.message || 'Retry failed')
+  } finally {
+    retryingRegistration.value = false
+  }
+}
+
+async function copyCloudUrl() {
+  const url = editingTrigger.value?.cloud_webhook_url
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    toast.success('Webhook URL copied')
+  } catch {
+    toast.error('Failed to copy URL')
   }
 }
 
@@ -664,24 +703,49 @@ onMounted(loadData)
         ></textarea>
       </div>
 
-      <!-- Webhook Secret -->
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Webhook Secret</label>
-        <div class="flex gap-2">
-          <input
-            v-model="formWebhookSecret"
-            type="text"
-            class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-            :placeholder="formSecretSaved ? '****...saved (enter new to replace)' : 'Paste or generate a secret'"
-            data-testid="trigger-secret"
-          />
+      <!-- Webhook URL (cloud relay) — only shown when editing -->
+      <div v-if="isEditing">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Webhook URL</label>
+        <div v-if="editingTrigger?.cloud_webhook_url" data-testid="webhook-url-shown">
+          <div class="flex gap-2">
+            <input
+              :value="editingTrigger.cloud_webhook_url"
+              type="text"
+              readonly
+              class="flex-1 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm font-mono"
+              data-testid="webhook-url-input"
+            />
+            <button
+              @click="copyCloudUrl"
+              type="button"
+              class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              data-testid="copy-webhook-url-btn"
+            >
+              Copy
+            </button>
+          </div>
+          <p class="mt-1 text-xs text-gray-500">
+            Configure this URL in your {{ editingTrigger.source === 'github' ? 'GitHub repository' : 'Jira project' }} webhook settings.
+          </p>
+        </div>
+        <div v-else-if="!cloudConnected" data-testid="webhook-url-cloud-not-connected">
+          <p class="text-sm text-gray-500">Cloud not connected.</p>
+          <router-link to="/settings/cloud" class="text-xs text-blue-600 hover:underline">
+            Connect to Errand Cloud →
+          </router-link>
+        </div>
+        <div v-else data-testid="webhook-url-registration-failed">
+          <p class="text-sm text-amber-600">
+            Registration with Errand Cloud did not complete. Click Retry, or check the Cloud Service settings page for the error detail.
+          </p>
           <button
-            @click="generateSecret"
+            @click="retryRegistration"
+            :disabled="retryingRegistration"
             type="button"
-            class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-            data-testid="generate-secret-btn"
+            class="mt-2 rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            data-testid="retry-registration-btn"
           >
-            Generate
+            {{ retryingRegistration ? 'Retrying...' : 'Retry' }}
           </button>
         </div>
       </div>

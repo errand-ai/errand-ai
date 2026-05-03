@@ -11,6 +11,13 @@ const { toastMock } = vi.hoisted(() => {
 })
 vi.mock('vue-sonner', () => ({ toast: toastMock }))
 
+const { mockFetchWebhookTriggers } = vi.hoisted(() => {
+  return { mockFetchWebhookTriggers: vi.fn().mockResolvedValue([]) }
+})
+vi.mock('../../../composables/useApi', () => ({
+  fetchWebhookTriggers: (...args: any[]) => mockFetchWebhookTriggers(...args),
+}))
+
 function makeRouter() {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -113,6 +120,83 @@ describe('CloudServicePage', () => {
     expect(wrapper.text()).toContain('https://cloud.test/hook/t2')
   })
 
+  it('displays per-trigger Jira/GitHub webhook URLs in the endpoints section', async () => {
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: 'https://cloud.test/hook/jira1',
+      },
+      {
+        id: 't-gh', name: 'GH Issues', source: 'github', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: 'https://cloud.test/hook/gh1',
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-testid="trigger-endpoint-row"]')
+    expect(rows.length).toBe(2)
+    expect(wrapper.text()).toContain('https://cloud.test/hook/jira1')
+    expect(wrapper.text()).toContain('https://cloud.test/hook/gh1')
+    expect(wrapper.findAll('[data-testid="copy-trigger-url-btn"]').length).toBe(2)
+  })
+
+  it('shows "Cloud not connected" placeholder for trigger when not connected to cloud', async () => {
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: null,
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({ status: 'not_configured' }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-cloud-not-connected"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trigger-registration-failed"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(false)
+  })
+
+  it('shows "Registration failed" placeholder for trigger without cloud_webhook_url when connected', async () => {
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: null,
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-registration-failed"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(false)
+  })
+
   it('shows Slack not enabled message when connected without Slack configured', async () => {
     vi.stubGlobal('fetch', stubFetch({
       status: 'connected',
@@ -128,7 +212,7 @@ describe('CloudServicePage', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="cloud-no-slack"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Enable Slack')
+    expect(wrapper.text()).toContain('Configure Slack, Jira, or GitHub')
   })
 
   it('shows registering message when connected with Slack but no endpoints yet', async () => {
@@ -181,9 +265,39 @@ describe('CloudServicePage', () => {
     const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="cloud-endpoint-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cloud-endpoint-error-banner"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Active subscription required')
     expect(wrapper.find('[data-testid="cloud-registering"]').exists()).toBe(false)
+  })
+
+  it('keeps the global endpoint-error banner visible when triggers exist (regression)', async () => {
+    // Previous behavior hid the section-level error block whenever any trigger
+    // row rendered, so users lost the only persistent error detail. The banner
+    // now sits above the rows and is always shown when endpoint_error is set.
+    mockFetchWebhookTriggers.mockResolvedValueOnce([
+      {
+        id: 't-jira', name: 'Jira Bugs', source: 'jira', enabled: true, has_secret: true,
+        filters: {}, actions: {}, profile_id: null, task_prompt: null,
+        cloud_webhook_url: null,
+      },
+    ])
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      endpoint_error: { detail: 'Active subscription required' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-endpoint-error-banner"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Active subscription required')
+    // Trigger rows still render too — banner is additive, not exclusive.
+    expect(wrapper.find('[data-testid="trigger-endpoint-row"]').exists()).toBe(true)
   })
 
   it('fires toast on endpoint registration error', async () => {

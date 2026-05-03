@@ -314,6 +314,8 @@ class WebhookTrigger(Base):
     actions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     task_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     webhook_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cloud_webhook_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cloud_endpoint_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

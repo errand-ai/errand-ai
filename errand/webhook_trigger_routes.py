@@ -1,11 +1,12 @@
 """Webhook trigger CRUD API routes."""
 
 import logging
+import secrets
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhook-triggers", tags=["webhook-triggers"])
 
+VALID_SOURCES = {"jira", "github"}
 VALID_FILTER_KEYS = {"event_types", "issue_types", "labels", "projects"}
 VALID_ACTION_KEYS = {"assign_to", "add_comment", "add_label", "transition_on_complete", "comment_output"}
 ACTION_TYPES = {
@@ -179,6 +181,13 @@ async def _ensure_github_column_options(filters: dict, actions: dict, session: A
 
 
 class TriggerCreate(BaseModel):
+    # Reject unknown fields. Older clients that still POST `webhook_secret`
+    # (which is now server-generated) must see a clear 422 — silently
+    # ignoring the field would leave them with a different secret than the
+    # one they configured externally and break signature verification with
+    # no validation error pointing at the cause.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     source: str
     enabled: bool = True
@@ -186,10 +195,11 @@ class TriggerCreate(BaseModel):
     filters: dict = Field(default_factory=dict)
     actions: dict = Field(default_factory=dict)
     task_prompt: Optional[str] = None
-    webhook_secret: Optional[str] = None
 
 
 class TriggerUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     source: Optional[str] = None
     enabled: Optional[bool] = None
@@ -197,7 +207,6 @@ class TriggerUpdate(BaseModel):
     filters: Optional[dict] = None
     actions: Optional[dict] = None
     task_prompt: Optional[str] = None
-    webhook_secret: Optional[str] = None
 
 
 def _trigger_response(t: WebhookTrigger) -> dict:
@@ -211,9 +220,16 @@ def _trigger_response(t: WebhookTrigger) -> dict:
         "actions": t.actions or {},
         "task_prompt": t.task_prompt,
         "has_secret": t.webhook_secret is not None,
+        "cloud_webhook_url": t.cloud_webhook_url,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
+
+
+def _generate_webhook_secret_encrypted() -> str:
+    """Generate a server-side webhook secret and return its encrypted form."""
+    plaintext = secrets.token_urlsafe(32)
+    return encrypt_secret({"secret": plaintext})
 
 
 @router.get("")
@@ -247,6 +263,11 @@ async def create_trigger(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_admin),
 ):
+    if body.source not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid source '{body.source}'. Must be one of: {', '.join(sorted(VALID_SOURCES))}",
+        )
     if body.source == "github":
         _validate_github_filters(body.filters)
         _validate_github_actions(body.actions)
@@ -264,7 +285,7 @@ async def create_trigger(
         filters=body.filters,
         actions=body.actions,
         task_prompt=body.task_prompt,
-        webhook_secret=encrypt_secret({"secret": body.webhook_secret}) if body.webhook_secret else None,
+        webhook_secret=_generate_webhook_secret_encrypted(),
     )
     session.add(trigger)
     try:
@@ -274,15 +295,12 @@ async def create_trigger(
         raise HTTPException(status_code=409, detail="A trigger with this name already exists")
     await session.refresh(trigger)
 
-    # Register with cloud if connected and secret is set
-    if body.webhook_secret:
-        try:
-            from cloud_endpoints import try_register_trigger_endpoint
-            await try_register_trigger_endpoint(
-                str(trigger.id), body.source, body.webhook_secret, body.name, session,
-            )
-        except Exception:
-            logger.warning("Cloud registration failed for trigger %s", trigger.id, exc_info=True)
+    # Register with cloud if connected
+    try:
+        from cloud_endpoints import register_webhook_trigger_with_cloud
+        await register_webhook_trigger_with_cloud(trigger, session)
+    except Exception:
+        logger.warning("Cloud registration failed for trigger %s", trigger.id, exc_info=True)
 
     return _trigger_response(trigger)
 
@@ -301,6 +319,11 @@ async def update_trigger(
     if not trigger:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
+    if body.source is not None and body.source not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid source '{body.source}'. Must be one of: {', '.join(sorted(VALID_SOURCES))}",
+        )
     source = body.source if body.source is not None else trigger.source
     source_changed = body.source is not None and body.source != trigger.source
     if source == "github":
@@ -320,9 +343,7 @@ async def update_trigger(
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
-        if field == "webhook_secret":
-            setattr(trigger, field, encrypt_secret({"secret": value}) if value else None)
-        elif field == "profile_id":
+        if field == "profile_id":
             setattr(trigger, field, _parse_uuid(value, "profile_id") if value else None)
         else:
             setattr(trigger, field, value)
@@ -334,13 +355,17 @@ async def update_trigger(
         raise HTTPException(status_code=409, detail="A trigger with this name already exists")
     await session.refresh(trigger)
 
-    # Re-register with cloud if secret was updated
-    if "webhook_secret" in update_data and update_data["webhook_secret"]:
+    # Re-register with cloud only when fields that affect the cloud endpoint or its
+    # label change. Toggling `enabled` or editing `task_prompt`/`profile_id` does not
+    # need to round-trip cloud — the upsert key is `trigger_id` and the only fields
+    # cloud cares about are integration (source) and label (name). Filters/actions
+    # don't change the cloud endpoint either, but they're included on the chance the
+    # user is "fixing" a previously failed registration by re-saving.
+    cloud_relevant_fields = {"name", "source", "filters", "actions"}
+    if cloud_relevant_fields & update_data.keys():
         try:
-            from cloud_endpoints import try_register_trigger_endpoint
-            await try_register_trigger_endpoint(
-                str(trigger.id), trigger.source, update_data["webhook_secret"], trigger.name, session,
-            )
+            from cloud_endpoints import register_webhook_trigger_with_cloud
+            await register_webhook_trigger_with_cloud(trigger, session)
         except Exception:
             logger.warning("Cloud re-registration failed for trigger %s", trigger.id, exc_info=True)
 
@@ -361,8 +386,8 @@ async def delete_trigger(
         raise HTTPException(status_code=404, detail="Trigger not found")
     # Deregister from cloud before deleting
     try:
-        from cloud_endpoints import try_deregister_trigger_endpoint
-        await try_deregister_trigger_endpoint(str(trigger.id), trigger.source, session)
+        from cloud_endpoints import revoke_webhook_trigger_in_cloud
+        await revoke_webhook_trigger_in_cloud(trigger, session)
     except Exception:
         logger.warning("Cloud deregistration failed for trigger %s", trigger.id, exc_info=True)
 

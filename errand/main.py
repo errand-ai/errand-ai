@@ -1730,15 +1730,36 @@ async def cloud_auth_disconnect(
         from cloud_client import stop_cloud_client
         await stop_cloud_client()
 
-        # Revoke cloud endpoints
+        # Revoke cloud endpoints (Slack + Jira/GitHub webhook triggers).
+        # Run the three bulk-revoke calls in parallel so a slow or dead cloud
+        # caps the user's wait at one timeout window (~10s) instead of three.
+        # Best-effort: each helper already swallows its own exceptions, so the
+        # local cleanup below proceeds regardless of cloud reachability.
         try:
             cred_data = decrypt_credentials(cred.encrypted_data)
-            from cloud_endpoints import revoke_cloud_endpoints
+            from cloud_endpoints import (
+                revoke_cloud_endpoints,
+                revoke_cloud_endpoints_for_integration,
+            )
             cloud_url = await _get_cloud_url(session)
             if cloud_url:
-                await revoke_cloud_endpoints(cred_data, cloud_url)
+                await asyncio.gather(
+                    revoke_cloud_endpoints(cred_data, cloud_url),
+                    revoke_cloud_endpoints_for_integration(cred_data, cloud_url, "jira"),
+                    revoke_cloud_endpoints_for_integration(cred_data, cloud_url, "github"),
+                )
         except Exception:
             logger.exception("Cloud endpoint revocation failed during disconnect")
+
+        # Clear cloud_webhook_url and cloud_endpoint_token on all webhook triggers
+        # for jira and github sources.
+        from sqlalchemy import update as _sa_update
+        from models import WebhookTrigger
+        await session.execute(
+            _sa_update(WebhookTrigger)
+            .where(WebhookTrigger.source.in_(("jira", "github")))
+            .values(cloud_webhook_url=None, cloud_endpoint_token=None)
+        )
 
         # Delete credentials
         await session.delete(cred)
