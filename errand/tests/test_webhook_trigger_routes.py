@@ -145,6 +145,22 @@ class TestWebhookTriggerCRUD:
         resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"filters": {"bad_key": ["x"]}})
         assert resp.status_code == 422
 
+    async def test_invalid_source_rejected_on_create(self, admin_client):
+        # Only `jira` and `github` are wired through the cloud-registration and
+        # disconnect-cleanup paths. Accepting an arbitrary source would leave
+        # a half-registered, half-cleaned-up trigger orphaned in the system.
+        resp = await admin_client.post("/api/webhook-triggers", json={
+            "name": "Slack Trigger", "source": "slack",
+        })
+        assert resp.status_code == 422
+        assert "Invalid source" in resp.json()["detail"]
+
+    async def test_invalid_source_rejected_on_update(self, admin_client):
+        create = await admin_client.post("/api/webhook-triggers", json={"name": "T", "source": "jira"})
+        tid = create.json()["id"]
+        resp = await admin_client.put(f"/api/webhook-triggers/{tid}", json={"source": "slack"})
+        assert resp.status_code == 422
+
     async def test_invalid_uuid_returns_422(self, admin_client):
         resp = await admin_client.get("/api/webhook-triggers/not-a-uuid")
         assert resp.status_code == 422

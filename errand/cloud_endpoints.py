@@ -4,6 +4,7 @@ Handles automatic registration and revocation of webhook endpoints
 with errand-cloud when both cloud and Slack credentials are active.
 """
 import logging
+import secrets
 import time as _time
 
 import httpx
@@ -11,7 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import PlatformCredential, Setting, WebhookTrigger
-from platforms.credentials import decrypt as decrypt_credentials
+from platforms.credentials import decrypt as decrypt_credentials, encrypt as encrypt_credentials
+
+# Cloud is best-effort on the trigger CRUD and disconnect paths. The local DB
+# write has already committed by the time we call cloud, so a slow or dead
+# cloud must not hold the user's HTTP request open. Keep this short so the
+# worst case for save / delete / disconnect stays inside ~10s rather than the
+# 30s blanket timeout used for the register-on-startup path.
+CLOUD_TRIGGER_TIMEOUT_SECS = 10
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +122,7 @@ async def revoke_cloud_endpoints(cloud_creds: dict, cloud_service_url: str) -> N
             resp = await client.delete(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
+                timeout=CLOUD_TRIGGER_TIMEOUT_SECS,
             )
             resp.raise_for_status()
             logger.info("Revoked cloud endpoints for slack")
@@ -335,20 +343,26 @@ async def register_webhook_trigger_with_cloud(
         return
     cloud_creds, cloud_service_url = ctx
 
+    # Backfill: legacy trigger rows may pre-date server-side secret generation
+    # and have webhook_secret == NULL. Without this, those triggers could be
+    # edited forever and never get a cloud endpoint. Generate, encrypt, and
+    # persist a secret on first attempt so future updates are well-formed.
     if not trigger.webhook_secret:
-        logger.debug("Trigger %s has no webhook_secret, skipping cloud registration", trigger.id)
-        return
+        plaintext_secret = secrets.token_urlsafe(32)
+        trigger.webhook_secret = encrypt_credentials({"secret": plaintext_secret})
+        await session.commit()
+        logger.info("Backfilled missing webhook_secret for trigger %s", trigger.id)
+    else:
+        try:
+            secret_data = decrypt_credentials(trigger.webhook_secret)
+            plaintext_secret = secret_data.get("secret", "")
+        except Exception:
+            logger.exception("Failed to decrypt webhook_secret for trigger %s", trigger.id)
+            return
 
-    try:
-        secret_data = decrypt_credentials(trigger.webhook_secret)
-        plaintext_secret = secret_data.get("secret", "")
-    except Exception:
-        logger.exception("Failed to decrypt webhook_secret for trigger %s", trigger.id)
-        return
-
-    if not plaintext_secret:
-        logger.debug("Empty webhook_secret for trigger %s, skipping cloud registration", trigger.id)
-        return
+        if not plaintext_secret:
+            logger.debug("Empty webhook_secret for trigger %s, skipping cloud registration", trigger.id)
+            return
 
     access_token = cloud_creds.get("access_token", "")
     if not access_token:
@@ -369,7 +383,7 @@ async def register_webhook_trigger_with_cloud(
                 api_url,
                 json=body,
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
+                timeout=CLOUD_TRIGGER_TIMEOUT_SECS,
             )
             if not resp.is_success:
                 level = logging.WARNING if resp.status_code == 403 else logging.ERROR
@@ -445,7 +459,7 @@ async def revoke_webhook_trigger_in_cloud(
             resp = await client.delete(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
+                timeout=CLOUD_TRIGGER_TIMEOUT_SECS,
             )
             resp.raise_for_status()
             logger.info("Revoked cloud endpoint for trigger %s", trigger.id)
@@ -467,7 +481,7 @@ async def revoke_cloud_endpoints_for_integration(
             resp = await client.delete(
                 api_url,
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
+                timeout=CLOUD_TRIGGER_TIMEOUT_SECS,
             )
             resp.raise_for_status()
             logger.info("Revoked cloud endpoints for integration %s", integration)

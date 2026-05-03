@@ -271,11 +271,20 @@ async function save() {
 
 async function retryRegistration() {
   if (!editingId.value || !editingTrigger.value) return
+  if (!validate()) return
   retryingRegistration.value = true
   try {
-    // PUT with current values triggers re-registration with cloud server-side
+    // Submit the *current* form values, not the persisted ones — if the user
+    // corrected fields (e.g. renamed the trigger) before clicking Retry, those
+    // edits should reach cloud, not be silently dropped. Mirrors what `save()`
+    // sends so the cloud upsert sees a consistent picture.
     const updated = await updateWebhookTrigger(editingId.value, {
-      name: editingTrigger.value.name,
+      name: formName.value.trim(),
+      enabled: formEnabled.value,
+      profile_id: formProfileId.value || null,
+      filters: buildFilters(),
+      actions: buildActions(),
+      task_prompt: formTaskPrompt.value.trim() || null,
     })
     editingTrigger.value = updated
     if (updated.cloud_webhook_url) {

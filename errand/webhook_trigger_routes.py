@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhook-triggers", tags=["webhook-triggers"])
 
+VALID_SOURCES = {"jira", "github"}
 VALID_FILTER_KEYS = {"event_types", "issue_types", "labels", "projects"}
 VALID_ACTION_KEYS = {"assign_to", "add_comment", "add_label", "transition_on_complete", "comment_output"}
 ACTION_TYPES = {
@@ -262,6 +263,11 @@ async def create_trigger(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_admin),
 ):
+    if body.source not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid source '{body.source}'. Must be one of: {', '.join(sorted(VALID_SOURCES))}",
+        )
     if body.source == "github":
         _validate_github_filters(body.filters)
         _validate_github_actions(body.actions)
@@ -313,6 +319,11 @@ async def update_trigger(
     if not trigger:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
+    if body.source is not None and body.source not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid source '{body.source}'. Must be one of: {', '.join(sorted(VALID_SOURCES))}",
+        )
     source = body.source if body.source is not None else trigger.source
     source_changed = body.source is not None and body.source != trigger.source
     if source == "github":

@@ -322,6 +322,41 @@ class TestRegisterWebhookTriggerWithCloud:
         assert trigger.cloud_endpoint_token == "gh1"
 
     @pytest.mark.asyncio
+    async def test_backfills_missing_webhook_secret_on_legacy_trigger(self):
+        """Legacy trigger rows pre-date server-side secret generation and may
+        have webhook_secret == NULL. The helper should generate, encrypt, and
+        persist a secret on first attempt rather than silently skipping forever.
+        """
+        trigger = _make_trigger()
+        trigger.webhook_secret = None  # legacy row
+        session = _FakeAsyncSession(
+            cloud_cred=_connected_cloud_cred(),
+            url_setting=_url_setting(),
+        )
+
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "endpoints": [{"type": "webhook", "url": "https://cloud.test/hook/bf", "token": "bf"}],
+        }
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await register_webhook_trigger_with_cloud(trigger, session)
+
+        # Secret was backfilled (encrypted) and registration completed
+        assert trigger.webhook_secret is not None
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/bf"
+        assert trigger.cloud_endpoint_token == "bf"
+        # And the body sent to cloud carried the freshly-generated plaintext
+        sent_body = mock_client.post.call_args.kwargs["json"]
+        assert sent_body["webhook_secret"]  # not empty
+
+    @pytest.mark.asyncio
     async def test_accepts_top_level_url_token_for_forward_compat(self):
         """If a future cloud version flattens the response (`{url, token}` at top
         level instead of nested under `endpoints[]`), we still extract correctly."""
