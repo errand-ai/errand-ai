@@ -38,6 +38,6 @@
 ## 6. Verification
 
 - [x] 6.1 Run backend test suite — all green.
-- [ ] 6.2 End-to-end smoke against a dev cloud: create a Jira trigger via the UI, confirm a `POST /api/endpoints` lands in cloud, the URL appears on the Cloud Service settings page, and a copy of that URL pasted into a Jira project webhook config delivers a test payload all the way to the connected websocket.
+- [x] 6.2 End-to-end smoke against a dev cloud: create a Jira trigger via the UI, confirm a `POST /api/endpoints` lands in cloud, the URL appears on the Cloud Service settings page, and a copy of that URL pasted into a Jira project webhook config delivers a test payload all the way to the connected websocket.
 - [ ] 6.3 Repeat the smoke for GitHub.
 - [ ] 6.4 Confirm the admin dashboard in errand-cloud now shows the new Jira/GitHub endpoints under the affected tenant.
