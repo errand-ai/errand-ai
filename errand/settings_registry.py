@@ -1,9 +1,14 @@
+import json
+import logging
 import os
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Setting
+
+logger = logging.getLogger(__name__)
 
 # Registry: key -> {env_var, sensitive, default}
 SETTINGS_REGISTRY = {
@@ -46,47 +51,127 @@ def mask_sensitive_value(value: str) -> str:
     return str(value)[:4] + "****"
 
 
+def _coerce(raw: Any, default: Any) -> Any:
+    """Coerce a raw value (env string or DB-decoded value) to the type of the registered default.
+
+    Rules:
+      - default is None: return raw verbatim
+      - default is bool: pass-through if already bool; if str, only the explicit
+        forms ``true``/``false``/``1``/``0`` (case-insensitive, whitespace-stripped)
+        are accepted — anything else raises. Other types raise TypeError.
+      - default is int: int(raw); refuses bool inputs (since ``bool`` subclasses ``int``).
+      - default is str: pass-through if already str, else ``str(raw)``.
+      - default is dict: pass-through if already dict; if str, ``json.loads`` and
+        require the result to be a dict — raises TypeError otherwise.
+      - default is list: pass-through if already list; if str, ``json.loads`` and
+        require the result to be a list — raises TypeError otherwise.
+    Raises on coercion failure; the caller is expected to fall back to default.
+    """
+    if default is None:
+        return raw
+    target = type(default)
+    if target is bool:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalised = raw.strip().lower()
+            if normalised in ("true", "1"):
+                return True
+            if normalised in ("false", "0"):
+                return False
+            raise ValueError(f"cannot coerce {raw!r} to bool")
+        raise TypeError(f"cannot coerce {type(raw).__name__} to bool")
+    if target is int:
+        if isinstance(raw, bool):
+            raise TypeError("refusing to coerce bool to int")
+        return int(raw)
+    if target is str:
+        return raw if isinstance(raw, str) else str(raw)
+    if target is dict:
+        if isinstance(raw, dict):
+            return raw
+        decoded = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(decoded, dict):
+            raise TypeError(f"expected dict, got {type(decoded).__name__}")
+        return decoded
+    if target is list:
+        if isinstance(raw, list):
+            return raw
+        decoded = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(decoded, list):
+            raise TypeError(f"expected list, got {type(decoded).__name__}")
+        return decoded
+    return raw
+
+
+async def resolve_setting_value(
+    session: AsyncSession,
+    key: str,
+    *,
+    db_rows: dict | None = None,
+) -> tuple[Any, str]:
+    """Resolve a single registered setting using env → DB → default.
+
+    Returns (value, source) where source ∈ {"env", "database", "default"}.
+    Coerces the resolved value to the type of the registered default. On
+    coercion failure, logs a warning and returns (default, "default").
+
+    If `db_rows` is provided, it is used as the DB lookup table; otherwise a
+    SELECT against the session is executed.
+    """
+    meta = SETTINGS_REGISTRY[key]
+    env_var = meta["env_var"]
+    default = meta["default"]
+
+    env_value = os.environ.get(env_var) if env_var else None
+    if env_value is not None and env_value != "":
+        try:
+            return _coerce(env_value, default), "env"
+        except Exception as e:
+            logger.warning("Failed to coerce env value for %s: %r (%s); falling back to default", key, env_value, e)
+            return default, "default"
+
+    if db_rows is None:
+        result = await session.execute(select(Setting).where(Setting.key == key))
+        row = result.scalars().first()
+        db_value = row.value if row is not None else None
+        present = row is not None
+    else:
+        present = key in db_rows
+        db_value = db_rows.get(key)
+
+    if present:
+        try:
+            return _coerce(db_value, default), "database"
+        except Exception as e:
+            logger.warning("Failed to coerce DB value for %s: %r (%s); falling back to default", key, db_value, e)
+            return default, "default"
+
+    return default, "default"
+
+
 async def resolve_settings(session: AsyncSession) -> dict:
     """Resolve all settings with metadata: {key: {value, source, sensitive, readonly}}"""
-    # Load all DB settings
+    # Load all DB settings once and pass through the per-key resolver.
     result = await session.execute(select(Setting))
-    db_settings = {s.key: s.value for s in result.scalars().all()}
+    db_rows = {s.key: s.value for s in result.scalars().all()}
 
     resolved = {}
     for key, meta in SETTINGS_REGISTRY.items():
         if key in EXCLUDED_KEYS:
             continue
 
-        env_var = meta["env_var"]
         sensitive = meta["sensitive"]
-        default = meta["default"]
+        value, source = await resolve_setting_value(session, key, db_rows=db_rows)
 
-        # Resolution order: env var → DB → default
-        env_value = os.environ.get(env_var) if env_var else None
+        if sensitive and source == "env":
+            value = mask_sensitive_value(value)
 
-        if env_value is not None and env_value != "":
-            value = env_value
-            if sensitive:
-                value = mask_sensitive_value(value)
-            resolved[key] = {
-                "value": value,
-                "source": "env",
-                "sensitive": sensitive,
-                "readonly": True,
-            }
-        elif key in db_settings:
-            resolved[key] = {
-                "value": db_settings[key],
-                "source": "database",
-                "sensitive": sensitive,
-                "readonly": False,
-            }
-        else:
-            resolved[key] = {
-                "value": default,
-                "source": "default",
-                "sensitive": sensitive,
-                "readonly": False,
-            }
+        resolved[key] = {
+            "value": value,
+            "source": source,
+            "sensitive": sensitive,
+            "readonly": source == "env",
+        }
 
     return resolved
