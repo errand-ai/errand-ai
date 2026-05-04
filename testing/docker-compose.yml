@@ -47,8 +47,8 @@ services:
 
   task-runner-build:
     build:
-      context: ../task-runner
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: task-runner/Dockerfile
     image: errand-task-runner:latest
     entrypoint: ["true"]
 

@@ -771,8 +771,7 @@ class TestPlaywrightUrlInjection:
         tm._runtime = mock_runtime
 
         with patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
-             patch("task_manager.get_valkey", return_value=None), \
-             patch("task_manager.recall_from_hindsight", return_value=None):
+             patch("task_manager.get_valkey", return_value=None):
             await tm._process_task(task, settings)
 
         import json
@@ -795,8 +794,7 @@ class TestPlaywrightUrlInjection:
         tm._runtime = mock_runtime
 
         with patch("task_manager.PLAYWRIGHT_MCP_URL", ""), \
-             patch("task_manager.get_valkey", return_value=None), \
-             patch("task_manager.recall_from_hindsight", return_value=None):
+             patch("task_manager.get_valkey", return_value=None):
             await tm._process_task(task, settings)
 
         import json
@@ -818,8 +816,7 @@ class TestPlaywrightUrlInjection:
         tm._runtime = mock_runtime
 
         with patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
-             patch("task_manager.get_valkey", return_value=None), \
-             patch("task_manager.recall_from_hindsight", return_value=None):
+             patch("task_manager.get_valkey", return_value=None):
             await tm._process_task(task, settings)
 
         import json

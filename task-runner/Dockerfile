@@ -1,6 +1,6 @@
 FROM python:3.11-slim AS builder
 WORKDIR /build
-COPY requirements.txt .
+COPY task-runner/requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
 # Stage pip itself for entrypoint-phase skill dependency installation
 RUN pip install --no-cache-dir --target=/pip-staging pip
@@ -87,9 +87,9 @@ RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
 FROM gcr.io/distroless/python3-debian12:nonroot
 COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 COPY --from=builder --chown=65532:65532 /pip-staging /opt/pip-bootstrap
-COPY main.py /app/main.py
-COPY tool_registry.py /app/tool_registry.py
-COPY entrypoint.sh /app/entrypoint.sh
+COPY task-runner/main.py /app/main.py
+COPY task-runner/tool_registry.py /app/tool_registry.py
+COPY task-runner/entrypoint.sh /app/entrypoint.sh
 
 # Copy shared libraries first (needed by all binaries below)
 COPY --from=git-builder /staged-libs/ /
@@ -124,6 +124,12 @@ COPY --from=node-builder --chown=65532:65532 /npm-staging /opt/npm-bootstrap
 # Copy gws CLI binary and bundled agent skills from gws-builder
 COPY --from=gws-builder /usr/local/bin/gws /usr/local/bin/gws
 COPY --from=gws-builder /gws-skills /opt/system-skills/gws
+
+# Copy local system skills (cloud-storage, hindsight, repo-context)
+COPY system-skills/cloud-storage /opt/system-skills/cloud-storage
+COPY system-skills/hindsight /opt/system-skills/hindsight
+COPY system-skills/repo-context /opt/system-skills/repo-context
+COPY system-skills/binary-files /opt/system-skills/binary-files
 
 # Copy busybox and create shell symlinks (provides /bin/sh, cat, ls, grep, etc.)
 # Libraries must be copied before this step so busybox can execute.

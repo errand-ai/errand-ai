@@ -58,5 +58,9 @@ COPY errand/ .
 COPY VERSION .
 COPY --from=frontend-build /frontend/dist ./static/
 COPY --from=gws-skills /gws-skills /app/system-skills/gws
+COPY system-skills/cloud-storage /app/system-skills/cloud-storage
+COPY system-skills/hindsight /app/system-skills/hindsight
+COPY system-skills/repo-context /app/system-skills/repo-context
+COPY system-skills/binary-files /app/system-skills/binary-files
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

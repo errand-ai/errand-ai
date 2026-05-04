@@ -19,9 +19,10 @@ from task_manager import (
     TaskRunnerOutput, parse_interval, normalize_interval,
     substitute_env_vars, extract_json, generate_ssh_config,
     build_skills_archive, build_skill_manifest,
-    recall_from_hindsight, DEFAULT_HINDSIGHT_BANK_ID,
+    DEFAULT_HINDSIGHT_BANK_ID,
     _read_callback_result,
-    REPO_CONTEXT_INSTRUCTIONS, PLAYWRIGHT_MCP_URL,
+    PLAYWRIGHT_MCP_URL,
+    SYSTEM_SKILL_REGISTRY, load_system_skills_from_registry,
 )
 from container_runtime import (
     _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
@@ -1060,8 +1061,8 @@ async def test_skills_directive_omitted_when_no_skills():
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_includes_binary_file_directive():
-    """System prompt always includes the Binary Files directive."""
+async def test_binary_files_no_inline_prompt_block():
+    """Binary-file handling is delivered via the `binary-files` system skill, not inline."""
     task = _make_mock_task(description="Research task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -1080,9 +1081,7 @@ async def test_system_prompt_includes_binary_file_directive():
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
-    assert "## Binary Files" in system_prompt_content
-    assert "Never read binary file contents" in system_prompt_content
-    assert "file-path-based tools" in system_prompt_content
+    assert "## Binary Files" not in system_prompt_content
 
 
 @pytest.mark.asyncio
@@ -2412,6 +2411,16 @@ class TestLoadSystemSkills:
         result = load_system_skills("gws", base_dir=str(tmp_path))
         assert result == []
 
+    def test_missing_skill_set_logs_warning(self, tmp_path, caplog):
+        """Missing system skill directory logs at WARNING level so ops can spot misconfigured images."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="task_manager"):
+            load_system_skills("definitely-not-here", base_dir=str(tmp_path))
+        assert any(
+            "definitely-not-here" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        )
+
     def test_result_is_memoized(self, tmp_path):
         """Repeat calls with the same args don't re-parse the on-disk skills."""
         gws = tmp_path / "gws"
@@ -2431,6 +2440,109 @@ class TestLoadSystemSkills:
         second = load_system_skills("gws", base_dir=str(tmp_path))
         assert first[0]["description"] == "First"
         assert second[0]["description"] == "First"
+
+
+class TestSystemSkillRegistry:
+    """Tests for the system skill registry and `load_system_skills_from_registry`."""
+
+    def setup_method(self) -> None:
+        _reset_system_skills_cache()
+
+    def _populate(self, base: "os.PathLike") -> None:
+        """Create one SKILL.md under each system skill set used by the registry."""
+        from pathlib import Path
+        base = Path(base)
+        layout = {
+            "gws": "gws-drive",
+            "cloud-storage": "cloud-storage",
+            "hindsight": "hindsight-memory",
+            "repo-context": "repo-context",
+            "binary-files": "binary-files",
+        }
+        for skill_set, skill_name in layout.items():
+            d = base / skill_set / skill_name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {skill_name}\ndescription: {skill_name} desc\n---\n\nbody"
+            )
+
+    def test_repo_context_unconditional(self, tmp_path):
+        """`repo-context` and `binary-files` are always loaded, even with no integrations."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry({}, base_dir=str(tmp_path))
+        names = {s["name"] for s in result}
+        assert "repo-context" in names
+        assert "binary-files" in names
+        assert "cloud-storage" not in names
+        assert "hindsight-memory" not in names
+        assert "gws-drive" not in names
+
+    def test_cloud_storage_loaded_when_injected(self, tmp_path):
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {"cloud_storage_injected": True}, base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert names == {"repo-context", "binary-files", "cloud-storage"}
+
+    def test_hindsight_loaded_when_url_configured(self, tmp_path):
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {"hindsight_url": "http://hindsight:8888"}, base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert names == {"repo-context", "binary-files", "hindsight-memory"}
+
+    def test_hindsight_not_loaded_when_url_empty(self, tmp_path):
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {"hindsight_url": ""}, base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert "hindsight-memory" not in names
+
+    def test_multiple_conditions_match(self, tmp_path):
+        """Google + cloud storage + hindsight all loaded together."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {
+                "google_workspace_enabled": True,
+                "cloud_storage_injected": True,
+                "hindsight_url": "http://h:8888",
+            },
+            base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert names == {"gws-drive", "cloud-storage", "hindsight-memory", "repo-context", "binary-files"}
+
+    def test_missing_directory_skipped_without_failure(self, tmp_path, caplog):
+        """A registry entry pointing at a missing dir doesn't crash."""
+        # Only create repo-context — others are missing.
+        from pathlib import Path
+        d = Path(tmp_path) / "repo-context" / "repo-context"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: repo-context\ndescription: rc\n---\n\nbody"
+        )
+        result = load_system_skills_from_registry(
+            {"cloud_storage_injected": True, "hindsight_url": "http://h"},
+            base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert "repo-context" in names
+
+    def test_condition_exception_skips_entry(self, tmp_path, caplog):
+        """A condition that raises is logged and skipped — other entries still load."""
+        self._populate(tmp_path)
+        bad_entry = {
+            "name": "broken",
+            "path": "broken",
+            "condition": lambda ctx: ctx["does-not-exist"],
+        }
+        with patch("task_manager.SYSTEM_SKILL_REGISTRY", [bad_entry] + SYSTEM_SKILL_REGISTRY):
+            result = load_system_skills_from_registry({}, base_dir=str(tmp_path))
+        names = {s["name"] for s in result}
+        assert "repo-context" in names  # other entries still evaluated
 
 
 import os
@@ -2587,46 +2699,37 @@ async def test_read_settings_skills_git_repo_empty_url(worker_session: AsyncSess
 # --- Hindsight integration tests ---
 
 
-def test_recall_from_hindsight_success():
-    """recall_from_hindsight returns recalled text on successful API call."""
-    with patch("task_manager.httpx.post") as mock_post:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"results": [{"text": "Previous task deployed v2 to staging."}]}
-        mock_post.return_value = mock_resp
+@pytest.mark.asyncio
+async def test_hindsight_no_server_side_recall_http_call():
+    """Server-side Hindsight prefetch is gone — no HTTP call to Hindsight REST API during prompt assembly."""
+    task = _make_mock_task(title="Deploy v2", description="Deploy frontend v2 to staging")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+    }
 
-        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "Deploy frontend")
+    mock_runtime = _make_mock_runtime()
 
-    assert result == "Previous task deployed v2 to staging."
-    mock_post.assert_called_once_with(
-        "http://hindsight:8888/v1/default/banks/my-bank/memories/recall",
-        json={"query": "Deploy frontend", "max_tokens": 2048},
-        timeout=30,
-    )
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+        }), patch("task_manager.httpx.post") as mock_post:
+        await _run_process_task(task, settings, mock_runtime)
 
+    # No httpx.post calls should be made for Hindsight recall during prompt assembly.
+    for call in mock_post.call_args_list:
+        url = call.args[0] if call.args else call.kwargs.get("url", "")
+        assert "memories/recall" not in url, f"Unexpected Hindsight recall HTTP call to {url}"
 
-def test_recall_from_hindsight_api_failure():
-    """recall_from_hindsight returns None and logs warning on API failure."""
-    with patch("task_manager.httpx.post") as mock_post:
-        mock_post.side_effect = Exception("Connection refused")
-
-        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "Deploy frontend")
-
-    assert result is None
-
-
-def test_recall_from_hindsight_empty_result():
-    """recall_from_hindsight returns None when API returns empty content."""
-    with patch("task_manager.httpx.post") as mock_post:
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"results": []}
-        mock_post.return_value = mock_resp
-
-        result = recall_from_hindsight("http://hindsight:8888", "my-bank", "query")
-
-    assert result is None
+    # And the prompt does not contain the legacy "Relevant Context from Memory" section.
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    system_prompt_content = files["system_prompt.txt"]
+    assert "Relevant Context from Memory" not in system_prompt_content
 
 
 @pytest.mark.asyncio
@@ -2648,7 +2751,7 @@ async def test_hindsight_mcp_injected_when_configured():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
-        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        }):
         await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json from prepare call
@@ -2679,7 +2782,7 @@ async def test_hindsight_mcp_skipped_when_already_in_database():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
-        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        }):
         await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — database value should be preserved
@@ -2689,8 +2792,8 @@ async def test_hindsight_mcp_skipped_when_already_in_database():
 
 
 @pytest.mark.asyncio
-async def test_hindsight_memory_context_in_system_prompt():
-    """When Hindsight recall returns content, it appears in the system prompt."""
+async def test_hindsight_no_inline_prompt_block_when_configured():
+    """Hindsight usage instructions live in the `hindsight-memory` system skill, not the prompt."""
     task = _make_mock_task(title="Deploy v2", description="Deploy frontend v2 to staging")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -2707,20 +2810,14 @@ async def test_hindsight_memory_context_in_system_prompt():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight:8888",
-        }), patch("task_manager.recall_from_hindsight", return_value="Last deploy used blue-green strategy."):
+        }):
         await _run_process_task(task, settings, mock_runtime)
 
-    # Extract system_prompt.txt from prepare() call
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
-    assert "## Relevant Context from Memory" in system_prompt_content
-    assert "Last deploy used blue-green strategy." in system_prompt_content
-    assert "## Persistent Memory (Hindsight)" in system_prompt_content
-    # Memory context appears before Hindsight instructions
-    memory_pos = system_prompt_content.index("Relevant Context from Memory")
-    instructions_pos = system_prompt_content.index("Persistent Memory (Hindsight)")
-    assert memory_pos < instructions_pos
+    assert "Relevant Context from Memory" not in system_prompt_content
+    assert "Persistent Memory (Hindsight)" not in system_prompt_content
 
 
 @pytest.mark.asyncio
@@ -2795,7 +2892,7 @@ async def test_hindsight_env_var_takes_precedence_over_setting():
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://env-hindsight:9999",
             "HINDSIGHT_BANK_ID": "env-bank",
-        }), patch("task_manager.recall_from_hindsight", return_value=None):
+        }):
         await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — should use env var values, not settings
@@ -2822,7 +2919,7 @@ async def test_hindsight_falls_back_to_admin_setting():
     with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-        }, clear=True), patch("task_manager.recall_from_hindsight", return_value=None):
+        }, clear=True):
         await _run_process_task(task, settings, mock_runtime)
 
     # Extract mcp.json — should use admin setting values
@@ -2851,8 +2948,7 @@ async def test_playwright_mcp_injected_from_env():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }), \
-        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
-        patch("task_manager.recall_from_hindsight", return_value=None):
+        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
@@ -2878,8 +2974,7 @@ async def test_playwright_mcp_not_injected_when_url_empty():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }), \
-        patch("task_manager.PLAYWRIGHT_MCP_URL", ""), \
-        patch("task_manager.recall_from_hindsight", return_value=None):
+        patch("task_manager.PLAYWRIGHT_MCP_URL", ""):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
@@ -2904,8 +2999,7 @@ async def test_playwright_mcp_not_overwritten_when_db_configured():
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
         }), \
-        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"), \
-        patch("task_manager.recall_from_hindsight", return_value=None):
+        patch("task_manager.PLAYWRIGHT_MCP_URL", "http://playwright:8931/mcp"):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
@@ -3169,12 +3263,12 @@ async def test_nonzero_exit_code_with_invalid_json_still_retries():
     assert clean_stdout is None, "Invalid TaskRunnerOutput should not be extracted"
 
 
-# --- Repo context discovery instructions ---
+# --- Repo context discovery (delivered as system skill, not inline prompt) ---
 
 
 @pytest.mark.asyncio
-async def test_repo_context_instructions_in_system_prompt():
-    """System prompt always includes repo context discovery instructions."""
+async def test_repo_context_no_inline_prompt_block():
+    """Repo context discovery is delivered via the `repo-context` system skill, not inline."""
     task = _make_mock_task(description="Clone and fix a repo")
     settings = {
         "mcp_servers": {"mcpServers": {}},
@@ -3194,25 +3288,18 @@ async def test_repo_context_instructions_in_system_prompt():
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
-    assert "## Repo Context Discovery" in system_prompt_content
-    assert "CLAUDE.md" in system_prompt_content
-    assert ".claude/commands/" in system_prompt_content
-    assert ".claude/skills/" in system_prompt_content
+    assert "## Repo Context Discovery" not in system_prompt_content
 
 
 @pytest.mark.asyncio
-async def test_repo_context_instructions_after_skill_manifest():
-    """Repo context instructions appear after the skill manifest when skills are present."""
-    task = _make_mock_task(description="Research task")
+async def test_system_prompt_lean_when_no_skills():
+    """With no skills from any source, the system prompt has no inline integration blocks."""
+    task = _make_mock_task(description="Trivial task")
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
         "task_processing_model": "gpt-4o",
         "system_prompt": "You are a helpful assistant.",
-        "skills": [
-            {"name": "researcher", "description": "Web research", "instructions": "Full instructions", "files": []},
-        ],
-        "mcp_api_key": "test-api-key-123",
     }
 
     mock_runtime = _make_mock_runtime()
@@ -3220,20 +3307,18 @@ async def test_repo_context_instructions_after_skill_manifest():
     with patch.dict("os.environ", {
             "OPENAI_BASE_URL": "http://litellm:4000",
             "OPENAI_API_KEY": "sk-test",
-        }, clear=True):
+        }, clear=True), patch(
+            "task_manager.load_system_skills_from_registry", return_value=[]
+        ):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     system_prompt_content = files["system_prompt.txt"]
 
-    # Both sections present
-    assert "## Skills" in system_prompt_content
-    assert "## Repo Context Discovery" in system_prompt_content
-
-    # Repo context comes after skills
-    skills_pos = system_prompt_content.index("## Skills")
-    repo_context_pos = system_prompt_content.index("## Repo Context Discovery")
-    assert repo_context_pos > skills_pos
+    assert "## Repo Context Discovery" not in system_prompt_content
+    assert "## Cloud Storage" not in system_prompt_content
+    assert "Persistent Memory (Hindsight)" not in system_prompt_content
+    assert "Relevant Context from Memory" not in system_prompt_content
 
 
 # --- LiteLLM MCP injection ---
@@ -3406,9 +3491,10 @@ async def test_onedrive_mcp_and_google_token_both_injected():
     env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
 
-    # OneDrive cloud-storage instructions present; Google Workspace instructions present.
+    # OneDrive cloud-storage instructions are now delivered as a system skill,
+    # not an inline prompt block. Google Workspace inline instructions remain.
     system_prompt = files["system_prompt.txt"]
-    assert "Cloud Storage" in system_prompt
+    assert "## Cloud Storage" not in system_prompt
     assert "Google Workspace" in system_prompt
 
 

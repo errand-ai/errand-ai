@@ -513,7 +513,9 @@ def load_system_skills(skill_set: str, base_dir: str = SYSTEM_SKILLS_DIR) -> lis
 
     skill_dir = os.path.join(base_dir, skill_set)
     if not os.path.isdir(skill_dir):
-        logger.debug("System skill set '%s' not present at %s — skipping", skill_set, skill_dir)
+        logger.warning(
+            "System skill set '%s' not present at %s — skipping", skill_set, skill_dir,
+        )
         _SYSTEM_SKILLS_CACHE[cache_key] = []
         return []
     skills = parse_skills_from_directory(skill_dir)
@@ -578,77 +580,67 @@ def generate_ssh_config(hosts: list[str]) -> str:
     return "\n\n".join(entries) + "\n" if entries else ""
 
 
-def recall_from_hindsight(hindsight_url: str, bank_id: str, query: str, max_tokens: int = 2048) -> str | None:
-    """Call Hindsight REST API to recall memories relevant to the query."""
-    url = f"{hindsight_url.rstrip('/')}/v1/default/banks/{bank_id}/memories/recall"
-    try:
-        resp = httpx.post(url, json={"query": query, "max_tokens": max_tokens}, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        results = data.get("results") or []
-        content = "\n".join(r["text"] for r in results if r.get("text"))
-        return content if content else None
-    except Exception:
-        logger.warning("Failed to recall from Hindsight at %s", url, exc_info=True)
-        return None
+# System skill registry — maps runtime conditions to system skill sets baked
+# into the server image at /app/system-skills/<path>/. Each entry's condition
+# is evaluated against a task context dict at task preparation time. Adding a
+# new system skill set requires only: (1) adding the SKILL.md files to the
+# image build and (2) adding an entry here.
+SYSTEM_SKILL_REGISTRY: list[dict] = [
+    {
+        "name": "gws",
+        "path": "gws",
+        "condition": lambda ctx: bool(ctx.get("google_workspace_enabled")),
+    },
+    {
+        "name": "cloud-storage",
+        "path": "cloud-storage",
+        "condition": lambda ctx: bool(ctx.get("cloud_storage_injected")),
+    },
+    {
+        "name": "hindsight",
+        "path": "hindsight",
+        "condition": lambda ctx: bool(ctx.get("hindsight_url")),
+    },
+    {
+        "name": "repo-context",
+        "path": "repo-context",
+        "condition": lambda ctx: True,
+    },
+    {
+        "name": "binary-files",
+        "path": "binary-files",
+        "condition": lambda ctx: True,
+    },
+]
 
 
-REPO_CONTEXT_INSTRUCTIONS = """
-
-## Repo Context Discovery
-
-After cloning any git repository, you MUST check for the following context files and use them:
-
-### CLAUDE.md (Project Instructions)
-After any `git clone`, check if `CLAUDE.md` exists in the repository root. If it does, read the file and treat its contents as project-specific instructions. Follow these instructions when working within that repository — they may contain coding conventions, architecture guidance, tool preferences, or workflow rules.
-
-### Commands (.claude/commands/)
-After any `git clone`, check if a `.claude/commands/` directory exists. If it does, list all `.md` files within it recursively. Each `.md` file defines a command:
-- The relative path within `.claude/commands/` (without the `.md` extension) forms the command name
-- Directory separators become colons (e.g., `.claude/commands/deploy/staging.md` → command `deploy:staging`)
-- If the user prompt references a command by name (with or without a leading `/`), read the corresponding `.md` file and execute the steps described in it
-- Do not read command files unless the user prompt references them
-
-### Repo-Level Skills (.claude/skills/)
-After any `git clone`, check if a `.claude/skills/` directory exists. If it does, find all `SKILL.md` files in subdirectories. For each `SKILL.md`:
-- Read only the YAML frontmatter (between `---` delimiters) to get the `name` and `description` fields
-- If a skill's description indicates it is relevant to the current task, read the full `SKILL.md` file and follow its instructions
-- Do not read the full file for skills that are not relevant to the task
-"""
+def load_system_skills_from_registry(
+    context: dict, base_dir: str = SYSTEM_SKILLS_DIR,
+) -> list[dict]:
+    """Evaluate the system skill registry against `context` and load matching skill sets."""
+    out: list[dict] = []
+    for entry in SYSTEM_SKILL_REGISTRY:
+        try:
+            include = entry["condition"](context)
+        except Exception:
+            logger.warning(
+                "System skill registry condition raised for '%s'", entry["name"],
+                exc_info=True,
+            )
+            continue
+        if not include:
+            continue
+        out.extend(load_system_skills(entry["path"], base_dir=base_dir))
+    return out
 
 
-CLOUD_STORAGE_INSTRUCTIONS = """
-
-## Cloud Storage
-
-You have access to OneDrive cloud storage via the `onedrive_*` MCP tools.
-
-Available operations: list files, read, write, delete, file info, create folder, move.
-Use path-based file access (e.g. `/Documents/report.docx`).
-
-### Concurrency (ETags)
-Some operations return an `etag` field. When updating a file, pass the etag you received from the read operation. If the file was modified by another process since you read it, the update will fail with a conflict error — re-read the file and retry.
-
-### Error Handling
-- **Permission errors**: The user may not have granted access to the requested file or folder. Report the error clearly.
-- **Not found errors**: The file or folder path may be incorrect. Verify the path and try again.
-- **Auth errors**: If you receive authentication errors, report that the cloud storage connection may need to be re-established.
-
-### Best Practice
-For modifying files: download the file content → modify locally → upload the new version. Avoid attempting in-place edits.
-"""
-
-BINARY_FILE_INSTRUCTIONS = """
-
-## Binary Files
-Never read binary file contents (images, PDFs, archives, etc.) into the conversation.
-Binary data will exceed the context window and cause task failure. To upload or transfer
-binary files, use file-path-based tools that accept a file path argument (e.g.,
-the OneDrive `onedrive_upload_file` tool, or the `gws drive` CLI when Google
-Workspace is connected). To inspect binary files, use execute_command with
-tools like `file`, `ls -la`, or `identify` (for images).
-"""
-
+# Google Workspace orientation. Kept inline (not a system skill) because the
+# block is conditional on whether any gws-* skills survive the per-profile
+# skill filter — that filter runs *after* the registry loader, so a registry
+# entry would be loaded into the archive even when the prompt block needs to
+# be suppressed. Folding this into a skill would require reworking the filter
+# / registry interaction; out of scope for the system-prompt-skill-refactor
+# change.
 GOOGLE_WORKSPACE_INSTRUCTIONS = """
 
 ## Google Workspace
@@ -1505,18 +1497,6 @@ class TaskManager:
             or DEFAULT_HINDSIGHT_BANK_ID
         )
 
-        # Pre-load memories from Hindsight
-        if hindsight_url:
-            recall_query = f"{task.title}. {task.description or ''}"
-            recalled = await asyncio.get_event_loop().run_in_executor(
-                None, recall_from_hindsight, hindsight_url, hindsight_bank_id, recall_query,
-            )
-            if recalled:
-                system_prompt += (
-                    "\n\n## Relevant Context from Memory\n\n"
-                    + recalled
-                )
-
         # Inject errand MCP server
         errand_mcp_url = os.environ.get("ERRAND_MCP_URL", "")
         mcp_api_key = settings.get("mcp_api_key", "")
@@ -1528,22 +1508,15 @@ class TaskManager:
                     "headers": {"Authorization": f"Bearer {mcp_api_key}"},
                 }
 
-        # Inject Hindsight MCP server
+        # Inject Hindsight MCP server. The agent reads the `hindsight-memory`
+        # system skill (loaded below) for usage instructions; no inline prompt
+        # block is appended.
         if hindsight_url:
             mcp_servers.setdefault("mcpServers", {})
             if "hindsight" not in mcp_servers["mcpServers"]:
                 mcp_servers["mcpServers"]["hindsight"] = {
                     "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
                 }
-            system_prompt += (
-                "\n\n## Persistent Memory (Hindsight)\n\n"
-                "You have access to Hindsight memory tools via the `hindsight` MCP server:\n"
-                "- **retain**: Store important facts, decisions, patterns, and learnings for future tasks\n"
-                "- **recall**: Search memories for relevant context about a topic\n"
-                "- **reflect**: Synthesize reasoning across stored memories\n\n"
-                "Use `retain` to save key outcomes, decisions, or context at the end of your task. "
-                "Use `recall` or `reflect` if you need additional context beyond what was pre-loaded."
-            )
 
         # Inject Playwright MCP server if PLAYWRIGHT_MCP_URL is set
         if PLAYWRIGHT_MCP_URL:
@@ -1586,8 +1559,8 @@ class TaskManager:
                     }
                     cloud_storage_injected = True
 
-        if cloud_storage_injected:
-            system_prompt += CLOUD_STORAGE_INSTRUCTIONS
+        # Cloud storage usage instructions are delivered via the `cloud-storage`
+        # system skill (loaded below by the registry) — no inline prompt block.
 
         # Google Workspace: inject the access token as GOOGLE_WORKSPACE_CLI_TOKEN
         # so the gws CLI in the task-runner image is authenticated. The matching
@@ -1619,9 +1592,14 @@ class TaskManager:
             git_skills = parse_skills_from_directory(base_path)
             logger.info("Found %d git-sourced skill(s) in %s", len(git_skills), base_path)
 
-        system_skills: list[dict] = []
-        if google_workspace_enabled:
-            system_skills.extend(load_system_skills("gws"))
+        # Load system skills via the registry. Conditions are evaluated against
+        # a context dict assembled from current task state.
+        system_skill_context = {
+            "google_workspace_enabled": google_workspace_enabled,
+            "cloud_storage_injected": cloud_storage_injected,
+            "hindsight_url": hindsight_url,
+        }
+        system_skills = load_system_skills_from_registry(system_skill_context)
 
         skills = merge_skills(db_skills, git_skills, system_skills)
 
@@ -1652,9 +1630,9 @@ class TaskManager:
         if skills:
             system_prompt += build_skill_manifest(skills)
 
-        # Inject repo context discovery instructions
-        system_prompt += BINARY_FILE_INSTRUCTIONS
-        system_prompt += REPO_CONTEXT_INSTRUCTIONS
+        # Repo context discovery and binary-file handling instructions are
+        # delivered via the `repo-context` and `binary-files` system skills
+        # (loaded above) — no inline prompt blocks for them.
 
         # Build environ dict for MCP config variable substitution
         mcp_environ = dict(os.environ)

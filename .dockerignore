@@ -12,3 +12,4 @@ openspec
 .playwright-mcp
 *.md
 !frontend/README.md
+!system-skills/**/*.md
