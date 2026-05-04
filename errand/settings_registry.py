@@ -56,10 +56,15 @@ def _coerce(raw: Any, default: Any) -> Any:
 
     Rules:
       - default is None: return raw verbatim
-      - default is bool: parse JSON if str, else cast via bool()
-      - default is int: int(raw)
-      - default is str: stringify
-      - default is dict/list: json.loads if str, else pass through
+      - default is bool: pass-through if already bool; if str, only the explicit
+        forms ``true``/``false``/``1``/``0`` (case-insensitive, whitespace-stripped)
+        are accepted — anything else raises. Other types raise TypeError.
+      - default is int: int(raw); refuses bool inputs (since ``bool`` subclasses ``int``).
+      - default is str: pass-through if already str, else ``str(raw)``.
+      - default is dict: pass-through if already dict; if str, ``json.loads`` and
+        require the result to be a dict — raises TypeError otherwise.
+      - default is list: pass-through if already list; if str, ``json.loads`` and
+        require the result to be a list — raises TypeError otherwise.
     Raises on coercion failure; the caller is expected to fall back to default.
     """
     if default is None:

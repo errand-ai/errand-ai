@@ -185,15 +185,20 @@ def test_coerce_int_failure_raises():
         _coerce("abc", 3)
 
 
-def test_coerce_bool_rejects_non_bool_json():
-    """json.loads('0') returns int 0 — must not silently coerce to bool."""
-    # Stricter than bare json.loads: explicit form required
-    assert _coerce("0", True) is False  # explicit lowercase form
+def test_coerce_bool_strict_string_forms_only():
+    """bool coercion accepts only the explicit forms 'true'/'false'/'1'/'0'.
+
+    Other strings (including JSON-encoded `"false"`, free-form `yes`/`no`)
+    raise so the caller falls back to the registered default — this avoids
+    the historical bug where ``json.loads("0")`` returned int 0 and slipped
+    through type checks expecting bool.
+    """
+    assert _coerce("0", True) is False
     assert _coerce("1", True) is True
     with pytest.raises(ValueError):
         _coerce("yes", True)
     with pytest.raises(ValueError):
-        _coerce('"false"', True)  # JSON-encoded string, not the form we accept
+        _coerce('"false"', True)  # JSON-encoded string, not an accepted form
 
 
 def test_coerce_dict_rejects_list():

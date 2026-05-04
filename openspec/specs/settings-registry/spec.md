@@ -107,7 +107,7 @@ The resolver SHALL accept an optional pre-fetched mapping of DB rows so callers 
 
 ### Requirement: `resolve_settings` delegates to the per-key resolver
 
-`settings_registry.resolve_settings` SHALL build its returned dictionary by calling the per-key resolver (above) for every non-excluded key in the registry, preserving its existing behaviour: masking sensitive values for env- and DB-sourced entries, populating `source`, `sensitive`, and `readonly` (true when `source == "env"`), and excluding keys listed in `EXCLUDED_KEYS`.
+`settings_registry.resolve_settings` SHALL build its returned dictionary by calling the per-key resolver (above) for every non-excluded key in the registry, preserving its existing behaviour: masking sensitive values only for env-sourced entries (per the "Sensitive value masking" requirement above — DB-sourced sensitive values are returned in full), populating `source`, `sensitive`, and `readonly` (true when `source == "env"`), and excluding keys listed in `EXCLUDED_KEYS`.
 
 The shape of the returned dictionary, including key set and field names, SHALL NOT change.
 
