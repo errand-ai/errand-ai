@@ -20,6 +20,6 @@ Use `execute_command` with shell utilities that report metadata only:
 
 - `file <path>` — identify the format
 - `ls -la <path>` — size and permissions
-- `identify <path>` — image dimensions and format (ImageMagick)
+- A short Python snippet via `python -c "..."` for image dimensions, PDF page counts, etc. — only if the relevant library is already installed in the runner
 
-These produce small text outputs that are safe to read.
+These produce small text outputs that are safe to read. Do not assume tools like `identify` (ImageMagick) are present — check with `which <tool>` first if you want to use a non-standard utility.

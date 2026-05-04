@@ -125,7 +125,7 @@ COPY --from=node-builder --chown=65532:65532 /npm-staging /opt/npm-bootstrap
 COPY --from=gws-builder /usr/local/bin/gws /usr/local/bin/gws
 COPY --from=gws-builder /gws-skills /opt/system-skills/gws
 
-# Copy local system skills (cloud-storage, hindsight, repo-context)
+# Copy local system skills (one COPY per skill set — see system-skills/ in repo root)
 COPY system-skills/cloud-storage /opt/system-skills/cloud-storage
 COPY system-skills/hindsight /opt/system-skills/hindsight
 COPY system-skills/repo-context /opt/system-skills/repo-context

@@ -585,6 +585,14 @@ def generate_ssh_config(hosts: list[str]) -> str:
 # is evaluated against a task context dict at task preparation time. Adding a
 # new system skill set requires only: (1) adding the SKILL.md files to the
 # image build and (2) adding an entry here.
+#
+# `exempt_from_profile_filter` (optional, default False) marks a skill set as
+# baseline guidance that the profile's external-skill filter SHALL NOT remove.
+# These instructions used to be inline in the system prompt (always present);
+# moving them to skills must not regress behaviour for profiles that disable
+# externally-sourced skills (`include_git_skills=False`). Only `gws` is left
+# subject to the filter — that matches its prior behaviour, where the
+# Google Workspace prompt block was suppressed when gws skills were filtered.
 SYSTEM_SKILL_REGISTRY: list[dict] = [
     {
         "name": "gws",
@@ -595,21 +603,25 @@ SYSTEM_SKILL_REGISTRY: list[dict] = [
         "name": "cloud-storage",
         "path": "cloud-storage",
         "condition": lambda ctx: bool(ctx.get("cloud_storage_injected")),
+        "exempt_from_profile_filter": True,
     },
     {
         "name": "hindsight",
         "path": "hindsight",
         "condition": lambda ctx: bool(ctx.get("hindsight_url")),
+        "exempt_from_profile_filter": True,
     },
     {
         "name": "repo-context",
         "path": "repo-context",
         "condition": lambda ctx: True,
+        "exempt_from_profile_filter": True,
     },
     {
         "name": "binary-files",
         "path": "binary-files",
         "condition": lambda ctx: True,
+        "exempt_from_profile_filter": True,
     },
 ]
 
@@ -617,7 +629,13 @@ SYSTEM_SKILL_REGISTRY: list[dict] = [
 def load_system_skills_from_registry(
     context: dict, base_dir: str = SYSTEM_SKILLS_DIR,
 ) -> list[dict]:
-    """Evaluate the system skill registry against `context` and load matching skill sets."""
+    """Evaluate the system skill registry against `context` and load matching skill sets.
+
+    Skills loaded from registry entries with `exempt_from_profile_filter=True`
+    are tagged with `_exempt_from_profile_filter=True` so the profile's external
+    skill filter spares them. The tag is shallow-copied onto each dict to avoid
+    mutating the cached parse result.
+    """
     out: list[dict] = []
     for entry in SYSTEM_SKILL_REGISTRY:
         try:
@@ -630,7 +648,10 @@ def load_system_skills_from_registry(
             continue
         if not include:
             continue
-        out.extend(load_system_skills(entry["path"], base_dir=base_dir))
+        loaded = load_system_skills(entry["path"], base_dir=base_dir)
+        if entry.get("exempt_from_profile_filter"):
+            loaded = [dict(s, _exempt_from_profile_filter=True) for s in loaded]
+        out.extend(loaded)
     return out
 
 
@@ -1605,13 +1626,19 @@ class TaskManager:
 
         # Apply profile skill filter: DB skills filtered by UUID, non-DB (git + system) skills by flag.
         # The `_profile_include_git_skills` flag (sourced from the legacy `include_git_skills`
-        # profile column) gates ALL externally-sourced skills, not just git ones — system skills
-        # like `gws` follow the same external-vs-DB distinction.
+        # profile column) gates externally-sourced skills like `gws` and git-sourced skills.
+        # System skills tagged with `_exempt_from_profile_filter=True` (cloud-storage, hindsight,
+        # repo-context, binary-files) are baseline guidance that used to live inline in the
+        # system prompt — they survive the filter regardless of `include_external`.
         profile_skill_ids = settings.get("_profile_skill_ids")
         if profile_skill_ids is not None:
             include_external = settings.get("_profile_include_git_skills", True)
             filtered_db = [s for s in skills if s.get("id") and s["id"] in profile_skill_ids]
-            non_db = [s for s in skills if not s.get("id")] if include_external else []
+            non_db = [
+                s for s in skills
+                if not s.get("id")
+                and (include_external or s.get("_exempt_from_profile_filter"))
+            ]
             skills = filtered_db + non_db
 
         # Append Google Workspace prompt instructions only if at least one gws

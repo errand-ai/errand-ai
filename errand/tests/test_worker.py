@@ -2544,6 +2544,66 @@ class TestSystemSkillRegistry:
         names = {s["name"] for s in result}
         assert "repo-context" in names  # other entries still evaluated
 
+    def test_baseline_skills_tagged_exempt_from_profile_filter(self, tmp_path):
+        """Baseline registry entries tag their loaded skills with `_exempt_from_profile_filter`."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {
+                "google_workspace_enabled": True,
+                "cloud_storage_injected": True,
+                "hindsight_url": "http://h:8888",
+            },
+            base_dir=str(tmp_path),
+        )
+        by_name = {s["name"]: s for s in result}
+        # gws is filterable (matches its prior behaviour)
+        assert by_name["gws-drive"].get("_exempt_from_profile_filter") is not True
+        # All other system skills are baseline guidance — exempt from the filter
+        for name in ("cloud-storage", "hindsight-memory", "repo-context", "binary-files"):
+            assert by_name[name].get("_exempt_from_profile_filter") is True
+
+
+@pytest.mark.asyncio
+async def test_baseline_system_skills_survive_profile_external_filter():
+    """When a profile sets include_git_skills=False, baseline system skills still ship.
+
+    Regression: cloud-storage / hindsight / repo-context / binary-files used to
+    live inline in the system prompt and were always present. After moving them
+    to skills, the profile's external-skill filter must not drop them.
+    """
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        # Profile excludes external (git + system) skills entirely.
+        "_profile_skill_ids": [],
+        "_profile_include_git_skills": False,
+    }
+
+    fake_baseline = [
+        {"name": "repo-context", "description": "rc", "instructions": "...", "files": [], "_exempt_from_profile_filter": True},
+        {"name": "binary-files", "description": "bf", "instructions": "...", "files": [], "_exempt_from_profile_filter": True},
+    ]
+    fake_filterable = [
+        {"name": "gws-drive", "description": "gws", "instructions": "...", "files": []},
+    ]
+
+    mock_runtime = _make_mock_runtime()
+    with patch(
+        "task_manager.load_system_skills_from_registry",
+        return_value=fake_baseline + fake_filterable,
+    ):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    manifest = files["system_prompt.txt"]
+    # Baseline skills are listed in the manifest, gws is filtered out.
+    assert "| repo-context |" in manifest
+    assert "| binary-files |" in manifest
+    assert "| gws-drive |" not in manifest
+
 
 import os
 import subprocess
