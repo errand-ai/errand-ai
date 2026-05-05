@@ -1330,10 +1330,16 @@ async def main():
             full_instructions += "\n\n" + catalog
         full_instructions += OUTPUT_INSTRUCTIONS
 
+        # Native @function_tool callables — always callable, never lazy-loaded.
+        # Single source of truth: this list is also passed to Agent(tools=...) below.
+        native_tools = [execute_command, write_file, edit_file, read_file, discover_tools, submit_result]
+        always_on_tools = {t.name for t in native_tools}
+
         # Create tool visibility context initialized with hot list
         visibility_ctx = ToolVisibilityContext(
             enabled_tools=set(hot_list),
             all_known_tools=all_known_tools,
+            always_on_tools=always_on_tools,
         )
 
         # 5. Create agent with reasoning settings and model-aware max output tokens
@@ -1344,7 +1350,7 @@ async def main():
             name="TaskRunner",
             instructions=full_instructions,
             model=env["OPENAI_MODEL"],
-            tools=[execute_command, write_file, edit_file, read_file, discover_tools, submit_result],
+            tools=native_tools,
             mcp_servers=mcp_servers if mcp_servers else [],
             model_settings=ModelSettings(
                 max_tokens=max_output_tokens,

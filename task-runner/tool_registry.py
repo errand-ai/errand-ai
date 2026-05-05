@@ -20,6 +20,7 @@ class ToolVisibilityContext:
 
     enabled_tools: set[str] = field(default_factory=set)
     all_known_tools: set[str] = field(default_factory=set)
+    always_on_tools: set[str] = field(default_factory=set)
     submitted_result: dict | None = None
 
 
@@ -131,10 +132,14 @@ def discover_tools(ctx: RunContextWrapper[ToolVisibilityContext], tool_names: li
     """
     visibility: ToolVisibilityContext = ctx.context
     enabled = []
+    already_on = []
     not_found = []
 
     for name in tool_names:
-        if name in visibility.all_known_tools:
+        # Always-on classification takes precedence over catalog membership.
+        if name in visibility.always_on_tools:
+            already_on.append(name)
+        elif name in visibility.all_known_tools:
             visibility.enabled_tools.add(name)
             enabled.append(name)
         else:
@@ -143,6 +148,8 @@ def discover_tools(ctx: RunContextWrapper[ToolVisibilityContext], tool_names: li
     parts = []
     if enabled:
         parts.append(f"Enabled: {', '.join(enabled)}")
+    if already_on:
+        parts.append(f"Already enabled (always-on): {', '.join(already_on)}")
     if not_found:
         parts.append(f"Not found: {', '.join(not_found)}")
     return ". ".join(parts) if parts else "No tools specified."
