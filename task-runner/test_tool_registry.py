@@ -282,6 +282,71 @@ def test_discover_tools_empty_list():
     assert result == "No tools specified."
 
 
+def test_discover_tools_always_on_only():
+    """Probing for an always-on native tool reports it as already enabled."""
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"list_applications"},
+        always_on_tools={"read_file", "write_file", "execute_command"},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["read_file"])
+
+    assert result == "Already enabled (always-on): read_file"
+    # enabled_tools is unchanged — always-on tools are not added there.
+    assert ctx.enabled_tools == set()
+
+
+def test_discover_tools_mixed_outcomes():
+    """Mixed probe of catalog, always-on, and unknown names produces three clauses in order."""
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"list_applications"},
+        always_on_tools={"read_file"},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["list_applications", "read_file", "made_up_tool"])
+
+    assert result == (
+        "Enabled: list_applications. "
+        "Already enabled (always-on): read_file. "
+        "Not found: made_up_tool"
+    )
+    assert "list_applications" in ctx.enabled_tools
+    assert "read_file" not in ctx.enabled_tools
+
+
+def test_discover_tools_always_on_precedence_over_catalog():
+    """A name in both always_on_tools and all_known_tools is reported as always-on, not enabled."""
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"foo"},
+        always_on_tools={"foo"},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["foo"])
+
+    assert result == "Already enabled (always-on): foo"
+    assert "foo" not in ctx.enabled_tools
+
+
+def test_discover_tools_always_on_does_not_mutate_state():
+    """Probing for always-on tools never mutates enabled_tools."""
+    ctx = ToolVisibilityContext(
+        enabled_tools={"retain"},
+        all_known_tools={"retain"},
+        always_on_tools={"read_file", "submit_result"},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    discover_tools(wrapper, ["read_file", "submit_result"])
+
+    assert ctx.enabled_tools == {"retain"}
+
+
 # --- connect_mcp_servers passes tool_filter ---
 # These tests import main.py which requires additional mocking (agents.run, openai, etc.)
 # They are tested in test_main.py which has the full mock setup.
