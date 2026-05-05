@@ -154,7 +154,8 @@ jobs:
       - name: Build and push task runner image
         uses: docker/build-push-action@v7
         with:
-          context: ./task-runner
+          context: .
+          file: ./task-runner/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
