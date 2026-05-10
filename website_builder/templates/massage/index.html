@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ business_name }} - {{ tagline | default('Professional Massage & Wellness') }}</title>
+    <meta name="description" content="{{ meta_description | default('Book online for relaxing massage therapy and wellness treatments') }}">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        :root {
+            --primary: #2D5A4A;
+            --secondary: #4A8B7A;
+            --accent: #E8F5F0;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--secondary);
+            transform: translateY(-2px);
+        }
+        
+        .hero-gradient {
+            background: linear-gradient(135deg, #2D5A4A 0%, #4A8B7A 100%);
+        }
+        
+        .treatment-card {
+            border-left: 4px solid var(--primary);
+        }
+        
+        .treatment-card:hover {
+            background: var(--accent);
+        }
+        
+        .testimonial-card {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        }
+        
+        .pricing-highlight {
+            border: 2px solid var(--primary);
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body class="font-sans text-gray-800">
+    <!-- Navigation -->
+    <nav class="fixed top-0 left-0 right-0 bg-white/95 backdrop-blur shadow-sm z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-20">
+                <div class="flex-shrink-0">
+                    <span class="text-2xl font-bold" style="color: var(--primary)">{{ business_name }}</span>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <a href="#treatments" class="text-gray-600 hover:text-gray-900">Treatments</a>
+                    <a href="#pricing" class="text-gray-600 hover:text-gray-900">Pricing</a>
+                    <a href="#about" class="text-gray-600 hover:text-gray-900">About</a>
+                    <a href="#contact" class="text-gray-600 hover:text-gray-900">Contact</a>
+                </div>
+                <button onclick="BookingWidget.open()" class="btn-primary">Book Now</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero-gradient text-white pt-32 pb-24">
+        <div class="max-w-4xl mx-auto px-4 text-center">
+            <div class="text-6xl mb-6">🧘</div>
+            <h1 class="text-4xl md:text-6xl font-bold mb-6">Relax, Rejuvenate, Restore</h1>
+            <p class="text-xl md:text-2xl mb-10 opacity-90">{{ tagline | default('Professional massage therapy for body and mind') }}</p>
+            <button onclick="BookingWidget.open()" class="bg-white text-gray-900 px-10 py-4 rounded-lg text-lg font-semibold hover:bg-gray-100 transition shadow-lg">
+                Book Your Session
+            </button>
+        </div>
+    </section>
+
+    <!-- About Section -->
+    <section id="about" class="py-20 bg-white">
+        <div class="max-w-4xl mx-auto px-4">
+            <div class="grid md:grid-cols-2 gap-12 items-center">
+                <div>
+                    <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-6">Your Path to Wellness</h2>
+                    <p class="text-lg text-gray-600 mb-6">
+                        At {{ business_name }}, we believe in the healing power of touch. Our skilled therapists combine traditional techniques with modern understanding to deliver transformative massage experiences.
+                    </p>
+                    <p class="text-lg text-gray-600 mb-6">
+                        Whether you're seeking relief from chronic tension, recovering from an injury, or simply want to unwind, we have a treatment tailored to your needs.
+                    </p>
+                    <div class="flex gap-4 mt-8">
+                        <div class="text-center">
+                            <div class="text-3xl font-bold" style="color: var(--primary)">500+</div>
+                            <div class="text-sm text-gray-500">Happy Clients</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-3xl font-bold" style="color: var(--primary)">15+</div>
+                            <div class="text-sm text-gray-500">Years Experience</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-3xl font-bold" style="color: var(--primary)">5★</div>
+                            <div class="text-sm text-gray-500">Rating</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-gray-100 rounded-2xl p-8">
+                    <h3 class="text-xl font-semibold mb-4">Our Specialties</h3>
+                    <ul class="space-y-3">
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Deep Tissue Massage</span>
+                        </li>
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Swedish Relaxation</span>
+                        </li>
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Sports Therapy</span>
+                        </li>
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Hot Stone Therapy</span>
+                        </li>
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Aromatherapy</span>
+                        </li>
+                        <li class="flex items-center gap-3">
+                            <span class="w-8 h-8 rounded-full flex items-center justify-center" style="background: var(--accent)">✓</span>
+                            <span>Prenatal Massage</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Treatments Section -->
+    <section id="treatments" class="py-20 bg-gray-50">
+        <div class="max-w-5xl mx-auto px-4">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Our Treatments</h2>
+                <p class="text-lg text-gray-600">Choose the perfect therapy for your needs</p>
+            </div>
+            
+            <div class="space-y-6">
+                <div class="treatment-card bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-xl font-semibold mb-2">Swedish Relaxation Massage</h3>
+                            <p class="text-gray-600 mb-3">Classic full-body massage using long, flowing strokes to promote relaxation and ease muscle tension.</p>
+                            <div class="flex gap-4 text-sm text-gray-500">
+                                <span>⏱ 60 min</span>
+                                <span>💆 All levels</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" style="color: var(--primary)">£55</div>
+                            <button onclick="BookingWidget.open()" class="btn-primary mt-2 text-sm">Book</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="treatment-card bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-xl font-semibold mb-2">Deep Tissue Massage</h3>
+                            <p class="text-gray-600 mb-3">Targeted pressure on deeper muscle layers to release chronic tension and restore movement.</p>
+                            <div class="flex gap-4 text-sm text-gray-500">
+                                <span>⏱ 60-90 min</span>
+                                <span>💪 Therapeutic</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" style="color: var(--primary)">£70</div>
+                            <button onclick="BookingWidget.open()" class="btn-primary mt-2 text-sm">Book</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="treatment-card bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-xl font-semibold mb-2">Hot Stone Therapy</h3>
+                            <p class="text-gray-600 mb-3">Heated basalt stones placed on key points, combined with massage for deep relaxation.</p>
+                            <div class="flex gap-4 text-sm text-gray-500">
+                                <span>⏱ 75 min</span>
+                                <span>🔥 Premium</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" style="color: var(--primary)">£85</div>
+                            <button onclick="BookingWidget.open()" class="btn-primary mt-2 text-sm">Book</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="treatment-card bg-white rounded-xl p-6 shadow-sm hover:shadow-md transition">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-xl font-semibold mb-2">Sports Massage</h3>
+                            <p class="text-gray-600 mb-3">Performance-focused therapy for athletes, focusing on injury prevention and recovery.</p>
+                            <div class="flex gap-4 text-sm text-gray-500">
+                                <span>⏱ 60 min</span>
+                                <span>🏃 Active</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" style="color: var(--primary)">£75</div>
+                            <button onclick="BookingWidget.open()" class="btn-primary mt-2 text-sm">Book</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing Section -->
+    <section id="pricing" class="py-20">
+        <div class="max-w-5xl mx-auto px-4">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Pricing & Packages</h2>
+                <p class="text-lg text-gray-600">Invest in your wellbeing</p>
+            </div>
+            
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="bg-white rounded-2xl p-8 shadow-md">
+                    <h3 class="text-xl font-semibold mb-2">Single Session</h3>
+                    <div class="text-4xl font-bold mb-6" style="color: var(--primary)">From £55</div>
+                    <ul class="space-y-3 mb-8">
+                        <li class="flex items-center gap-2"><span>✓</span> 60-90 minute session</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Personalized consultation</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Premium oils used</li>
+                    </ul>
+                    <button onclick="BookingWidget.open()" class="w-full py-3 border-2 border-gray-300 rounded-lg font-semibold hover:border-gray-400">
+                        Book Now
+                    </button>
+                </div>
+                
+                <div class="bg-white rounded-2xl p-8 shadow-md pricing-highlight relative">
+                    <div class="absolute -top-3 left-1/2 transform -translate-x-1/2">
+                        <span class="bg-gray-900 text-white text-xs px-3 py-1 rounded-full">Popular</span>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Monthly Pass</h3>
+                    <div class="text-4xl font-bold mb-6" style="color: var(--primary)">£180<span class="text-lg font-normal">/mo</span></div>
+                    <ul class="space-y-3 mb-8">
+                        <li class="flex items-center gap-2"><span>✓</span> 4 sessions per month</li>
+                        <li class="flex items-center gap-2"><span>✓</span> 10% discount</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Priority booking</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Free upgrades</li>
+                    </ul>
+                    <button onclick="BookingWidget.open()" class="btn-primary w-full">Get Started</button>
+                </div>
+                
+                <div class="bg-white rounded-2xl p-8 shadow-md">
+                    <h3 class="text-xl font-semibold mb-2">Gift Vouchers</h3>
+                    <div class="text-4xl font-bold mb-6" style="color: var(--primary)">Flexible</div>
+                    <ul class="space-y-3 mb-8">
+                        <li class="flex items-center gap-2"><span>✓</span> Any treatment</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Digital delivery</li>
+                        <li class="flex items-center gap-2"><span>✓</span> Custom message</li>
+                        <li class="flex items-center gap-2"><span>✓</span> 1 year validity</li>
+                    </ul>
+                    <button onclick="BookingWidget.open()" class="w-full py-3 border-2 border-gray-300 rounded-lg font-semibold hover:border-gray-400">
+                        Purchase
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Contact Section -->
+    <section id="contact" class="py-20 bg-gray-900 text-white">
+        <div class="max-w-5xl mx-auto px-4">
+            <div class="grid md:grid-cols-2 gap-12">
+                <div>
+                    <h2 class="text-3xl font-bold mb-8">Get in Touch</h2>
+                    
+                    <div class="space-y-6">
+                        <div class="flex items-start gap-4">
+                            <span class="text-2xl">📍</span>
+                            <div>
+                                <h3 class="font-semibold">Location</h3>
+                                <p class="text-gray-400">{{ address }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4">
+                            <span class="text-2xl">📞</span>
+                            <div>
+                                <h3 class="font-semibold">Phone</h3>
+                                <p class="text-gray-400">{{ phone }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4">
+                            <span class="text-2xl">✉️</span>
+                            <div>
+                                <h3 class="font-semibold">Email</h3>
+                                <p class="text-gray-400">{{ email }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4">
+                            <span class="text-2xl">🕐</span>
+                            <div>
+                                <h3 class="font-semibold">Hours</h3>
+                                <p class="text-gray-400">
+                                    Mon-Fri: 9:00 AM - 8:00 PM<br>
+                                    Saturday: 10:00 AM - 6:00 PM<br>
+                                    Sunday: 11:00 AM - 5:00 PM
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-gray-800 rounded-2xl p-8">
+                    <h3 class="text-xl font-semibold mb-6">Book Your Appointment</h3>
+                    <button onclick="BookingWidget.open()" class="w-full py-4 bg-white text-gray-900 rounded-lg text-lg font-semibold hover:bg-gray-100 transition">
+                        Reserve Your Session
+                    </button>
+                    <p class="text-gray-400 text-sm mt-4 text-center">
+                        Or call us at {{ phone }}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-950 text-white py-8">
+        <div class="max-w-5xl mx-auto px-4 text-center">
+            <p class="text-gray-400">&copy; 2026 {{ business_name }}. All rights reserved. Powered by Errand AI</p>
+        </div>
+    </footer>
+
+    <div id="booking-widget-container"></div>
+</body>
+</html>

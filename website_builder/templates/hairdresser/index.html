@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ business_name }} - {{ tagline | default('Professional Hair Services') }}</title>
+    <meta name="description" content="{{ meta_description | default('Book appointments online for expert hair services') }}">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Custom styles -->
+    <style>
+        :root {
+            --primary: #8B4513;
+            --secondary: #D2691E;
+            --accent: #F5DEB3;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--secondary);
+        }
+        
+        .hero-gradient {
+            background: linear-gradient(135deg, #8B4513 0%, #D2691E 100%);
+        }
+        
+        .service-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        
+        .gallery-item:hover img {
+            transform: scale(1.05);
+        }
+        
+        .gallery-item img {
+            transition: transform 0.3s ease;
+        }
+    </style>
+    
+    <!-- Booking Widget Script -->
+    <script src="/embed/booking-widget.js" defer></script>
+</head>
+<body class="font-sans text-gray-800">
+    <!-- Navigation -->
+    <nav class="fixed top-0 left-0 right-0 bg-white shadow-md z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex-shrink-0">
+                    <span class="text-2xl font-bold" style="color: var(--primary)">{{ business_name }}</span>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <a href="#services" class="text-gray-600 hover:text-gray-900">Services</a>
+                    <a href="#gallery" class="text-gray-600 hover:text-gray-900">Gallery</a>
+                    <a href="#testimonials" class="text-gray-600 hover:text-gray-900">Reviews</a>
+                    <a href="#contact" class="text-gray-600 hover:text-gray-900">Contact</a>
+                </div>
+                <button onclick="BookingWidget.open()" class="btn-primary">Book Now</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero-gradient text-white pt-32 pb-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center">
+                <h1 class="text-4xl md:text-6xl font-bold mb-6">{{ business_name }}</h1>
+                <p class="text-xl md:text-2xl mb-8 opacity-90">{{ tagline | default('Expert Hair Styling & Care') }}</p>
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <button onclick="BookingWidget.open()" class="bg-white text-gray-900 px-8 py-4 rounded-lg font-semibold hover:bg-gray-100 transition">
+                        Book Appointment
+                    </button>
+                    <a href="#services" class="border-2 border-white px-8 py-4 rounded-lg font-semibold hover:bg-white/10 transition">
+                        View Services
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Services Section -->
+    <section id="services" class="py-20 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Our Services</h2>
+                <p class="text-lg text-gray-600">Professional hair services tailored to you</p>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <!-- Service Cards (Example) -->
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">✂️</div>
+                    <h3 class="text-xl font-semibold mb-2">Haircuts & Styling</h3>
+                    <p class="text-gray-600 mb-4">Expert cuts and styling for all hair types</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£35</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+                
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">🎨</div>
+                    <h3 class="text-xl font-semibold mb-2">Color Treatments</h3>
+                    <p class="text-gray-600 mb-4">Full color, highlights, balayage and more</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£65+</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+                
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">💇</div>
+                    <h3 class="text-xl font-semibold mb-2">Bridal & Events</h3>
+                    <p class="text-gray-600 mb-4">Special occasion styling and makeup</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£150+</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+                
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">💆</div>
+                    <h3 class="text-xl font-semibold mb-2">Deep Conditioning</h3>
+                    <p class="text-gray-600 mb-4">Restore and nourish your hair</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£25</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+                
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">🪮</div>
+                    <h3 class="text-xl font-semibold mb-2">Men's Grooming</h3>
+                    <p class="text-gray-600 mb-4">Classic cuts and modern styles</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£20</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+                
+                <div class="service-card bg-white rounded-xl p-8 shadow-md transition">
+                    <div class="text-4xl mb-4">✨</div>
+                    <h3 class="text-xl font-semibold mb-2">Blow Dry & Finish</h3>
+                    <p class="text-gray-600 mb-4">Perfect finish for any occasion</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-2xl font-bold" style="color: var(--primary)">£30</span>
+                        <button onclick="BookingWidget.open()" class="text-sm font-semibold" style="color: var(--primary)">Book →</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Gallery Section -->
+    <section id="gallery" class="py-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Our Work</h2>
+                <p class="text-lg text-gray-600">See our latest styles and transformations</p>
+            </div>
+            
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-1.jpg" alt="Hair style 1" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-2.jpg" alt="Hair style 2" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-3.jpg" alt="Hair style 3" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-4.jpg" alt="Hair style 4" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-5.jpg" alt="Hair style 5" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-6.jpg" alt="Hair style 6" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-7.jpg" alt="Hair style 7" class="w-full h-64 object-cover">
+                </div>
+                <div class="gallery-item overflow-hidden rounded-lg">
+                    <img src="/images/gallery/placeholder-8.jpg" alt="Hair style 8" class="w-full h-64 object-cover">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Testimonials Section -->
+    <section id="testimonials" class="py-20 bg-gray-900 text-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold mb-4">What Our Clients Say</h2>
+                <p class="text-lg text-gray-400">Join thousands of happy customers</p>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div class="bg-gray-800 rounded-xl p-8">
+                    <div class="flex items-center mb-4">
+                        <div class="text-yellow-400 text-xl">★★★★★</div>
+                    </div>
+                    <p class="text-gray-300 mb-6">"Absolutely love my hair! The team really listened to what I wanted and delivered beyond my expectations. Will definitely be back!"</p>
+                    <div class="flex items-center">
+                        <div class="w-12 h-12 bg-gray-600 rounded-full mr-4"></div>
+                        <div>
+                            <div class="font-semibold">Sarah M.</div>
+                            <div class="text-sm text-gray-400">Regular Client</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-gray-800 rounded-xl p-8">
+                    <div class="flex items-center mb-4">
+                        <div class="text-yellow-400 text-xl">★★★★★</div>
+                    </div>
+                    <p class="text-gray-300 mb-6">"Best hair salon in town! Professional, friendly, and always up to date with the latest trends. My go-to for all hair needs."</p>
+                    <div class="flex items-center">
+                        <div class="w-12 h-12 bg-gray-600 rounded-full mr-4"></div>
+                        <div>
+                            <div class="font-semibold">Emma L.</div>
+                            <div class="text-sm text-gray-400">VIP Member</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-gray-800 rounded-xl p-8">
+                    <div class="flex items-center mb-4">
+                        <div class="text-yellow-400 text-xl">★★★★★</div>
+                    </div>
+                    <p class="text-gray-300 mb-6">"The booking system is so convenient! Easy to schedule and always running on time. Great experience every visit."</p>
+                    <div class="flex items-center">
+                        <div class="w-12 h-12 bg-gray-600 rounded-full mr-4"></div>
+                        <div>
+                            <div class="font-semibold">Rachel K.</div>
+                            <div class="text-sm text-gray-400">Monthly Client</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Contact Section -->
+    <section id="contact" class="py-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-16">
+                <div>
+                    <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-8">Contact Us</h2>
+                    
+                    <div class="space-y-6">
+                        <div class="flex items-start">
+                            <div class="text-2xl mr-4">📍</div>
+                            <div>
+                                <h3 class="font-semibold text-lg">Address</h3>
+                                <p class="text-gray-600">{{ address }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start">
+                            <div class="text-2xl mr-4">📞</div>
+                            <div>
+                                <h3 class="font-semibold text-lg">Phone</h3>
+                                <p class="text-gray-600">{{ phone }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start">
+                            <div class="text-2xl mr-4">✉️</div>
+                            <div>
+                                <h3 class="font-semibold text-lg">Email</h3>
+                                <p class="text-gray-600">{{ email }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start">
+                            <div class="text-2xl mr-4">🕐</div>
+                            <div>
+                                <h3 class="font-semibold text-lg">Opening Hours</h3>
+                                <p class="text-gray-600">
+                                    Mon-Fri: 9:00 AM - 6:00 PM<br>
+                                    Saturday: 9:00 AM - 5:00 PM<br>
+                                    Sunday: Closed
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button onclick="BookingWidget.open()" class="btn-primary mt-8">Book Your Appointment</button>
+                </div>
+                
+                <div class="bg-gray-100 rounded-xl p-8">
+                    <h3 class="font-semibold text-lg mb-4">Find Us</h3>
+                    <div class="aspect-video bg-gray-200 rounded-lg flex items-center justify-center">
+                        <p class="text-gray-500">Map placeholder</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
+                <div>
+                    <span class="text-2xl font-bold">{{ business_name }}</span>
+                    <p class="mt-4 text-gray-400">{{ tagline | default('Expert Hair Styling & Care') }}</p>
+                </div>
+                
+                <div>
+                    <h4 class="font-semibold mb-4">Services</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="#services" class="hover:text-white">Haircuts</a></li>
+                        <li><a href="#services" class="hover:text-white">Color</a></li>
+                        <li><a href="#services" class="hover:text-white">Styling</a></li>
+                        <li><a href="#services" class="hover:text-white">Treatments</a></li>
+                    </ul>
+                </div>
+                
+                <div>
+                    <h4 class="font-semibold mb-4">Quick Links</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="#gallery" class="hover:text-white">Gallery</a></li>
+                        <li><a href="#testimonials" class="hover:text-white">Reviews</a></li>
+                        <li><a href="#contact" class="hover:text-white">Contact</a></li>
+                        <li><a href="#" onclick="BookingWidget.open(); return false;" class="hover:text-white">Book Online</a></li>
+                    </ul>
+                </div>
+                
+                <div>
+                    <h4 class="font-semibold mb-4">Follow Us</h4>
+                    <div class="flex space-x-4">
+                        <a href="#" class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center hover:bg-gray-700">
+                            <span>📘</span>
+                        </a>
+                        <a href="#" class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center hover:bg-gray-700">
+                            <span>📸</span>
+                        </a>
+                        <a href="#" class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center hover:bg-gray-700">
+                            <span>🐦</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="border-t border-gray-800 mt-12 pt-8 text-center text-gray-400">
+                <p>&copy; 2026 {{ business_name }}. All rights reserved. Powered by Errand AI</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Booking Widget Container -->
+    <div id="booking-widget-container"></div>
+</body>
+</html>

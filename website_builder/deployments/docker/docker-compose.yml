@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Website Builder Backend
+  website-builder-api:
+    build:
+      context: ../../
+      dockerfile: website_builder/backend/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://user:pass@postgres:5432/website_builder}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - website-builder-network
+    restart: unless-stopped
+
+  # Static site generator
+  site-generator:
+    build:
+      context: ../../
+      dockerfile: website_builder/Dockerfile.generator
+    volumes:
+      - website-data:/data
+      - templates-data:/templates
+    networks:
+      - website-builder-network
+    restart: unless-stopped
+
+  # Nginx for serving static sites
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - website-data:/var/www/sites
+      - ssl-data:/etc/nginx/ssl
+    depends_on:
+      - site-generator
+    networks:
+      - website-builder-network
+    restart: unless-stopped
+
+  # PostgreSQL for website data
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=website_builder
+      - POSTGRES_USER=${DB_USER:-webbuilder}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - website-builder-network
+    restart: unless-stopped
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    networks:
+      - website-builder-network
+    restart: unless-stopped
+
+  # SSL certificate automation
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait; done;'"
+    networks:
+      - website-builder-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  website-data:
+  templates-data:
+  ssl-data:
+
+networks:
+  website-builder-network:
+    driver: bridge
