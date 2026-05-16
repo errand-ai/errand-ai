@@ -26,7 +26,7 @@ from agents.mcp import MCPServerStreamableHttp
 from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
-from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, submit_result
+from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -1335,11 +1335,17 @@ async def main():
         native_tools = [execute_command, write_file, edit_file, read_file, discover_tools, submit_result]
         always_on_tools = {t.name for t in native_tools}
 
+        # Scan /workspace/skills/ so discover_tools can recover when the model
+        # probes a skill name instead of a tool name.
+        installed_skills = scan_installed_skills()
+        logger.info("Installed skills: %d", len(installed_skills))
+
         # Create tool visibility context initialized with hot list
         visibility_ctx = ToolVisibilityContext(
             enabled_tools=set(hot_list),
             all_known_tools=all_known_tools,
             always_on_tools=always_on_tools,
+            installed_skills=installed_skills,
         )
 
         # 5. Create agent with reasoning settings and model-aware max output tokens
