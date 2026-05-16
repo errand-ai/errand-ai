@@ -14,7 +14,37 @@ sys.path.insert(0, os.path.dirname(__file__))
 # Mock the agents SDK — the SDK may not be installed locally or may have
 # version conflicts. We only need the pure-Python functions from main.
 _mock_agents = MagicMock()
-_mock_agents.function_tool = lambda f: f  # passthrough decorator
+def _mock_function_tool(*args, **kwargs):
+    """Mock @function_tool supporting both bare and parameterised forms.
+
+    `@function_tool` (no parens) → called with the function as the sole arg.
+    `@function_tool(name_override="x")` → called with kwargs, returns a
+    decorator that stamps the override onto the wrapped function's `.name`.
+    """
+    if args and callable(args[0]) and not kwargs:
+        f = args[0]
+        try:
+            if not hasattr(f, "name"):
+                f.name = f.__name__
+        except (AttributeError, TypeError):
+            # Built-ins and some callables (e.g. MagicMock-wrapped) reject
+            # attribute assignment; the real SDK would have replaced them
+            # with a FunctionTool object, so just leave the callable as-is.
+            pass
+        return f
+
+    def _decorator(f):
+        try:
+            f.name = kwargs.get("name_override", f.__name__)
+        except (AttributeError, TypeError):
+            # Same rationale as above — tests that pass non-assignable
+            # callables don't care about the stamped name attribute.
+            pass
+        return f
+    return _decorator
+
+
+_mock_agents.function_tool = _mock_function_tool
 # RunHooks must be a real class so StreamEventEmitter can subclass it
 _mock_agents.RunHooks = type("RunHooks", (), {})
 # ModelSettings must be a real class

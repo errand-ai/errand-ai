@@ -24,6 +24,7 @@ from main import (
     connect_mcp_servers, resolve_max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS,
     _TRUNCATION_RECOVERY_MESSAGE,
     extract_output, _OUTPUT, _NUDGE, _EMPTY_FAIL,
+    _execute_command_impl, EXECUTE_COMMAND_ALIASES, EXECUTE_COMMAND_ALIAS_TOOLS,
 )
 
 
@@ -1405,3 +1406,63 @@ def test_backward_compat_text_json_without_submit_result():
     payload = json.loads(output)
     assert payload["status"] == "completed"
     assert payload["result"] == "Legacy output format"
+
+
+# --- execute_command alias shims ---
+
+
+def test_execute_command_impl_direct_invocation(tmp_path):
+    """The shared helper is directly callable and returns expected output."""
+    result = _execute_command_impl("echo alias-test", working_directory=str(tmp_path))
+    assert "alias-test" in result
+
+
+def test_execute_command_aliases_constant_is_locked():
+    """Regression guard against accidental shrinkage or rename of the alias list."""
+    assert EXECUTE_COMMAND_ALIASES == ("run_command", "bash", "shell", "sh")
+
+
+def test_execute_command_alias_tools_match_alias_names():
+    """Each generated alias tool exposes `.name` equal to its alias string."""
+    names = [t.name for t in EXECUTE_COMMAND_ALIAS_TOOLS]
+    assert names == list(EXECUTE_COMMAND_ALIASES)
+
+
+def test_execute_command_alias_tools_count_matches_constant():
+    """One alias tool is generated for each entry in the alias constant."""
+    assert len(EXECUTE_COMMAND_ALIAS_TOOLS) == len(EXECUTE_COMMAND_ALIASES)
+
+
+def test_execute_command_alias_delegates_to_impl(tmp_path):
+    """Alias shims invoke the same implementation as execute_command."""
+    # Under conftest's mocked function_tool, the alias is a plain callable.
+    run_command = EXECUTE_COMMAND_ALIAS_TOOLS[0]
+    assert callable(run_command), "alias should be callable under the test SDK mock"
+    result = run_command("echo alias-delegate", working_directory=str(tmp_path))
+    assert "alias-delegate" in result
+
+
+def test_native_tools_includes_alias_tools_via_always_on_set():
+    """Simulate the agent-construction path and confirm aliases land in always_on_tools."""
+    native_tools = [execute_command] + list(EXECUTE_COMMAND_ALIAS_TOOLS)
+    always_on_tools = {t.name for t in native_tools}
+    for alias in EXECUTE_COMMAND_ALIASES:
+        assert alias in always_on_tools, f"alias {alias!r} missing from always_on_tools"
+
+
+def test_discover_tools_classifies_alias_as_always_on():
+    """An alias name probed via discover_tools is reported as already-enabled (always-on)."""
+    from conftest import MockRunContextWrapper as _MockRunContextWrapper
+    from tool_registry import ToolVisibilityContext, discover_tools
+
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools=set(),
+        always_on_tools={"execute_command", *EXECUTE_COMMAND_ALIASES},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["run_command"])
+
+    assert result == "Already enabled (always-on): run_command"
+    assert ctx.enabled_tools == set()
