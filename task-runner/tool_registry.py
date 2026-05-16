@@ -21,7 +21,30 @@ class ToolVisibilityContext:
     enabled_tools: set[str] = field(default_factory=set)
     all_known_tools: set[str] = field(default_factory=set)
     always_on_tools: set[str] = field(default_factory=set)
+    installed_skills: dict[str, str] = field(default_factory=dict)
     submitted_result: dict | None = None
+
+
+def scan_installed_skills(skills_root: str = "/workspace/skills") -> dict[str, str]:
+    """Scan ``skills_root`` for ``*/SKILL.md`` files and return ``{name: absolute_path}``.
+
+    Returns an empty dict if ``skills_root`` does not exist or contains no skill
+    directories. Used to populate ``ToolVisibilityContext.installed_skills`` so
+    that ``discover_tools`` can recover from skill-name probes by inlining the
+    matched SKILL.md content.
+    """
+    if not os.path.isdir(skills_root):
+        return {}
+
+    skills: dict[str, str] = {}
+    for entry in os.listdir(skills_root):
+        skill_dir = os.path.join(skills_root, entry)
+        if not os.path.isdir(skill_dir):
+            continue
+        skill_md = os.path.join(skill_dir, "SKILL.md")
+        if os.path.isfile(skill_md):
+            skills[entry] = os.path.abspath(skill_md)
+    return skills
 
 
 def get_hot_list() -> set[str]:
@@ -127,29 +150,51 @@ def discover_tools(ctx: RunContextWrapper[ToolVisibilityContext], tool_names: li
     Only enable tools you need for the current task — do not speculatively enable tools.
     You can enable multiple tools in a single call.
 
+    If a name matches an installed Agent Skill rather than a tool, the skill's
+    SKILL.md content is returned inline under a ``Loaded skill:`` clause so the
+    instructions are available immediately (no follow-up ``read_file`` needed).
+
     Args:
         tool_names: List of tool names to enable.
     """
     visibility: ToolVisibilityContext = ctx.context
-    enabled = []
-    already_on = []
-    not_found = []
+    enabled: list[str] = []
+    already_on: list[str] = []
+    loaded_skills: list[tuple[str, str, str]] = []  # (name, path, content)
+    not_found: list[str] = []
 
     for name in tool_names:
-        # Always-on classification takes precedence over catalog membership.
+        # Precedence: always_on > catalog > installed skill > not found.
         if name in visibility.always_on_tools:
             already_on.append(name)
         elif name in visibility.all_known_tools:
             visibility.enabled_tools.add(name)
             enabled.append(name)
+        elif name in visibility.installed_skills:
+            path = visibility.installed_skills[name]
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except OSError as e:
+                logger.warning("Failed to read SKILL.md for '%s' at %s: %s", name, path, e)
+                not_found.append(name)
+                continue
+            loaded_skills.append((name, path, content))
         else:
             not_found.append(name)
 
-    parts = []
+    parts: list[str] = []
     if enabled:
         parts.append(f"Enabled: {', '.join(enabled)}")
     if already_on:
         parts.append(f"Already enabled (always-on): {', '.join(already_on)}")
+    if loaded_skills:
+        names = ", ".join(n for n, _, _ in loaded_skills)
+        blocks = "\n\n".join(
+            f"--- {path} ---\n{content}\n--- end skill ---"
+            for _, path, content in loaded_skills
+        )
+        parts.append(f"Loaded skill: {names}\n\n{blocks}")
     if not_found:
         parts.append(f"Not found: {', '.join(not_found)}")
     return ". ".join(parts) if parts else "No tools specified."

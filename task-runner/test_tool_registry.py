@@ -15,6 +15,7 @@ from tool_registry import (
     create_tool_filter,
     discover_tools,
     get_hot_list,
+    scan_installed_skills,
     submit_result,
     _truncate_description,
     DEFAULT_HOT_TOOLS,
@@ -449,6 +450,164 @@ def test_submit_result_last_call_wins():
     submit_result(wrapper, result="Final version")
 
     assert ctx.submitted_result["result"] == "Final version"
+
+
+# --- scan_installed_skills() ---
+
+
+def test_scan_installed_skills_missing_root(tmp_path):
+    """Returns empty dict when skills_root does not exist."""
+    missing = tmp_path / "does-not-exist"
+    assert scan_installed_skills(str(missing)) == {}
+
+
+def test_scan_installed_skills_populated(tmp_path):
+    """Returns name → absolute SKILL.md path for each skill directory found."""
+    (tmp_path / "tweet-publisher").mkdir()
+    (tmp_path / "tweet-publisher" / "SKILL.md").write_text("publisher contents")
+    (tmp_path / "gws-drive").mkdir()
+    (tmp_path / "gws-drive" / "SKILL.md").write_text("drive contents")
+    # A directory without a SKILL.md should be ignored.
+    (tmp_path / "no-skill-md").mkdir()
+    # A loose file at the root should be ignored.
+    (tmp_path / "stray.md").write_text("ignore me")
+
+    result = scan_installed_skills(str(tmp_path))
+
+    assert set(result.keys()) == {"tweet-publisher", "gws-drive"}
+    assert result["tweet-publisher"] == os.path.abspath(str(tmp_path / "tweet-publisher" / "SKILL.md"))
+    assert result["gws-drive"] == os.path.abspath(str(tmp_path / "gws-drive" / "SKILL.md"))
+
+
+# --- discover_tools skill-awareness ---
+
+
+def test_discover_tools_loads_skill_when_name_matches(tmp_path):
+    """A name matching only an installed skill returns the SKILL.md contents inline."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("---\nname: tweet-publisher\ndescription: Post approved tweets\n---\n\n## Steps\n1. Read approved tweets...")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"list_applications"},
+        installed_skills={"tweet-publisher": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["tweet-publisher"])
+
+    assert result.startswith("Loaded skill: tweet-publisher\n\n")
+    assert f"--- {skill_md} ---" in result
+    assert "Post approved tweets" in result
+    assert "## Steps" in result
+    assert result.endswith("--- end skill ---")
+    # enabled_tools must remain untouched on a skill match.
+    assert ctx.enabled_tools == set()
+
+
+def test_discover_tools_mixed_tool_skill_unknown(tmp_path):
+    """Mixed probe produces clauses in order: Enabled → Loaded skill → Not found."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("tweet publisher body")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"list_applications"},
+        installed_skills={"tweet-publisher": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["list_applications", "tweet-publisher", "made_up_name"])
+
+    # All three clauses in the expected order.
+    enabled_idx = result.index("Enabled: list_applications")
+    loaded_idx = result.index("Loaded skill: tweet-publisher")
+    not_found_idx = result.index("Not found: made_up_name")
+    assert enabled_idx < loaded_idx < not_found_idx
+    assert "list_applications" in ctx.enabled_tools
+
+
+def test_discover_tools_tool_precedence_over_skill(tmp_path):
+    """A name present in both the tool catalog and installed_skills classifies as Enabled."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("skill body")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools={"tweet-publisher"},
+        installed_skills={"tweet-publisher": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["tweet-publisher"])
+
+    assert result == "Enabled: tweet-publisher"
+    assert "tweet-publisher" in ctx.enabled_tools
+    assert "Loaded skill" not in result
+
+
+def test_discover_tools_always_on_precedence_over_skill(tmp_path):
+    """A name present in always_on_tools and installed_skills classifies as Already enabled (always-on)."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("skill body")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools=set(),
+        always_on_tools={"read_file"},
+        installed_skills={"read_file": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["read_file"])
+
+    assert result == "Already enabled (always-on): read_file"
+    assert "Loaded skill" not in result
+    assert ctx.enabled_tools == set()
+
+
+def test_discover_tools_skill_md_unreadable_falls_back_to_not_found(tmp_path):
+    """If SKILL.md was deleted after startup, the probe falls back to Not found without raising."""
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("body")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools=set(),
+        installed_skills={"tweet-publisher": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+    # Simulate the file disappearing between startup and the call.
+    skill_md.unlink()
+
+    result = discover_tools(wrapper, ["tweet-publisher"])
+
+    assert result == "Not found: tweet-publisher"
+    assert ctx.enabled_tools == set()
+
+
+def test_discover_tools_multiple_skill_matches(tmp_path):
+    """Multiple skill matches produce one Loaded skill clause with concatenated delimited blocks in input order."""
+    pub_md = tmp_path / "pub.md"
+    pub_md.write_text("publisher body")
+    drv_md = tmp_path / "drv.md"
+    drv_md.write_text("drive body")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools=set(),
+        installed_skills={
+            "tweet-publisher": str(pub_md),
+            "gws-drive": str(drv_md),
+        },
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    # Pass in a specific order; the response must preserve it.
+    result = discover_tools(wrapper, ["tweet-publisher", "gws-drive"])
+
+    assert result.startswith("Loaded skill: tweet-publisher, gws-drive\n\n")
+    pub_idx = result.index(f"--- {pub_md} ---")
+    drv_idx = result.index(f"--- {drv_md} ---")
+    assert pub_idx < drv_idx
+    # Each block ends with the closing delimiter.
+    assert result.count("--- end skill ---") == 2
+    assert "publisher body" in result
+    assert "drive body" in result
 
 
 def test_submit_result_rejects_invalid_status():
