@@ -498,7 +498,12 @@ def _make_execute_command_alias(name: str):
         if getattr(_alias, "name", None) != name:
             _alias.name = name  # type: ignore[attr-defined]
     except Exception:
-        pass
+        # The real agents SDK returns a FunctionTool with `.name` already
+        # set; this fallback only matters under the test mock. If the
+        # object happens to reject attribute writes (rare — e.g. some
+        # FrozenInstanceError variants), the SDK-provided name is already
+        # correct and there is nothing to do.
+        logger.debug("Could not stamp alias name %r on shim; using SDK default", name)
     return _alias
 
 

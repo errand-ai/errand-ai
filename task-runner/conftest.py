@@ -27,6 +27,9 @@ def _mock_function_tool(*args, **kwargs):
             if not hasattr(f, "name"):
                 f.name = f.__name__
         except (AttributeError, TypeError):
+            # Built-ins and some callables (e.g. MagicMock-wrapped) reject
+            # attribute assignment; the real SDK would have replaced them
+            # with a FunctionTool object, so just leave the callable as-is.
             pass
         return f
 
@@ -34,6 +37,8 @@ def _mock_function_tool(*args, **kwargs):
         try:
             f.name = kwargs.get("name_override", f.__name__)
         except (AttributeError, TypeError):
+            # Same rationale as above — tests that pass non-assignable
+            # callables don't care about the stamped name attribute.
             pass
         return f
     return _decorator
