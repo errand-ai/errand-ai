@@ -405,17 +405,11 @@ New conversation content to merge:
 {conversation}"""
 
 
-@function_tool
-def execute_command(command: str, working_directory: str = "/workspace") -> str:
-    """Execute a shell command and return the combined stdout and stderr output.
+def _execute_command_impl(command: str, working_directory: str = "/workspace") -> str:
+    """Shared implementation for execute_command and its alias shims.
 
-    Use this tool to run commands like git clone, ls, grep, pip install, etc.
-    For reading, writing, and editing files, prefer the dedicated file tools
-    (read_file, write_file, edit_file) instead.
-
-    Args:
-        command: The shell command to execute.
-        working_directory: The directory to run the command in. Defaults to /workspace.
+    Kept undecorated so unit tests and alias shims can call it directly without
+    going through the agents-SDK FunctionTool wrapper.
     """
     try:
         result = subprocess.run(
@@ -452,6 +446,63 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
         return f"Command timed out after {COMMAND_TIMEOUT} seconds"
     except Exception as e:
         return f"Error executing command: {e}"
+
+
+@function_tool
+def execute_command(command: str, working_directory: str = "/workspace") -> str:
+    """Execute a shell command and return the combined stdout and stderr output.
+
+    Use this tool to run commands like git clone, ls, grep, pip install, etc.
+    For reading, writing, and editing files, prefer the dedicated file tools
+    (read_file, write_file, edit_file) instead.
+
+    Args:
+        command: The shell command to execute.
+        working_directory: The directory to run the command in. Defaults to /workspace.
+    """
+    return _execute_command_impl(command, working_directory)
+
+
+# Common alternative names that weaker models hallucinate instead of
+# `execute_command`. Each name is registered as a lightweight always-on
+# @function_tool shim that delegates to `_execute_command_impl`. The aliases
+# are NOT advertised in the system prompt or MCP catalog — they exist solely
+# as a compatibility surface. See change `alias-known-tool-name-mistakes`.
+EXECUTE_COMMAND_ALIASES: tuple[str, ...] = ("run_command", "bash", "shell", "sh")
+
+
+def _make_execute_command_alias(name: str):
+    """Build a @function_tool shim that delegates to `_execute_command_impl`.
+
+    The shim uses `name_override` so the SDK registers it (and emits structured
+    tool_call/tool_result events) under the alias name rather than the Python
+    function name.
+    """
+    @function_tool(name_override=name)
+    def _alias(command: str, working_directory: str = "/workspace") -> str:
+        """Alias for execute_command — delegates to the same implementation.
+
+        Use this tool to run shell commands; identical behaviour to
+        execute_command. For reading, writing, and editing files, prefer the
+        dedicated file tools (read_file, write_file, edit_file).
+
+        Args:
+            command: The shell command to execute.
+            working_directory: The directory to run the command in. Defaults to /workspace.
+        """
+        return _execute_command_impl(command, working_directory)
+    # In the real SDK, @function_tool(name_override=...) returns a FunctionTool
+    # whose `.name` matches. In tests the decorator may be mocked; set the
+    # attribute defensively so callers can introspect by name either way.
+    try:
+        if getattr(_alias, "name", None) != name:
+            _alias.name = name  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return _alias
+
+
+EXECUTE_COMMAND_ALIAS_TOOLS = [_make_execute_command_alias(n) for n in EXECUTE_COMMAND_ALIASES]
 
 
 # --- File Mutation Queue and File Tools ---
@@ -1333,6 +1384,15 @@ async def main():
         # Native @function_tool callables — always callable, never lazy-loaded.
         # Single source of truth: this list is also passed to Agent(tools=...) below.
         native_tools = [execute_command, write_file, edit_file, read_file, discover_tools, submit_result]
+        # Append execute_command alias shims (run_command, bash, shell, sh) so
+        # weaker models that hallucinate the wrong shell-tool name still route
+        # through to the canonical implementation. See change
+        # `alias-known-tool-name-mistakes`.
+        native_tools.extend(EXECUTE_COMMAND_ALIAS_TOOLS)
+        logger.info(
+            "execute_command aliases armed: %s",
+            ", ".join(EXECUTE_COMMAND_ALIASES),
+        )
         always_on_tools = {t.name for t in native_tools}
 
         # Scan /workspace/skills/ so discover_tools can recover when the model
