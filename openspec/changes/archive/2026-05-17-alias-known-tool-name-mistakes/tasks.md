@@ -30,13 +30,13 @@
 
 ## 6. Local verification
 
-- [ ] 6.1 `docker compose -f testing/docker-compose.yml up --build` — start the stack
-- [ ] 6.2 Run a task that exercises shell (e.g. trigger a task whose system prompt suggests running a CLI tool); inspect tool-call logs — `execute_command` events should look identical to before
-- [ ] 6.3 (Optional, for stronger evidence) Force-trigger an alias by inspecting a task where the model has historically called `run_command` (the "Publish Approved Tweet" task on glm-4-flash, per Loki) and confirm the `tool_call` event now carries `{"tool": "run_command", ...}` and the task succeeds
+- [x] 6.1 `docker compose -f testing/docker-compose.yml up --build` — start the stack
+- [x] 6.2 Run a task that exercises shell (e.g. trigger a task whose system prompt suggests running a CLI tool); inspect tool-call logs — `execute_command` events should look identical to before
+- [x] 6.3 (Optional, for stronger evidence) Force-trigger an alias by inspecting a task where the model has historically called `run_command` (the "Publish Approved Tweet" task on glm-4-flash, per Loki) and confirm the `tool_call` event now carries `{"tool": "run_command", ...}` and the task succeeds
 
 ## 7. Commit, push, PR
 
-- [ ] 7.1 Create feature branch `alias-known-tool-name-mistakes` from `main` (after PR #180 is merged, so this branch starts from the post-skill-aware-discover-tools state)
-- [ ] 7.2 Commit changes with a clear message (subject ≤ 72 chars, body explaining the hallucination pattern, the alias set, and the production task evidence)
-- [ ] 7.3 Push and open the PR; wait for CI to build images + Helm chart
-- [ ] 7.4 Verify the built image runs on Kubernetes (ArgoCD sync or `helm upgrade --dry-run`) and a smoke task succeeds before merging
+- [x] 7.1 Create feature branch `alias-known-tool-name-mistakes` from `main` (after PR #180 is merged, so this branch starts from the post-skill-aware-discover-tools state)
+- [x] 7.2 Commit changes with a clear message (subject ≤ 72 chars, body explaining the hallucination pattern, the alias set, and the production task evidence)
+- [x] 7.3 Push and open the PR; wait for CI to build images + Helm chart — PR #181
+- [x] 7.4 Verify the built image runs on Kubernetes (ArgoCD sync or `helm upgrade --dry-run`) and a smoke task succeeds before merging
