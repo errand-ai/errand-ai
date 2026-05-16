@@ -461,6 +461,16 @@ def test_scan_installed_skills_missing_root(tmp_path):
     assert scan_installed_skills(str(missing)) == {}
 
 
+def test_scan_installed_skills_unreadable_directory(tmp_path):
+    """Permission errors on the skills root return an empty dict instead of crashing startup."""
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    # Patch os.listdir to simulate a permission error on the iteration step.
+    with patch("tool_registry.os.listdir", side_effect=PermissionError("no read perms")):
+        result = scan_installed_skills(str(skills_root))
+    assert result == {}
+
+
 def test_scan_installed_skills_populated(tmp_path):
     """Returns name → absolute SKILL.md path for each skill directory found."""
     (tmp_path / "tweet-publisher").mkdir()
@@ -559,6 +569,24 @@ def test_discover_tools_always_on_precedence_over_skill(tmp_path):
 
     assert result == "Already enabled (always-on): read_file"
     assert "Loaded skill" not in result
+    assert ctx.enabled_tools == set()
+
+
+def test_discover_tools_skill_md_invalid_utf8_falls_back_to_not_found(tmp_path):
+    """A SKILL.md containing invalid UTF-8 falls back to Not found without raising."""
+    skill_md = tmp_path / "SKILL.md"
+    # Bytes that are not valid UTF-8 (lone continuation byte 0x80).
+    skill_md.write_bytes(b"\x80\x80\x80 not utf-8")
+    ctx = ToolVisibilityContext(
+        enabled_tools=set(),
+        all_known_tools=set(),
+        installed_skills={"tweet-publisher": str(skill_md)},
+    )
+    wrapper = _MockRunContextWrapper(ctx)
+
+    result = discover_tools(wrapper, ["tweet-publisher"])
+
+    assert result == "Not found: tweet-publisher"
     assert ctx.enabled_tools == set()
 
 

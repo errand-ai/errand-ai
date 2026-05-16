@@ -37,7 +37,12 @@ def scan_installed_skills(skills_root: str = "/workspace/skills") -> dict[str, s
         return {}
 
     skills: dict[str, str] = {}
-    for entry in os.listdir(skills_root):
+    try:
+        entries = os.listdir(skills_root)
+    except OSError as e:
+        logger.warning("Failed to list skills directory %s: %s", skills_root, e)
+        return {}
+    for entry in entries:
         skill_dir = os.path.join(skills_root, entry)
         if not os.path.isdir(skill_dir):
             continue
@@ -175,7 +180,7 @@ def discover_tools(ctx: RunContextWrapper[ToolVisibilityContext], tool_names: li
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 logger.warning("Failed to read SKILL.md for '%s' at %s: %s", name, path, e)
                 not_found.append(name)
                 continue
