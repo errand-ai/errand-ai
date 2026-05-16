@@ -34,13 +34,13 @@
 
 ## 6. Local verification
 
-- [ ] 6.1 `docker compose -f testing/docker-compose.yml up --build` — start the stack
-- [ ] 6.2 Trigger a task that mounts at least one skill into `/workspace/skills/` and observe a tool-call log entry showing the model probing a skill name through `discover_tools` returning a `Loaded skill:` clause (can be forced by running a task with a model that previously failed this way, or by inspecting the unit-test fixtures)
-- [ ] 6.3 Confirm no regression on a task that does not probe skill names: `Loaded skill:` clause must be absent from `discover_tools` results
+- [x] 6.1 `docker compose -f testing/docker-compose.yml up --build` — start the stack
+- [x] 6.2 Trigger a task that mounts at least one skill into `/workspace/skills/` and observe a tool-call log entry showing the model probing a skill name through `discover_tools` returning a `Loaded skill:` clause (can be forced by running a task with a model that previously failed this way, or by inspecting the unit-test fixtures)
+- [x] 6.3 Confirm no regression on a task that does not probe skill names: `Loaded skill:` clause must be absent from `discover_tools` results
 
 ## 7. Commit, push, PR
 
-- [ ] 7.1 Create feature branch `skill-aware-discover-tools` from `main`
-- [ ] 7.2 Commit changes with a clear message (subject ≤ 72 chars, body explaining the failure mode and the recovery behaviour)
-- [ ] 7.3 Push and open the PR; wait for CI to build images + Helm chart
-- [ ] 7.4 Verify the built image runs on Kubernetes (ArgoCD sync or `helm upgrade --dry-run`) and a smoke task succeeds before merging
+- [x] 7.1 Create feature branch `skill-aware-discover-tools` from `main`
+- [x] 7.2 Commit changes with a clear message (subject ≤ 72 chars, body explaining the failure mode and the recovery behaviour)
+- [x] 7.3 Push and open the PR; wait for CI to build images + Helm chart
+- [x] 7.4 Verify the built image runs on Kubernetes (ArgoCD sync or `helm upgrade --dry-run`) and a smoke task succeeds before merging
