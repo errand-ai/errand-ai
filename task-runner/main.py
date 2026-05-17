@@ -468,7 +468,63 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
 # @function_tool shim that delegates to `_execute_command_impl`. The aliases
 # are NOT advertised in the system prompt or MCP catalog — they exist solely
 # as a compatibility surface. See change `alias-known-tool-name-mistakes`.
-EXECUTE_COMMAND_ALIASES: tuple[str, ...] = ("run_command", "bash", "shell", "sh")
+EXECUTE_COMMAND_ALIASES: tuple[str, ...] = ("run_command", "bash", "shell", "sh", "executescript")
+
+
+def _normalize_harmony_tool_name(name: str) -> str:
+    """Strip OpenAI Harmony-format token suffixes from a tool name.
+
+    Some models leak Harmony tokens like `<|channel|>json` into the tool
+    name string they emit (observed in production task 7bbc189f-... with
+    e.g. `run_command<|channel|>json`). This breaks the SDK's exact-match
+    tool dispatch. The recovery handler calls this helper to recover the
+    bare name before re-attempting dispatch.
+
+    Empty strings and names without a `<|` token pass through unchanged.
+    The caller is responsible for guarding against None.
+    """
+    return name.split("<|", 1)[0]
+
+
+def _resolve_recovery_target(failing_name: str, all_known_tools: set[str]) -> str | None:
+    """Decide whether a tool-not-found error is recoverable by normalization.
+
+    Returns the bare tool name to retry under, or `None` if the failure
+    cannot be rescued (in which case the caller falls through to the
+    existing tool-not-found behaviour).
+
+    Recovery fires only when the failing name carries a Harmony suffix
+    (`<|...|>...`) AND the normalized bare name is one we recognize:
+    a known MCP tool, an `execute_command` alias, or the canonical
+    `execute_command`. A name without a suffix returns None — the
+    Harmony normalizer is the only failure class this helper handles;
+    other recovery paths (e.g. enabling a not-yet-discovered MCP tool)
+    are layered on by the caller.
+
+    This helper is the single source of truth for the Harmony recovery
+    decision. Tests import it directly so production and test logic
+    cannot drift.
+    """
+    if not failing_name:
+        return None
+    normalized = _normalize_harmony_tool_name(failing_name)
+    if normalized == failing_name:
+        return None
+    if (
+        normalized in all_known_tools
+        or normalized in EXECUTE_COMMAND_ALIASES
+        or normalized == "execute_command"
+    ):
+        return normalized
+    return None
+
+
+# Cap how many times the Harmony-suffix recovery can fire for a given
+# (original, normalized) pair within a single agent run. Beyond this, we
+# give up the no-cost retry and let the normal MAX_AGENT_RETRIES limit
+# absorb further attempts so a model that keeps emitting the same bad
+# token cannot loop forever.
+HARMONY_RECOVERY_CAP_PER_PAIR = 3
 
 
 def _make_execute_command_alias(name: str):
@@ -1449,6 +1505,10 @@ async def main():
         attempt = 0
         nudge_attempted = False
         original_user_prompt = user_prompt
+        # Counts how many times the Harmony-suffix recovery has fired for
+        # each (original, normalized) tool-name pair in this run. Bounded
+        # by HARMONY_RECOVERY_CAP_PER_PAIR to prevent infinite loops.
+        harmony_recovery_counts: dict[tuple[str, str], int] = {}
         while attempt < MAX_AGENT_RETRIES:
             attempt += 1
             try:
@@ -1558,6 +1618,44 @@ async def main():
                 # protocol issue, not a real error. The finite set of tools bounds retries.
                 match = re.search(r"Tool (\S+) not found in agent", str(e))
                 tool_name = match.group(1) if match else None
+
+                # Harmony-format suffix normalization: some models emit tokens
+                # like `run_command<|channel|>json` instead of `run_command`.
+                # Strip the suffix and retry the agent under the bare name
+                # if it is recognized. Capped per (original, normalized) pair
+                # so a model that keeps emitting the same bad token cannot
+                # loop forever — beyond the cap, fall through to the normal
+                # MAX_AGENT_RETRIES path.
+                if tool_name:
+                    normalized = _resolve_recovery_target(
+                        tool_name, visibility_ctx.all_known_tools
+                    )
+                    if normalized is not None:
+                        pair = (tool_name, normalized)
+                        prior = harmony_recovery_counts.get(pair, 0)
+                        if prior < HARMONY_RECOVERY_CAP_PER_PAIR:
+                            harmony_recovery_counts[pair] = prior + 1
+                            emit_event("harmony_suffix_normalized", {
+                                "original": tool_name,
+                                "normalized": normalized,
+                                "model": env.get("OPENAI_MODEL"),
+                                "attempt": prior + 1,
+                            })
+                            logger.warning(
+                                "Harmony suffix normalized: %r -> %r (model=%s, attempt %d/%d), retrying",
+                                tool_name, normalized, env.get("OPENAI_MODEL"),
+                                prior + 1, HARMONY_RECOVERY_CAP_PER_PAIR,
+                            )
+                            if normalized in visibility_ctx.all_known_tools:
+                                visibility_ctx.enabled_tools.add(normalized)
+                            attempt -= 1  # Don't count toward retry limit
+                            continue
+                        else:
+                            logger.warning(
+                                "Harmony recovery cap reached for %r -> %r (model=%s); falling through to normal retry",
+                                tool_name, normalized, env.get("OPENAI_MODEL"),
+                            )
+
                 if tool_name and tool_name in visibility_ctx.all_known_tools:
                     visibility_ctx.enabled_tools.add(tool_name)
                     logger.warning("Auto-enabled undiscovered tool '%s', retrying", tool_name)
