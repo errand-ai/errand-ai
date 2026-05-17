@@ -468,7 +468,21 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
 # @function_tool shim that delegates to `_execute_command_impl`. The aliases
 # are NOT advertised in the system prompt or MCP catalog — they exist solely
 # as a compatibility surface. See change `alias-known-tool-name-mistakes`.
-EXECUTE_COMMAND_ALIASES: tuple[str, ...] = ("run_command", "bash", "shell", "sh")
+EXECUTE_COMMAND_ALIASES: tuple[str, ...] = ("run_command", "bash", "shell", "sh", "executescript")
+
+
+def _normalize_harmony_tool_name(name: str) -> str:
+    """Strip OpenAI Harmony-format token suffixes from a tool name.
+
+    Some models leak Harmony tokens like `<|channel|>json` into the tool
+    name string they emit (observed in production task 7bbc189f-... with
+    e.g. `run_command<|channel|>json`). This breaks the SDK's exact-match
+    tool dispatch. The recovery handler calls this helper to recover the
+    bare name before re-attempting dispatch.
+
+    Empty/None-ish or already-clean names pass through unchanged.
+    """
+    return name.split("<|", 1)[0]
 
 
 def _make_execute_command_alias(name: str):
@@ -1558,6 +1572,31 @@ async def main():
                 # protocol issue, not a real error. The finite set of tools bounds retries.
                 match = re.search(r"Tool (\S+) not found in agent", str(e))
                 tool_name = match.group(1) if match else None
+
+                # Harmony-format suffix normalization: some models emit tokens
+                # like `run_command<|channel|>json` instead of `run_command`.
+                # Strip the suffix and retry if the bare name is recognized.
+                if tool_name:
+                    normalized = _normalize_harmony_tool_name(tool_name)
+                    if normalized != tool_name and (
+                        normalized in visibility_ctx.all_known_tools
+                        or normalized in EXECUTE_COMMAND_ALIASES
+                        or normalized == "execute_command"
+                    ):
+                        emit_event("harmony_suffix_normalized", {
+                            "original": tool_name,
+                            "normalized": normalized,
+                            "model": env.get("OPENAI_MODEL"),
+                        })
+                        logger.warning(
+                            "Harmony suffix normalized: %r -> %r (model=%s), retrying",
+                            tool_name, normalized, env.get("OPENAI_MODEL"),
+                        )
+                        if normalized in visibility_ctx.all_known_tools:
+                            visibility_ctx.enabled_tools.add(normalized)
+                        attempt -= 1  # Don't count toward retry limit
+                        continue
+
                 if tool_name and tool_name in visibility_ctx.all_known_tools:
                     visibility_ctx.enabled_tools.add(tool_name)
                     logger.warning("Auto-enabled undiscovered tool '%s', retrying", tool_name)

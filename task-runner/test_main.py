@@ -25,6 +25,7 @@ from main import (
     _TRUNCATION_RECOVERY_MESSAGE,
     extract_output, _OUTPUT, _NUDGE, _EMPTY_FAIL,
     _execute_command_impl, EXECUTE_COMMAND_ALIASES, EXECUTE_COMMAND_ALIAS_TOOLS,
+    _normalize_harmony_tool_name,
 )
 
 
@@ -1419,7 +1420,7 @@ def test_execute_command_impl_direct_invocation(tmp_path):
 
 def test_execute_command_aliases_constant_is_locked():
     """Regression guard against accidental shrinkage or rename of the alias list."""
-    assert EXECUTE_COMMAND_ALIASES == ("run_command", "bash", "shell", "sh")
+    assert EXECUTE_COMMAND_ALIASES == ("run_command", "bash", "shell", "sh", "executescript")
 
 
 def test_execute_command_alias_tools_match_alias_names():
@@ -1466,3 +1467,96 @@ def test_discover_tools_classifies_alias_as_always_on():
 
     assert result == "Already enabled (always-on): run_command"
     assert ctx.enabled_tools == set()
+
+
+# --- Harmony-suffix normalizer + executescript alias ---
+
+
+def test_normalize_harmony_tool_name_strips_channel_suffix():
+    assert _normalize_harmony_tool_name("run_command<|channel|>json") == "run_command"
+
+
+def test_normalize_harmony_tool_name_strips_message_suffix():
+    assert _normalize_harmony_tool_name("execute_command<|message|>start") == "execute_command"
+
+
+def test_normalize_harmony_tool_name_passes_through_clean_name():
+    assert _normalize_harmony_tool_name("plain_name") == "plain_name"
+
+
+def test_normalize_harmony_tool_name_passes_through_empty():
+    assert _normalize_harmony_tool_name("") == ""
+
+
+def test_executescript_is_registered_alias():
+    """The executescript alias is in the constant and has a generated tool."""
+    assert "executescript" in EXECUTE_COMMAND_ALIASES
+    names = [t.name for t in EXECUTE_COMMAND_ALIAS_TOOLS]
+    assert "executescript" in names
+
+
+def test_executescript_alias_delegates_to_impl(tmp_path):
+    """The executescript shim invokes the same implementation as execute_command."""
+    executescript = next(t for t in EXECUTE_COMMAND_ALIAS_TOOLS if t.name == "executescript")
+    assert callable(executescript)
+    result = executescript("echo executescript-delegate", working_directory=str(tmp_path))
+    assert "executescript-delegate" in result
+
+
+def _harmony_recovery_decision(failing_name, all_known_tools):
+    """Mirror of the in-main() handler decision logic for testability.
+
+    Returns the tool name to retry under, or None if recovery should fall
+    through. Stays in lock-step with the handler in main.py — if the
+    handler changes, this helper changes too.
+    """
+    if not failing_name:
+        return None
+    normalized = _normalize_harmony_tool_name(failing_name)
+    if normalized != failing_name and (
+        normalized in all_known_tools
+        or normalized in EXECUTE_COMMAND_ALIASES
+        or normalized == "execute_command"
+    ):
+        return normalized
+    return None
+
+
+def test_harmony_recovery_alias_with_suffix():
+    """run_command<|channel|>json is recovered to run_command (alias)."""
+    assert _harmony_recovery_decision(
+        "run_command<|channel|>json", set()
+    ) == "run_command"
+
+
+def test_harmony_recovery_canonical_with_suffix():
+    """execute_command<|message|>start is recovered to execute_command."""
+    assert _harmony_recovery_decision(
+        "execute_command<|channel|>commentary", set()
+    ) == "execute_command"
+
+
+def test_harmony_recovery_known_mcp_tool_with_suffix():
+    """An MCP tool name with Harmony suffix recovers to the bare known name."""
+    assert _harmony_recovery_decision(
+        "gdrive_read_file<|channel|>json", {"gdrive_read_file"}
+    ) == "gdrive_read_file"
+
+
+def test_harmony_recovery_unknown_tool_falls_through():
+    """frobnicate<|channel|>json has no known bare name — no recovery."""
+    assert _harmony_recovery_decision(
+        "frobnicate<|channel|>json", {"retain", "gdrive_read_file"}
+    ) is None
+
+
+def test_harmony_recovery_no_suffix_falls_through():
+    """A clean name with no Harmony suffix is not handled by this path."""
+    assert _harmony_recovery_decision(
+        "executescript", {"retain"}
+    ) is None  # bare name dispatch — handled by the alias mechanism, not this normalizer
+
+
+def test_harmony_recovery_empty_falls_through():
+    assert _harmony_recovery_decision("", set()) is None
+    assert _harmony_recovery_decision(None, set()) is None
