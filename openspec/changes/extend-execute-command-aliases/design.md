@@ -39,6 +39,7 @@ When the SDK raises `ModelBehaviorError("Tool X not found in agent TaskRunner")`
    - Re-dispatch the call via the normalized name's tool
    - Treat the original call's arguments verbatim (do not strip from arguments — only from the tool name)
 4. If the normalized name is still unknown, fall through to the existing "tool not found" handling.
+5. Bound recovery per `(original, normalized)` pair via `HARMONY_RECOVERY_CAP_PER_PAIR` (default `3`). Once a pair exceeds the cap, log a cap-reached warning and let `MAX_AGENT_RETRIES` absorb further attempts — a model that keeps emitting the same bad token cannot loop indefinitely.
 
 The normalizer is deliberately narrow — it only fires on the `<|` prefix that marks Harmony tokens. We do NOT do general fuzzy matching or Levenshtein distance, which would risk dispatching to the wrong tool.
 
@@ -60,7 +61,7 @@ Reject — would require intercepting the model output stream and rewriting it, 
 
 Considered. Cleaner in some ways — the SDK would always see the canonical name. But the existing recovery handler is the right place because (a) it already runs only on error, so the happy path is unaffected, (b) it logs failures, which we want for observability, and (c) it lets us scope the normalization to "names we recognize" instead of "any string with a `<|` in it".
 
-Chose B over D because we want telemetry on every normalization event — making it visible at recovery time gives us a counter we can graph.
+Chose D's spirit (a normalizer scoped to recognized names) but kept it inside the existing recovery handler rather than at the SDK call site — that way we get telemetry on every normalization event and the happy path is unaffected. Option B (modifying the Agents SDK) was explicitly rejected above.
 
 ## Open questions
 

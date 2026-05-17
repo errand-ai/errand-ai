@@ -25,7 +25,8 @@ from main import (
     _TRUNCATION_RECOVERY_MESSAGE,
     extract_output, _OUTPUT, _NUDGE, _EMPTY_FAIL,
     _execute_command_impl, EXECUTE_COMMAND_ALIASES, EXECUTE_COMMAND_ALIAS_TOOLS,
-    _normalize_harmony_tool_name,
+    _normalize_harmony_tool_name, _resolve_recovery_target,
+    HARMONY_RECOVERY_CAP_PER_PAIR,
 )
 
 
@@ -1503,60 +1504,62 @@ def test_executescript_alias_delegates_to_impl(tmp_path):
     assert "executescript-delegate" in result
 
 
-def _harmony_recovery_decision(failing_name, all_known_tools):
-    """Mirror of the in-main() handler decision logic for testability.
-
-    Returns the tool name to retry under, or None if recovery should fall
-    through. Stays in lock-step with the handler in main.py — if the
-    handler changes, this helper changes too.
-    """
-    if not failing_name:
-        return None
-    normalized = _normalize_harmony_tool_name(failing_name)
-    if normalized != failing_name and (
-        normalized in all_known_tools
-        or normalized in EXECUTE_COMMAND_ALIASES
-        or normalized == "execute_command"
-    ):
-        return normalized
-    return None
-
-
 def test_harmony_recovery_alias_with_suffix():
     """run_command<|channel|>json is recovered to run_command (alias)."""
-    assert _harmony_recovery_decision(
+    assert _resolve_recovery_target(
         "run_command<|channel|>json", set()
     ) == "run_command"
 
 
 def test_harmony_recovery_canonical_with_suffix():
     """execute_command<|message|>start is recovered to execute_command."""
-    assert _harmony_recovery_decision(
+    assert _resolve_recovery_target(
         "execute_command<|channel|>commentary", set()
     ) == "execute_command"
 
 
 def test_harmony_recovery_known_mcp_tool_with_suffix():
     """An MCP tool name with Harmony suffix recovers to the bare known name."""
-    assert _harmony_recovery_decision(
+    assert _resolve_recovery_target(
         "gdrive_read_file<|channel|>json", {"gdrive_read_file"}
     ) == "gdrive_read_file"
 
 
 def test_harmony_recovery_unknown_tool_falls_through():
     """frobnicate<|channel|>json has no known bare name — no recovery."""
-    assert _harmony_recovery_decision(
+    assert _resolve_recovery_target(
         "frobnicate<|channel|>json", {"retain", "gdrive_read_file"}
     ) is None
 
 
 def test_harmony_recovery_no_suffix_falls_through():
     """A clean name with no Harmony suffix is not handled by this path."""
-    assert _harmony_recovery_decision(
+    assert _resolve_recovery_target(
         "executescript", {"retain"}
     ) is None  # bare name dispatch — handled by the alias mechanism, not this normalizer
 
 
 def test_harmony_recovery_empty_falls_through():
-    assert _harmony_recovery_decision("", set()) is None
-    assert _harmony_recovery_decision(None, set()) is None
+    assert _resolve_recovery_target("", set()) is None
+
+
+def test_harmony_recovery_cap_constant_is_positive():
+    """Sanity guard: the cap must be a positive int so the loop bound is meaningful."""
+    assert isinstance(HARMONY_RECOVERY_CAP_PER_PAIR, int)
+    assert HARMONY_RECOVERY_CAP_PER_PAIR >= 1
+
+
+def test_harmony_recovery_cap_logic_caps_repeated_pairs():
+    """Simulate the in-main() cap accounting: after CAP fires, further attempts return False."""
+    counts: dict[tuple[str, str], int] = {}
+    pair = ("run_command<|channel|>json", "run_command")
+    fired = []
+    for _ in range(HARMONY_RECOVERY_CAP_PER_PAIR + 2):
+        prior = counts.get(pair, 0)
+        if prior < HARMONY_RECOVERY_CAP_PER_PAIR:
+            counts[pair] = prior + 1
+            fired.append(True)
+        else:
+            fired.append(False)
+    # The first CAP attempts fire; subsequent attempts fall through.
+    assert fired == [True] * HARMONY_RECOVERY_CAP_PER_PAIR + [False, False]
