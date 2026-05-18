@@ -118,7 +118,9 @@ function onDocumentClick(e: MouseEvent) {
   if (!open.value) return
   const target = e.target as Node | null
   if (rootEl.value && target && !rootEl.value.contains(target)) {
-    closePanel({ returnFocus: true })
+    // Pointer-driven close: do not steal focus back to the trigger — the
+    // user may have intentionally clicked another focusable control.
+    closePanel()
   }
 }
 

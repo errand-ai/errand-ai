@@ -4,9 +4,32 @@ Admin settings page navigation layout and sub-page structure.
 ## Requirements
 ### Requirement: Settings page layout
 
-The Settings page SHALL use a responsive navigation layout that switches between sidebar and dropdown modes based on viewport width. At viewport widths ≥ 640px (Tailwind `sm` breakpoint) the page SHALL render the existing sidebar layout to the left of content. At viewport widths < 640px the page SHALL render a section picker dropdown above the content area, with the sidebar hidden.
+The Settings page SHALL use a responsive navigation layout that switches between sidebar and dropdown modes based on viewport width. At viewport widths ≥ 640px (Tailwind `sm` breakpoint) the page SHALL render a sidebar layout to the left of content. At viewport widths < 640px the page SHALL render a section picker dropdown above the content area, with the sidebar hidden.
 
-The eight settings sub-pages and their section composition SHALL be unchanged: "Agent Configuration" (`/settings/agent`), "Task Management" (`/settings/tasks`), "Security" (`/settings/security`), "Task Profiles" (`/settings/profiles`), "Integrations" (`/settings/integrations`), "Task Generators" (`/settings/task-generators`), "Cloud Service" (`/settings/cloud`), and "User Management" (`/settings/users`).
+Eight sub-pages SHALL exist:
+
+- **"Agent Configuration"** (`/settings/agent`) SHALL contain "System Prompt", "Skills", "Skills Repository", "MCP Server Configuration", and "MCP Servers (via LiteLLM)" sections (in that order). The LiteLLM MCP Servers section SHALL be conditionally visible (only when the LiteLLM proxy is detected).
+- **"Task Management"** (`/settings/tasks`) SHALL contain "LLM Providers", "LLM Models", and "Task Management" sections (in that order).
+- **"Security"** (`/settings/security`) SHALL contain "Git SSH Key" and "MCP API Key" sections.
+- **"Task Profiles"** (`/settings/profiles`) SHALL contain the task profile management interface.
+- **"Integrations"** (`/settings/integrations`) SHALL contain the platform integrations section.
+- **"Task Generators"** (`/settings/task-generators`) SHALL contain the task-generator management interface.
+- **"Cloud Service"** (`/settings/cloud`) SHALL contain the cloud-service configuration interface.
+- **"User Management"** (`/settings/users`) SHALL contain authentication mode and local admin account sections.
+
+The "MCP Server Configuration" section SHALL remain collapsible. Each settings section SHALL remain a separate Vue component in `frontend/src/components/settings/`.
+
+#### Scenario: Task Management page shows three sections
+- **WHEN** an admin navigates to `/settings/tasks`
+- **THEN** the page displays "LLM Providers", "LLM Models", and "Task Management" sections in that order
+
+#### Scenario: Agent Configuration page shows five sections including LiteLLM MCP
+- **WHEN** an admin navigates to `/settings/agent` and the LiteLLM proxy is detected
+- **THEN** the page displays System Prompt, Skills, Skills Repository, MCP Server Configuration, and MCP Servers (via LiteLLM) sections in that order
+
+#### Scenario: Agent Configuration page hides LiteLLM MCP when unavailable
+- **WHEN** an admin navigates to `/settings/agent` and the LiteLLM proxy is not detected
+- **THEN** the page displays System Prompt, Skills, Skills Repository, and MCP Server Configuration sections only
 
 #### Scenario: Sidebar visible on tablet/desktop
 - **WHEN** an admin navigates to `/settings/*` on a viewport with `min-width: 640px`
