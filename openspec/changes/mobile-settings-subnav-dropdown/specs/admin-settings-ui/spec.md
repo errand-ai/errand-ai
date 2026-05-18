@@ -33,9 +33,14 @@ The section picker dropdown SHALL be keyboard-operable. The trigger button SHALL
 
 #### Scenario: Open with Enter and select with Enter
 - **WHEN** focus is on the picker trigger and the user presses Enter
-- **THEN** the panel SHALL open with focus moved to the first option
+- **THEN** the panel SHALL open with focus moved to the option matching the active route (or the first option if no route is active)
 - **AND** subsequent ArrowDown SHALL move focus down the list
 - **AND** Enter on a focused option SHALL navigate to that section's route and close the panel
+- **AND** focus SHALL return to the trigger button after the panel closes
+
+#### Scenario: Open with ArrowDown focuses the first option
+- **WHEN** focus is on the picker trigger and the user presses ArrowDown
+- **THEN** the panel SHALL open with focus moved to the first option
 
 #### Scenario: Escape closes without selecting
 - **WHEN** the panel is open and the user presses Escape

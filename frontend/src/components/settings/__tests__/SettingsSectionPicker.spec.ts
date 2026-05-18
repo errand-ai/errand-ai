@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { describe, it, expect, afterEach } from 'vitest'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import SettingsSectionPicker from '../SettingsSectionPicker.vue'
 
 const sections = [
@@ -8,12 +8,22 @@ const sections = [
   { id: 'security', label: 'Security', to: '/settings/security' },
 ]
 
+const wrappers: VueWrapper[] = []
+
 function makeWrapper(activeRoute = '/settings/tasks') {
-  return mount(SettingsSectionPicker, {
+  const wrapper = mount(SettingsSectionPicker, {
     props: { sections, activeRoute },
     attachTo: document.body,
   })
+  wrappers.push(wrapper)
+  return wrapper
 }
+
+afterEach(() => {
+  while (wrappers.length) {
+    wrappers.pop()?.unmount()
+  }
+})
 
 describe('SettingsSectionPicker', () => {
   it('renders the active label in the closed-state button', () => {
@@ -62,5 +72,34 @@ describe('SettingsSectionPicker', () => {
     await options[0].trigger('keydown', { key: 'ArrowDown' })
     await options[1].trigger('keydown', { key: 'Enter' })
     expect(wrapper.emitted('change')).toEqual([['/settings/tasks']])
+  })
+
+  it('Enter on the trigger toggles the panel', async () => {
+    const wrapper = makeWrapper()
+    const button = wrapper.get('[data-testid="settings-section-picker-button"]')
+    await button.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-section-picker-panel"]').exists()).toBe(true)
+    await button.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="settings-section-picker-panel"]').exists()).toBe(false)
+  })
+
+  it('ArrowDown on the trigger opens to the first option', async () => {
+    const wrapper = makeWrapper('/settings/security')
+    const button = wrapper.get('[data-testid="settings-section-picker-button"]')
+    await button.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+    expect(document.activeElement).toBe(wrapper.findAll('[role="option"]')[0].element)
+  })
+
+  it('returns focus to the trigger after Escape', async () => {
+    const wrapper = makeWrapper()
+    const button = wrapper.get('[data-testid="settings-section-picker-button"]')
+    await button.trigger('click')
+    await flushPromises()
+    await wrapper.get('[role="option"]').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.activeElement).toBe(button.element)
   })
 })

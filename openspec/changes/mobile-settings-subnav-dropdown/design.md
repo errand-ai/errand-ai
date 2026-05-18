@@ -1,6 +1,6 @@
 ## Approach
 
-Use Tailwind's responsive utilities to swap rendering between a sidebar (current) and a dropdown picker. The two render trees do not coexist visually — only one is mounted at a time, controlled by `@media (min-width: 640px)` via Tailwind's `sm:` prefix.
+Use Tailwind's responsive utilities to swap rendering between a sidebar (current) and a dropdown picker. Both render trees are present in the DOM at all times; only one is visible at a time, controlled by `@media (min-width: 640px)` via Tailwind's `sm:` prefix (`hidden sm:block` on the sidebar, `sm:hidden` on the picker). This keeps the implementation declarative and avoids a JS-driven viewport observer.
 
 ```
 < 640px                              ≥ 640px

@@ -19,6 +19,7 @@ const emit = defineEmits<{
 const open = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
 const listEl = ref<HTMLElement | null>(null)
+const triggerEl = ref<HTMLButtonElement | null>(null)
 const highlightedIndex = ref(0)
 
 const activeSection = computed<Section | undefined>(() =>
@@ -37,20 +38,23 @@ function focusOption(index: number) {
   node?.focus()
 }
 
-async function openPanel() {
+async function openPanel(initialIndex?: number) {
   open.value = true
-  highlightedIndex.value = activeIndex()
+  highlightedIndex.value = initialIndex ?? activeIndex()
   await nextTick()
   focusOption(highlightedIndex.value)
 }
 
-function closePanel() {
+function closePanel({ returnFocus = false } = {}) {
   open.value = false
+  if (returnFocus) {
+    nextTick(() => triggerEl.value?.focus())
+  }
 }
 
 function togglePanel() {
   if (open.value) {
-    closePanel()
+    closePanel({ returnFocus: true })
   } else {
     openPanel()
   }
@@ -58,37 +62,42 @@ function togglePanel() {
 
 function selectSection(section: Section) {
   emit('change', section.to)
-  closePanel()
+  closePanel({ returnFocus: true })
 }
 
 function onKeydownButton(e: KeyboardEvent) {
-  if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+  if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    openPanel()
-  }
-}
-
-function onKeydownOption(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    closePanel()
+    togglePanel()
     return
   }
   if (e.key === 'ArrowDown') {
     e.preventDefault()
-    highlightedIndex.value = Math.min(props.sections.length - 1, highlightedIndex.value + 1)
+    openPanel(0)
+  }
+}
+
+function onKeydownOption(e: KeyboardEvent, index: number) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closePanel({ returnFocus: true })
+    return
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    highlightedIndex.value = Math.min(props.sections.length - 1, index + 1)
     focusOption(highlightedIndex.value)
     return
   }
   if (e.key === 'ArrowUp') {
     e.preventDefault()
-    highlightedIndex.value = Math.max(0, highlightedIndex.value - 1)
+    highlightedIndex.value = Math.max(0, index - 1)
     focusOption(highlightedIndex.value)
     return
   }
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    const section = props.sections[highlightedIndex.value]
+    const section = props.sections[index]
     if (section) selectSection(section)
     return
   }
@@ -109,7 +118,7 @@ function onDocumentClick(e: MouseEvent) {
   if (!open.value) return
   const target = e.target as Node | null
   if (rootEl.value && target && !rootEl.value.contains(target)) {
-    closePanel()
+    closePanel({ returnFocus: true })
   }
 }
 
@@ -129,6 +138,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="rootEl" class="relative" data-testid="settings-section-picker">
     <button
+      ref="triggerEl"
       type="button"
       class="flex w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-left text-sm font-medium text-gray-900 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
       :aria-expanded="open"
@@ -171,8 +181,8 @@ onBeforeUnmount(() => {
         :class="section.to === activeRoute ? 'bg-gray-100 font-medium text-gray-900' : ''"
         :data-testid="`settings-section-picker-option-${section.id}`"
         @click="selectSection(section)"
-        @keydown="onKeydownOption"
-        @mouseenter="highlightedIndex = index"
+        @keydown="onKeydownOption($event, index)"
+        @mouseenter="() => { highlightedIndex = index; focusOption(index) }"
       >
         {{ section.label }}
       </li>
