@@ -1,10 +1,25 @@
 <script setup lang="ts">
-import { onMounted, ref, provide } from 'vue'
-import { useRoute } from 'vue-router'
+import { onMounted, ref, provide, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import SettingsSectionPicker from '../components/settings/SettingsSectionPicker.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
+
+const sections = [
+  { id: 'agent', label: 'Agent Configuration', to: '/settings/agent' },
+  { id: 'tasks', label: 'Task Management', to: '/settings/tasks' },
+  { id: 'security', label: 'Security', to: '/settings/security' },
+  { id: 'profiles', label: 'Task Profiles', to: '/settings/profiles' },
+  { id: 'integrations', label: 'Integrations', to: '/settings/integrations' },
+  { id: 'task-generators', label: 'Task Generators', to: '/settings/task-generators' },
+  { id: 'cloud', label: 'Cloud Service', to: '/settings/cloud' },
+  { id: 'users', label: 'User Management', to: '/settings/users' },
+]
+
+const activeRoute = computed(() => route.path)
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 const DEFAULT_TASK_PROCESSING_MODEL = 'claude-sonnet-4-5-20250929'
@@ -149,69 +164,29 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-else class="flex gap-8">
-      <nav class="w-48 flex-shrink-0" data-testid="settings-sidebar">
+    <div v-else class="flex flex-col sm:flex-row sm:gap-8">
+      <SettingsSectionPicker
+        class="sm:hidden mb-4"
+        :sections="sections"
+        :active-route="activeRoute"
+        @change="(to: string) => router.push(to)"
+      />
+
+      <nav class="hidden sm:block w-48 flex-shrink-0" data-testid="settings-sidebar">
         <div class="sticky top-6 space-y-1">
           <router-link
-            to="/settings/agent"
+            v-for="section in sections"
+            :key="section.id"
+            :to="section.to"
             class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/agent' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
+            :class="route.path === section.to ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
           >
-            Agent Configuration
-          </router-link>
-          <router-link
-            to="/settings/tasks"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/tasks' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Task Management
-          </router-link>
-          <router-link
-            to="/settings/security"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/security' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Security
-          </router-link>
-          <router-link
-            to="/settings/profiles"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/profiles' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Task Profiles
-          </router-link>
-          <router-link
-            to="/settings/integrations"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/integrations' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Integrations
-          </router-link>
-          <router-link
-            to="/settings/task-generators"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/task-generators' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Task Generators
-          </router-link>
-          <router-link
-            to="/settings/cloud"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/cloud' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            Cloud Service
-          </router-link>
-          <router-link
-            to="/settings/users"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === '/settings/users' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            User Management
+            {{ section.label }}
           </router-link>
         </div>
       </nav>
 
-      <div class="flex-1 min-w-0">
+      <div class="min-w-0 sm:flex-1">
         <router-view />
       </div>
     </div>
