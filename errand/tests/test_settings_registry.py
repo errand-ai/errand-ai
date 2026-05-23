@@ -124,6 +124,25 @@ async def test_sensitive_env_values_masked():
     await engine.dispose()
 
 
+async def test_hindsight_token_masked_when_env_sourced():
+    """Env-sourced hindsight_token should be marked sensitive and masked in API responses."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    await _create_tables(engine)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    with patch.dict(os.environ, {"HINDSIGHT_TOKEN": "sk-abc1234567890"}):
+        async with session_factory() as session:
+            result = await resolve_settings(session)
+
+    assert result["hindsight_token"]["sensitive"] is True
+    assert result["hindsight_token"]["readonly"] is True
+    assert result["hindsight_token"]["source"] == "env"
+    assert result["hindsight_token"]["value"] != "sk-abc1234567890"
+    assert result["hindsight_token"]["value"].endswith("****")
+
+    await engine.dispose()
+
+
 async def test_excluded_keys_not_in_result():
     """EXCLUDED_KEYS should not appear in resolved settings."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)

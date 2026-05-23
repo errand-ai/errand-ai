@@ -700,6 +700,7 @@ async def _read_settings(session: AsyncSession) -> dict:
         "skills_git_repo": None,
         "hindsight_url": "",
         "hindsight_bank_id": "",
+        "hindsight_token": "",
         "litellm_mcp_servers": [],
         "hot_tools": "",
         "task_processing_timeout": None,
@@ -711,7 +712,7 @@ async def _read_settings(session: AsyncSession) -> dict:
                 "mcp_servers", "credentials", "task_processing_model",
                 "system_prompt", "task_runner_log_level", "mcp_api_key",
                 "ssh_private_key", "git_ssh_hosts", "skills_git_repo",
-                "hindsight_url", "hindsight_bank_id", "litellm_mcp_servers",
+                "hindsight_url", "hindsight_bank_id", "hindsight_token", "litellm_mcp_servers",
                 "hot_tools", "task_processing_timeout",
             ])
         )
@@ -748,6 +749,8 @@ async def _read_settings(session: AsyncSession) -> dict:
             settings["hindsight_url"] = str(setting.value) if setting.value else ""
         elif setting.key == "hindsight_bank_id":
             settings["hindsight_bank_id"] = str(setting.value) if setting.value else ""
+        elif setting.key == "hindsight_token":
+            settings["hindsight_token"] = str(setting.value) if setting.value else ""
         elif setting.key == "litellm_mcp_servers":
             settings["litellm_mcp_servers"] = setting.value if isinstance(setting.value, list) else []
         elif setting.key == "hot_tools":
@@ -1517,6 +1520,7 @@ class TaskManager:
             or settings.get("hindsight_bank_id", "")
             or DEFAULT_HINDSIGHT_BANK_ID
         )
+        hindsight_token = os.environ.get("HINDSIGHT_TOKEN", "") or settings.get("hindsight_token", "")
 
         # Inject errand MCP server
         errand_mcp_url = os.environ.get("ERRAND_MCP_URL", "")
@@ -1535,9 +1539,14 @@ class TaskManager:
         if hindsight_url:
             mcp_servers.setdefault("mcpServers", {})
             if "hindsight" not in mcp_servers["mcpServers"]:
-                mcp_servers["mcpServers"]["hindsight"] = {
+                hindsight_entry: dict = {
                     "url": f"{hindsight_url.rstrip('/')}/mcp/{hindsight_bank_id}/"
                 }
+                if hindsight_token:
+                    hindsight_entry["headers"] = {
+                        "Authorization": f"Bearer {hindsight_token}"
+                    }
+                mcp_servers["mcpServers"]["hindsight"] = hindsight_entry
 
         # Inject Playwright MCP server if PLAYWRIGHT_MCP_URL is set
         if PLAYWRIGHT_MCP_URL:
