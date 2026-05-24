@@ -30,7 +30,7 @@ SETTINGS_REGISTRY = {
     "oidc_roles_claim": {"env_var": "OIDC_ROLES_CLAIM", "sensitive": False, "default": "resource_access.errand.roles"},
     "litellm_mcp_servers": {"env_var": None, "sensitive": False, "default": []},
     "hindsight_url": {"env_var": "HINDSIGHT_URL", "sensitive": False, "default": ""},
-    "hindsight_bank_id": {"env_var": "HINDSIGHT_BANK_ID", "sensitive": False, "default": ""},
+    "hindsight_bank_id": {"env_var": "HINDSIGHT_BANK_ID", "sensitive": False, "default": "errand-tasks"},
     "hindsight_token": {"env_var": "HINDSIGHT_TOKEN", "sensitive": True, "default": ""},
     "title_generation_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "task_processing_timeout": {"env_var": None, "sensitive": False, "default": 30},
