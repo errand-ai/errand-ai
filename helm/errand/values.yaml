@@ -91,6 +91,12 @@ onedrive:
 hindsight:
   url: ""
   bankId: "errand-tasks"
+  # Optional bearer token for authenticated Hindsight deployments. When
+  # `apiKey.secret` and `apiKey.key` are both set, the server Deployment
+  # injects HINDSIGHT_TOKEN from `secretKeyRef`.
+  apiKey:
+    secret: ""
+    key: ""
 
 ingress:
   enabled: true
