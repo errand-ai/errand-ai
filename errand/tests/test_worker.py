@@ -2932,6 +2932,22 @@ async def test_read_settings_hindsight_configured(worker_session: AsyncSession):
     assert settings["hindsight_bank_id"] == "my-bank"
 
 
+async def test_read_settings_hindsight_token_configured(worker_session: AsyncSession):
+    """read_settings returns hindsight_token when configured in the DB."""
+    from models import Setting
+    worker_session.add(Setting(key="hindsight_token", value="sk-db-token"))
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_token"] == "sk-db-token"
+
+
+async def test_read_settings_hindsight_token_default(worker_session: AsyncSession):
+    """read_settings returns empty string for hindsight_token when not configured."""
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_token"] == ""
+
+
 @pytest.mark.asyncio
 async def test_hindsight_env_var_takes_precedence_over_setting():
     """HINDSIGHT_URL env var takes precedence over hindsight_url admin setting."""
@@ -3012,7 +3028,7 @@ async def test_hindsight_authorization_header_injected_when_token_configured():
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
             "HINDSIGHT_TOKEN": "sk-abc123",
-        }):
+        }, clear=True):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
@@ -3073,7 +3089,7 @@ async def test_hindsight_token_env_var_takes_precedence_over_setting():
             "OPENAI_API_KEY": "sk-test",
             "HINDSIGHT_URL": "http://hindsight-api:8888",
             "HINDSIGHT_TOKEN": "env-token",
-        }):
+        }, clear=True):
         await _run_process_task(task, settings, mock_runtime)
 
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
