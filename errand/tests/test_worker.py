@@ -2932,6 +2932,22 @@ async def test_read_settings_hindsight_configured(worker_session: AsyncSession):
     assert settings["hindsight_bank_id"] == "my-bank"
 
 
+async def test_read_settings_hindsight_token_configured(worker_session: AsyncSession):
+    """read_settings returns hindsight_token when configured in the DB."""
+    from models import Setting
+    worker_session.add(Setting(key="hindsight_token", value="sk-db-token"))
+    await worker_session.commit()
+
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_token"] == "sk-db-token"
+
+
+async def test_read_settings_hindsight_token_default(worker_session: AsyncSession):
+    """read_settings returns empty string for hindsight_token when not configured."""
+    settings = await read_settings(worker_session)
+    assert settings["hindsight_token"] == ""
+
+
 @pytest.mark.asyncio
 async def test_hindsight_env_var_takes_precedence_over_setting():
     """HINDSIGHT_URL env var takes precedence over hindsight_url admin setting."""
@@ -2986,6 +3002,131 @@ async def test_hindsight_falls_back_to_admin_setting():
     files = mock_runtime.async_prepare.call_args.kwargs["files"]
     mcp_config = json.loads(files["mcp.json"])
     assert mcp_config["mcpServers"]["hindsight"]["url"] == "http://setting-hindsight:8888/mcp/setting-bank/"
+
+
+# --- Hindsight bearer token injection ---
+
+
+@pytest.mark.asyncio
+async def test_hindsight_authorization_header_injected_when_token_configured():
+    """When HINDSIGHT_TOKEN is set, hindsight MCP entry includes Authorization: Bearer <token>."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+        "hindsight_token": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+            "HINDSIGHT_TOKEN": "sk-abc123",
+        }, clear=True):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    entry = mcp_config["mcpServers"]["hindsight"]
+    assert entry["url"] == "http://hindsight-api:8888/mcp/errand-tasks/"
+    assert entry["headers"] == {"Authorization": "Bearer sk-abc123"}
+
+
+@pytest.mark.asyncio
+async def test_hindsight_no_authorization_header_when_token_empty():
+    """When no Hindsight token is configured, the hindsight MCP entry has no headers key."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+        "hindsight_token": "",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+        }, clear=True):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    entry = mcp_config["mcpServers"]["hindsight"]
+    assert entry == {"url": "http://hindsight-api:8888/mcp/errand-tasks/"}
+    assert "headers" not in entry
+
+
+@pytest.mark.asyncio
+async def test_hindsight_token_env_var_takes_precedence_over_setting():
+    """HINDSIGHT_TOKEN env var takes precedence over hindsight_token admin setting."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+        "hindsight_token": "db-token",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+            "HINDSIGHT_TOKEN": "env-token",
+        }, clear=True):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert mcp_config["mcpServers"]["hindsight"]["headers"] == {
+        "Authorization": "Bearer env-token",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hindsight_token_falls_back_to_admin_setting():
+    """When HINDSIGHT_TOKEN env var is not set, hindsight_token admin setting is used."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {"mcpServers": {}},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "hindsight_url": "",
+        "hindsight_bank_id": "",
+        "hindsight_token": "db-token",
+    }
+
+    mock_runtime = _make_mock_runtime()
+
+    with patch.dict("os.environ", {
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "sk-test",
+            "HINDSIGHT_URL": "http://hindsight-api:8888",
+        }, clear=True):
+        await _run_process_task(task, settings, mock_runtime)
+
+    files = mock_runtime.async_prepare.call_args.kwargs["files"]
+    mcp_config = json.loads(files["mcp.json"])
+    assert mcp_config["mcpServers"]["hindsight"]["headers"] == {
+        "Authorization": "Bearer db-token",
+    }
 
 
 # --- Playwright MCP URL injection ---
