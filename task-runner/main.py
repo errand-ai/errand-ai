@@ -420,13 +420,20 @@ _GWS_AUTH_FAILED_SIGNATURE = '"status": "UNAUTHENTICATED"'
 # round-trip, regardless of whether that refresh succeeds or fails.
 _google_token_refresh_lock = asyncio.Lock()
 
-# Counter of in-flight `_refresh_google_workspace_token()` coroutines. Used to
-# scope `_recent_failed_stale_token` to "while concurrent waiters exist" so
-# that a transient refresh failure does not poison subsequent retry attempts
-# made after the initial wave has finished. Reset to None once the counter
-# drops back to zero.
-_refresh_inflight_count = 0
-_recent_failed_stale_token: str | None = None
+# Cross-invocation dedup state for `_refresh_google_workspace_token()`.
+# Stored in a dict (rather than two module-level scalars + `global` keyword)
+# so static analyzers can see the cross-function read+write flow without
+# false-positive "unused global" warnings.
+#
+# `inflight_count` tracks live calls; while > 0 a failure recorded under
+# `recent_failed_stale_token` is shared with subsequent waiters in the same
+# wave so they don't issue duplicate POSTs. Once it drops back to zero (no
+# concurrent waiters remain) the failure flag is cleared so a later
+# `execute_command` recovery can try again.
+_refresh_dedup_state: dict = {
+    "inflight_count": 0,
+    "recent_failed_stale_token": None,
+}
 
 
 async def _refresh_google_workspace_token() -> str | None:
@@ -441,8 +448,6 @@ async def _refresh_google_workspace_token() -> str | None:
     once a refresh succeeds, the lock-released token is reused by other
     waiting callers without a second HTTP round-trip.
     """
-    global _refresh_inflight_count, _recent_failed_stale_token
-
     api_url = os.environ.get("ERRAND_API_URL", "").rstrip("/")
     api_key = os.environ.get("ERRAND_API_KEY", "")
     if not api_url or not api_key:
@@ -452,7 +457,7 @@ async def _refresh_google_workspace_token() -> str | None:
         emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
         return None
 
-    _refresh_inflight_count += 1
+    _refresh_dedup_state["inflight_count"] += 1
     try:
         token_before_lock = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
         async with _google_token_refresh_lock:
@@ -471,10 +476,10 @@ async def _refresh_google_workspace_token() -> str | None:
             # Another waiter already attempted a refresh for this exact
             # stale token under the lock and got back failure. Sending a
             # second POST will get the same answer. Share the failure
-            # outcome with this waiter and exit early. The `_refresh_inflight_count`
-            # finally-block clears the flag once this concurrent wave ends,
-            # so a fresh execute_command later in the task can still try.
-            if _recent_failed_stale_token == token_before_lock:
+            # outcome with this waiter and exit early. The finally-block
+            # below clears the flag once this concurrent wave ends, so a
+            # fresh execute_command later in the task can still try.
+            if _refresh_dedup_state["recent_failed_stale_token"] == token_before_lock:
                 logger.info("Skipping refresh: concurrent waiter already failed for this stale token")
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
@@ -488,7 +493,7 @@ async def _refresh_google_workspace_token() -> str | None:
                     )
             except Exception:
                 logger.warning("Google token refresh request failed", exc_info=True)
-                _recent_failed_stale_token = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
@@ -496,7 +501,7 @@ async def _refresh_google_workspace_token() -> str | None:
                 logger.warning(
                     "Google token refresh returned HTTP %d", resp.status_code,
                 )
-                _recent_failed_stale_token = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
@@ -504,27 +509,27 @@ async def _refresh_google_workspace_token() -> str | None:
                 new_token = resp.json().get("access_token", "")
             except Exception:
                 logger.warning("Google token refresh response was not valid JSON", exc_info=True)
-                _recent_failed_stale_token = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
             if not new_token:
                 logger.warning("Google token refresh response had no access_token")
-                _recent_failed_stale_token = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
             os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] = new_token
             # Success clears any prior failure flag — the stale token
             # value associated with it is now gone from the environment.
-            _recent_failed_stale_token = None
+            _refresh_dedup_state["recent_failed_stale_token"] = None
             emit_event("token_refreshed", {"provider": "google_workspace", "status": "ok"})
             return new_token
     finally:
-        _refresh_inflight_count -= 1
-        if _refresh_inflight_count == 0:
+        _refresh_dedup_state["inflight_count"] -= 1
+        if _refresh_dedup_state["inflight_count"] == 0:
             # No concurrent waiters remain; let the next caller try fresh.
-            _recent_failed_stale_token = None
+            _refresh_dedup_state["recent_failed_stale_token"] = None
 
 
 def _run_subprocess(command: str, working_directory: str) -> tuple[int, str]:

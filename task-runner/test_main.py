@@ -1605,8 +1605,10 @@ def _reset_google_token_refresh_lock(monkeypatch):
     style elsewhere in the module.
     """
     monkeypatch.setattr("main._google_token_refresh_lock", asyncio.Lock())
-    monkeypatch.setattr("main._refresh_inflight_count", 0)
-    monkeypatch.setattr("main._recent_failed_stale_token", None)
+    monkeypatch.setattr(
+        "main._refresh_dedup_state",
+        {"inflight_count": 0, "recent_failed_stale_token": None},
+    )
 
 
 def _make_async_resp(status_code: int, body: dict | None = None):
