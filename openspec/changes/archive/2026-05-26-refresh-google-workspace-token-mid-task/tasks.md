@@ -61,6 +61,6 @@
 
 - [x] 9.1 From the repo root, run `DATABASE_URL="sqlite+aiosqlite:///:memory:" errand/.venv/bin/python -m pytest errand/tests/ -v` — all pass. (The path `errand/tests/` is cwd-relative; the env var avoids hitting a real Postgres.)
 - [x] 9.2 From the repo root, run `errand/.venv/bin/python -m pytest task-runner/ -v` — all pass.
-- [ ] 9.3 Run the docker-compose stack and trigger a task that uses `gws`; confirm normal-path behaviour unchanged.
-- [ ] 9.4 Simulate token expiry locally (e.g. set `GOOGLE_WORKSPACE_CLI_TOKEN` to an obviously-invalid value at task start) and confirm: refresh fires, env var updates, retry succeeds, transcript contains `token_refreshed` event, LLM result reflects only the successful outcome.
+- [x] 9.3 Run the docker-compose stack and trigger a task that uses `gws`; confirm normal-path behaviour unchanged.
+- [x] 9.4 Simulate token expiry locally (e.g. set `GOOGLE_WORKSPACE_CLI_TOKEN` to an obviously-invalid value at task start) and confirm: refresh fires, env var updates, retry succeeds, transcript contains `token_refreshed` event, LLM result reflects only the successful outcome.
 - [x] 9.5 Validate OpenSpec change: `openspec status --change refresh-google-workspace-token-mid-task` reports all 4 artifacts complete.
