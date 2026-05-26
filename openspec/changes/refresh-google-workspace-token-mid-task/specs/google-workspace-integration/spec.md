@@ -2,18 +2,24 @@
 
 ### Requirement: Mid-task Google access token refresh endpoint
 
-The errand server SHALL expose `POST /api/google/refresh-token`, authenticated by an `Authorization: Bearer <mcp_api_key>` header. On a successful request, the endpoint SHALL load the stored `google_drive` platform credential, perform a forced OAuth refresh (bypassing the standard 5-minute remaining-life buffer), persist the resulting credential to the database, and return a JSON body of `{ "access_token": "<value>", "expires_at": <epoch_seconds> }`. The endpoint SHALL log the refresh outcome (success or failure) and the new `expires_at` but SHALL NOT log the access token value.
+The errand server SHALL expose `POST /api/google/refresh-token`, authenticated by an `Authorization: Bearer <task-scoped-bearer>` header where `<task-scoped-bearer>` is an opaque per-task token generated at task-prepare time and stored in Valkey under `google_refresh_token:<bearer>` → `<task_id>`. The endpoint SHALL NOT accept the global `mcp_api_key` setting as authentication — that key is readable by every task via `/workspace/mcp.json` and would allow a task without Google access to obtain a Google access token. On a successful request, the endpoint SHALL load the stored `google_drive` platform credential, perform a forced OAuth refresh (bypassing the standard 5-minute remaining-life buffer), persist the resulting credential to the database, and return a JSON body of `{ "access_token": "<value>", "expires_at": <epoch_seconds> }`. The endpoint SHALL log the refresh outcome (success or failure) and the new `expires_at` but SHALL NOT log the access token value.
 
 #### Scenario: Authenticated caller receives a fresh token
 
-- **WHEN** a request with a valid `Authorization: Bearer <mcp_api_key>` header is sent to `POST /api/google/refresh-token` and stored `google_drive` credentials include a working refresh token
+- **WHEN** a request with a valid `Authorization: Bearer <task-scoped-bearer>` header (i.e. a bearer present in Valkey under `google_refresh_token:<bearer>`) is sent to `POST /api/google/refresh-token` and stored `google_drive` credentials include a working refresh token
 - **THEN** the response status is `200`
 - **AND** the response body contains a new `access_token` whose value differs from the stored token at request time (or is fresh per Google's response)
 - **AND** the new credential is persisted to the `platform_credentials` table
 
 #### Scenario: Unauthenticated caller is rejected
 
-- **WHEN** a request to `POST /api/google/refresh-token` is missing the `Authorization` header, has an empty bearer token, or carries a token that does not match `mcp_api_key`
+- **WHEN** a request to `POST /api/google/refresh-token` is missing the `Authorization` header, has an empty bearer token, or carries a bearer that has no matching `google_refresh_token:<bearer>` key in Valkey
+- **THEN** the response status is `401`
+- **AND** no refresh is attempted
+
+#### Scenario: Global mcp_api_key is rejected
+
+- **WHEN** a request to `POST /api/google/refresh-token` carries the `mcp_api_key` setting value as the bearer (i.e. the key used to authenticate the errand MCP server)
 - **THEN** the response status is `401`
 - **AND** no refresh is attempted
 
@@ -36,9 +42,9 @@ The errand server SHALL expose `POST /api/google/refresh-token`, authenticated b
 - **THEN** the endpoint still performs the refresh
 - **AND** does not short-circuit on the standard 5-minute buffer used by task-start injection
 
-### Requirement: Task-runner exposes errand API base URL and key
+### Requirement: Task-runner exposes errand API base URL and per-task refresh bearer
 
-The task manager SHALL set environment variables `ERRAND_API_URL` (the errand server base URL, e.g. `http://errand:8000`) and `ERRAND_API_KEY` (= the `mcp_api_key` setting value) on every task-runner container that already receives `GOOGLE_WORKSPACE_CLI_TOKEN`. The base URL SHALL be derivable from `ERRAND_MCP_URL` by stripping the `/mcp/...` suffix.
+The task manager SHALL set environment variables `ERRAND_API_URL` (the errand server base URL, e.g. `http://errand:8000`) and `ERRAND_API_KEY` (a freshly-generated opaque token, e.g. `secrets.token_hex(32)`) on every task-runner container that already receives `GOOGLE_WORKSPACE_CLI_TOKEN`. The base URL SHALL be derivable from `ERRAND_MCP_URL` by stripping the `/mcp/...` suffix. Before injection, the task manager SHALL store the bearer in Valkey under the key `google_refresh_token:<bearer>` with the task ID as the value and a TTL of at least 8 hours. `ERRAND_API_KEY` SHALL NOT be set to the value of the global `mcp_api_key` setting.
 
 #### Scenario: Google credentials present — env vars set
 
@@ -130,7 +136,8 @@ The task manager SHALL inject the Google OAuth access token as the `GOOGLE_WORKS
 - **WHEN** the task manager prepares a task and Google Workspace credentials exist with a non-expired access token
 - **THEN** the container is started with `GOOGLE_WORKSPACE_CLI_TOKEN` set to the access token value
 - **AND** the container is started with `ERRAND_API_URL` set to the errand server base URL
-- **AND** the container is started with `ERRAND_API_KEY` set to the `mcp_api_key` value
+- **AND** the container is started with `ERRAND_API_KEY` set to a freshly-generated per-task opaque bearer
+- **AND** that bearer is stored in Valkey under `google_refresh_token:<bearer>` with the task ID as the value
 
 #### Scenario: Google credentials exist but token expired
 

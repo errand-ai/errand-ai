@@ -2,6 +2,12 @@
 
 Covers `POST /api/google/refresh-token` — the mid-task refresh endpoint
 exercised by task-runner pods when they observe an UNAUTHENTICATED response.
+
+The endpoint authenticates against a *task-scoped* bearer token stored in
+Valkey under `google_refresh_token:<bearer>` → `<task_id>`. These tests
+seed that key directly via the `fake_valkey` fixture and confirm a valid
+bearer succeeds, a missing/wrong bearer is rejected, and the underlying
+Valkey lookup is required.
 """
 
 import time
@@ -12,11 +18,12 @@ from cryptography.fernet import Fernet
 from httpx import Response
 from sqlalchemy import select
 
-from models import PlatformCredential, Setting
+from models import PlatformCredential
 from platforms.credentials import encrypt, decrypt
 
 
-_MCP_KEY = "mcp-key-for-tests"
+_TASK_ID = "task-abcdef"
+_VALID_BEARER = "task-scoped-refresh-bearer"
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +44,8 @@ def _make_credentials(expires_in: int = 3600) -> dict:
     }
 
 
-async def _seed_mcp_key(session_maker) -> None:
-    async with session_maker() as session:
-        session.add(Setting(key="mcp_api_key", value=_MCP_KEY))
-        await session.commit()
+async def _seed_refresh_bearer(fake_valkey, bearer: str = _VALID_BEARER, task_id: str = _TASK_ID) -> None:
+    await fake_valkey.set(f"google_refresh_token:{bearer}", task_id, ex=28800)
 
 
 async def _seed_google_credentials(session_maker, creds: dict) -> None:
@@ -54,9 +59,9 @@ async def _seed_google_credentials(session_maker, creds: dict) -> None:
 
 
 @pytest.mark.anyio
-async def test_refresh_unauthorised_without_bearer(admin_client_with_session):
+async def test_refresh_unauthorised_without_bearer(admin_client_with_session, fake_valkey):
     client, session_maker = admin_client_with_session
-    await _seed_mcp_key(session_maker)
+    await _seed_refresh_bearer(fake_valkey)
     await _seed_google_credentials(session_maker, _make_credentials())
 
     resp = await client.post("/api/google/refresh-token")
@@ -64,35 +69,55 @@ async def test_refresh_unauthorised_without_bearer(admin_client_with_session):
 
 
 @pytest.mark.anyio
-async def test_refresh_unauthorised_with_wrong_bearer(admin_client_with_session):
+async def test_refresh_unauthorised_with_wrong_bearer(admin_client_with_session, fake_valkey):
     client, session_maker = admin_client_with_session
-    await _seed_mcp_key(session_maker)
+    await _seed_refresh_bearer(fake_valkey)
     await _seed_google_credentials(session_maker, _make_credentials())
 
     resp = await client.post(
         "/api/google/refresh-token",
-        headers={"Authorization": "Bearer wrong-key"},
+        headers={"Authorization": "Bearer not-the-stored-token"},
     )
     assert resp.status_code == 401
 
 
 @pytest.mark.anyio
-async def test_refresh_returns_404_when_no_google_credentials(admin_client_with_session):
+async def test_refresh_rejects_mcp_api_key(admin_client_with_session, fake_valkey):
+    """The global mcp_api_key MUST NOT authenticate this endpoint; only the
+    per-task `google_refresh_token:<bearer>` bearer does."""
+    from models import Setting
+
     client, session_maker = admin_client_with_session
-    await _seed_mcp_key(session_maker)
+    # No matching google_refresh_token in Valkey.
+    async with session_maker() as session:
+        session.add(Setting(key="mcp_api_key", value="some-mcp-key"))
+        await session.commit()
+    await _seed_google_credentials(session_maker, _make_credentials())
+
+    resp = await client.post(
+        "/api/google/refresh-token",
+        headers={"Authorization": "Bearer some-mcp-key"},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_refresh_returns_404_when_no_google_credentials(admin_client_with_session, fake_valkey):
+    client, _ = admin_client_with_session
+    await _seed_refresh_bearer(fake_valkey)
     # No Google credentials seeded.
 
     resp = await client.post(
         "/api/google/refresh-token",
-        headers={"Authorization": f"Bearer {_MCP_KEY}"},
+        headers={"Authorization": f"Bearer {_VALID_BEARER}"},
     )
     assert resp.status_code == 404
 
 
 @pytest.mark.anyio
-async def test_refresh_returns_502_on_upstream_failure(admin_client_with_session):
+async def test_refresh_returns_502_on_upstream_failure(admin_client_with_session, fake_valkey):
     client, session_maker = admin_client_with_session
-    await _seed_mcp_key(session_maker)
+    await _seed_refresh_bearer(fake_valkey)
     await _seed_google_credentials(session_maker, _make_credentials())
 
     mock_client = AsyncMock()
@@ -103,7 +128,7 @@ async def test_refresh_returns_502_on_upstream_failure(admin_client_with_session
     with patch("cloud_storage.httpx.AsyncClient", return_value=mock_client):
         resp = await client.post(
             "/api/google/refresh-token",
-            headers={"Authorization": f"Bearer {_MCP_KEY}"},
+            headers={"Authorization": f"Bearer {_VALID_BEARER}"},
         )
 
     assert resp.status_code == 502
@@ -118,9 +143,9 @@ async def test_refresh_returns_502_on_upstream_failure(admin_client_with_session
 
 
 @pytest.mark.anyio
-async def test_refresh_happy_path_returns_new_token_and_persists(admin_client_with_session):
+async def test_refresh_happy_path_returns_new_token_and_persists(admin_client_with_session, fake_valkey):
     client, session_maker = admin_client_with_session
-    await _seed_mcp_key(session_maker)
+    await _seed_refresh_bearer(fake_valkey)
     # Credential has plenty of life left — force-refresh should ignore the buffer.
     await _seed_google_credentials(session_maker, _make_credentials(expires_in=3600))
 
@@ -135,7 +160,7 @@ async def test_refresh_happy_path_returns_new_token_and_persists(admin_client_wi
     with patch("cloud_storage.httpx.AsyncClient", return_value=mock_client):
         resp = await client.post(
             "/api/google/refresh-token",
-            headers={"Authorization": f"Bearer {_MCP_KEY}"},
+            headers={"Authorization": f"Bearer {_VALID_BEARER}"},
         )
 
     assert resp.status_code == 200

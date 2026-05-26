@@ -59,13 +59,13 @@ The runner's `execute_command` function tool is the only place `gws` is ever inv
 
 ### Decision 4: New HTTP endpoint, not a new MCP tool
 
-**Choice:** Add `POST /api/google/refresh-token` on errand-server, authenticated with `Authorization: Bearer <mcp_api_key>`. The runner calls it via `httpx`.
+**Choice:** Add `POST /api/google/refresh-token` on errand-server, authenticated with a per-task opaque bearer (stored in Valkey under `google_refresh_token:<bearer>` → `<task_id>`, TTL 8 h). The runner calls it via `httpx`.
 
 **Alternatives considered:**
 - *Expose as an MCP tool on the errand MCP server.* Two costs: (a) the runner would have to invoke an MCP tool from inside a function-tool body, which means the call appears in the conversation as a tool call (defeating "invisible to LLM"), or it means duplicating MCP client plumbing inside the wrapper. (b) MCP tools are LLM-callable by default, which we explicitly don't want for this one.
-- *Reuse the existing `RESULT_CALLBACK_URL` pattern's auth header rather than `mcp_api_key`.* The MCP key is already the canonical "errand back-channel" credential — reusing it keeps the secret count down.
+- *Reuse the global `mcp_api_key` setting as the bearer.* Initially shipped this way, but it's insecure: `mcp_api_key` is copied into `/workspace/mcp.json` for every task that runs the errand MCP server, so any task — including one whose profile excludes Google access — could read that file and call the endpoint to obtain the user's Google access token. Replaced with a per-task opaque bearer stored in Valkey (modelled on `RESULT_CALLBACK_TOKEN`), injected only when Google credentials are present, so the bearer's scope is bounded to "this task already had Google access".
 
-**Rationale:** A plain HTTPS POST with bearer auth is the simplest possible surface. No SDK boundary, no LLM visibility, no new auth model.
+**Rationale:** A plain HTTPS POST with a per-task bearer is the simplest secure surface. No SDK boundary, no LLM visibility, no new auth model, and the bearer's blast radius is one task.
 
 ### Decision 5: Force refresh, ignore the 5-min buffer
 
