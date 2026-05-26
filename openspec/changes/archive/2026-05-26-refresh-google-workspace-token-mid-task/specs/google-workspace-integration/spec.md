@@ -58,15 +58,17 @@ The task manager SHALL set environment variables `ERRAND_API_URL` (the errand se
 
 ### Requirement: Transparent token refresh on `execute_command` auth failure
 
-The task-runner's `execute_command` function tool SHALL inspect the combined stdout and stderr captured from each subprocess. When the captured output contains the literal substring `"status": "UNAUTHENTICATED"` AND `GOOGLE_WORKSPACE_CLI_TOKEN` is set in the runner's environment AND no prior refresh attempt has occurred for this invocation, the wrapper SHALL:
+The task-runner's `execute_command` function tool SHALL capture the value of `GOOGLE_WORKSPACE_CLI_TOKEN` *before* invoking the subprocess (call this `stale_token`), then inspect the combined stdout and stderr captured from each subprocess. When the captured output contains the literal substring `"status": "UNAUTHENTICATED"` AND `stale_token` is non-empty AND no prior refresh attempt has occurred for this invocation, the wrapper SHALL:
 
 1. Acquire a module-level `asyncio.Lock` (the "refresh lock").
-2. Re-read `GOOGLE_WORKSPACE_CLI_TOKEN`; if it differs from the value present when the lock was requested, skip the refresh call (another caller refreshed concurrently).
+2. Re-read `GOOGLE_WORKSPACE_CLI_TOKEN`; if it differs from `stale_token` (the value observed by *this* caller's subprocess before it ran), skip the refresh call — another caller has already refreshed past this stale value.
 3. Otherwise, issue `POST ${ERRAND_API_URL}/api/google/refresh-token` with `Authorization: Bearer ${ERRAND_API_KEY}`.
 4. On success, update `os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"]` with the returned value.
 5. Release the lock.
 6. Re-run the same shell command exactly once.
 7. Return the retry's output to the agent loop.
+
+Comparing against the pre-subprocess `stale_token` (rather than re-reading the env at refresh-helper entry) is what makes concurrent dedup correct when another caller's refresh completes *between* this caller's subprocess returning and this caller's refresh-helper entering.
 
 The output of the original (auth-failed) invocation SHALL NOT be returned to the agent loop in the success case.
 
