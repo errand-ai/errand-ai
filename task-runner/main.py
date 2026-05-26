@@ -436,7 +436,7 @@ _refresh_dedup_state: dict = {
 }
 
 
-async def _refresh_google_workspace_token() -> str | None:
+async def _refresh_google_workspace_token(stale_token: str = "") -> str | None:
     """Request a fresh Google Workspace access token from errand-server.
 
     Calls `POST ${ERRAND_API_URL}/api/google/refresh-token` with the bearer
@@ -444,9 +444,26 @@ async def _refresh_google_workspace_token() -> str | None:
     the new access token. On any failure (HTTP error, network, missing env
     vars), returns None and never raises.
 
+    `stale_token` SHOULD be the value of `GOOGLE_WORKSPACE_CLI_TOKEN` that the
+    *caller's* failed subprocess actually saw — captured before
+    `_run_subprocess`. Passing it explicitly (rather than re-reading
+    `os.environ` here) is what makes concurrent dedup correct: if another
+    concurrent caller has *already* completed a refresh between this
+    caller's subprocess run and its entry to this helper, the env var no
+    longer reflects what this caller's subprocess failed with, and reading
+    the env here would miss the dedupe. Comparing the lock-held current
+    env to the caller's captured `stale_token` is what tells us "another
+    caller refreshed past this stale value" and lets us reuse without a
+    second POST. If `stale_token` is omitted (e.g. legacy callers), the
+    helper falls back to reading the env at entry, accepting the race.
+
     Concurrent callers are deduplicated via `_google_token_refresh_lock`:
-    once a refresh succeeds, the lock-released token is reused by other
-    waiting callers without a second HTTP round-trip.
+    once a refresh succeeds for a given stale token, all subsequent
+    waiters whose subprocesses observed that same stale value reuse the
+    new token without a second HTTP round-trip. On failure, a wave-
+    scoped failure cache (`_refresh_dedup_state["recent_failed_stale_token"]`)
+    ensures other waiters in the same wave share the failure outcome
+    rather than each issuing their own POST.
     """
     api_url = os.environ.get("ERRAND_API_URL", "").rstrip("/")
     api_key = os.environ.get("ERRAND_API_KEY", "")
@@ -457,15 +474,23 @@ async def _refresh_google_workspace_token() -> str | None:
         emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
         return None
 
+    # Fall back to reading env at entry only if the caller didn't capture
+    # the pre-subprocess value (legacy / tests). The race the explicit
+    # `stale_token` arg closes only matters when subprocesses run
+    # concurrently; legacy single-call paths are unaffected.
+    if not stale_token:
+        stale_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+
     _refresh_dedup_state["inflight_count"] += 1
     try:
-        token_before_lock = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
         async with _google_token_refresh_lock:
             # Another caller may have refreshed while we were waiting on
-            # the lock — if the env var changed, skip the network call
-            # and return the value that's already in place.
+            # the lock (or before we entered the helper at all) — if the
+            # env value no longer matches what *this* caller's subprocess
+            # failed with, skip the network call and return the in-place
+            # value.
             current_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
-            if current_token and current_token != token_before_lock:
+            if current_token and current_token != stale_token:
                 logger.info("Google token already refreshed by concurrent caller; reusing")
                 # Emit the success event from this caller's perspective so
                 # the transcript shows one event per recovery, regardless
@@ -479,7 +504,7 @@ async def _refresh_google_workspace_token() -> str | None:
             # outcome with this waiter and exit early. The finally-block
             # below clears the flag once this concurrent wave ends, so a
             # fresh execute_command later in the task can still try.
-            if _refresh_dedup_state["recent_failed_stale_token"] == token_before_lock:
+            if _refresh_dedup_state["recent_failed_stale_token"] == stale_token:
                 logger.info("Skipping refresh: concurrent waiter already failed for this stale token")
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
@@ -493,7 +518,7 @@ async def _refresh_google_workspace_token() -> str | None:
                     )
             except Exception:
                 logger.warning("Google token refresh request failed", exc_info=True)
-                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = stale_token
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
@@ -501,7 +526,7 @@ async def _refresh_google_workspace_token() -> str | None:
                 logger.warning(
                     "Google token refresh returned HTTP %d", resp.status_code,
                 )
-                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = stale_token
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
@@ -509,13 +534,13 @@ async def _refresh_google_workspace_token() -> str | None:
                 new_token = resp.json().get("access_token", "")
             except Exception:
                 logger.warning("Google token refresh response was not valid JSON", exc_info=True)
-                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = stale_token
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
             if not new_token:
                 logger.warning("Google token refresh response had no access_token")
-                _refresh_dedup_state["recent_failed_stale_token"] = token_before_lock
+                _refresh_dedup_state["recent_failed_stale_token"] = stale_token
                 emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
                 return None
 
@@ -588,6 +613,14 @@ async def _execute_command_impl(command: str, working_directory: str = "/workspa
     errand-server and re-runs the same command exactly once. Recovery is
     capped at one retry per invocation.
     """
+    # Capture the GOOGLE_WORKSPACE_CLI_TOKEN value *before* invoking the
+    # subprocess. If this command fails with UNAUTHENTICATED and we end
+    # up calling the refresh helper, we MUST pass the value the failed
+    # subprocess actually saw — not the env value at refresh-helper
+    # entry, which may have already been updated by a concurrent caller.
+    # See `_refresh_google_workspace_token` for the dedupe contract.
+    stale_token_at_attempt = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+
     # Offload the blocking subprocess to a worker thread so we don't
     # starve the event loop (which would block concurrent execute_command
     # callers, refresh-lock waiters, event emission, and HTTP refreshes).
@@ -602,10 +635,10 @@ async def _execute_command_impl(command: str, working_directory: str = "/workspa
     # Transparent Google Workspace token refresh + retry.
     if (
         _GWS_AUTH_FAILED_SIGNATURE in output
-        and os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
+        and stale_token_at_attempt
     ):
         logger.info("Detected expired Google Workspace token; attempting refresh")
-        new_token = await _refresh_google_workspace_token()
+        new_token = await _refresh_google_workspace_token(stale_token=stale_token_at_attempt)
         if new_token:
             try:
                 returncode, output = await asyncio.to_thread(_run_subprocess, command, working_directory)

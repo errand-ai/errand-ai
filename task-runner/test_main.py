@@ -1948,3 +1948,86 @@ async def test_concurrent_refresh_failure_dedupes_to_one_post(monkeypatch):
     # `_recent_failed_stale_token` cache only scopes dedup to concurrent waiters.
     await _execute_command_impl("gws drive list", "/workspace")
     assert post_calls["n"] == 2, "wave-scoped dedup must reset after no concurrent waiters remain"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_dedupes_when_second_caller_arrives_after_env_updated(monkeypatch):
+    """The race the dedupe must handle:
+
+        C1 subprocess runs with stale-token. Sees 401.
+        C2 subprocess runs with stale-token. Sees 401.
+        C1 enters refresh helper, completes refresh, env := fresh-token,
+           releases lock — ALL before C2 enters the helper.
+        C2 enters helper. If the helper reads env at entry, it sees
+           fresh-token and proceeds to issue a SECOND POST (wrong).
+
+    With `stale_token` captured before each subprocess run and passed
+    explicitly into the helper, C2's `current_token != stale_token`
+    check correctly identifies that the env has already been updated
+    past *its* stale value, and reuses the new token without a second
+    POST. This test exercises that path."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    barrier_c1_subprocess_done = asyncio.Event()
+    barrier_c1_refresh_complete = asyncio.Event()
+    invocation = {"count": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        invocation["count"] += 1
+        n = invocation["count"]
+        if n in (1, 2):
+            return 1, f'attempt-{n}: {_GWS_SIG}'
+        return 0, f"ok-{n}"
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    post_calls = {"n": 0}
+
+    async def post_records_and_returns_success(*args, **kwargs):
+        post_calls["n"] += 1
+        return _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+
+    http_client = MagicMock()
+    http_client.post = AsyncMock(side_effect=post_records_and_returns_success)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=http_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+
+    # Run C1 to completion FIRST (its refresh succeeds and updates env).
+    await _execute_command_impl("gws drive list", "/workspace")
+    assert os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] == "fresh-token"
+    assert post_calls["n"] == 1
+
+    # Now run C2 — its subprocess sees the OLD env (because we restore
+    # it just for the second subprocess), but its `stale_token` capture
+    # at the wrapper entry should record stale-token before the run.
+    # We simulate this by manually rolling back the env before invoking,
+    # then asserting the wrapper does the right thing.
+    os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] = "stale-token"
+
+    # ...but for the next invocation, we also want to model that C1's
+    # refresh has *already* re-applied fresh-token to the env between
+    # C2's subprocess returning and the refresh helper entering. The
+    # cleanest way: have the subprocess restore the env to "fresh-token"
+    # before returning, simulating "the env got updated while we were
+    # running our subprocess".
+    def fake_run_subprocess_that_updates_env(command, working_directory):
+        invocation["count"] += 1
+        # C2's subprocess sees stale-token at fork time, returns 401.
+        # Simulate "C1 finished and updated env between subprocess
+        # invocation and refresh-helper entry":
+        os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] = "fresh-token"
+        return 1, f'attempt-c2: {_GWS_SIG}'
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess_that_updates_env)
+
+    await _execute_command_impl("gws drive list", "/workspace")
+    # C2 must NOT have issued a second POST — its captured stale_token
+    # is "stale-token", and at lock acquisition env reads "fresh-token",
+    # which the dedupe check identifies as already-refreshed.
+    assert post_calls["n"] == 1, f"expected dedupe (still 1 POST), got {post_calls['n']}"

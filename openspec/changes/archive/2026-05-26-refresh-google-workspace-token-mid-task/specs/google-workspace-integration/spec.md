@@ -96,7 +96,9 @@ The output of the original (auth-failed) invocation SHALL NOT be returned to the
 
 - **WHEN** two `execute_command` calls run in parallel, each detect `"status": "UNAUTHENTICATED"`, and arrive at the refresh lock close in time
 - **THEN** exactly one `POST /api/google/refresh-token` request is sent
-- **AND** both wrappers use the same new token value for their retries
+- **AND** on success, both wrappers use the same new token value for their retries
+- **AND** on failure, both wrappers share the failure outcome (no second POST within the same concurrent wave)
+- **AND** once the wave has fully drained (no in-flight refresh callers), a later `execute_command` recovery is permitted to issue a fresh POST
 
 #### Scenario: GOOGLE_WORKSPACE_CLI_TOKEN not set — no detection
 

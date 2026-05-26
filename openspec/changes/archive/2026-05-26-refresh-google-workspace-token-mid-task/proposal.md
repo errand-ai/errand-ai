@@ -24,7 +24,7 @@ Long-running tasks fail with HTTP 401 from Google APIs when the `GOOGLE_WORKSPAC
 **Code**
 - `errand/auth_routes.py` or a new `errand/google_routes.py`: new `POST /api/google/refresh-token` endpoint, authenticated via a per-task opaque bearer stored in Valkey (NOT `mcp_api_key`, which is readable by every task with errand MCP enabled).
 - `errand/cloud_storage.py`: extend `refresh_token_if_needed` (or add a sibling `force_refresh`) so the buffer is overridable. Optional.
-- `task-runner/main.py`: wrap `execute_command` (or its impl) with the detection + retry shim. Add an `asyncio.Lock` and an HTTP client helper that hits `${ERRAND_BASE_URL}/api/google/refresh-token` with `Authorization: Bearer ${MCP_API_KEY}`.
+- `task-runner/main.py`: wrap `execute_command` (or its impl) with the detection + retry shim. Add an `asyncio.Lock` and an HTTP client helper that hits `${ERRAND_API_URL}/api/google/refresh-token` with `Authorization: Bearer ${ERRAND_API_KEY}` (the per-task Valkey-backed bearer; NOT the global MCP key).
 - `task-runner/main.py`: emit a new `token_refreshed` event (alongside existing `tool_call` / `tool_result` events) so refresh activity is visible in task transcripts.
 
 **Configuration**
