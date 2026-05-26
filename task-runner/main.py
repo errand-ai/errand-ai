@@ -405,51 +405,172 @@ New conversation content to merge:
 {conversation}"""
 
 
-def _execute_command_impl(command: str, working_directory: str = "/workspace") -> str:
+# Mid-task Google Workspace OAuth token refresh.
+#
+# `gws` reads `GOOGLE_WORKSPACE_CLI_TOKEN` from the subprocess environment at
+# fork time. When the access token expires mid-task, Google APIs respond with
+# a JSON body containing `"status": "UNAUTHENTICATED"`. The wrapper below
+# detects that signature, calls back to errand-server's force-refresh endpoint,
+# updates `os.environ`, and re-runs the same command once. The LLM never sees
+# the failure.
+_GWS_AUTH_FAILED_SIGNATURE = '"status": "UNAUTHENTICATED"'
+
+# Deduplicates concurrent refreshes — two `execute_command` calls running in
+# parallel that both hit an expired token will share a single refresh
+# round-trip.
+_google_token_refresh_lock = asyncio.Lock()
+
+
+async def _refresh_google_workspace_token() -> str | None:
+    """Request a fresh Google Workspace access token from errand-server.
+
+    Calls `POST ${ERRAND_API_URL}/api/google/refresh-token` with the bearer
+    token in `ERRAND_API_KEY`. On success, mutates `os.environ` and returns
+    the new access token. On any failure (HTTP error, network, missing env
+    vars), returns None and never raises.
+
+    Concurrent callers are deduplicated via `_google_token_refresh_lock`:
+    once a refresh succeeds, the lock-released token is reused by other
+    waiting callers without a second HTTP round-trip.
+    """
+    api_url = os.environ.get("ERRAND_API_URL", "").rstrip("/")
+    api_key = os.environ.get("ERRAND_API_KEY", "")
+    if not api_url or not api_key:
+        logger.warning(
+            "Cannot refresh Google token: ERRAND_API_URL or ERRAND_API_KEY not set",
+        )
+        emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
+        return None
+
+    token_before_lock = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+    async with _google_token_refresh_lock:
+        # Another caller may have refreshed while we were waiting on the
+        # lock — if the env var changed, skip the network call and return
+        # the value that's already in place.
+        current_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+        if current_token and current_token != token_before_lock:
+            logger.info("Google token already refreshed by concurrent caller; reusing")
+            return current_token
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{api_url}/api/google/refresh-token",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10.0,
+                )
+        except Exception:
+            logger.warning("Google token refresh request failed", exc_info=True)
+            emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                "Google token refresh returned HTTP %d", resp.status_code,
+            )
+            emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
+            return None
+
+        try:
+            new_token = resp.json().get("access_token", "")
+        except Exception:
+            logger.warning("Google token refresh response was not valid JSON", exc_info=True)
+            emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
+            return None
+
+        if not new_token:
+            logger.warning("Google token refresh response had no access_token")
+            emit_event("token_refreshed", {"provider": "google_workspace", "status": "failed"})
+            return None
+
+        os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] = new_token
+        emit_event("token_refreshed", {"provider": "google_workspace", "status": "ok"})
+        return new_token
+
+
+def _run_subprocess(command: str, working_directory: str) -> tuple[int, str]:
+    """Run a shell command, returning (returncode, combined_output).
+
+    Pure sync helper extracted so the async wrapper can call it twice (once
+    for the original attempt, once for the retry after a token refresh) and
+    so unit tests can patch a stable target.
+    """
+    result = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=COMMAND_TIMEOUT,
+        cwd=working_directory,
+    )
+    output_parts = []
+    if result.stdout:
+        output_parts.append(result.stdout)
+    if result.stderr:
+        output_parts.append(result.stderr)
+    output = "\n".join(output_parts) if output_parts else "(no output)"
+    return result.returncode, output
+
+
+def _format_command_output(returncode: int, output: str) -> str:
+    """Apply returncode prefix and truncation suffix used by execute_command."""
+    if returncode != 0:
+        output = f"Command exited with code {returncode}\n{output}"
+    if len(output) > MAX_TOOL_OUTPUT_CHARS:
+        original_len = len(output)
+        suffix = (
+            f"\n\n[OUTPUT TRUNCATED — was {original_len} characters, limit is {MAX_TOOL_OUTPUT_CHARS} characters]\n"
+            "This output exceeds the context window budget. For binary files (images, archives, etc.), "
+            "do not read contents into the conversation. Use file-path-based tools to upload or process "
+            "them directly (e.g., cloud-storage upload tools that accept a file path)."
+        )
+        output = output[:MAX_TOOL_OUTPUT_CHARS - len(suffix)] + suffix
+        logger.warning(
+            "execute_command output truncated: %d -> %d characters (limit %d)",
+            original_len, len(output), MAX_TOOL_OUTPUT_CHARS,
+        )
+    return output
+
+
+async def _execute_command_impl(command: str, working_directory: str = "/workspace") -> str:
     """Shared implementation for execute_command and its alias shims.
 
     Kept undecorated so unit tests and alias shims can call it directly without
     going through the agents-SDK FunctionTool wrapper.
+
+    Transparently recovers from expired Google Workspace tokens: if the
+    captured output contains `"status": "UNAUTHENTICATED"` AND
+    `GOOGLE_WORKSPACE_CLI_TOKEN` is set, the wrapper refreshes the token via
+    errand-server and re-runs the same command exactly once. Recovery is
+    capped at one retry per invocation.
     """
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT,
-            cwd=working_directory,
-        )
-        output_parts = []
-        if result.stdout:
-            output_parts.append(result.stdout)
-        if result.stderr:
-            output_parts.append(result.stderr)
-        output = "\n".join(output_parts) if output_parts else "(no output)"
-        if result.returncode != 0:
-            output = f"Command exited with code {result.returncode}\n{output}"
-        if len(output) > MAX_TOOL_OUTPUT_CHARS:
-            original_len = len(output)
-            suffix = (
-                f"\n\n[OUTPUT TRUNCATED — was {original_len} characters, limit is {MAX_TOOL_OUTPUT_CHARS} characters]\n"
-                "This output exceeds the context window budget. For binary files (images, archives, etc.), "
-                "do not read contents into the conversation. Use file-path-based tools to upload or process "
-                "them directly (e.g., cloud-storage upload tools that accept a file path)."
-            )
-            output = output[:MAX_TOOL_OUTPUT_CHARS - len(suffix)] + suffix
-            logger.warning(
-                "execute_command output truncated: %d -> %d characters (limit %d)",
-                original_len, len(output), MAX_TOOL_OUTPUT_CHARS,
-            )
-        return output
+        returncode, output = _run_subprocess(command, working_directory)
     except subprocess.TimeoutExpired:
         return f"Command timed out after {COMMAND_TIMEOUT} seconds"
     except Exception as e:
         return f"Error executing command: {e}"
 
+    # Transparent Google Workspace token refresh + retry.
+    if (
+        _GWS_AUTH_FAILED_SIGNATURE in output
+        and os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
+    ):
+        logger.info("Detected expired Google Workspace token; attempting refresh")
+        new_token = await _refresh_google_workspace_token()
+        if new_token:
+            try:
+                returncode, output = _run_subprocess(command, working_directory)
+            except subprocess.TimeoutExpired:
+                return f"Command timed out after {COMMAND_TIMEOUT} seconds"
+            except Exception as e:
+                return f"Error executing command: {e}"
+
+    return _format_command_output(returncode, output)
+
 
 @function_tool
-def execute_command(command: str, working_directory: str = "/workspace") -> str:
+async def execute_command(command: str, working_directory: str = "/workspace") -> str:
     """Execute a shell command and return the combined stdout and stderr output.
 
     Use this tool to run commands like git clone, ls, grep, pip install, etc.
@@ -460,7 +581,7 @@ def execute_command(command: str, working_directory: str = "/workspace") -> str:
         command: The shell command to execute.
         working_directory: The directory to run the command in. Defaults to /workspace.
     """
-    return _execute_command_impl(command, working_directory)
+    return await _execute_command_impl(command, working_directory)
 
 
 # Common alternative names that weaker models hallucinate instead of
@@ -535,7 +656,7 @@ def _make_execute_command_alias(name: str):
     function name.
     """
     @function_tool(name_override=name)
-    def _alias(command: str, working_directory: str = "/workspace") -> str:
+    async def _alias(command: str, working_directory: str = "/workspace") -> str:
         """Alias for execute_command — delegates to the same implementation.
 
         Use this tool to run shell commands; identical behaviour to
@@ -546,7 +667,7 @@ def _make_execute_command_alias(name: str):
             command: The shell command to execute.
             working_directory: The directory to run the command in. Defaults to /workspace.
         """
-        return _execute_command_impl(command, working_directory)
+        return await _execute_command_impl(command, working_directory)
     # In the real SDK, @function_tool(name_override=...) returns a FunctionTool
     # whose `.name` matches. In tests the decorator may be mocked; set the
     # attribute defensively so callers can introspect by name either way.

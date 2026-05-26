@@ -1606,6 +1606,25 @@ class TaskManager:
                 env_vars["GOOGLE_WORKSPACE_CLI_TOKEN"] = google_access_token
                 google_workspace_enabled = True
 
+                # Inject ERRAND_API_URL and ERRAND_API_KEY so the task-runner
+                # can request a mid-task refresh from
+                # `POST /api/google/refresh-token` when it detects an
+                # UNAUTHENTICATED response from a gws call. Without these the
+                # runner-side recovery silently no-ops and any expired-token
+                # failure surfaces to the LLM as today.
+                errand_base_url = ""
+                if errand_mcp_url:
+                    errand_base_url = errand_mcp_url.rstrip("/").rsplit("/mcp", 1)[0]
+                if errand_base_url and mcp_api_key:
+                    env_vars["ERRAND_API_URL"] = errand_base_url
+                    env_vars["ERRAND_API_KEY"] = mcp_api_key
+                else:
+                    logger.warning(
+                        "Google token injected but mid-task refresh disabled: "
+                        "errand_base_url=%r mcp_api_key_set=%s",
+                        errand_base_url, bool(mcp_api_key),
+                    )
+
         # Merge DB skills with git-sourced and system skills (DB > git > system)
         db_skills = settings.get("skills", [])
         git_skills: list[dict] = []

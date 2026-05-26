@@ -3895,3 +3895,79 @@ async def test_refreshed_google_token_lands_in_task_env_var():
 
     env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.refreshed"
+
+
+# --- Mid-task Google refresh: ERRAND_API_URL / ERRAND_API_KEY injection ---
+
+
+@pytest.mark.asyncio
+async def test_errand_api_url_and_key_injected_with_google_credentials():
+    """When Google credentials exist, the runner also receives ERRAND_API_URL + ERRAND_API_KEY."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "mcp_api_key": "secret-mcp-key-xyz",
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+    assert env.get("ERRAND_API_URL") == "http://errand:8000"
+    assert env.get("ERRAND_API_KEY") == "secret-mcp-key-xyz"
+
+
+@pytest.mark.asyncio
+async def test_errand_api_url_and_key_absent_without_google_credentials():
+    """Without Google credentials, the new env vars are not set even if mcp_api_key exists."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "mcp_api_key": "secret-mcp-key-xyz",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=None)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert "GOOGLE_WORKSPACE_CLI_TOKEN" not in env
+    assert "ERRAND_API_URL" not in env
+    assert "ERRAND_API_KEY" not in env
+
+
+@pytest.mark.asyncio
+async def test_errand_api_vars_skipped_when_mcp_api_key_missing():
+    """If mcp_api_key is empty, mid-task refresh env vars are skipped (graceful no-op)."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        # mcp_api_key intentionally absent.
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    # Token still injected (existing behaviour) — but refresh is disabled.
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+    assert "ERRAND_API_URL" not in env
+    assert "ERRAND_API_KEY" not in env

@@ -338,3 +338,97 @@ async def test_cloud_proxy_refresh_rotates_token(db_session):
         result = await refresh_token_if_needed("google_drive", creds, db_session)
 
     assert result["refresh_token"] == "new-refresh"
+
+
+# ---------------------------------------------------------------------------
+# force_refresh_token — used by the mid-task /api/google/refresh-token
+# endpoint when the runner has observed an UNAUTHENTICATED response.
+# Bypasses the 5-minute remaining-life buffer.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_force_refresh_token_succeeds_when_expires_at_far_in_future(db_session, monkeypatch):
+    """Force refresh should refresh regardless of remaining lifetime."""
+    from cloud_storage import force_refresh_token
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    creds = _make_credentials(expired=False)  # ~1 hour of life left
+    db_session.add(PlatformCredential(
+        platform_id="google_drive",
+        encrypted_data=encrypt(creds),
+        status="connected",
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = Response(200, json={
+        "access_token": "forced-new-token",
+        "expires_in": 3600,
+    })
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("cloud_storage.httpx.AsyncClient", return_value=mock_client):
+        result = await force_refresh_token("google_drive", creds, db_session)
+
+    assert result is not None
+    assert result["access_token"] == "forced-new-token"
+
+    # Persisted to DB
+    db_result = await db_session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "google_drive")
+    )
+    stored = decrypt(db_result.scalar_one().encrypted_data)
+    assert stored["access_token"] == "forced-new-token"
+
+
+@pytest.mark.anyio
+async def test_force_refresh_token_returns_none_when_no_refresh_token(db_session, monkeypatch):
+    """Force refresh returns None when there's no refresh_token stored."""
+    from cloud_storage import force_refresh_token
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    creds = _make_credentials(expired=False, no_refresh=True)
+
+    result = await force_refresh_token("google_drive", creds, db_session)
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_force_refresh_token_returns_none_on_upstream_failure(db_session, monkeypatch):
+    """Upstream non-200 leaves credentials untouched and returns None."""
+    from cloud_storage import force_refresh_token
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "goog-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "goog-secret")
+
+    creds = _make_credentials(expired=False)
+    original_access_token = creds["access_token"]
+    db_session.add(PlatformCredential(
+        platform_id="google_drive",
+        encrypted_data=encrypt(creds),
+        status="connected",
+    ))
+    await db_session.commit()
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = Response(400, json={"error": "invalid_grant"})
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("cloud_storage.httpx.AsyncClient", return_value=mock_client):
+        result = await force_refresh_token("google_drive", creds, db_session)
+
+    assert result is None
+
+    # Stored credential not mutated
+    db_result = await db_session.execute(
+        select(PlatformCredential).where(PlatformCredential.platform_id == "google_drive")
+    )
+    stored = decrypt(db_result.scalar_one().encrypted_data)
+    assert stored["access_token"] == original_access_token

@@ -2,6 +2,7 @@
 
 # Mocks are set up in conftest.py (shared with test_tool_registry.py)
 
+import asyncio
 import json
 import logging
 import os
@@ -446,23 +447,32 @@ def test_log_level_invalid_falls_back_to_info():
 
 
 # --- execute_command tool ---
+#
+# NOTE: `execute_command` and the alias shims in EXECUTE_COMMAND_ALIAS_TOOLS are
+# `async def` (see main.py — required by the mid-task Google token refresh
+# wrapper, which awaits an HTTP refresh on UNAUTHENTICATED responses). Calling
+# them without `await` / `asyncio.run(...)` returns a coroutine that's never
+# awaited and the assertion fails with `TypeError: argument of type 'coroutine'
+# is not iterable`. New tests in this cluster MUST either be `async def` +
+# `@pytest.mark.asyncio`, or wrap the call in `asyncio.run(...)` as the sync
+# tests below do.
 
 
 def test_execute_command_success(tmp_path):
     """Runs a simple command and returns stdout."""
-    result = execute_command("echo hello", working_directory=str(tmp_path))
+    result = asyncio.run(execute_command("echo hello", working_directory=str(tmp_path)))
     assert "hello" in result
 
 
 def test_execute_command_nonzero_exit(tmp_path):
     """Reports non-zero exit code."""
-    result = execute_command("exit 42", working_directory=str(tmp_path))
+    result = asyncio.run(execute_command("exit 42", working_directory=str(tmp_path)))
     assert "exited with code 42" in result
 
 
 def test_execute_command_stderr(tmp_path):
     """Captures stderr output."""
-    result = execute_command("echo err >&2", working_directory=str(tmp_path))
+    result = asyncio.run(execute_command("echo err >&2", working_directory=str(tmp_path)))
     assert "err" in result
 
 
@@ -472,7 +482,7 @@ def test_execute_command_timeout(tmp_path):
     original = main_module.COMMAND_TIMEOUT
     main_module.COMMAND_TIMEOUT = 1
     try:
-        result = execute_command("sleep 10", working_directory=str(tmp_path))
+        result = asyncio.run(execute_command("sleep 10", working_directory=str(tmp_path)))
         assert "timed out" in result
     finally:
         main_module.COMMAND_TIMEOUT = original
@@ -480,14 +490,14 @@ def test_execute_command_timeout(tmp_path):
 
 def test_execute_command_working_directory():
     """Runs command in specified working directory."""
-    result = execute_command("pwd", working_directory="/tmp")
+    result = asyncio.run(execute_command("pwd", working_directory="/tmp"))
     # macOS /tmp is a symlink to /private/tmp
     assert "tmp" in result
 
 
 def test_execute_command_invalid_directory():
     """Returns error for non-existent working directory."""
-    result = execute_command("echo hello", working_directory="/nonexistent")
+    result = asyncio.run(execute_command("echo hello", working_directory="/nonexistent"))
     assert "Error executing command" in result
 
 
@@ -501,7 +511,7 @@ def test_execute_command_output_truncated_at_cap(tmp_path):
     main_module.MAX_TOOL_OUTPUT_CHARS = 100  # small cap for testing
     try:
         # Generate output larger than the cap
-        result = execute_command(f"python3 -c \"print('x' * 200)\"", working_directory=str(tmp_path))
+        result = asyncio.run(execute_command(f"python3 -c \"print('x' * 200)\"", working_directory=str(tmp_path)))
         assert "[OUTPUT TRUNCATED" in result
         assert "file-path-based tools" in result
     finally:
@@ -514,7 +524,7 @@ def test_execute_command_output_within_cap_not_truncated(tmp_path):
     original_cap = main_module.MAX_TOOL_OUTPUT_CHARS
     main_module.MAX_TOOL_OUTPUT_CHARS = 10000  # large cap
     try:
-        result = execute_command("echo hello", working_directory=str(tmp_path))
+        result = asyncio.run(execute_command("echo hello", working_directory=str(tmp_path)))
         assert "[OUTPUT TRUNCATED" not in result
         assert "hello" in result
     finally:
@@ -1411,11 +1421,17 @@ def test_backward_compat_text_json_without_submit_result():
 
 
 # --- execute_command alias shims ---
+#
+# See the note above the `# --- execute_command tool ---` cluster: the alias
+# shims and `_execute_command_impl` are all `async def`. Wrap calls in
+# `asyncio.run(...)` from sync tests, or use `@pytest.mark.asyncio` + `await`.
 
 
 def test_execute_command_impl_direct_invocation(tmp_path):
     """The shared helper is directly callable and returns expected output."""
-    result = _execute_command_impl("echo alias-test", working_directory=str(tmp_path))
+    result = asyncio.run(
+        _execute_command_impl("echo alias-test", working_directory=str(tmp_path))
+    )
     assert "alias-test" in result
 
 
@@ -1440,7 +1456,7 @@ def test_execute_command_alias_delegates_to_impl(tmp_path):
     # Under conftest's mocked function_tool, the alias is a plain callable.
     run_command = EXECUTE_COMMAND_ALIAS_TOOLS[0]
     assert callable(run_command), "alias should be callable under the test SDK mock"
-    result = run_command("echo alias-delegate", working_directory=str(tmp_path))
+    result = asyncio.run(run_command("echo alias-delegate", working_directory=str(tmp_path)))
     assert "alias-delegate" in result
 
 
@@ -1500,7 +1516,7 @@ def test_executescript_alias_delegates_to_impl(tmp_path):
     """The executescript shim invokes the same implementation as execute_command."""
     executescript = next(t for t in EXECUTE_COMMAND_ALIAS_TOOLS if t.name == "executescript")
     assert callable(executescript)
-    result = executescript("echo executescript-delegate", working_directory=str(tmp_path))
+    result = asyncio.run(executescript("echo executescript-delegate", working_directory=str(tmp_path)))
     assert "executescript-delegate" in result
 
 
@@ -1563,3 +1579,262 @@ def test_harmony_recovery_cap_logic_caps_repeated_pairs():
             fired.append(False)
     # The first CAP attempts fire; subsequent attempts fall through.
     assert fired == [True] * HARMONY_RECOVERY_CAP_PER_PAIR + [False, False]
+
+
+# ---------------------------------------------------------------------------
+# Mid-task Google Workspace token refresh — execute_command wrapper
+# ---------------------------------------------------------------------------
+
+
+_GWS_SIG = '"status": "UNAUTHENTICATED"'
+
+
+def _make_async_resp(status_code: int, body: dict | None = None):
+    """Build a minimal stand-in for an httpx.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json = MagicMock(return_value=body or {})
+    return resp
+
+
+def _build_async_client_cm(post_return):
+    """Build an async-context-manager mock that returns a client whose .post awaits to post_return."""
+    client = MagicMock()
+    client.post = AsyncMock(return_value=post_return)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm, client
+
+
+@pytest.mark.asyncio
+async def test_execute_command_recovers_from_auth_failure(monkeypatch):
+    """Signature in original output → exactly one refresh + one retry; only retry output returned."""
+    from main import _refresh_google_workspace_token  # noqa: F401 — ensure import
+
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    call_count = {"n": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return 1, f'error[api]: {_GWS_SIG}'
+        return 0, "drive-list-output"
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    cm, http_client = _build_async_client_cm(
+        _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+    )
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    result = await _execute_command_impl("gws drive list", "/workspace")
+
+    assert call_count["n"] == 2
+    assert http_client.post.await_count == 1
+    assert "drive-list-output" in result
+    assert _GWS_SIG not in result  # original output discarded
+    assert os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] == "fresh-token"
+
+
+@pytest.mark.asyncio
+async def test_execute_command_no_refresh_when_token_env_unset(monkeypatch):
+    """Signature present but GOOGLE_WORKSPACE_CLI_TOKEN unset → no refresh, original output returned."""
+    monkeypatch.delenv("GOOGLE_WORKSPACE_CLI_TOKEN", raising=False)
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    def fake_run_subprocess(command, working_directory):
+        return 0, f'cat: {_GWS_SIG}'
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    cm, http_client = _build_async_client_cm(_make_async_resp(200, {"access_token": "fresh"}))
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    result = await _execute_command_impl("cat sample.json", "/workspace")
+
+    assert _GWS_SIG in result  # original output returned unchanged
+    assert http_client.post.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_command_retry_also_fails(monkeypatch):
+    """Signature in BOTH original and retry → second output returned, no second refresh attempted."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    call_count = {"n": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        call_count["n"] += 1
+        return 1, f'attempt-{call_count["n"]}: {_GWS_SIG}'
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    cm, http_client = _build_async_client_cm(
+        _make_async_resp(200, {"access_token": "fresh-token"})
+    )
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    result = await _execute_command_impl("gws drive list", "/workspace")
+
+    assert call_count["n"] == 2  # original + one retry, no third attempt
+    assert http_client.post.await_count == 1
+    assert "attempt-2" in result
+    assert _GWS_SIG in result  # second output preserved
+
+
+@pytest.mark.asyncio
+async def test_execute_command_no_retry_when_refresh_endpoint_fails(monkeypatch):
+    """Refresh endpoint returns non-200 → original output returned, no retry attempted."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    call_count = {"n": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        call_count["n"] += 1
+        return 1, f'attempt-{call_count["n"]}: {_GWS_SIG}'
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    cm, http_client = _build_async_client_cm(_make_async_resp(502, {}))
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    result = await _execute_command_impl("gws drive list", "/workspace")
+
+    assert call_count["n"] == 1  # no retry
+    assert http_client.post.await_count == 1
+    assert "attempt-1" in result
+    assert os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] == "stale-token"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_execute_command_concurrent_refresh_deduplicates(monkeypatch):
+    """Two parallel auth-failing commands → exactly one HTTP POST to the refresh endpoint."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    invocation = {"count": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        invocation["count"] += 1
+        if invocation["count"] <= 2:
+            return 1, f'attempt: {_GWS_SIG}'
+        return 0, f"ok-{invocation['count']}"
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    # Make the refresh HTTP call slow enough that both coroutines reach the
+    # refresh helper before the first one completes its network call.
+    # Otherwise AsyncMock returns synchronously and coroutine 1 finishes its
+    # entire refresh path before coroutine 2 starts.
+    post_calls = {"n": 0}
+
+    async def slow_post(*args, **kwargs):
+        post_calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+
+    http_client = MagicMock()
+    http_client.post = AsyncMock(side_effect=slow_post)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=http_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    results = await asyncio.gather(
+        _execute_command_impl("gws drive list", "/workspace"),
+        _execute_command_impl("gws drive list", "/workspace"),
+    )
+
+    assert post_calls["n"] == 1, f"expected 1 refresh, got {post_calls['n']}"
+    assert all("ok-" in r for r in results), f"results={results}"
+    assert os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] == "fresh-token"
+
+
+@pytest.mark.asyncio
+async def test_execute_command_retry_uses_refreshed_env(monkeypatch):
+    """The subprocess for the retry sees the refreshed GOOGLE_WORKSPACE_CLI_TOKEN value."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    seen_tokens: list[str] = []
+
+    def fake_run_subprocess(command, working_directory):
+        seen_tokens.append(os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", ""))
+        if len(seen_tokens) == 1:
+            return 1, _GWS_SIG
+        return 0, "ok"
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    cm, http_client = _build_async_client_cm(
+        _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+    )
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    await _execute_command_impl("gws drive list", "/workspace")
+
+    assert seen_tokens == ["stale-token", "fresh-token"]
+
+
+@pytest.mark.asyncio
+async def test_token_refreshed_event_emitted_on_success(monkeypatch):
+    """token_refreshed event with status=ok is emitted on a successful refresh."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr("main.emit_event", lambda et, data: events.append((et, data)))
+
+    cm, _ = _build_async_client_cm(
+        _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+    )
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _refresh_google_workspace_token
+    new = await _refresh_google_workspace_token()
+
+    assert new == "fresh-token"
+    assert ("token_refreshed", {"provider": "google_workspace", "status": "ok"}) in events
+    # Event payload does not include the token value
+    for et, data in events:
+        if et == "token_refreshed":
+            assert "access_token" not in data
+            assert "token" not in data
+
+
+@pytest.mark.asyncio
+async def test_token_refreshed_event_emitted_on_failure(monkeypatch):
+    """token_refreshed event with status=failed is emitted when the refresh endpoint fails."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr("main.emit_event", lambda et, data: events.append((et, data)))
+
+    cm, _ = _build_async_client_cm(_make_async_resp(502, {}))
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _refresh_google_workspace_token
+    new = await _refresh_google_workspace_token()
+
+    assert new is None
+    assert ("token_refreshed", {"provider": "google_workspace", "status": "failed"}) in events
