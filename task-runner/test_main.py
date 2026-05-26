@@ -1970,8 +1970,6 @@ async def test_concurrent_refresh_dedupes_when_second_caller_arrives_after_env_u
     monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
     monkeypatch.setenv("ERRAND_API_KEY", "test-key")
 
-    barrier_c1_subprocess_done = asyncio.Event()
-    barrier_c1_refresh_complete = asyncio.Event()
     invocation = {"count": 0}
 
     def fake_run_subprocess(command, working_directory):
