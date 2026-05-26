@@ -1589,6 +1589,22 @@ def test_harmony_recovery_cap_logic_caps_repeated_pairs():
 _GWS_SIG = '"status": "UNAUTHENTICATED"'
 
 
+@pytest.fixture(autouse=True)
+def _reset_google_token_refresh_lock():
+    """Replace the module-level `_google_token_refresh_lock` with a fresh
+    `asyncio.Lock()` per test.
+
+    pytest-asyncio runs each test on its own event loop, but an `asyncio.Lock`
+    created at module import binds to the FIRST loop that awaits it. The
+    second test then trips Python 3.12's "bound to a different event loop"
+    safety check. In production the task-runner has one long-lived loop, so
+    the module-level lock is correct; only tests need this isolation.
+    """
+    import main as _main_mod
+    _main_mod._google_token_refresh_lock = asyncio.Lock()
+    yield
+
+
 def _make_async_resp(status_code: int, body: dict | None = None):
     """Build a minimal stand-in for an httpx.Response."""
     resp = MagicMock()
@@ -1763,6 +1779,48 @@ async def test_execute_command_concurrent_refresh_deduplicates(monkeypatch):
     assert post_calls["n"] == 1, f"expected 1 refresh, got {post_calls['n']}"
     assert all("ok-" in r for r in results), f"results={results}"
     assert os.environ["GOOGLE_WORKSPACE_CLI_TOKEN"] == "fresh-token"
+
+
+@pytest.mark.asyncio
+async def test_token_refreshed_event_emitted_on_dedupe_reuse(monkeypatch):
+    """The deduplicated-reuse path still emits a token_refreshed event so the
+    transcript shows one event per caller, not per HTTP round-trip."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr("main.emit_event", lambda et, data: events.append((et, data)))
+
+    invocation = {"count": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        invocation["count"] += 1
+        if invocation["count"] <= 2:
+            return 1, f'attempt: {_GWS_SIG}'
+        return 0, f"ok-{invocation['count']}"
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    async def slow_post(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return _make_async_resp(200, {"access_token": "fresh-token", "expires_at": 9999999999})
+
+    http_client = MagicMock()
+    http_client.post = AsyncMock(side_effect=slow_post)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=http_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    await asyncio.gather(
+        _execute_command_impl("gws drive list", "/workspace"),
+        _execute_command_impl("gws drive list", "/workspace"),
+    )
+
+    ok_events = [d for et, d in events if et == "token_refreshed" and d.get("status") == "ok"]
+    assert len(ok_events) == 2, f"expected 2 ok events (one per caller), got {len(ok_events)}: {events}"
 
 
 @pytest.mark.asyncio

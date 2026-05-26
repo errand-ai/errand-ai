@@ -450,6 +450,11 @@ async def _refresh_google_workspace_token() -> str | None:
         current_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
         if current_token and current_token != token_before_lock:
             logger.info("Google token already refreshed by concurrent caller; reusing")
+            # Emit the success event from this caller's perspective so the
+            # transcript shows one event per recovery, regardless of which
+            # coroutine made the HTTP round-trip. The spec requires an event
+            # on every refresh attempt.
+            emit_event("token_refreshed", {"provider": "google_workspace", "status": "ok"})
             return current_token
 
         try:

@@ -9,7 +9,7 @@ Long-running tasks fail with HTTP 401 from Google APIs when the `GOOGLE_WORKSPAC
 - Guard the refresh + retry with an `asyncio.Lock` so two concurrent `execute_command` calls hitting an expired token cause at most one refresh round-trip.
 - Cap recovery at one retry per `execute_command` invocation. If the retry still produces an `UNAUTHENTICATED` response, return the second failure to the LLM unchanged.
 - Refresh only runs if `GOOGLE_WORKSPACE_CLI_TOKEN` was injected at task start (i.e. the task has Google credentials at all). Tasks without Google Workspace remain unaffected.
-- The new errand endpoint is reachable from inside the runner via the same base URL as `ERRAND_MCP_URL` (stripped of the `/mcp/` suffix), reusing the existing connectivity. No new networking or auth surface.
+- The new errand endpoint is reachable from inside the runner via two new env vars — `ERRAND_API_URL` (the errand server base URL, derived server-side by stripping the `/mcp/...` suffix from `ERRAND_MCP_URL`) and `ERRAND_API_KEY` (= the existing `mcp_api_key` setting). The bearer-auth scheme is reused; no new networking surface.
 
 ## Capabilities
 
@@ -28,8 +28,8 @@ Long-running tasks fail with HTTP 401 from Google APIs when the `GOOGLE_WORKSPAC
 - `task-runner/main.py`: emit a new `token_refreshed` event (alongside existing `tool_call` / `tool_result` events) so refresh activity is visible in task transcripts.
 
 **Configuration**
-- No new env vars on the runner — `ERRAND_MCP_URL` and `MCP_API_KEY` (already injected) are reused.
-- No new errand settings.
+- Two new env vars injected onto the task-runner container alongside `GOOGLE_WORKSPACE_CLI_TOKEN`: `ERRAND_API_URL` (derived from `ERRAND_MCP_URL`) and `ERRAND_API_KEY` (= the existing `mcp_api_key` setting). Both are skipped when no Google credentials are present, so runners without Google Workspace see no new env.
+- No new errand settings, no new auth credentials — `mcp_api_key` is reused.
 
 **Observability**
 - New log line on the server when the refresh endpoint is called (task identifier, success/failure).
