@@ -1590,7 +1590,7 @@ _GWS_SIG = '"status": "UNAUTHENTICATED"'
 
 
 @pytest.fixture(autouse=True)
-def _reset_google_token_refresh_lock():
+def _reset_google_token_refresh_lock(monkeypatch):
     """Replace the module-level `_google_token_refresh_lock` with a fresh
     `asyncio.Lock()` per test.
 
@@ -1599,10 +1599,12 @@ def _reset_google_token_refresh_lock():
     second test then trips Python 3.12's "bound to a different event loop"
     safety check. In production the task-runner has one long-lived loop, so
     the module-level lock is correct; only tests need this isolation.
+
+    Uses `monkeypatch.setattr` (the prevailing pattern in this file) to
+    avoid mixing `import main as ...` with the existing `from main import`
+    style elsewhere in the module.
     """
-    import main as _main_mod
-    _main_mod._google_token_refresh_lock = asyncio.Lock()
-    yield
+    monkeypatch.setattr("main._google_token_refresh_lock", asyncio.Lock())
 
 
 def _make_async_resp(status_code: int, body: dict | None = None):
