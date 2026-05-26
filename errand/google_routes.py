@@ -16,7 +16,6 @@ to read the user's Google access token.
 """
 
 import logging
-import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -56,12 +55,6 @@ async def _require_task_scoped_refresh_token(
 
     if stored_task_id is None:
         raise HTTPException(status_code=401, detail="invalid or expired bearer token")
-
-    # Constant-time check is implicit in Valkey GET (the key itself was
-    # used as the lookup), but a redundant compare is cheap insurance
-    # against any future refactor that introduces a length-prefix match.
-    if not secrets.compare_digest(bearer, bearer):  # pragma: no cover — invariant
-        raise HTTPException(status_code=401, detail="bearer mismatch")
 
     return stored_task_id
 

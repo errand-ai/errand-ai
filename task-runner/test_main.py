@@ -1592,7 +1592,7 @@ _GWS_SIG = '"status": "UNAUTHENTICATED"'
 @pytest.fixture(autouse=True)
 def _reset_google_token_refresh_lock(monkeypatch):
     """Replace the module-level `_google_token_refresh_lock` with a fresh
-    `asyncio.Lock()` per test.
+    `asyncio.Lock()` per test, and reset the concurrent-wave dedup state.
 
     pytest-asyncio runs each test on its own event loop, but an `asyncio.Lock`
     created at module import binds to the FIRST loop that awaits it. The
@@ -1605,6 +1605,8 @@ def _reset_google_token_refresh_lock(monkeypatch):
     style elsewhere in the module.
     """
     monkeypatch.setattr("main._google_token_refresh_lock", asyncio.Lock())
+    monkeypatch.setattr("main._refresh_inflight_count", 0)
+    monkeypatch.setattr("main._recent_failed_stale_token", None)
 
 
 def _make_async_resp(status_code: int, body: dict | None = None):
@@ -1898,3 +1900,49 @@ async def test_token_refreshed_event_emitted_on_failure(monkeypatch):
 
     assert new is None
     assert ("token_refreshed", {"provider": "google_workspace", "status": "failed"}) in events
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_failure_dedupes_to_one_post(monkeypatch):
+    """When the first concurrent refresh fails, subsequent waiters in the
+    same wave SHALL share the failure outcome rather than each issuing
+    their own POST. Once the wave drains, a later caller may try again."""
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_TOKEN", "stale-token")
+    monkeypatch.setenv("ERRAND_API_URL", "http://errand:8000")
+    monkeypatch.setenv("ERRAND_API_KEY", "test-key")
+
+    invocation = {"count": 0}
+
+    def fake_run_subprocess(command, working_directory):
+        invocation["count"] += 1
+        return 1, f'attempt-{invocation["count"]}: {_GWS_SIG}'
+
+    monkeypatch.setattr("main._run_subprocess", fake_run_subprocess)
+
+    post_calls = {"n": 0}
+
+    async def slow_failing_post(*args, **kwargs):
+        post_calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return _make_async_resp(502, {})
+
+    http_client = MagicMock()
+    http_client.post = AsyncMock(side_effect=slow_failing_post)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=http_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **kw: cm)
+
+    from main import _execute_command_impl
+    await asyncio.gather(
+        _execute_command_impl("gws drive list", "/workspace"),
+        _execute_command_impl("gws drive list", "/workspace"),
+    )
+
+    # Exactly one POST despite two concurrent waiters hitting the same stale token.
+    assert post_calls["n"] == 1, f"expected 1 POST, got {post_calls['n']}"
+
+    # After the wave drains, a later caller is allowed to try again — the
+    # `_recent_failed_stale_token` cache only scopes dedup to concurrent waiters.
+    await _execute_command_impl("gws drive list", "/workspace")
+    assert post_calls["n"] == 2, "wave-scoped dedup must reset after no concurrent waiters remain"

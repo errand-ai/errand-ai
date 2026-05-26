@@ -6,7 +6,7 @@
 ## 2. Server-side: HTTP endpoint
 
 - [x] 2.1 Create `errand/google_routes.py` (or extend an existing routes module) exposing `POST /api/google/refresh-token`.
-- [x] 2.2 Add a FastAPI dependency that validates the `Authorization: Bearer <mcp_api_key>` header against the `mcp_api_key` setting. Reject with `401` if missing or mismatched.
+- [x] 2.2 Add a FastAPI dependency that validates the `Authorization: Bearer <task-scoped-bearer>` header against the Valkey key `google_refresh_token:<bearer>`. Reject with `401` if missing/unrecognised; `503` if Valkey is unavailable. The endpoint SHALL NOT accept the global `mcp_api_key` (per the PR #187 security review).
 - [x] 2.3 In the handler, load the `google_drive` `PlatformCredential`; return `404` if absent.
 - [x] 2.4 Call the force-refresh helper from 1.1. On `None`, return `502` with a short error message. On success, return `{ "access_token": "<value>", "expires_at": <int> }`.
 - [x] 2.5 Log `task_id` (from header if present), provider, success/failure, and the new `expires_at`. Do not log the access token.
@@ -15,8 +15,8 @@
 
 ## 3. Server-side: inject runner env vars
 
-- [x] 3.1 In `errand/task_manager.py`, when injecting `GOOGLE_WORKSPACE_CLI_TOKEN`, also set `ERRAND_API_URL` (derived from `ERRAND_MCP_URL` by stripping `/mcp/...`) and `ERRAND_API_KEY` (the `mcp_api_key` setting value).
-- [x] 3.2 Skip the new env vars if no `mcp_api_key` is configured; log a single warning. (Refresh will then silently no-op in the runner.)
+- [x] 3.1 In `errand/task_manager.py`, when injecting `GOOGLE_WORKSPACE_CLI_TOKEN`, also set `ERRAND_API_URL` (derived from `ERRAND_MCP_URL` by stripping `/mcp/...`) and `ERRAND_API_KEY` (a per-task `secrets.token_hex(32)` bearer, stored in Valkey under `google_refresh_token:<bearer>` → `<task_id>` with `GOOGLE_REFRESH_TOKEN_TTL_SECONDS` TTL — NOT `mcp_api_key`).
+- [x] 3.2 Skip the new env vars if Valkey is unavailable; log a single warning. (Refresh will then silently no-op in the runner.)
 - [x] 3.3 Add a unit test asserting both new env vars are present when Google credentials exist, and absent when they don't.
 
 ## 4. Runner-side: refresh helper

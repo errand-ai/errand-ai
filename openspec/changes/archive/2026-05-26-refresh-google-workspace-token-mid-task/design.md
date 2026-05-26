@@ -2,7 +2,7 @@
 
 Google Workspace OAuth access tokens have a 60-minute TTL. The task-runner today receives the token as a snapshot `GOOGLE_WORKSPACE_CLI_TOKEN` env var at task start, and that snapshot may already have less than 60 minutes of life when injected — `errand/cloud_storage.py:refresh_token_if_needed` only refreshes if the token is within a 5-minute buffer of expiry, so any value of `expires_at` further away than 5 min is passed through as-is. Task-runner pods have no elapsed-time cap (only `MAX_TURNS`), so any task can in principle outlive its injected token. A real production failure (a 59.7-minute "job hunt" task starting with ~49 minutes of token life) confirms this is not theoretical.
 
-The task-runner already talks back to errand-server in two ways: (a) connecting to the errand MCP server (URL in `ERRAND_MCP_URL`, bearer token = `mcp_api_key` baked into the MCP config file at startup), and (b) posting final results to `RESULT_CALLBACK_URL` with `RESULT_CALLBACK_TOKEN`. There is a clean precedent for injecting URL + bearer-token env-var pairs and using `httpx` for callbacks. Reusing this shape avoids inventing new authentication surface.
+The task-runner already talks back to errand-server in two ways: (a) connecting to the errand MCP server (URL in `ERRAND_MCP_URL`, bearer token = `mcp_api_key` baked into `/workspace/mcp.json` at startup), and (b) posting final results to `RESULT_CALLBACK_URL` with a *per-task* `RESULT_CALLBACK_TOKEN` stored in Valkey. The new mid-task refresh endpoint follows the second pattern (per-task bearer) rather than the first (global key), so that a task whose profile does not grant Google access cannot lift `mcp_api_key` from `/workspace/mcp.json` and call the endpoint to obtain the user's Google access token. The `httpx` shape is identical to the callback flow.
 
 The runner's `execute_command` function tool is the only place `gws` is ever invoked from inside a task — gws is a shell binary, the agent calls it via shell. Wrapping `execute_command` is therefore sufficient; there is no second tool surface to also instrument.
 
@@ -13,7 +13,7 @@ The runner's `execute_command` function tool is the only place `gws` is ever inv
 - Refresh logic SHALL be invisible to the agent's conversation history — no extra tool turns, no LLM prompt augmentation, no token values flowing through model context.
 - Concurrent `execute_command` calls hitting expired-token responses SHALL deduplicate to a single refresh round-trip.
 - A refresh that itself fails (refresh token revoked, errand unreachable) SHALL surface a useful error to the LLM rather than loop or swallow the original failure.
-- The new errand endpoint SHALL reuse the existing `mcp_api_key` bearer-token scheme — no new credentials, no new RBAC.
+- The new errand endpoint SHALL be authenticated by a *per-task* opaque bearer (modelled on `RESULT_CALLBACK_TOKEN`), NOT the global `mcp_api_key` — so that a task without Google access cannot escalate by reading the MCP config and calling the endpoint.
 
 **Non-Goals:**
 - OneDrive mid-task token refresh. OneDrive tokens are consumed by an MCP server (header on the connection) not an env var; refresh there requires reconnecting an MCP client mid-stream, which is structurally different. Future change.
@@ -87,7 +87,7 @@ The runner's `execute_command` function tool is the only place `gws` is ever inv
 
 ### Decision 7: Inject `ERRAND_API_URL` and `ERRAND_API_KEY` env vars
 
-**Choice:** `task_manager.py` SHALL set `ERRAND_API_URL` (errand-server base URL, derived from `ERRAND_MCP_URL` by stripping the `/mcp/...` suffix) and `ERRAND_API_KEY` (= `mcp_api_key`) on every task-runner container. The wrapper reads these at refresh time.
+**Choice:** `task_manager.py` SHALL set `ERRAND_API_URL` (errand-server base URL, derived from `ERRAND_MCP_URL` by stripping the `/mcp/...` suffix) and `ERRAND_API_KEY` (a freshly-generated per-task opaque bearer, stored in Valkey under `google_refresh_token:<bearer>` → `<task_id>` with `GOOGLE_REFRESH_TOKEN_TTL_SECONDS` TTL) on every task-runner container that already receives `GOOGLE_WORKSPACE_CLI_TOKEN`. `ERRAND_API_KEY` SHALL NOT be set to the global `mcp_api_key` setting — see Decision 4 for the security rationale. The wrapper reads these at refresh time.
 
 **Alternatives considered:**
 - *Parse `ERRAND_MCP_URL` at runtime in the runner.* Already done elsewhere on the server side (`cloud_storage._get_server_base_url`); plumbing a parsed base URL in is simpler than duplicating the parser in the runner.
