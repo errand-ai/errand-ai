@@ -85,6 +85,12 @@ def _is_external_client(created_by: str | None) -> bool:
 
 DEFAULT_HINDSIGHT_BANK_ID = "errand-tasks"
 
+# TTL (seconds) for the per-task Google Workspace refresh bearer stored in
+# Valkey under `google_refresh_token:<bearer>`. Chosen to outlast any
+# reasonable task duration; the runner only needs the bearer while the task
+# is in flight. Independent of the OAuth access token's own 60-min TTL.
+GOOGLE_REFRESH_TOKEN_TTL_SECONDS = 8 * 60 * 60  # 8 hours
+
 
 # ---------------------------------------------------------------------------
 # Pydantic model for task runner output
@@ -1605,6 +1611,49 @@ class TaskManager:
             if google_access_token:
                 env_vars["GOOGLE_WORKSPACE_CLI_TOKEN"] = google_access_token
                 google_workspace_enabled = True
+
+                # Inject ERRAND_API_URL + a per-task ERRAND_API_KEY so the
+                # task-runner can request a mid-task refresh from
+                # `POST /api/google/refresh-token` when it detects an
+                # UNAUTHENTICATED response from a gws call. Without these the
+                # runner-side recovery silently no-ops and any expired-token
+                # failure surfaces to the LLM as today.
+                #
+                # IMPORTANT: ERRAND_API_KEY is a *task-scoped* opaque token,
+                # NOT `mcp_api_key`. The MCP key is global and would be
+                # readable by any task via `/workspace/mcp.json`; that would
+                # let a task that was never granted Google access call this
+                # endpoint and read the Google token. The per-task token is
+                # stored in Valkey under `google_refresh_token:<token>` →
+                # `<task_id>`, with a TTL chosen to outlast any reasonable
+                # task duration (`GOOGLE_REFRESH_TOKEN_TTL_SECONDS`).
+                errand_base_url = ""
+                if errand_mcp_url:
+                    errand_base_url = errand_mcp_url.rstrip("/").rsplit("/mcp", 1)[0]
+                if errand_base_url:
+                    try:
+                        import redis as sync_redis
+                        gr_redis = sync_redis.Redis.from_url(VALKEY_URL, decode_responses=True)
+                        refresh_bearer = secrets.token_hex(32)
+                        gr_redis.set(
+                            f"google_refresh_token:{refresh_bearer}",
+                            str(task.id),
+                            ex=GOOGLE_REFRESH_TOKEN_TTL_SECONDS,
+                        )
+                        gr_redis.close()
+                        env_vars["ERRAND_API_URL"] = errand_base_url
+                        env_vars["ERRAND_API_KEY"] = refresh_bearer
+                    except Exception:
+                        logger.warning(
+                            "Failed to store Google refresh bearer in Valkey, "
+                            "mid-task refresh disabled for task %s",
+                            task.id, exc_info=True,
+                        )
+                else:
+                    logger.warning(
+                        "Google token injected but mid-task refresh disabled: "
+                        "errand_base_url=%r", errand_base_url,
+                    )
 
         # Merge DB skills with git-sourced and system skills (DB > git > system)
         db_skills = settings.get("skills", [])

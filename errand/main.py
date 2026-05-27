@@ -33,6 +33,7 @@ from sqlalchemy.orm import selectinload
 import auth as auth_module
 from auth import OIDCConfig
 from auth_routes import router as auth_router
+from google_routes import router as google_router
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
@@ -345,6 +346,7 @@ app.include_router(task_generator_router)
 app.include_router(webhook_trigger_router)
 app.include_router(jira_credential_router)
 app.include_router(webhook_receiver_router)
+app.include_router(google_router)
 
 app.mount("/mcp", create_mcp_app())
 

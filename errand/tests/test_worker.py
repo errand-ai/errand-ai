@@ -3895,3 +3895,104 @@ async def test_refreshed_google_token_lands_in_task_env_var():
 
     env = mock_runtime.async_prepare.call_args.kwargs["env"]
     assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.refreshed"
+
+
+# --- Mid-task Google refresh: ERRAND_API_URL / ERRAND_API_KEY injection ---
+
+
+@pytest.mark.asyncio
+async def test_errand_api_url_and_key_injected_with_google_credentials():
+    """When Google credentials exist, the runner receives ERRAND_API_URL +
+    a per-task ERRAND_API_KEY bearer, and the bearer is stored in Valkey
+    under `google_refresh_token:<bearer>` with the task ID as the value.
+
+    The bearer MUST NOT equal `mcp_api_key` — see PR #187 security review.
+    """
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "mcp_api_key": "secret-mcp-key-xyz",
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+    mock_redis = MagicMock()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}), \
+         patch("redis.Redis.from_url", return_value=mock_redis):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+    assert env.get("ERRAND_API_URL") == "http://errand:8000"
+
+    bearer = env.get("ERRAND_API_KEY")
+    assert bearer, "ERRAND_API_KEY should be set"
+    assert bearer != "secret-mcp-key-xyz", \
+        "ERRAND_API_KEY must NOT equal mcp_api_key (per-task bearer required)"
+    assert len(bearer) == 64, f"expected token_hex(32) length, got {len(bearer)}"
+
+    # Bearer was stored in Valkey under the expected key + TTL.
+    set_calls = [c for c in mock_redis.set.call_args_list if "google_refresh_token:" in str(c)]
+    assert len(set_calls) == 1
+    args, kwargs = set_calls[0]
+    assert args[0] == f"google_refresh_token:{bearer}"
+    assert args[1] == str(task.id)
+    assert kwargs.get("ex") == 8 * 60 * 60  # GOOGLE_REFRESH_TOKEN_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_errand_api_url_and_key_absent_without_google_credentials():
+    """Without Google credentials, the new env vars are not set."""
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "mcp_api_key": "secret-mcp-key-xyz",
+    }
+
+    mock_runtime = _make_mock_runtime()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=None)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert "GOOGLE_WORKSPACE_CLI_TOKEN" not in env
+    assert "ERRAND_API_URL" not in env
+    assert "ERRAND_API_KEY" not in env
+
+
+@pytest.mark.asyncio
+async def test_errand_api_vars_skipped_when_valkey_unavailable():
+    """When Valkey is unreachable, the refresh env vars are skipped gracefully.
+
+    The Google token still injects (existing behaviour) — the runner just
+    won't be able to mid-task refresh, so an expired token will surface to
+    the LLM as today.
+    """
+    task = _make_mock_task(description="Test task")
+    settings = {
+        "mcp_servers": {},
+        "credentials": [],
+        "task_processing_model": "gpt-4o",
+        "system_prompt": "Be helpful.",
+        "mcp_api_key": "secret-mcp-key-xyz",
+    }
+    cloud_creds = {
+        "google_drive": {"access_token": "ya29.test", "expires_at": 9999999999},
+    }
+
+    mock_runtime = _make_mock_runtime()
+    with patch.dict("os.environ", {"ERRAND_MCP_URL": "http://errand:8000/mcp/"}), \
+         patch("redis.Redis.from_url", side_effect=ConnectionError("Valkey down")):
+        await _run_process_task(task, settings, mock_runtime, cloud_storage_credentials=cloud_creds)
+
+    env = mock_runtime.async_prepare.call_args.kwargs["env"]
+    assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
+    assert "ERRAND_API_URL" not in env
+    assert "ERRAND_API_KEY" not in env

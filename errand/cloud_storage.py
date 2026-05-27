@@ -40,18 +40,24 @@ def _get_client_credentials(provider: str) -> tuple[str, str] | None:
 
 
 async def refresh_token_if_needed(
-    provider: str, credentials: dict, session: AsyncSession
+    provider: str, credentials: dict, session: AsyncSession,
+    *, force: bool = False,
 ) -> dict | None:
     """Refresh the access token if expired (within 5-min buffer).
 
-    Returns updated credentials dict, or None if refresh failed.
-    If token is still valid, returns credentials unchanged.
-    """
-    expires_at = credentials.get("expires_at", 0)
-    now = time.time()
+    If `force=True`, refresh regardless of remaining lifetime. Used by the
+    mid-task refresh endpoint, where the caller has empirical evidence the
+    token no longer works and the cached `expires_at` cannot be trusted.
 
-    if now < expires_at - REFRESH_BUFFER_SECONDS:
-        return credentials  # still valid
+    Returns updated credentials dict, or None if refresh failed.
+    If token is still valid (and `force` is False), returns credentials
+    unchanged.
+    """
+    if not force:
+        expires_at = credentials.get("expires_at", 0)
+        now = time.time()
+        if now < expires_at - REFRESH_BUFFER_SECONDS:
+            return credentials  # still valid
 
     refresh_token = credentials.get("refresh_token", "")
     if not refresh_token:
@@ -65,6 +71,21 @@ async def refresh_token_if_needed(
 
     # Cloud-proxy refresh — delegate to errand-cloud via WebSocket
     return await _cloud_proxy_refresh(provider, credentials, refresh_token, session)
+
+
+async def force_refresh_token(
+    provider: str, credentials: dict, session: AsyncSession,
+) -> dict | None:
+    """Force-refresh the access token regardless of remaining lifetime.
+
+    Used by the mid-task refresh endpoint when the runner has observed an
+    UNAUTHENTICATED response from the provider — the cached `expires_at`
+    is by definition wrong in that case, so the standard 5-min buffer
+    short-circuit must be skipped.
+
+    Returns the updated credentials dict, or None on failure.
+    """
+    return await refresh_token_if_needed(provider, credentials, session, force=True)
 
 
 async def _direct_refresh(
