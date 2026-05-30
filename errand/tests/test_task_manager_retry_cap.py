@@ -3,7 +3,6 @@
 See openspec/changes/cap-runner-retry-storm for the spec.
 """
 
-import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 

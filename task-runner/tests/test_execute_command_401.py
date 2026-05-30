@@ -4,7 +4,6 @@ Covers `_is_google_token_expired` (legacy UNAUTHENTICATED + Google raw 401
 conjunction) and the one-retry cap inside `_execute_command_impl`.
 """
 
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest

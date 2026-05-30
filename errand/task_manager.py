@@ -1997,7 +1997,12 @@ class TaskManager:
         current = result.scalar_one()
         new_retry = current.retry_count + 1
 
-        last_failure = output if output is not None else "(no output)"
+        # Truncate the embedded failure output so a megabyte of upstream stdout
+        # doesn't bloat the row (and SSE payload). 4 KiB is enough for a human
+        # to triage the failure in the UI; the full output is preserved in
+        # `runner_logs` below.
+        raw_failure = output if output is not None else "(no output)"
+        last_failure = truncate_output(raw_failure, max_bytes=4096)
         message = (
             f"Task exceeded max retries ({max_attempts}) — last failure: "
             f"{last_failure}"

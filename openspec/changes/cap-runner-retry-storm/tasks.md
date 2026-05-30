@@ -1,6 +1,6 @@
 ## 1. Bump version and create feature branch
 
-- [x] 1.1 Bump `VERSION` from `0.69.0` to `0.70.0` (minor — new feature, backwards-compatible)
+- [x] 1.1 Bump `VERSION` from `0.122.0` to `0.123.0` (minor — new feature, backwards-compatible)
 - [x] 1.2 Create feature branch `cap-runner-retry-storm`
 
 ## 2. Server-side: retry cap + backoff ceiling in TaskManager
@@ -41,7 +41,7 @@
 
 ## 6. PR and deploy
 
-- [ ] 6.1 Push branch, open PR with title `feat: cap runner retry storms and widen gws 401 detection`
+- [x] 6.1 Push branch, open PR with title `feat: cap runner retry storms and widen gws 401 detection`
 - [ ] 6.2 Confirm CI builds image + Helm chart successfully (immutable tag check, no duplicates)
 - [ ] 6.3 Verify ArgoCD dry-run / staging apply succeeds against the new chart
 - [ ] 6.4 Merge PR, delete local branch, pull `main`
