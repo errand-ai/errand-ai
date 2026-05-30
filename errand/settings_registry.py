@@ -39,6 +39,7 @@ SETTINGS_REGISTRY = {
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
     "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
     "max_concurrent_tasks": {"env_var": "MAX_CONCURRENT_TASKS", "sensitive": False, "default": 3},
+    "max_retry_attempts": {"env_var": "MAX_RETRY_ATTEMPTS", "sensitive": False, "default": 5},
     "task_log_buffer_max_entries": {"env_var": None, "sensitive": False, "default": 5000},
     "task_log_buffer_ttl_seconds": {"env_var": None, "sensitive": False, "default": 86400},
 }

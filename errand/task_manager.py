@@ -62,6 +62,10 @@ LEADER_LOCK_CONNECT_ARGS = {
 DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
 MAX_GIT_RETRIES = 5
 
+# Retry storm guardrails — see openspec/changes/cap-runner-retry-storm.
+MAX_RETRY_BACKOFF_MINUTES = 60
+DEFAULT_MAX_RETRY_ATTEMPTS = 5
+
 # Sources considered internal to errand (not external MCP clients).
 _INTERNAL_CREATED_BY = {"system", "mcp", "email_poller"}
 
@@ -1873,13 +1877,57 @@ class TaskManager:
         except asyncio.CancelledError:
             pass
 
+    async def _get_max_retry_attempts(self, session: AsyncSession) -> int:
+        """Resolve max_retry_attempts via env → DB → default.
+
+        Clamps `<= 0` to `1` so a misconfigured setting still leaves a finite
+        retry budget (any failure escalates on the first attempt rather than
+        spinning the loop). Non-integer DB values fall back to the default;
+        a single WARNING is emitted on that path.
+        """
+        from settings_registry import resolve_setting_value
+        try:
+            value, _source = await resolve_setting_value(session, "max_retry_attempts")
+        except Exception:
+            logger.warning(
+                "Failed to resolve max_retry_attempts; using default %d",
+                DEFAULT_MAX_RETRY_ATTEMPTS, exc_info=True,
+            )
+            return DEFAULT_MAX_RETRY_ATTEMPTS
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "max_retry_attempts resolved to non-integer %r; using default %d",
+                value, DEFAULT_MAX_RETRY_ATTEMPTS,
+            )
+            return DEFAULT_MAX_RETRY_ATTEMPTS
+        if ivalue <= 0:
+            return 1
+        return ivalue
+
     async def _schedule_retry(self, task: DequeuedTask, output: str | None = None, runner_logs: str | None = None) -> None:
-        """Move a failed task back to scheduled with exponential backoff."""
+        """Move a failed task back to scheduled with exponential backoff.
+
+        If `current.retry_count >= max_retry_attempts - 1`, escalates the task
+        to `review` with a `Failed` tag instead of rescheduling (see
+        `_escalate_to_review_failed`). Backoff is capped at
+        `MAX_RETRY_BACKOFF_MINUTES` minutes.
+        """
         async with async_session() as session:
             result = await session.execute(select(Task).where(Task.id == task.id))
             current = result.scalar_one()
+
+            max_attempts = await self._get_max_retry_attempts(session)
+            if current.retry_count >= max_attempts - 1:
+                await self._escalate_to_review_failed(
+                    session, task, output=output, runner_logs=runner_logs,
+                    max_attempts=max_attempts,
+                )
+                return
+
             new_retry = current.retry_count + 1
-            backoff_minutes = 2 ** (current.retry_count)
+            backoff_minutes = min(2 ** current.retry_count, MAX_RETRY_BACKOFF_MINUTES)
             execute_at = datetime.now(timezone.utc) + timedelta(minutes=backoff_minutes)
             new_position = await _next_position(session, "scheduled")
 
@@ -1928,6 +1976,87 @@ class TaskManager:
                 "Task %s scheduled for retry %d in %d min (execute_at=%s)",
                 task.id, new_retry, backoff_minutes, execute_at.isoformat(),
             )
+
+    async def _escalate_to_review_failed(
+        self,
+        session: AsyncSession,
+        task: DequeuedTask,
+        *,
+        output: str | None,
+        runner_logs: str | None,
+        max_attempts: int,
+    ) -> None:
+        """Move a task to `review` with a `Failed` tag after exhausting retries.
+
+        Increments `retry_count` one final time, writes a human-readable message
+        identifying the cap was reached and quoting the most recent failure
+        output, removes any `Retry` tag, adds a `Failed` tag (creating it on
+        demand), and publishes a `task_updated` event.
+        """
+        result = await session.execute(select(Task).where(Task.id == task.id))
+        current = result.scalar_one()
+        new_retry = current.retry_count + 1
+
+        last_failure = output if output is not None else "(no output)"
+        message = (
+            f"Task exceeded max retries ({max_attempts}) — last failure: "
+            f"{last_failure}"
+        )
+
+        new_position = await _next_position(session, "review")
+        values = {
+            "status": "review",
+            "position": new_position,
+            "output": message,
+            "retry_count": new_retry,
+            "updated_by": "system",
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if runner_logs is not None:
+            values["runner_logs"] = runner_logs
+        await session.execute(
+            update(Task).where(Task.id == task.id).values(**values)
+        )
+
+        # Remove any existing "Retry" tag association.
+        retry_result = await session.execute(select(Tag).where(Tag.name == "Retry"))
+        retry_tag = retry_result.scalar_one_or_none()
+        if retry_tag is not None:
+            await session.execute(
+                task_tags.delete().where(
+                    task_tags.c.task_id == task.id,
+                    task_tags.c.tag_id == retry_tag.id,
+                )
+            )
+
+        # Ensure the "Failed" tag exists and is associated.
+        failed_result = await session.execute(select(Tag).where(Tag.name == "Failed"))
+        failed_tag = failed_result.scalar_one_or_none()
+        if failed_tag is None:
+            failed_tag = Tag(name="Failed")
+            session.add(failed_tag)
+            await session.flush()
+        existing = await session.execute(
+            select(task_tags).where(
+                task_tags.c.task_id == task.id,
+                task_tags.c.tag_id == failed_tag.id,
+            )
+        )
+        if existing.first() is None:
+            await session.execute(
+                task_tags.insert().values(task_id=task.id, tag_id=failed_tag.id)
+            )
+
+        await session.commit()
+        result = await session.execute(
+            select(Task).options(selectinload(Task.tags)).where(Task.id == task.id)
+        )
+        escalated = result.scalar_one()
+        await publish_event("task_updated", _task_to_dict(escalated))
+        logger.info(
+            "Task %s exceeded max retries (%d), moved to review",
+            task.id, new_retry,
+        )
 
     async def _reschedule_if_repeating(self, task: DequeuedTask) -> None:
         """If the task is repeating and not expired, create a cloned task for the next interval."""
