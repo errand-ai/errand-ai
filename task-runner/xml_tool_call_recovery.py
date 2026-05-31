@@ -45,6 +45,8 @@ def _extract_arguments(block: str) -> dict | None:
             if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
+            # JSON body looked plausible but didn't decode — fall through to
+            # the <parameter=...> / verbose-parameter extractors below.
             pass
 
     attr_matches = _PARAM_ATTR_RE.findall(block)

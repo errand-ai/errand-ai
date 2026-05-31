@@ -230,7 +230,10 @@ class _RecoveringChatCompletions:
             ]
             message.tool_calls = tool_call_objs
             _emit_recovered_event(response, recovered_dicts)
-        elif total_blocks > 0:
+        # Emit recovery_failed whenever any <tool_call> block was unparseable,
+        # even if other blocks in the same response were recovered — operators
+        # still need the diagnostic sample to spot new dialect variants.
+        if total_blocks > len(recovered_dicts):
             _emit_recovery_failed_event(response, total_blocks, sample)
 
 
