@@ -27,6 +27,7 @@ from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
 from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
+from xml_tool_call_recovery import parse_xml_tool_calls
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -137,6 +138,100 @@ def extract_json(text: str) -> dict | None:
 def emit_event(event_type: str, data: dict) -> None:
     """Write a single-line JSON event to stderr."""
     print(json.dumps({"type": event_type, "data": data}), file=sys.stderr, flush=True)
+
+
+def _emit_recovered_event(response, recovered_calls: list) -> None:
+    payload = {
+        "model": getattr(response, "model", None),
+        "calls_recovered": len(recovered_calls),
+        "function_names": [c["function"]["name"] for c in recovered_calls],
+    }
+    emit_event("tool_call_recovered_from_reasoning", payload)
+
+
+def _emit_recovery_failed_event(response, match_count: int, sample: str | None) -> None:
+    payload = {
+        "model": getattr(response, "model", None),
+        "match_count": match_count,
+        "sample": sample,
+    }
+    emit_event("tool_call_recovery_failed", payload)
+
+
+class _RecoveringChatCompletions:
+    """Wraps ``client.chat.completions`` to rescue Qwen-XML tool calls
+    emitted in ``reasoning_content`` when the model failed to populate
+    structured ``tool_calls``. See `xml_tool_call_recovery`.
+    """
+
+    _logged_active = False
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def create(self, *args, **kwargs):
+        response = await self._inner.create(*args, **kwargs)
+        if not _RecoveringChatCompletions._logged_active:
+            logger.info("XML tool call recovery active for chat.completions")
+            _RecoveringChatCompletions._logged_active = True
+        try:
+            self._post_process(response)
+        except Exception as exc:
+            logger.warning("XML tool-call recovery post-process failed: %s", exc)
+        return response
+
+    def _post_process(self, response) -> None:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return
+
+        content = getattr(message, "content", None)
+        if content not in (None, ""):
+            return
+
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            return
+
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if not isinstance(reasoning_content, str) or not reasoning_content:
+            return
+
+        if "<tool_call>" not in reasoning_content:
+            return
+
+        recovered_dicts, total_blocks, sample = parse_xml_tool_calls(reasoning_content)
+
+        if recovered_dicts:
+            try:
+                from openai.types.chat.chat_completion_message_tool_call import (
+                    ChatCompletionMessageToolCall,
+                    Function,
+                )
+            except ImportError:  # pragma: no cover — older SDK fallback
+                from openai.types.chat import ChatCompletionMessageToolCall
+                from openai.types.chat.chat_completion_message_tool_call import Function
+            tool_call_objs = [
+                ChatCompletionMessageToolCall(
+                    id=c["id"],
+                    type="function",
+                    function=Function(
+                        name=c["function"]["name"],
+                        arguments=c["function"]["arguments"],
+                    ),
+                )
+                for c in recovered_dicts
+            ]
+            message.tool_calls = tool_call_objs
+            _emit_recovered_event(response, recovered_dicts)
+        elif total_blocks > 0:
+            _emit_recovery_failed_event(response, total_blocks, sample)
 
 
 class StreamEventEmitter(RunHooks):
@@ -1637,6 +1732,7 @@ async def main():
         client_kwargs["timeout"] = request_timeout
         logger.info("LLM request timeout set to %.1fs from LLM_REQUEST_TIMEOUT", request_timeout)
     client = AsyncOpenAI(**client_kwargs)
+    client.chat.completions = _RecoveringChatCompletions(client.chat.completions)
     set_default_openai_client(client)
 
     # 4. Parse MCP config and connect to servers with lazy tool loading
