@@ -189,6 +189,35 @@ async def test_unparseable_xml_emits_recovery_failed_event(_capture_events):
 
 
 @pytest.mark.asyncio
+async def test_truncated_tool_call_marker_emits_recovery_failed(_capture_events):
+    """Truncated markup with no closing </tool_call> finds zero closed blocks
+    via the parser, but the opener was present. The wrapper must still emit
+    recovery_failed so operators can spot the truncation pattern."""
+    reasoning = (
+        "I'll start a tool call but cut off mid-thought\n"
+        "<tool_call><function=fetch><parameter=url>https://example.com"
+        # no </parameter></function></tool_call> — truncated
+    )
+    response = _make_response(
+        content="", tool_calls=None, reasoning_content=reasoning, model="qwen3.6"
+    )
+    wrapper = main._RecoveringChatCompletions(_FakeInner(response))
+
+    await wrapper.create()
+
+    # Nothing recovered
+    assert response.choices[0].message.tool_calls is None
+    # …but the failure IS reported
+    failed = [e for e in _capture_events if e[0] == "tool_call_recovery_failed"]
+    assert len(failed) == 1
+    payload = failed[0][1]
+    assert payload["model"] == "qwen3.6"
+    assert payload["match_count"] == 1  # one <tool_call> opener
+    assert payload["sample"] is not None
+    assert payload["sample"].startswith("<tool_call>")
+
+
+@pytest.mark.asyncio
 async def test_mixed_recovered_and_failed_blocks_emits_both_events(_capture_events):
     """When a response has one parseable and one unparseable <tool_call>,
     operators still need to see the failed-event sample so dialect variants

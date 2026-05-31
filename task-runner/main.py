@@ -230,11 +230,21 @@ class _RecoveringChatCompletions:
             ]
             message.tool_calls = tool_call_objs
             _emit_recovered_event(response, recovered_dicts)
-        # Emit recovery_failed whenever any <tool_call> block was unparseable,
-        # even if other blocks in the same response were recovered — operators
-        # still need the diagnostic sample to spot new dialect variants.
-        if total_blocks > len(recovered_dicts):
-            _emit_recovery_failed_event(response, total_blocks, sample)
+        # Emit recovery_failed whenever fewer <tool_call> markers were
+        # recovered than were detected — covers (a) all-malformed responses,
+        # (b) partially-recovered responses, and (c) truncated markup where
+        # the parser found zero closed blocks but the opener was present.
+        # Operators need the diagnostic sample in every case to spot new
+        # dialect variants and truncations.
+        marker_count = reasoning_content.count("<tool_call>")
+        if marker_count > len(recovered_dicts):
+            diag_sample = sample
+            if diag_sample is None:
+                # No closed block matched; sample from the first opener so
+                # operators can see the truncated/malformed shape.
+                idx = reasoning_content.find("<tool_call>")
+                diag_sample = reasoning_content[idx:idx + 256] if idx >= 0 else None
+            _emit_recovery_failed_event(response, marker_count, diag_sample)
 
 
 class StreamEventEmitter(RunHooks):
