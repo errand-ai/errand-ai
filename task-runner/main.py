@@ -414,6 +414,32 @@ New conversation content to merge:
 # updates `os.environ`, and re-runs the same command once. The LLM never sees
 # the failure.
 _GWS_AUTH_FAILED_SIGNATURE = '"status": "UNAUTHENTICATED"'
+# Google's raw API 401 surfaces as a JSON body containing `"code": 401` together
+# with `"Request had invalid authentication credentials"`. The `gws` CLI passes
+# this shape through verbatim, so `_GWS_AUTH_FAILED_SIGNATURE` alone misses it.
+_GWS_RAW_401_CODE_SIGNATURE = '"code": 401'
+_GWS_RAW_401_MESSAGE_SIGNATURE = "Request had invalid authentication credentials"
+
+
+def _is_google_token_expired(output: str) -> bool:
+    """Return True if `output` looks like an expired-Google-token failure.
+
+    Matches either:
+    1. The legacy `"status": "UNAUTHENTICATED"` substring (e.g. from gRPC/Google
+       protobuf wrappers), OR
+    2. The conjunction of `"code": 401` AND
+       `"Request had invalid authentication credentials"` (Google's raw REST
+       401 shape, which the `gws` CLI surfaces verbatim).
+
+    Detection is case-sensitive substring matching to mirror the existing
+    implementation style and avoid false positives from arbitrary CLI output.
+    """
+    if _GWS_AUTH_FAILED_SIGNATURE in output:
+        return True
+    return (
+        _GWS_RAW_401_CODE_SIGNATURE in output
+        and _GWS_RAW_401_MESSAGE_SIGNATURE in output
+    )
 
 # Deduplicates concurrent refreshes — two `execute_command` calls running in
 # parallel that both hit an expired token will share a single refresh
@@ -634,7 +660,7 @@ async def _execute_command_impl(command: str, working_directory: str = "/workspa
 
     # Transparent Google Workspace token refresh + retry.
     if (
-        _GWS_AUTH_FAILED_SIGNATURE in output
+        _is_google_token_expired(output)
         and stale_token_at_attempt
     ):
         logger.info("Detected expired Google Workspace token; attempting refresh")
