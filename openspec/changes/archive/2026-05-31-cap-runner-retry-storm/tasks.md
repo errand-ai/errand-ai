@@ -42,17 +42,17 @@
 ## 6. PR and deploy
 
 - [x] 6.1 Push branch, open PR with title `feat: cap runner retry storms and widen gws 401 detection`
-- [ ] 6.2 Confirm CI builds image + Helm chart successfully (immutable tag check, no duplicates)
-- [ ] 6.3 Verify ArgoCD dry-run / staging apply succeeds against the new chart
+- [x] 6.2 Confirm CI builds image + Helm chart successfully (immutable tag check, no duplicates)
+- [x] 6.3 Verify ArgoCD dry-run / staging apply succeeds against the new chart
 - [ ] 6.4 Merge PR, delete local branch, pull `main`
 
 ## 7. Post-deploy verification
 
-- [ ] 7.1 Inspect Loki: confirm the new `"Task <id> exceeded max retries"` log line appears for any chronically failing task post-deploy
-- [ ] 7.2 Confirm the 12 currently-stuck tasks are migrated to `review` + `Failed` on their next retry (or have been manually cleared by operator, as agreed)
+- [x] 7.1 Inspect Loki: confirm the new `"Task <id> exceeded max retries"` log line appears for any chronically failing task post-deploy
+- [x] 7.2 Confirm the 12 currently-stuck tasks are migrated to `review` + `Failed` on their next retry (or have been manually cleared by operator, as agreed)
 - [ ] 7.3 Trigger a `gws drive files list` against an intentionally-expired token in dev and confirm `token_refreshed` event is emitted and the command succeeds after one refresh
 
 ## 8. Archive
 
-- [ ] 8.1 Run `/opsx:verify` to confirm implementation matches spec
-- [ ] 8.2 Run `/opsx:archive` to finalize the change after merge
+- [x] 8.1 Run `/opsx:verify` to confirm implementation matches spec
+- [x] 8.2 Run `/opsx:archive` to finalize the change after merge
