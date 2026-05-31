@@ -66,8 +66,6 @@ class _FakeInner:
 @pytest.fixture(autouse=True)
 def _capture_events(monkeypatch):
     """Capture emit_event invocations from main."""
-    import main
-
     events: list[tuple[str, dict]] = []
 
     def fake_emit(event_type: str, data: dict) -> None:
