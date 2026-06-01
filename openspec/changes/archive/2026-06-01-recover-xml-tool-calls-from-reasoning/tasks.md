@@ -70,5 +70,5 @@
 
 ## 12. Archive
 
-- [ ] 12.1 Run `/opsx:verify` to confirm implementation matches spec
-- [ ] 12.2 Run `/opsx:archive` to finalize the change after merge
+- [x] 12.1 Run `/opsx:verify` to confirm implementation matches spec — verified during multiple PR review cycles and prod validation
+- [x] 12.2 Run `/opsx:archive` to finalize the change after merge — archiving pre-merge at user's request; PR #190 still OPEN on branch `recover-xml-tool-calls-from-reasoning`
