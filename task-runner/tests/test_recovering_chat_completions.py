@@ -19,6 +19,57 @@ import pytest
 # with the chat-completion tool-call submodule so the `from ... import`
 # inside _post_process succeeds.
 sys.modules.setdefault("openai.types.chat", MagicMock())
+_mock_chunk_mod = MagicMock()
+
+
+class _FakeChunkChoice:
+    def __init__(self, index, delta, finish_reason=None):
+        self.index = index
+        self.delta = delta
+        self.finish_reason = finish_reason
+
+
+class _FakeChunkDelta:
+    def __init__(self, role=None, content=None, tool_calls=None, reasoning_content=None):
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
+
+
+class _FakeChunkToolCall:
+    def __init__(self, index, id, type, function):
+        self.index = index
+        self.id = id
+        self.type = type
+        self.function = function
+
+
+class _FakeChunkToolCallFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeChunk:
+    def __init__(self, id, model, created, choices, object="chat.completion.chunk"):
+        self.id = id
+        self.model = model
+        self.created = created
+        self.choices = choices
+        self.object = object
+
+
+# Mock the openai chunk types so the wrapper's synthesis import succeeds
+_FakeChunkMod = type(sys)("openai.types.chat.chat_completion_chunk")
+_FakeChunkMod.Choice = _FakeChunkChoice
+_FakeChunkMod.ChoiceDelta = _FakeChunkDelta
+_FakeChunkMod.ChoiceDeltaToolCall = _FakeChunkToolCall
+_FakeChunkMod.ChoiceDeltaToolCallFunction = _FakeChunkToolCallFunction
+sys.modules["openai.types.chat.chat_completion_chunk"] = _FakeChunkMod
+_chat_mod = sys.modules["openai.types.chat"]
+_chat_mod.ChatCompletionChunk = _FakeChunk
+
 _mock_tc_mod = MagicMock()
 
 
@@ -246,6 +297,132 @@ async def test_mixed_recovered_and_failed_blocks_emits_both_events(_capture_even
     assert len(failed) == 1
     assert failed[0][1]["match_count"] == 2
     assert "garbage" in failed[0][1]["sample"]
+
+
+def _make_chunks_for_reasoning(reasoning_text: str, model: str = "qwen3.6") -> list:
+    """Split reasoning_text across two chunks (simulating real LiteLLM stream)
+    plus a final empty chunk with finish_reason='stop'."""
+    mid = len(reasoning_text) // 2
+    return [
+        _FakeChunk(id="c1", model=model, created=1, choices=[
+            _FakeChunkChoice(0, _FakeChunkDelta(role="assistant", reasoning_content=reasoning_text[:mid])),
+        ]),
+        _FakeChunk(id="c1", model=model, created=1, choices=[
+            _FakeChunkChoice(0, _FakeChunkDelta(reasoning_content=reasoning_text[mid:])),
+        ]),
+        _FakeChunk(id="c1", model=model, created=1, choices=[
+            _FakeChunkChoice(0, _FakeChunkDelta(), finish_reason="stop"),
+        ]),
+    ]
+
+
+class _FakeStreamInner:
+    """Inner chat.completions returning an async iterator over chunks when stream=True."""
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self._closed = False
+
+    async def create(self, *args, **kwargs):
+        chunks = self._chunks
+        outer_self = self
+
+        class _Stream:
+            def __aiter__(self_inner):
+                return self_inner._gen()
+
+            async def _gen(self_inner):
+                for c in chunks:
+                    yield c
+
+            async def aclose(self_inner):
+                outer_self._closed = True
+
+        return _Stream()
+
+
+@pytest.mark.asyncio
+async def test_streaming_recovers_xml_tool_call_from_reasoning_content(_capture_events):
+    """Replicates prod failure mode: agents-SDK calls create(stream=True);
+    LiteLLM yields chunks with reasoning_content carrying Qwen-XML; the
+    last chunk has finish_reason=stop and no tool_calls. Wrapper must
+    yield a synthesized tool-call chunk so downstream sees the tool call."""
+    reasoning = (
+        "Let me verify\n\n"
+        "<tool_call>\n"
+        "<function=execute_command>\n"
+        "<parameter=command>\ngrep -in foo /workspace/verify.md | tail -20\n</parameter>\n"
+        "<parameter=working_directory>\n/workspace\n</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+    chunks = _make_chunks_for_reasoning(reasoning, model="qwen3.6-35b-a3b-ud-mlx")
+    inner = _FakeStreamInner(chunks)
+    wrapper = main._RecoveringChatCompletions(inner)
+
+    stream = await wrapper.create(stream=True)
+    received = []
+    async for c in stream:
+        received.append(c)
+
+    # Original 3 chunks + 1 synthesized tool-call chunk
+    assert len(received) == 4
+    synth = received[-1]
+    assert synth.choices[0].finish_reason == "tool_calls"
+    tcs = synth.choices[0].delta.tool_calls
+    assert len(tcs) == 1
+    assert tcs[0].function.name == "execute_command"
+    args = json.loads(tcs[0].function.arguments)
+    assert args["command"].strip().startswith("grep -in foo")
+    assert args["working_directory"] == "/workspace"
+    assert tcs[0].id.startswith("call_recovered_")
+
+    # Event emitted
+    recovered = [e for e in _capture_events if e[0] == "tool_call_recovered_from_reasoning"]
+    assert len(recovered) == 1
+    payload = recovered[0][1]
+    assert payload["model"] == "qwen3.6-35b-a3b-ud-mlx"
+    assert payload["calls_recovered"] == 1
+    assert payload["function_names"] == ["execute_command"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_passthrough_when_tool_calls_seen(_capture_events):
+    """A well-formed streaming response that already delivers tool_calls
+    must pass through unchanged; no synthesized chunk."""
+    chunks = [
+        _FakeChunk(id="c", model="m", created=1, choices=[
+            _FakeChunkChoice(0, _FakeChunkDelta(
+                tool_calls=[_FakeChunkToolCall(0, "call_real", "function",
+                    _FakeChunkToolCallFunction("ls", '{"path":"/"}'))],
+            )),
+        ]),
+        _FakeChunk(id="c", model="m", created=1, choices=[
+            _FakeChunkChoice(0, _FakeChunkDelta(), finish_reason="tool_calls"),
+        ]),
+    ]
+    wrapper = main._RecoveringChatCompletions(_FakeStreamInner(chunks))
+
+    received = []
+    async for c in (await wrapper.create(stream=True)):
+        received.append(c)
+
+    assert len(received) == 2  # no synthetic chunk added
+    assert _capture_events == []
+
+
+@pytest.mark.asyncio
+async def test_streaming_passthrough_when_no_xml_markup(_capture_events):
+    """Prose-only reasoning with no <tool_call> markup must not trigger
+    recovery — the agent's existing empty-response handling still applies."""
+    chunks = _make_chunks_for_reasoning("I should think about this but I have no plan.")
+    wrapper = main._RecoveringChatCompletions(_FakeStreamInner(chunks))
+
+    received = []
+    async for c in (await wrapper.create(stream=True)):
+        received.append(c)
+
+    assert len(received) == 3  # original chunks only
+    assert _capture_events == []
 
 
 @pytest.mark.asyncio

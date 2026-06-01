@@ -177,6 +177,11 @@ class _RecoveringChatCompletions:
         if not _RecoveringChatCompletions._logged_active:
             logger.info("XML tool call recovery active for chat.completions")
             _RecoveringChatCompletions._logged_active = True
+        # Streaming path: the agents-SDK calls create(stream=True) and gets
+        # an AsyncStream of ChatCompletionChunk. We can't post-process a
+        # non-existent `message` on the stream object — wrap the iterator.
+        if kwargs.get("stream"):
+            return _wrap_streaming_response(response)
         try:
             self._post_process(response)
         except Exception as exc:
@@ -245,6 +250,109 @@ class _RecoveringChatCompletions:
                 idx = reasoning_content.find("<tool_call>")
                 diag_sample = reasoning_content[idx:idx + 256] if idx >= 0 else None
             _emit_recovery_failed_event(response, marker_count, diag_sample)
+
+
+def _wrap_streaming_response(inner_stream):
+    """Wrap an AsyncStream[ChatCompletionChunk] so that, on stream end with
+    no content/tool_calls but XML markup in accumulated reasoning_content,
+    a synthesized tool-call chunk is yielded to rescue the turn."""
+
+    async def _iter():
+        content_buf = ""
+        reasoning_buf = ""
+        saw_tool_calls = False
+        last_chunk = None
+        try:
+            async for chunk in inner_stream:
+                if chunk.choices:
+                    delta = getattr(chunk.choices[0], "delta", None)
+                    if delta is not None:
+                        if getattr(delta, "content", None):
+                            content_buf += delta.content
+                        if getattr(delta, "tool_calls", None):
+                            saw_tool_calls = True
+                        rc = getattr(delta, "reasoning_content", None)
+                        if isinstance(rc, str) and rc:
+                            reasoning_buf += rc
+                last_chunk = chunk
+                yield chunk
+        finally:
+            # Always close the inner stream on exit.
+            close = getattr(inner_stream, "aclose", None) or getattr(inner_stream, "close", None)
+            if close is not None:
+                try:
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception:  # pragma: no cover — best-effort cleanup
+                    pass
+
+        if saw_tool_calls or content_buf:
+            return
+        if "<tool_call>" not in reasoning_buf:
+            return
+
+        recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_buf)
+        model_hint = getattr(last_chunk, "model", None) if last_chunk else None
+        fake_response = type("_FakeResp", (), {"model": model_hint})()
+
+        if recovered_dicts:
+            try:
+                synth = _build_synthetic_tool_call_chunk(recovered_dicts, last_chunk)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("XML tool-call recovery: synthesis failed: %s", exc)
+            else:
+                _emit_recovered_event(fake_response, recovered_dicts)
+                yield synth
+
+        marker_count = reasoning_buf.count("<tool_call>")
+        if marker_count > len(recovered_dicts):
+            diag_sample = sample
+            if diag_sample is None:
+                idx = reasoning_buf.find("<tool_call>")
+                diag_sample = reasoning_buf[idx:idx + 256] if idx >= 0 else None
+            _emit_recovery_failed_event(fake_response, marker_count, diag_sample)
+
+    return _iter()
+
+
+def _build_synthetic_tool_call_chunk(recovered_dicts: list, template_chunk):
+    """Construct a single ChatCompletionChunk delivering the recovered tool
+    calls in one delta with finish_reason='tool_calls'."""
+    from openai.types.chat import ChatCompletionChunk
+    from openai.types.chat.chat_completion_chunk import (
+        Choice,
+        ChoiceDelta,
+        ChoiceDeltaToolCall,
+        ChoiceDeltaToolCallFunction,
+    )
+
+    tc_deltas = [
+        ChoiceDeltaToolCall(
+            index=i,
+            id=c["id"],
+            type="function",
+            function=ChoiceDeltaToolCallFunction(
+                name=c["function"]["name"],
+                arguments=c["function"]["arguments"],
+            ),
+        )
+        for i, c in enumerate(recovered_dicts)
+    ]
+
+    return ChatCompletionChunk(
+        id=getattr(template_chunk, "id", "recovered") if template_chunk else "recovered",
+        model=getattr(template_chunk, "model", "unknown") if template_chunk else "unknown",
+        created=getattr(template_chunk, "created", 0) if template_chunk else 0,
+        object="chat.completion.chunk",
+        choices=[
+            Choice(
+                index=0,
+                delta=ChoiceDelta(role="assistant", tool_calls=tc_deltas),
+                finish_reason="tool_calls",
+            )
+        ],
+    )
 
 
 class StreamEventEmitter(RunHooks):
