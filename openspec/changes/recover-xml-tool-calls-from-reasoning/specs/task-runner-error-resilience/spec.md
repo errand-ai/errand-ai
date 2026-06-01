@@ -90,8 +90,10 @@ The task-runner SHALL emit a `tool_call_recovered_from_reasoning` event to the t
 When XML markup is detected but no block could be parsed, the runner SHALL instead emit `tool_call_recovery_failed` with:
 
 - `model`: the `model` field from the response (string).
-- `match_count`: number of `<tool_call>` substrings found (integer).
+- `match_count`: number of `<tool_call>` substrings found (integer; `0` for the dangling-closer case).
 - `sample`: a truncated sample (≤ 256 characters) of the unparseable content for diagnostics.
+
+The runner SHALL ALSO emit `tool_call_recovery_failed` when `reasoning_content` contains a `</tool_call>` substring without any matching `<tool_call>` opener (a dangling-closer pattern observed when the model emits closing scaffolding only). In this case `match_count` is `0` and the `sample` SHALL be a ≤ 256-character window centred on the first `</tool_call>` so operators can see the surrounding context. No recovery is attempted — there is no function name to invoke.
 
 #### Scenario: Successful rescue emits the recovered event
 
@@ -102,3 +104,8 @@ When XML markup is detected but no block could be parsed, the runner SHALL inste
 
 - **WHEN** `reasoning_content` contains a `<tool_call>` marker but the parser cannot extract a function name from any block
 - **THEN** the transcript receives a `tool_call_recovery_failed` event with the model, the marker count, and a sample of the content
+
+#### Scenario: Dangling closing tag without opener emits recovery-failed
+
+- **WHEN** `reasoning_content` contains `</tool_call>` (and typically `</function>`, `</parameter>`) but no opening `<tool_call>` substring
+- **THEN** the transcript receives a `tool_call_recovery_failed` event with `match_count=0` and a `sample` window centred on the first `</tool_call>` so operators can quantify the pattern; the response itself passes through and the existing empty-response handling proceeds

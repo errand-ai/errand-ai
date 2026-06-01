@@ -158,6 +158,17 @@ def _emit_recovery_failed_event(response, match_count: int, sample: str | None) 
     emit_event("tool_call_recovery_failed", payload)
 
 
+def _dangling_closer_sample(reasoning_content: str) -> str:
+    """Build a ≤256-char sample centered on the first `</tool_call>` so
+    operators can see the dangling-closer context."""
+    idx = reasoning_content.find("</tool_call>")
+    if idx < 0:
+        return reasoning_content[:256]
+    start = max(0, idx - 200)
+    end = min(len(reasoning_content), idx + len("</tool_call>") + 50)
+    return reasoning_content[start:end][:256]
+
+
 class _RecoveringChatCompletions:
     """Wraps ``client.chat.completions`` to rescue Qwen-XML tool calls
     emitted in ``reasoning_content`` when the model failed to populate
@@ -209,6 +220,13 @@ class _RecoveringChatCompletions:
             return
 
         if "<tool_call>" not in reasoning_content:
+            # Dangling-closer case: model emitted `</tool_call>` (and friends)
+            # without the matching opener — nothing to recover, but operators
+            # need the diagnostic so they can quantify the pattern.
+            if "</tool_call>" in reasoning_content:
+                _emit_recovery_failed_event(
+                    response, 0, _dangling_closer_sample(reasoning_content)
+                )
             return
 
         recovered_dicts, total_blocks, sample = parse_xml_tool_calls(reasoning_content)
@@ -289,12 +307,19 @@ def _wrap_streaming_response(inner_stream):
 
         if saw_tool_calls or content_buf:
             return
+
+        model_hint = getattr(last_chunk, "model", None) if last_chunk else None
+        fake_response = type("_FakeResp", (), {"model": model_hint})()
+
         if "<tool_call>" not in reasoning_buf:
+            # Dangling-closer case (see _post_process for rationale).
+            if "</tool_call>" in reasoning_buf:
+                _emit_recovery_failed_event(
+                    fake_response, 0, _dangling_closer_sample(reasoning_buf)
+                )
             return
 
         recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_buf)
-        model_hint = getattr(last_chunk, "model", None) if last_chunk else None
-        fake_response = type("_FakeResp", (), {"model": model_hint})()
 
         if recovered_dicts:
             try:

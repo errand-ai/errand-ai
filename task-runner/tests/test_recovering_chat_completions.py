@@ -217,6 +217,35 @@ async def test_reasoning_content_accessed_via_getattr(_capture_events):
 
 
 @pytest.mark.asyncio
+async def test_dangling_close_tag_emits_recovery_failed(_capture_events):
+    """Real prod failure mode: model emits only `</tool_call>` (and `</function>`,
+    `</parameter>`) without the opener. Nothing to recover, but operators still
+    need the diagnostic so they can quantify this pattern."""
+    reasoning = (
+        "The file wasn't created at all. The warning about 'parents' being "
+        "stringified suggests the API call failed silently. Let me try a "
+        "different approach.\n</parameter>\n</function>\n</tool_call>"
+    )
+    response = _make_response(
+        content="", tool_calls=None, reasoning_content=reasoning, model="qwen3.6"
+    )
+    wrapper = main._RecoveringChatCompletions(_FakeInner(response))
+
+    await wrapper.create()
+
+    # Nothing rescued (correct — there's no function name to invoke)
+    assert response.choices[0].message.tool_calls is None
+    # …but recovery_failed IS emitted with the dangling-closer sample
+    failed = [e for e in _capture_events if e[0] == "tool_call_recovery_failed"]
+    assert len(failed) == 1
+    payload = failed[0][1]
+    assert payload["model"] == "qwen3.6"
+    assert payload["match_count"] == 0  # no `<tool_call>` openers
+    assert payload["sample"] is not None
+    assert "</tool_call>" in payload["sample"]
+
+
+@pytest.mark.asyncio
 async def test_unparseable_xml_emits_recovery_failed_event(_capture_events):
     reasoning = "<tool_call>garbage without function tag</tool_call>"
     response = _make_response(
@@ -407,6 +436,32 @@ async def test_streaming_passthrough_when_tool_calls_seen(_capture_events):
 
     assert len(received) == 2  # no synthetic chunk added
     assert _capture_events == []
+
+
+@pytest.mark.asyncio
+async def test_streaming_dangling_close_tag_emits_recovery_failed(_capture_events):
+    """Same as the non-streaming dangling-closer case but delivered via
+    chunked reasoning_content deltas."""
+    reasoning = (
+        "Trying again, but the schema doesn't fit.\n"
+        "</parameter>\n</function>\n</tool_call>"
+    )
+    chunks = _make_chunks_for_reasoning(reasoning, model="qwen3.6-35b-a3b-ud-mlx")
+    wrapper = main._RecoveringChatCompletions(_FakeStreamInner(chunks))
+
+    received = []
+    async for c in (await wrapper.create(stream=True)):
+        received.append(c)
+
+    # No synthetic chunk added — there's nothing to call
+    assert len(received) == 3
+    failed = [e for e in _capture_events if e[0] == "tool_call_recovery_failed"]
+    assert len(failed) == 1
+    payload = failed[0][1]
+    assert payload["model"] == "qwen3.6-35b-a3b-ud-mlx"
+    assert payload["match_count"] == 0
+    assert payload["sample"] is not None
+    assert "</tool_call>" in payload["sample"]
 
 
 @pytest.mark.asyncio
