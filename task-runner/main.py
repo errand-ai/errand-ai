@@ -229,7 +229,7 @@ class _RecoveringChatCompletions:
                 )
             return
 
-        recovered_dicts, total_blocks, sample = parse_xml_tool_calls(reasoning_content)
+        recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_content)
 
         if recovered_dicts:
             try:

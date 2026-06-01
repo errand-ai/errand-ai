@@ -1,6 +1,6 @@
 ## Context
 
-The errand task-runner constructs `AsyncOpenAI(base_url=..., api_key=..., timeout=...)` at `task-runner/main.py:1639` and registers it via `set_default_openai_client(client)` so the agents-SDK uses it for all chat completions. The agents-SDK then calls `client.chat.completions.create(...)` internally and normalises the result into a `RunResult` whose `final_output` is a string and whose `new_items` contains structured tool-call entries. By the time the agent loop's `extract_output` runs (line 1797), `reasoning_content` has been discarded — the empty-response detection cannot see it.
+The errand task-runner constructs `AsyncOpenAI(base_url=..., api_key=..., timeout=...)` in `task-runner/main.py:main()` and registers it via `set_default_openai_client(client)` so the agents-SDK uses it for all chat completions. The agents-SDK then calls `client.chat.completions.create(...)` internally and normalises the result into a `RunResult` whose `final_output` is a string and whose `new_items` contains structured tool-call entries. By the time the agent loop's `extract_output` runs, `reasoning_content` has been discarded — the empty-response detection cannot see it.
 
 To rescue tool calls emitted as XML inside `reasoning_content`, the response must be mutated **before** the agents-SDK consumes it. This means hooking the OpenAI Python client at the `chat.completions.create` boundary.
 

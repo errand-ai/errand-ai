@@ -1,6 +1,6 @@
 ## 1. Bump version and create feature branch
 
-- [x] 1.1 Bump `VERSION` from `0.123.0` to `0.124.0` (minor — new feature, backwards-compatible)
+- [x] 1.1 Bump `VERSION` to `0.124.x` (minor — new feature, backwards-compatible; subsequent patch bumps applied for review iterations)
 - [x] 1.2 Create feature branch `recover-xml-tool-calls-from-reasoning`
 
 ## 2. Parser module
@@ -18,7 +18,7 @@
 - [x] 3.2 `create()` SHALL `await self._inner.create(*args, **kwargs)` to obtain the response, then call a private helper `_post_process(response)` before returning it
 - [x] 3.3 `_post_process` SHALL apply the 4-condition detection (empty content, null/empty tool_calls, non-empty reasoning_content, contains `<tool_call>`). If any fails, return response unchanged.
 - [x] 3.4 On match, call `parse_xml_tool_calls(reasoning_content)`. If `recovered_calls` is non-empty, mutate `response.choices[0].message.tool_calls` to that list and emit `tool_call_recovered_from_reasoning` event. If `recovered_calls` is empty but `total_blocks_matched > 0`, emit `tool_call_recovery_failed` event and return response unchanged.
-- [x] 3.5 In `main()`, after constructing `client = AsyncOpenAI(**client_kwargs)` at line 1639, install the wrapper: `client.chat.completions = _RecoveringChatCompletions(client.chat.completions)`. This must happen before `set_default_openai_client(client)`.
+- [x] 3.5 In `main()`, after constructing `client = AsyncOpenAI(**client_kwargs)`, install the wrapper: `client.chat.completions = _RecoveringChatCompletions(client.chat.completions)`. This must happen before `set_default_openai_client(client)`.
 - [x] 3.6 Confirm the wrapper is on the hot path by adding a one-line INFO log on first use (`logger.info("XML tool call recovery active for chat.completions")`)
 
 ## 4. Event payload helpers
@@ -41,15 +41,15 @@
 
 ## 7. PR and deploy
 
-- [ ] 7.1 Push branch, open PR with title `feat: recover tool calls emitted in reasoning_content as Qwen XML`
-- [ ] 7.2 Confirm CI builds image + Helm chart successfully (immutable tag check, no duplicates)
-- [ ] 7.3 Verify ArgoCD dry-run / staging apply succeeds against the new chart
+- [x] 7.1 Push branch, open PR with title `feat: recover tool calls emitted in reasoning_content as Qwen XML`
+- [x] 7.2 Confirm CI builds image + Helm chart successfully (immutable tag check, no duplicates)
+- [x] 7.3 Verify ArgoCD dry-run / staging apply succeeds against the new chart
 - [ ] 7.4 Merge PR, delete local branch, pull `main`
 
 ## 8. Post-deploy verification
 
-- [ ] 8.1 Inspect Loki for `tool_call_recovered_from_reasoning` events post-deploy; confirm they appear for tasks that previously failed with empty-response
-- [ ] 8.2 Inspect Loki for `tool_call_recovery_failed` events; if any appear, capture the `sample` field and extend the parser to cover that dialect variant
+- [x] 8.1 Inspect Loki for `tool_call_recovered_from_reasoning` events post-deploy; confirm they appear for tasks that previously failed with empty-response
+- [x] 8.2 Inspect Loki for `tool_call_recovery_failed` events; if any appear, capture the `sample` field and extend the parser to cover that dialect variant
 - [ ] 8.3 Re-run one of the historically-failing tasks (e.g. one that hit EmptyResponseError on qwen3.6) and confirm it now completes
 
 ## 9. Archive

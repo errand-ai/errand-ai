@@ -1,6 +1,6 @@
 ## Why
 
-Non-premiere local models (qwen3-family observed on LMStudio, but the pattern recurs across other open-weights releases) emit tool calls inside `reasoning_content` as Qwen-XML markup rather than in the structured `tool_calls` field. A concrete example captured from LiteLLM's response log for `qwen3.6-35b-a3b-ud-mlx`:
+Non-premier local models (qwen3-family observed on LMStudio, but the pattern recurs across other open-weights releases) emit tool calls inside `reasoning_content` as Qwen-XML markup rather than in the structured `tool_calls` field. A concrete example captured from LiteLLM's response log for `qwen3.6-35b-a3b-ud-mlx`:
 
 ```json
 {
@@ -39,7 +39,7 @@ _None._
 
 ## Impact
 
-- **Code**: `task-runner/main.py` (new wrapper around `AsyncOpenAI.chat.completions.create`, new parser module, integration in `main()` where the client is constructed at line 1639).
+- **Code**: `task-runner/main.py` (new wrapper around `AsyncOpenAI.chat.completions.create`, new parser module, integration in `main()` where the client is constructed).
 - **Tests**: new `task-runner/tests/test_xml_tool_call_recovery.py` covering the parser, the wrapper passthrough, and the event emission.
 - **Telemetry**: new `tool_call_recovered_from_reasoning` event.
 - **Settings**: no new settings; behaviour is always-on.
