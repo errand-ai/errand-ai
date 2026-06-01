@@ -17,7 +17,9 @@ _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _FUNCTION_ATTR_RE = re.compile(r"<function\s*=\s*([A-Za-z_][\w\-.]*)\s*>", re.DOTALL)
 _FUNCTION_ELEM_RE = re.compile(r"<function_name>\s*([A-Za-z_][\w\-.]*)\s*</function_name>", re.DOTALL)
 
-_ARGUMENTS_JSON_RE = re.compile(r"<arguments>\s*(\{.*?\})\s*</arguments>", re.DOTALL)
+# Greedy `.*` (DOTALL) anchored to </arguments> so nested JSON objects like
+# `{"a": {"b": 1}}` aren't truncated at the first `}`.
+_ARGUMENTS_JSON_RE = re.compile(r"<arguments>\s*(\{.*\})\s*</arguments>", re.DOTALL)
 _PARAM_ATTR_RE = re.compile(r"<parameter\s*=\s*([A-Za-z_][\w\-.]*)\s*>(.*?)</parameter>", re.DOTALL)
 _PARAM_VERBOSE_RE = re.compile(
     r"<parameter>\s*<name>\s*(.*?)\s*</name>\s*<value>\s*(.*?)\s*</value>\s*</parameter>",

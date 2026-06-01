@@ -105,6 +105,26 @@ def test_no_tool_call_markup_returns_empty_list():
     assert sample is None
 
 
+def test_nested_json_arguments_are_not_truncated():
+    """Non-greedy regex would have truncated nested JSON at the first `}`.
+    Greedy + </arguments> anchor must capture the full object."""
+    block = (
+        "<tool_call>"
+        "<function_name>configure</function_name>"
+        '<arguments>{"server": {"host": "localhost", "port": 8080}, "retries": 3}</arguments>'
+        "</tool_call>"
+    )
+    calls, total, sample = parse_xml_tool_calls(block)
+
+    assert total == 1
+    assert sample is None
+    assert calls[0]["function"]["name"] == "configure"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "server": {"host": "localhost", "port": 8080},
+        "retries": 3,
+    }
+
+
 def test_failure_sample_is_truncated_to_256_chars():
     big = "x" * 500
     reasoning = f"<tool_call>{big}</tool_call>"

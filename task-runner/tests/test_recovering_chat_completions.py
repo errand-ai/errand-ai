@@ -19,7 +19,6 @@ import pytest
 # with the chat-completion tool-call submodule so the `from ... import`
 # inside _post_process succeeds.
 sys.modules.setdefault("openai.types.chat", MagicMock())
-_mock_chunk_mod = MagicMock()
 
 
 class _FakeChunkChoice:
@@ -327,14 +326,14 @@ class _FakeStreamInner:
         outer_self = self
 
         class _Stream:
-            def __aiter__(self_inner):
-                return self_inner._gen()
+            def __aiter__(self):
+                return self._gen()
 
-            async def _gen(self_inner):
+            async def _gen(self):
                 for c in chunks:
                     yield c
 
-            async def aclose(self_inner):
+            async def aclose(self):
                 outer_self._closed = True
 
         return _Stream()
