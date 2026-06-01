@@ -230,41 +230,36 @@ class _RecoveringChatCompletions:
             return
 
         recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_content)
+        synthesis_failed = False
 
         if recovered_dicts:
             try:
-                from openai.types.chat.chat_completion_message_tool_call import (
-                    ChatCompletionMessageToolCall,
-                    Function,
-                )
-            except ImportError:  # pragma: no cover — older SDK fallback
-                from openai.types.chat import ChatCompletionMessageToolCall
-                from openai.types.chat.chat_completion_message_tool_call import Function
-            tool_call_objs = [
-                ChatCompletionMessageToolCall(
-                    id=c["id"],
-                    type="function",
-                    function=Function(
-                        name=c["function"]["name"],
-                        arguments=c["function"]["arguments"],
-                    ),
-                )
-                for c in recovered_dicts
-            ]
-            message.tool_calls = tool_call_objs
-            _emit_recovered_event(response, recovered_dicts)
+                message.tool_calls = _build_recovered_message_tool_calls(recovered_dicts)
+            except Exception as exc:
+                # Synthesis failed (SDK type drift, constructor error, etc.).
+                # Surface the failure as a recovery_failed event so operators
+                # see it in Loki rather than the wrapper silently dropping
+                # the rescue. Original response is left unchanged → agents-SDK
+                # raises EmptyResponseError as it would have without us.
+                logger.warning("XML tool-call recovery: synthesis failed: %s", exc)
+                synthesis_failed = True
+            else:
+                _emit_recovered_event(response, recovered_dicts)
         # Emit recovery_failed whenever fewer <tool_call> markers were
-        # recovered than were detected — covers (a) all-malformed responses,
-        # (b) partially-recovered responses, and (c) truncated markup where
-        # the parser found zero closed blocks but the opener was present.
-        # Operators need the diagnostic sample in every case to spot new
-        # dialect variants and truncations.
+        # recovered than were detected, OR when synthesis failed despite
+        # successful parsing. Covers (a) all-malformed responses,
+        # (b) partially-recovered responses, (c) truncated markup where
+        # the parser found zero closed blocks but the opener was present,
+        # and (d) synthesis errors (SDK type drift, etc.). Operators need
+        # the diagnostic sample in every case to spot new dialect variants,
+        # truncations, and environment/SDK incompatibilities.
         marker_count = reasoning_content.count("<tool_call>")
-        if marker_count > len(recovered_dicts):
+        effective_recovered = 0 if synthesis_failed else len(recovered_dicts)
+        if marker_count > effective_recovered:
             diag_sample = sample
             if diag_sample is None:
-                # No closed block matched; sample from the first opener so
-                # operators can see the truncated/malformed shape.
+                # No closed block matched (or synthesis-error fallback); sample
+                # from the first opener so operators see the surrounding shape.
                 idx = reasoning_content.find("<tool_call>")
                 diag_sample = reasoning_content[idx:idx + 256] if idx >= 0 else None
             _emit_recovery_failed_event(response, marker_count, diag_sample)
@@ -320,18 +315,24 @@ def _wrap_streaming_response(inner_stream):
             return
 
         recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_buf)
+        synthesis_failed = False
 
         if recovered_dicts:
             try:
                 synth = _build_synthetic_tool_call_chunk(recovered_dicts, last_chunk)
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:
                 logger.warning("XML tool-call recovery: synthesis failed: %s", exc)
+                synthesis_failed = True
             else:
                 _emit_recovered_event(fake_response, recovered_dicts)
                 yield synth
 
+        # If synthesis raised, treat the parsed dicts as un-delivered so the
+        # diagnostic event still fires — operators must not see the wrapper
+        # silently drop a rescue (e.g. on SDK type drift across environments).
         marker_count = reasoning_buf.count("<tool_call>")
-        if marker_count > len(recovered_dicts):
+        effective_recovered = 0 if synthesis_failed else len(recovered_dicts)
+        if marker_count > effective_recovered:
             diag_sample = sample
             if diag_sample is None:
                 idx = reasoning_buf.find("<tool_call>")
@@ -339,6 +340,31 @@ def _wrap_streaming_response(inner_stream):
             _emit_recovery_failed_event(fake_response, marker_count, diag_sample)
 
     return _iter()
+
+
+def _build_recovered_message_tool_calls(recovered_dicts: list) -> list:
+    """Construct OpenAI `ChatCompletionMessageToolCall` instances for the
+    non-streaming path. Isolated so it can be patched independently in tests."""
+    try:
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+            Function,
+        )
+    except ImportError:  # pragma: no cover — older SDK fallback
+        from openai.types.chat import ChatCompletionMessageToolCall
+        from openai.types.chat.chat_completion_message_tool_call import Function
+
+    return [
+        ChatCompletionMessageToolCall(
+            id=c["id"],
+            type="function",
+            function=Function(
+                name=c["function"]["name"],
+                arguments=c["function"]["arguments"],
+            ),
+        )
+        for c in recovered_dicts
+    ]
 
 
 def _build_synthetic_tool_call_chunk(recovered_dicts: list, template_chunk):

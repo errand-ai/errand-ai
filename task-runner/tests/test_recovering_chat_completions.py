@@ -480,6 +480,65 @@ async def test_streaming_passthrough_when_no_xml_markup(_capture_events):
 
 
 @pytest.mark.asyncio
+async def test_synthesis_failure_emits_recovery_failed_non_streaming(_capture_events, monkeypatch):
+    """If the synthesis step raises (e.g., SDK type drift), the wrapper must
+    still emit recovery_failed so operators can detect the rescue attempt
+    in Loki — silent drops are unacceptable."""
+
+    def _explode(*args, **kwargs):
+        raise TypeError("simulated SDK type drift")
+
+    monkeypatch.setattr(main, "_build_recovered_message_tool_calls", _explode)
+
+    reasoning = "<tool_call><function=ls><parameter=path>/tmp</parameter></function></tool_call>"
+    response = _make_response(
+        content="", tool_calls=None, reasoning_content=reasoning, model="qwen3.6"
+    )
+    wrapper = main._RecoveringChatCompletions(_FakeInner(response))
+
+    await wrapper.create()
+
+    # tool_calls untouched (rescue couldn't be delivered)
+    assert response.choices[0].message.tool_calls is None
+    # No recovered event (nothing actually delivered)
+    recovered = [e for e in _capture_events if e[0] == "tool_call_recovered_from_reasoning"]
+    assert recovered == []
+    # BUT recovery_failed IS emitted — operators see the synthesis failure
+    failed = [e for e in _capture_events if e[0] == "tool_call_recovery_failed"]
+    assert len(failed) == 1
+    assert failed[0][1]["match_count"] == 1
+    assert failed[0][1]["sample"] is not None
+
+
+@pytest.mark.asyncio
+async def test_synthesis_failure_emits_recovery_failed_streaming(_capture_events, monkeypatch):
+    """Streaming counterpart: synthesis failure must still emit recovery_failed."""
+    import main as main_mod
+
+    def _explode(*args, **kwargs):
+        raise TypeError("simulated SDK type drift")
+
+    monkeypatch.setattr(main_mod, "_build_synthetic_tool_call_chunk", _explode)
+
+    reasoning = "<tool_call><function=ls><parameter=path>/tmp</parameter></function></tool_call>"
+    chunks = _make_chunks_for_reasoning(reasoning, model="qwen3.6")
+    wrapper = main._RecoveringChatCompletions(_FakeStreamInner(chunks))
+
+    received = []
+    async for c in (await wrapper.create(stream=True)):
+        received.append(c)
+
+    # Only the original 3 chunks — no synthetic chunk yielded
+    assert len(received) == 3
+    recovered = [e for e in _capture_events if e[0] == "tool_call_recovered_from_reasoning"]
+    assert recovered == []
+    failed = [e for e in _capture_events if e[0] == "tool_call_recovery_failed"]
+    assert len(failed) == 1
+    assert failed[0][1]["match_count"] == 1
+    assert failed[0][1]["sample"] is not None
+
+
+@pytest.mark.asyncio
 async def test_inner_create_is_awaited_with_arguments_passed_through(_capture_events):
     response = _make_response(content="hi", tool_calls=None)
     inner = _FakeInner(response)
