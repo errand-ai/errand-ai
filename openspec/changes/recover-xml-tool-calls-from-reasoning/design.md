@@ -30,6 +30,13 @@ The cleanest layer is the OpenAI Python client. The agents-SDK calls `client.cha
 
 The wrapper SHALL be implemented by constructing a small `_RecoveringChatCompletions` adapter that holds a reference to the real `client.chat.completions` and exposes the same `create()` signature, post-processing the response before returning it. The adapter is installed by assigning `client.chat.completions = adapter` on the `AsyncOpenAI` instance prior to `set_default_openai_client(client)`. Subclassing `AsyncOpenAI` is rejected as more invasive — direct attribute swap on a single instance is contained to the runner's `main()` function.
 
+### Streaming vs non-streaming paths
+
+The openai-agents SDK calls `client.chat.completions.create(stream=True)` (see `agents/models/openai_chatcompletions.py`), so `create()` returns an `AsyncStream[ChatCompletionChunk]`, not a `ChatCompletion`. A non-streaming-only post-processor is silently a no-op because the stream object has no `choices[0].message` attribute. The wrapper therefore inspects `kwargs.get("stream")` and branches:
+
+- **Non-streaming**: the response is a `ChatCompletion`. Apply detection criteria to `choices[0].message` directly and mutate `message.tool_calls` in place.
+- **Streaming**: the response is an `AsyncStream[ChatCompletionChunk]`. Return an async generator that (a) forwards every original chunk untouched (preserves streaming UX), (b) accumulates `delta.content`, `delta.tool_calls`-presence, and `delta.reasoning_content` across chunks, and (c) after the stream ends, runs the same detection criteria against the accumulated state. If recovery applies, the generator yields one additional synthesised `ChatCompletionChunk` whose `delta.tool_calls` contains the recovered calls and whose `finish_reason="tool_calls"` — the agents-SDK stream handler accumulates this exactly as it would a model-emitted tool call.
+
 ### Detection criteria (all must hold to trigger recovery)
 
 1. `choices[0].message.content` is `""` or `None`.
@@ -49,7 +56,7 @@ The parser SHALL extract every `<tool_call>...</tool_call>` block from `reasonin
    - `<function=NAME>` (attribute form)
    - `<function_name>NAME</function_name>` (element form)
 2. Extract arguments. Three argument shapes are supported, tried in order:
-   - `<arguments>{...JSON...}</arguments>` — JSON blob.
+   - `<arguments>{...JSON...}</arguments>` — JSON blob. The regex uses greedy `.*` anchored to the closing `</arguments>` tag so nested-object JSON (e.g. `{"server": {"host": "x"}, "retries": 3}`) is captured in full; a non-greedy match would truncate at the first `}` and silently fail recovery for any tool with nested arguments.
    - One or more `<parameter=key>value</parameter>` tags — key/value form.
    - `<parameter><name>key</name><value>value</value></parameter>` — verbose form.
 
@@ -67,9 +74,15 @@ Each successfully parsed block produces one `ChatCompletionMessageToolCall`:
 
 If `_no_ block can be parsed_` (regex match found, but neither name nor any argument shape could be extracted), the wrapper passes the original response through and emits a `tool_call_recovery_failed` event with the partial match for diagnostics. The agents-SDK will then raise EmptyResponseError as it does today — the runner is no worse off than before.
 
+The wrapper SHALL emit `tool_call_recovery_failed` even when **some** blocks were successfully recovered but **others** were unparseable in the same response. The recovered-event is also fired (carrying the rescued calls); the failed-event carries the diagnostic sample of the first unparseable block. Without this, operators would lose visibility into new dialect variants that happen to appear alongside well-formed blocks.
+
+For the **truncated-opener** case (a `<tool_call>` substring is present but `_TOOL_CALL_BLOCK_RE` matches zero closed blocks — e.g. the model emitted `<tool_call><function=foo` and stopped), the trigger is `reasoning_content.count("<tool_call>") > len(recovered_dicts)`, not the closed-block count. The sample is built from the first opener forward (≤ 256 chars) so the truncation shape is visible.
+
+For the **dangling-closer** case (`</tool_call>` is present in `reasoning_content` but no `<tool_call>` opener exists — model emitted closing scaffolding only), nothing is recoverable (there is no function name to invoke), but the wrapper SHALL still emit `tool_call_recovery_failed` with `match_count=0` and a ≤ 256-character window centred on the first `</tool_call>`. This distinct failure mode is observed in prod alongside genuine empty responses; without the event operators cannot distinguish it from other empty-response causes.
+
 ### Response mutation: in-place on the dataclass-like SDK object
 
-`openai>=1.x` returns `ChatCompletion` Pydantic-ish objects whose `message` is mutable. The wrapper SHALL:
+For the **non-streaming** path, `openai>=1.x` returns `ChatCompletion` Pydantic objects whose `message` is mutable. The wrapper SHALL:
 
 1. Set `choices[0].message.tool_calls` to the list of recovered calls.
 2. Leave `content` as is (empty), since the recovered calls are the actual content.
@@ -78,12 +91,22 @@ If `_no_ block can be parsed_` (regex match found, but neither name nor any argu
 
 Other fields are unchanged. The wrapper SHALL NOT touch `usage` — the model's own token counts remain the truth.
 
+For the **streaming** path, the existing chunks pass through untouched (`message` doesn't exist on chunks) and the rescue is delivered as **one additional synthesised chunk** appended after the inner stream ends. The synthesised chunk SHALL have:
+
+- `delta.role="assistant"` and `delta.tool_calls=[ChoiceDeltaToolCall(...)]` with each recovered call's `id`, `name`, and full JSON-encoded `arguments`.
+- `finish_reason="tool_calls"` so the agents-SDK stream handler treats the turn as complete.
+- `id`, `model`, `created` copied from the last real chunk for consistency.
+
+The agents-SDK stream handler accumulates `delta.tool_calls` chunk-by-chunk into its `state.function_calls` dict; one final chunk carrying the complete tool-call set is therefore equivalent to the model emitting it natively.
+
 ### Event semantics
 
-- `tool_call_recovered_from_reasoning` event payload: `{ model, calls_recovered: <int>, function_names: <list[str]> }`. Emitted on every successful rescue.
-- `tool_call_recovery_failed` event payload: `{ model, match_count: <int>, sample: <truncated string up to 256 chars> }`. Emitted when `<tool_call>` markup is present but no block could be parsed.
+- `tool_call_recovered_from_reasoning` event payload: `{ model, calls_recovered: <int>, function_names: <list[str]> }`. Emitted on every successful rescue (whether all blocks succeeded or only some).
+- `tool_call_recovery_failed` event payload: `{ model, match_count: <int>, sample: <truncated string up to 256 chars> }`. Emitted in every failure shape:
+  - `match_count > 0` and `sample` non-null: at least one `<tool_call>` opener was present and at least one block was unparseable (covers all-malformed, partial recovery, truncated opener).
+  - `match_count == 0` and `sample` non-null: dangling-closer pattern — `</tool_call>` present without an opener.
 
-These give operators a Loki signal to monitor (a) how often the dialect hits us and from which models, and (b) when the parser falls short and needs more patterns.
+These give operators four distinct Loki signals to monitor: (a) how often the dialect hits us and from which models, (b) when the parser falls short and needs more patterns, (c) when models emit truncated openers (typically generation cutoff), and (d) when models emit only closing scaffolding without an opener (typically the model giving up mid-thought).
 
 ### No setting / no opt-out
 

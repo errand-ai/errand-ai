@@ -50,9 +50,25 @@
 
 - [x] 8.1 Inspect Loki for `tool_call_recovered_from_reasoning` events post-deploy; confirm they appear for tasks that previously failed with empty-response
 - [x] 8.2 Inspect Loki for `tool_call_recovery_failed` events; if any appear, capture the `sample` field and extend the parser to cover that dialect variant
-- [ ] 8.3 Re-run one of the historically-failing tasks (e.g. one that hit EmptyResponseError on qwen3.6) and confirm it now completes
+- [x] 8.3 Re-run one of the historically-failing tasks (e.g. one that hit EmptyResponseError on qwen3.6) and confirm it now completes — task `892153ea-ebcf-4374-a559-a8d8330eaa72` previously failed on first qualifying turn, now runs 38 min through 72 LLM turns with 2 successful Qwen-XML rescues (Loki: `tool_call_recovered_from_reasoning` events at 11:19:08 and 11:19:39 UTC, model `qwen3.6-35b-a3b-ud-mlx`, function `bash`)
 
-## 9. Archive
+## 10. Streaming support (emergent — required for prod)
 
-- [ ] 9.1 Run `/opsx:verify` to confirm implementation matches spec
-- [ ] 9.2 Run `/opsx:archive` to finalize the change after merge
+- [x] 10.1 Discover during prod testing that openai-agents calls `create(stream=True)` so the wrapper's `_post_process` was a silent no-op on `AsyncStream`
+- [x] 10.2 Add `_wrap_streaming_response()` that returns an async generator: forwards all inner chunks, accumulates `delta.{content,tool_calls,reasoning_content}` across them, and on stream end runs the same detection criteria against the accumulated state
+- [x] 10.3 Implement `_build_synthetic_tool_call_chunk()` constructing a single `ChatCompletionChunk` with `delta.role="assistant"`, `delta.tool_calls=[ChoiceDeltaToolCall(...)]`, and `finish_reason="tool_calls"` that the agents-SDK stream handler accumulates as a normal model-emitted tool call
+- [x] 10.4 In `_RecoveringChatCompletions.create()`, branch on `kwargs.get("stream")` so the non-streaming path is unchanged and streaming responses are wrapped
+- [x] 10.5 Add streaming tests covering: end-to-end recovery from chunked reasoning_content, passthrough when the model emitted tool_calls correctly, passthrough when reasoning_content has no XML markup, and the streaming dangling-closer / truncated-opener / mixed-block cases
+
+## 11. Diagnostic visibility hardening
+
+- [x] 11.1 Emit `tool_call_recovery_failed` whenever any `<tool_call>` opener was present but at least one block could not be parsed — covers mixed-recovered-and-failed responses where operators previously lost the diagnostic sample (Copilot review)
+- [x] 11.2 Emit `tool_call_recovery_failed` for the truncated-opener case (opener present but `_TOOL_CALL_BLOCK_RE` matches zero closed blocks) using `reasoning_content.count("<tool_call>")` as `match_count` and a sample from the first opener onwards (Copilot review)
+- [x] 11.3 Emit `tool_call_recovery_failed` for the dangling-closer case (`</tool_call>` present without an opener), with `match_count=0` and a sample window centred on the first `</tool_call>` — observed in prod on task 892153ea's final empty-response turn
+- [x] 11.4 Make `_ARGUMENTS_JSON_RE` greedy and anchor to `</arguments>` so nested-object JSON like `{"server": {"host": "x"}, "retries": 3}` isn't truncated at the first `}` (Copilot review)
+- [x] 11.5 Add regression tests for each of 11.1–11.4 in both streaming and non-streaming code paths
+
+## 12. Archive
+
+- [ ] 12.1 Run `/opsx:verify` to confirm implementation matches spec
+- [ ] 12.2 Run `/opsx:archive` to finalize the change after merge
