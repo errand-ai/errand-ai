@@ -27,6 +27,7 @@ from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
 from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
+from xml_tool_call_recovery import parse_xml_tool_calls
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -137,6 +138,272 @@ def extract_json(text: str) -> dict | None:
 def emit_event(event_type: str, data: dict) -> None:
     """Write a single-line JSON event to stderr."""
     print(json.dumps({"type": event_type, "data": data}), file=sys.stderr, flush=True)
+
+
+def _emit_recovered_event(response, recovered_calls: list) -> None:
+    payload = {
+        "model": getattr(response, "model", None),
+        "calls_recovered": len(recovered_calls),
+        "function_names": [c["function"]["name"] for c in recovered_calls],
+    }
+    emit_event("tool_call_recovered_from_reasoning", payload)
+
+
+def _emit_recovery_failed_event(response, match_count: int, sample: str | None) -> None:
+    payload = {
+        "model": getattr(response, "model", None),
+        "match_count": match_count,
+        "sample": sample,
+    }
+    emit_event("tool_call_recovery_failed", payload)
+
+
+def _dangling_closer_sample(reasoning_content: str) -> str:
+    """Build a ≤256-char sample centered on the first `</tool_call>` so
+    operators can see the dangling-closer context."""
+    idx = reasoning_content.find("</tool_call>")
+    if idx < 0:
+        return reasoning_content[:256]
+    start = max(0, idx - 200)
+    end = min(len(reasoning_content), idx + len("</tool_call>") + 50)
+    return reasoning_content[start:end][:256]
+
+
+class _RecoveringChatCompletions:
+    """Wraps ``client.chat.completions`` to rescue Qwen-XML tool calls
+    emitted in ``reasoning_content`` when the model failed to populate
+    structured ``tool_calls``. See `xml_tool_call_recovery`.
+    """
+
+    _logged_active = False
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def create(self, *args, **kwargs):
+        response = await self._inner.create(*args, **kwargs)
+        if not _RecoveringChatCompletions._logged_active:
+            logger.info("XML tool call recovery active for chat.completions")
+            _RecoveringChatCompletions._logged_active = True
+        # Streaming path: the agents-SDK calls create(stream=True) and gets
+        # an AsyncStream of ChatCompletionChunk. We can't post-process a
+        # non-existent `message` on the stream object — wrap the iterator.
+        if kwargs.get("stream"):
+            return _wrap_streaming_response(response)
+        try:
+            self._post_process(response)
+        except Exception as exc:
+            logger.warning("XML tool-call recovery post-process failed: %s", exc)
+        return response
+
+    def _post_process(self, response) -> None:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return
+
+        content = getattr(message, "content", None)
+        if content not in (None, ""):
+            return
+
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            return
+
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if not isinstance(reasoning_content, str) or not reasoning_content:
+            return
+
+        if "<tool_call>" not in reasoning_content:
+            # Dangling-closer case: model emitted `</tool_call>` (and friends)
+            # without the matching opener — nothing to recover, but operators
+            # need the diagnostic so they can quantify the pattern.
+            if "</tool_call>" in reasoning_content:
+                _emit_recovery_failed_event(
+                    response, 0, _dangling_closer_sample(reasoning_content)
+                )
+            return
+
+        recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_content)
+        synthesis_failed = False
+
+        if recovered_dicts:
+            try:
+                message.tool_calls = _build_recovered_message_tool_calls(recovered_dicts)
+            except Exception as exc:
+                # Synthesis failed (SDK type drift, constructor error, etc.).
+                # Surface the failure as a recovery_failed event so operators
+                # see it in Loki rather than the wrapper silently dropping
+                # the rescue. Original response is left unchanged → agents-SDK
+                # raises EmptyResponseError as it would have without us.
+                logger.warning("XML tool-call recovery: synthesis failed: %s", exc)
+                synthesis_failed = True
+            else:
+                _emit_recovered_event(response, recovered_dicts)
+        # Emit recovery_failed whenever fewer <tool_call> markers were
+        # recovered than were detected, OR when synthesis failed despite
+        # successful parsing. Covers (a) all-malformed responses,
+        # (b) partially-recovered responses, (c) truncated markup where
+        # the parser found zero closed blocks but the opener was present,
+        # and (d) synthesis errors (SDK type drift, etc.). Operators need
+        # the diagnostic sample in every case to spot new dialect variants,
+        # truncations, and environment/SDK incompatibilities.
+        marker_count = reasoning_content.count("<tool_call>")
+        effective_recovered = 0 if synthesis_failed else len(recovered_dicts)
+        if marker_count > effective_recovered:
+            diag_sample = sample
+            if diag_sample is None:
+                # No closed block matched (or synthesis-error fallback); sample
+                # from the first opener so operators see the surrounding shape.
+                idx = reasoning_content.find("<tool_call>")
+                diag_sample = reasoning_content[idx:idx + 256] if idx >= 0 else None
+            _emit_recovery_failed_event(response, marker_count, diag_sample)
+
+
+def _wrap_streaming_response(inner_stream):
+    """Wrap an AsyncStream[ChatCompletionChunk] so that, on stream end with
+    no content/tool_calls but XML markup in accumulated reasoning_content,
+    a synthesized tool-call chunk is yielded to rescue the turn."""
+
+    async def _iter():
+        content_buf = ""
+        reasoning_buf = ""
+        saw_tool_calls = False
+        last_chunk = None
+        try:
+            async for chunk in inner_stream:
+                if chunk.choices:
+                    delta = getattr(chunk.choices[0], "delta", None)
+                    if delta is not None:
+                        if getattr(delta, "content", None):
+                            content_buf += delta.content
+                        if getattr(delta, "tool_calls", None):
+                            saw_tool_calls = True
+                        rc = getattr(delta, "reasoning_content", None)
+                        if isinstance(rc, str) and rc:
+                            reasoning_buf += rc
+                last_chunk = chunk
+                yield chunk
+        finally:
+            # Always close the inner stream on exit.
+            close = getattr(inner_stream, "aclose", None) or getattr(inner_stream, "close", None)
+            if close is not None:
+                try:
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception:  # pragma: no cover — best-effort cleanup
+                    pass
+
+        if saw_tool_calls or content_buf:
+            return
+
+        model_hint = getattr(last_chunk, "model", None) if last_chunk else None
+        fake_response = type("_FakeResp", (), {"model": model_hint})()
+
+        if "<tool_call>" not in reasoning_buf:
+            # Dangling-closer case (see _post_process for rationale).
+            if "</tool_call>" in reasoning_buf:
+                _emit_recovery_failed_event(
+                    fake_response, 0, _dangling_closer_sample(reasoning_buf)
+                )
+            return
+
+        recovered_dicts, _total_blocks, sample = parse_xml_tool_calls(reasoning_buf)
+        synthesis_failed = False
+
+        if recovered_dicts:
+            try:
+                synth = _build_synthetic_tool_call_chunk(recovered_dicts, last_chunk)
+            except Exception as exc:
+                logger.warning("XML tool-call recovery: synthesis failed: %s", exc)
+                synthesis_failed = True
+            else:
+                _emit_recovered_event(fake_response, recovered_dicts)
+                yield synth
+
+        # If synthesis raised, treat the parsed dicts as un-delivered so the
+        # diagnostic event still fires — operators must not see the wrapper
+        # silently drop a rescue (e.g. on SDK type drift across environments).
+        marker_count = reasoning_buf.count("<tool_call>")
+        effective_recovered = 0 if synthesis_failed else len(recovered_dicts)
+        if marker_count > effective_recovered:
+            diag_sample = sample
+            if diag_sample is None:
+                idx = reasoning_buf.find("<tool_call>")
+                diag_sample = reasoning_buf[idx:idx + 256] if idx >= 0 else None
+            _emit_recovery_failed_event(fake_response, marker_count, diag_sample)
+
+    return _iter()
+
+
+def _build_recovered_message_tool_calls(recovered_dicts: list) -> list:
+    """Construct OpenAI `ChatCompletionMessageToolCall` instances for the
+    non-streaming path. Isolated so it can be patched independently in tests."""
+    try:
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+            Function,
+        )
+    except ImportError:  # pragma: no cover — older SDK fallback
+        from openai.types.chat import ChatCompletionMessageToolCall
+        from openai.types.chat.chat_completion_message_tool_call import Function
+
+    return [
+        ChatCompletionMessageToolCall(
+            id=c["id"],
+            type="function",
+            function=Function(
+                name=c["function"]["name"],
+                arguments=c["function"]["arguments"],
+            ),
+        )
+        for c in recovered_dicts
+    ]
+
+
+def _build_synthetic_tool_call_chunk(recovered_dicts: list, template_chunk):
+    """Construct a single ChatCompletionChunk delivering the recovered tool
+    calls in one delta with finish_reason='tool_calls'."""
+    from openai.types.chat import ChatCompletionChunk
+    from openai.types.chat.chat_completion_chunk import (
+        Choice,
+        ChoiceDelta,
+        ChoiceDeltaToolCall,
+        ChoiceDeltaToolCallFunction,
+    )
+
+    tc_deltas = [
+        ChoiceDeltaToolCall(
+            index=i,
+            id=c["id"],
+            type="function",
+            function=ChoiceDeltaToolCallFunction(
+                name=c["function"]["name"],
+                arguments=c["function"]["arguments"],
+            ),
+        )
+        for i, c in enumerate(recovered_dicts)
+    ]
+
+    return ChatCompletionChunk(
+        id=getattr(template_chunk, "id", "recovered") if template_chunk else "recovered",
+        model=getattr(template_chunk, "model", "unknown") if template_chunk else "unknown",
+        created=getattr(template_chunk, "created", 0) if template_chunk else 0,
+        object="chat.completion.chunk",
+        choices=[
+            Choice(
+                index=0,
+                delta=ChoiceDelta(role="assistant", tool_calls=tc_deltas),
+                finish_reason="tool_calls",
+            )
+        ],
+    )
 
 
 class StreamEventEmitter(RunHooks):
@@ -1637,6 +1904,7 @@ async def main():
         client_kwargs["timeout"] = request_timeout
         logger.info("LLM request timeout set to %.1fs from LLM_REQUEST_TIMEOUT", request_timeout)
     client = AsyncOpenAI(**client_kwargs)
+    client.chat.completions = _RecoveringChatCompletions(client.chat.completions)
     set_default_openai_client(client)
 
     # 4. Parse MCP config and connect to servers with lazy tool loading

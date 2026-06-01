@@ -89,6 +89,7 @@ COPY --from=builder /install /usr/local/lib/python3.11/site-packages
 COPY --from=builder --chown=65532:65532 /pip-staging /opt/pip-bootstrap
 COPY task-runner/main.py /app/main.py
 COPY task-runner/tool_registry.py /app/tool_registry.py
+COPY task-runner/xml_tool_call_recovery.py /app/xml_tool_call_recovery.py
 COPY task-runner/entrypoint.sh /app/entrypoint.sh
 
 # Copy shared libraries first (needed by all binaries below)
