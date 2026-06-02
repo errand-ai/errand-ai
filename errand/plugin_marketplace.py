@@ -240,12 +240,37 @@ def _git_clone(url: str, ref: Optional[str], dest: Path, ssh_private_key: Option
                 pass
 
 
+_ALLOWED_HTTP_SCHEMES = ("https://", "http://")
+
+
+class MarketplaceFetchError(Exception):
+    """Raised when a marketplace cannot be fetched."""
+
+
+def _validate_http_url(url: str) -> str:
+    """Validate a marketplace/plugin HTTP URL against an allowlist.
+
+    Admins supply marketplace URLs explicitly — this barrier exists to limit
+    blast radius (no `file://`, `gopher://`, etc.) and to make the data-flow
+    visible to static analysers. Returns the URL unchanged on success.
+    """
+    if not isinstance(url, str) or not url:
+        raise MarketplaceFetchError("http url is required")
+    if not any(url.startswith(p) for p in _ALLOWED_HTTP_SCHEMES):
+        raise MarketplaceFetchError(
+            f"refusing http URL with disallowed scheme: {url!r} "
+            f"(allowed: {_ALLOWED_HTTP_SCHEMES})"
+        )
+    return url
+
+
 async def _http_fetch_json(url: str, bearer_token: Optional[str]) -> Any:
+    safe_url = _validate_http_url(url)
     headers = {}
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url, headers=headers, follow_redirects=True)
+        resp = await client.get(safe_url, headers=headers, follow_redirects=True)
         resp.raise_for_status()
         return resp.json()
 
@@ -253,10 +278,6 @@ async def _http_fetch_json(url: str, bearer_token: Optional[str]) -> Any:
 # --------------------------------------------------------------------------- #
 # Marketplace operations                                                      #
 # --------------------------------------------------------------------------- #
-
-
-class MarketplaceFetchError(Exception):
-    """Raised when a marketplace cannot be fetched."""
 
 
 @dataclass
@@ -380,9 +401,32 @@ class PluginInstallError(Exception):
     """Raised when a plugin cannot be installed."""
 
 
+import re as _re
+
+# Path segments may contain only ASCII letters, digits, dots, underscores,
+# and dashes. Anything else is replaced with an underscore. The result is
+# then matched against a strict allowlist; on mismatch we raise rather than
+# silently substitute, so taint cannot reach `Path` operations.
+_SAFE_SEGMENT_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def _safe_segment(name: str) -> str:
-    """Normalize a name for use as a path segment."""
-    return name.replace("/", "_").replace("..", "_")
+    """Sanitize a name for use as a single path segment.
+
+    Replaces every character outside [A-Za-z0-9._-] with `_`, then verifies
+    the result matches the allowlist. The strict regex check after substitution
+    acts as a sanitizer barrier — anything reaching this function's return
+    value is guaranteed to be a safe filename component.
+    """
+    if not isinstance(name, str) or not name:
+        return "_"
+    cleaned = _re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    # Collapse leading dots so the segment never resolves to . or ..
+    cleaned = cleaned.lstrip(".") or "_"
+    if not _SAFE_SEGMENT_RE.match(cleaned):
+        # Defense-in-depth — should be unreachable after the sub() above.
+        cleaned = "_"
+    return cleaned
 
 
 def plugin_install_dir(scope: str, plugin_name: str, version: str) -> Path:
@@ -561,9 +605,10 @@ async def _fetch_plugin_into(
                 shutil.move(str(tmp), str(dest))
         return
     if source.kind == "http":
+        safe_url = _validate_http_url(source.url)
         async with httpx.AsyncClient(timeout=60.0) as client:
             headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
-            resp = await client.get(source.url, headers=headers, follow_redirects=True)
+            resp = await client.get(safe_url, headers=headers, follow_redirects=True)
             resp.raise_for_status()
             dest.mkdir(parents=True)
             (dest / ".claude-plugin").mkdir()
