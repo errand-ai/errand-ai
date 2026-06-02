@@ -443,7 +443,7 @@ def merge_skills_with_plugins(
     git_skills: list[dict],
     system_skills: list[dict] | None = None,
     plugin_skills: list[dict] | None = None,
-) -> tuple[list[dict], dict[str, list[str]]]:
+) -> tuple[list[dict], dict[str, list[dict]]]:
     """Merge skills from DB, plugin, git, and system sources.
 
     Precedence: DB > plugin > git > system. Plugin-vs-plugin name collisions
@@ -451,12 +451,13 @@ def merge_skills_with_plugins(
     plugin_skills pre-sorted).
 
     Returns (merged_skills, plugin_conflicts) where plugin_conflicts maps a
-    plugin_name to a list of `<skill_name> (overridden by <source>)` strings
-    describing skills that lost to a higher-precedence source.
+    plugin_name to a list of conflict objects:
+        [{"skill": "<skill_name>", "other": "<other_source>"}, ...]
+    matching the shape the frontend renders.
     """
     seen: dict[str, str] = {s["name"]: "db" for s in db_skills}
     merged = list(db_skills)
-    plugin_conflicts: dict[str, list[str]] = {}
+    plugin_conflicts: dict[str, list[dict]] = {}
     for skill in plugin_skills or []:
         name = skill["name"]
         plugin_name = skill.get("_plugin_name", "")
@@ -468,7 +469,7 @@ def merge_skills_with_plugins(
             )
             if plugin_name:
                 plugin_conflicts.setdefault(plugin_name, []).append(
-                    f"{name} (overridden by {origin})"
+                    {"skill": name, "other": origin}
                 )
         else:
             merged.append(skill)
@@ -1753,12 +1754,30 @@ class TaskManager:
                 if plugin_uuids:
                     from plugin_marketplace import wait_for_plugin as _wait_for_plugin
                     async with async_session() as _pl_session:
-                        result = await _pl_session.execute(
-                            select(Plugin).where(
-                                Plugin.id.in_(plugin_uuids), Plugin.enabled.is_(True)
-                            )
+                        # Fetch ALL referenced plugin rows first so we can
+                        # distinguish "doesn't exist" from "globally disabled"
+                        # and log each case at info level for admin diagnostics
+                        # (spec requirement for task-profile-worker-resolution).
+                        all_result = await _pl_session.execute(
+                            select(Plugin).where(Plugin.id.in_(plugin_uuids))
                         )
-                        rows = sorted(result.scalars().all(), key=lambda p: p.plugin_name)
+                        all_rows = list(all_result.scalars().all())
+                        found_ids = {p.id for p in all_rows}
+                        missing_ids = [str(pid) for pid in plugin_uuids if pid not in found_ids]
+                        for mid in missing_ids:
+                            logger.info(
+                                "Profile enabled_plugins references missing plugin %s for task %s — skipping",
+                                mid, task.id,
+                            )
+                        disabled = [p for p in all_rows if not p.enabled]
+                        for p in disabled:
+                            logger.info(
+                                "Profile enabled_plugins references globally-disabled plugin %s (%s) for task %s — skipping",
+                                p.id, p.plugin_name, task.id,
+                            )
+                        rows = sorted(
+                            [p for p in all_rows if p.enabled], key=lambda p: p.plugin_name,
+                        )
                         scopes = await _resolve_plugin_scopes(_pl_session, rows)
                     for ps in scopes:
                         ready = await _wait_for_plugin(ps.plugin.id)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -292,20 +293,71 @@ async def list_marketplace_plugins(
         manifest = MarketplaceManifest.model_validate(mp.cached_manifest)
     except ValidationError:
         return []
+    from plugin_marketplace import (
+        normalize_plugin_source,
+        marketplace_cache_dir,
+        _detect_plugin_root,
+    )
+    base_dir = (
+        Path(mp.source_url) if mp.source_type == "local" else marketplace_cache_dir(mp.name)
+    )
     out: list[dict] = []
-    from plugin_marketplace import normalize_plugin_source
     for entry in manifest.plugins:
         norm = normalize_plugin_source(entry.source)
+        skills: list[str] = []
+        mcp_servers: list[str] = []
+        # For relative sources we can cheaply inspect the cloned plugin tree
+        # alongside the marketplace clone to surface a preview before install.
+        # Other source kinds would require fetching the plugin itself, which
+        # is too expensive for a list endpoint — frontend renders the field
+        # as optional and just omits the preview block in that case.
+        if norm.kind == "relative" and norm.path and base_dir.is_dir():
+            candidate = (base_dir / norm.path).resolve()
+            try:
+                candidate.relative_to(base_dir.resolve())
+            except ValueError:
+                candidate = None
+            if candidate and candidate.is_dir():
+                plugin_root = _detect_plugin_root(candidate)
+                skills_dir = plugin_root / "skills"
+                if skills_dir.is_dir():
+                    skills = sorted(
+                        p.name for p in skills_dir.iterdir()
+                        if p.is_dir() and (p / "SKILL.md").is_file()
+                    )
+                # MCP servers — read either inline plugin.json or .mcp.json
+                import json as _json
+                plugin_json = plugin_root / ".claude-plugin" / "plugin.json"
+                if plugin_json.is_file():
+                    try:
+                        raw = _json.loads(plugin_json.read_text(encoding="utf-8"))
+                        if isinstance(raw.get("mcpServers"), dict):
+                            mcp_servers = sorted(raw["mcpServers"].keys())
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Invalid plugin.json at %s", plugin_json)
+                if not mcp_servers:
+                    mcp_json = plugin_root / ".mcp.json"
+                    if mcp_json.is_file():
+                        try:
+                            raw = _json.loads(mcp_json.read_text(encoding="utf-8"))
+                            if isinstance(raw, dict):
+                                inner = raw.get("mcpServers") if isinstance(raw.get("mcpServers"), dict) else raw
+                                mcp_servers = sorted(inner.keys())
+                        except Exception:  # noqa: BLE001
+                            logger.debug("Invalid .mcp.json at %s", mcp_json)
         out.append({
             "name": entry.name,
             "description": entry.description,
             "version": entry.version,
+            "available_versions": [entry.version] if entry.version else [],
             "display_name": entry.display_name,
             "keywords": entry.keywords,
             "category": entry.category,
             "source_kind": norm.kind,
             "unsupported": norm.kind == "unsupported",
             "unsupported_reason": norm.unsupported_reason,
+            "skills": skills,
+            "mcp_servers": mcp_servers,
         })
     return out
 

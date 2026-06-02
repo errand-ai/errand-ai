@@ -2400,7 +2400,7 @@ class TestMergeSkillsWithPlugins:
         assert len(merged) == 1
         assert merged[0]["description"] == "DB"
         assert "slack-toolkit" in conflicts
-        assert any("post" in c for c in conflicts["slack-toolkit"])
+        assert any(c["skill"] == "post" and c["other"] == "db" for c in conflicts["slack-toolkit"])
 
     def test_plugin_wins_over_git_and_system(self):
         from task_manager import merge_skills_with_plugins
