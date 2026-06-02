@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Skill manifest in system prompt
-When the worker prepares the system prompt for a task, the worker SHALL append a skill discovery directive and manifest as the sole augmentation block (after the base prompt). The manifest SHALL list all skills (from DB, git, and system sources) with their name and description. The directive SHALL instruct the agent to read the SKILL.md of any relevant skill before using associated tools or capabilities.
+When the worker prepares the system prompt for a task, the worker SHALL append a skill discovery directive and manifest as the sole augmentation block (after the base prompt). The manifest SHALL list all skills (from DB, plugin, git, and system sources) with their name and description. Plugin-sourced entries SHALL be annotated with their source plugin name. The directive SHALL instruct the agent to read the SKILL.md of any relevant skill before using associated tools or capabilities.
 
 The system prompt SHALL NOT contain any other integration-specific instruction blocks. All integration instructions (cloud storage, Hindsight, repo context) are delivered via system skills listed in the manifest.
 
@@ -16,4 +16,12 @@ The system prompt SHALL NOT contain any other integration-specific instruction b
 
 #### Scenario: Manifest includes system skills
 - **WHEN** the worker prepares the system prompt with system skills (e.g., cloud-storage, hindsight-memory, repo-context, gws-*)
-- **THEN** the manifest table includes entries for all system skills alongside DB and git skills
+- **THEN** the manifest table includes entries for all system skills alongside DB, plugin, and git skills
+
+#### Scenario: Manifest includes plugin skills with annotation
+- **WHEN** the worker prepares the system prompt with a plugin `slack-toolkit` contributing a `post-message` skill
+- **THEN** the manifest includes `post-message` annotated as sourced from plugin `slack-toolkit`
+
+#### Scenario: Skill precedence resolved in manifest
+- **WHEN** a DB skill, a plugin skill, a git skill, and a system skill all share the same name
+- **THEN** the manifest entry reflects the DB skill (highest precedence) and the others are omitted, with warnings logged for each omission
