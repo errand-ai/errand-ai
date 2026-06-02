@@ -37,6 +37,7 @@ export interface TaskProfile {
   litellm_mcp_servers: string[] | null
   skill_ids: string[] | null
   include_git_skills: boolean
+  enabled_plugins?: string[] | null
   created_at: string
   updated_at: string
 }
@@ -665,3 +666,208 @@ export async function deleteJiraCredentials(): Promise<void> {
   const res = await authFetch(`${BASE}/credentials/jira`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete Jira credentials: ${res.status}`)
 }
+
+// --- Plugin Marketplaces ---
+
+export type MarketplaceSourceType = 'github' | 'git' | 'http' | 'local'
+
+export interface Marketplace {
+  id: string
+  name: string
+  source_type: MarketplaceSourceType
+  source_url: string
+  ref: string | null
+  has_auth_token: boolean
+  enabled: boolean
+  predefined: boolean
+  last_synced_at: string | null
+  last_sync_status: 'ok' | 'error' | null
+  last_sync_error: string | null
+  plugin_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface MarketplacePluginEntry {
+  name: string
+  source: unknown
+  version?: string
+  description?: string
+  displayName?: string
+  keywords?: string[]
+  category?: string
+  unsupported?: boolean
+  available_versions?: string[]
+  skills?: string[]
+  mcp_servers?: string[]
+}
+
+export interface MarketplaceCreateInput {
+  name: string
+  source_type: MarketplaceSourceType
+  source_url: string
+  ref?: string | null
+  auth_token?: string | null
+}
+
+export interface MarketplacePatchInput {
+  enabled?: boolean
+  name?: string
+  source_url?: string
+  ref?: string | null
+  auth_token?: string | null
+}
+
+export async function fetchMarketplaces(): Promise<Marketplace[]> {
+  const res = await authFetch(`${BASE}/marketplaces`)
+  if (!res.ok) throw new Error(`Failed to fetch marketplaces: ${res.status}`)
+  return res.json()
+}
+
+export async function createMarketplace(data: MarketplaceCreateInput): Promise<Marketplace> {
+  const res = await authFetch(`${BASE}/marketplaces`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to add marketplace: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function patchMarketplace(id: string, data: MarketplacePatchInput): Promise<Marketplace> {
+  const res = await authFetch(`${BASE}/marketplaces/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to update marketplace: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteMarketplace(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/marketplaces/${id}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to remove marketplace: ${res.status}`)
+  }
+}
+
+export async function resyncMarketplace(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/marketplaces/${id}/resync`, { method: 'POST' })
+  if (!res.ok && res.status !== 202) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to resync marketplace: ${res.status}`)
+  }
+}
+
+export async function fetchMarketplacePlugins(id: string): Promise<MarketplacePluginEntry[]> {
+  const res = await authFetch(`${BASE}/marketplaces/${id}/plugins`)
+  if (!res.ok) throw new Error(`Failed to fetch marketplace plugins: ${res.status}`)
+  return res.json()
+}
+
+// --- Plugins ---
+
+export interface PluginMcpServer {
+  raw: string
+  namespaced: string
+}
+
+export interface PluginIgnoredArtifact {
+  type: string
+  count: number
+}
+
+export interface PluginSkillConflict {
+  skill: string
+  other: string
+}
+
+export interface Plugin {
+  id: string
+  plugin_name: string
+  marketplace_id: string | null
+  marketplace_name?: string | null
+  installed_version: string
+  latest_available_version: string | null
+  enabled: boolean
+  manifest: Record<string, unknown> | null
+  ignored_artifacts: PluginIgnoredArtifact[] | null
+  skill_conflicts: PluginSkillConflict[] | null
+  update_available: boolean
+  skills: string[]
+  mcp_servers: PluginMcpServer[]
+  installed_at: string | null
+  last_checked_at: string | null
+}
+
+export interface PluginMarketplaceInstallInput {
+  marketplace_id: string
+  plugin_name: string
+  version?: string
+}
+
+export interface PluginManualInstallInput {
+  source_type: 'github' | 'git'
+  source_url: string
+  ref?: string | null
+  auth_token?: string | null
+}
+
+export async function fetchPlugins(): Promise<Plugin[]> {
+  const res = await authFetch(`${BASE}/plugins`)
+  if (!res.ok) throw new Error(`Failed to fetch plugins: ${res.status}`)
+  return res.json()
+}
+
+export async function installPlugin(
+  data: PluginMarketplaceInstallInput | PluginManualInstallInput,
+): Promise<Plugin> {
+  const res = await authFetch(`${BASE}/plugins`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to install plugin: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function patchPlugin(id: string, data: { enabled?: boolean }): Promise<Plugin> {
+  const res = await authFetch(`${BASE}/plugins/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to update plugin: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deletePlugin(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/plugins/${id}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to remove plugin: ${res.status}`)
+  }
+}
+
+export async function updatePlugin(id: string): Promise<Plugin> {
+  const res = await authFetch(`${BASE}/plugins/${id}/update`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to update plugin: ${res.status}`)
+  }
+  return res.json()
+}
+

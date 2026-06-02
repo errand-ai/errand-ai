@@ -438,31 +438,75 @@ def parse_skills_from_directory(base_path: str) -> list[dict]:
     return skills
 
 
+def merge_skills_with_plugins(
+    db_skills: list[dict],
+    git_skills: list[dict],
+    system_skills: list[dict] | None = None,
+    plugin_skills: list[dict] | None = None,
+) -> tuple[list[dict], dict[str, list[dict]]]:
+    """Merge skills from DB, plugin, git, and system sources.
+
+    Precedence: DB > plugin > git > system. Plugin-vs-plugin name collisions
+    are resolved deterministically by alphabetical plugin name (caller passes
+    plugin_skills pre-sorted).
+
+    Returns (merged_skills, plugin_conflicts) where plugin_conflicts maps a
+    plugin_name to a list of conflict objects:
+        [{"skill": "<skill_name>", "other": "<other_source>"}, ...]
+    matching the shape the frontend renders.
+    """
+    seen: dict[str, str] = {s["name"]: "db" for s in db_skills}
+    merged = list(db_skills)
+    plugin_conflicts: dict[str, list[dict]] = {}
+    for skill in plugin_skills or []:
+        name = skill["name"]
+        plugin_name = skill.get("_plugin_name", "")
+        if name in seen:
+            origin = seen[name]
+            logger.warning(
+                "Skill name conflict: '%s' from plugin '%s' overridden by %s source",
+                name, plugin_name, origin,
+            )
+            if plugin_name:
+                plugin_conflicts.setdefault(plugin_name, []).append(
+                    {"skill": name, "other": origin}
+                )
+        else:
+            merged.append(skill)
+            seen[name] = f"plugin:{plugin_name}" if plugin_name else "plugin"
+    for skill in git_skills:
+        name = skill["name"]
+        if name in seen:
+            logger.warning(
+                "Skill name conflict: '%s' from git overridden by %s source",
+                name, seen[name],
+            )
+        else:
+            merged.append(skill)
+            seen[name] = "git"
+    for skill in system_skills or []:
+        name = skill["name"]
+        if name in seen:
+            logger.info(
+                "System skill '%s' overridden by %s source", name, seen[name],
+            )
+        else:
+            merged.append(skill)
+            seen[name] = "system"
+    return merged, plugin_conflicts
+
+
 def merge_skills(
     db_skills: list[dict],
     git_skills: list[dict],
     system_skills: list[dict] | None = None,
 ) -> list[dict]:
-    """Merge skills from DB, git, and system sources. Precedence: DB > git > system.
+    """Backwards-compatible wrapper returning only the merged list.
 
-    Higher-precedence sources win on name conflicts. System skills (e.g. gws skills
-    bundled in the image) are merged in last so they only appear if no DB or git
-    skill of the same name exists.
+    Precedence: DB > git > system (no plugin source). For the plugin-aware
+    variant, see `merge_skills_with_plugins`.
     """
-    seen = {s["name"] for s in db_skills}
-    merged = list(db_skills)
-    for skill in git_skills:
-        if skill["name"] in seen:
-            logger.warning("Skill name conflict: '%s' exists in both DB and git — using DB version", skill["name"])
-        else:
-            merged.append(skill)
-            seen.add(skill["name"])
-    for skill in system_skills or []:
-        if skill["name"] in seen:
-            logger.info("System skill '%s' overridden by DB or git skill", skill["name"])
-        else:
-            merged.append(skill)
-            seen.add(skill["name"])
+    merged, _ = merge_skills_with_plugins(db_skills, git_skills, system_skills, None)
     return merged
 
 
@@ -825,6 +869,7 @@ async def _resolve_profile(session: AsyncSession, task: Task, settings: dict) ->
     if profile.skill_ids is not None:
         resolved["_profile_skill_ids"] = profile.skill_ids
         resolved["_profile_include_git_skills"] = profile.include_git_skills
+    resolved["_profile_enabled_plugins"] = profile.enabled_plugins or []
 
     return resolved
 
@@ -1684,7 +1729,121 @@ class TaskManager:
         }
         system_skills = load_system_skills_from_registry(system_skill_context)
 
-        skills = merge_skills(db_skills, git_skills, system_skills)
+        # Load plugin-sourced skills + MCP servers gated by the profile's
+        # enabled_plugins (bundle-level gating). Plugin skills are sorted by
+        # plugin_name so plugin-vs-plugin collisions resolve alphabetically.
+        plugin_skills: list[dict] = []
+        plugin_mcp_servers: dict[str, dict] = {}
+        plugin_conflict_map: dict[str, list[str]] = {}
+        profile_enabled_plugin_ids = settings.get("_profile_enabled_plugins") or []
+        if profile_enabled_plugin_ids:
+            try:
+                from plugin_marketplace import (
+                    parse_plugin_skills as _parse_plugin_skills,
+                    namespaced_mcp_servers as _namespaced_mcp_servers,
+                    resolve_plugin_scopes as _resolve_plugin_scopes,
+                )
+                from models import Plugin
+                import uuid as _uuid
+                plugin_uuids = []
+                for pid in profile_enabled_plugin_ids:
+                    try:
+                        plugin_uuids.append(_uuid.UUID(pid))
+                    except (TypeError, ValueError):
+                        logger.info("Skipping invalid plugin UUID in enabled_plugins: %r", pid)
+                if plugin_uuids:
+                    from plugin_marketplace import wait_for_plugin as _wait_for_plugin
+                    async with async_session() as _pl_session:
+                        # Fetch ALL referenced plugin rows first so we can
+                        # distinguish "doesn't exist" from "globally disabled"
+                        # and log each case at info level for admin diagnostics
+                        # (spec requirement for task-profile-worker-resolution).
+                        all_result = await _pl_session.execute(
+                            select(Plugin).where(Plugin.id.in_(plugin_uuids))
+                        )
+                        all_rows = list(all_result.scalars().all())
+                        found_ids = {p.id for p in all_rows}
+                        missing_ids = [str(pid) for pid in plugin_uuids if pid not in found_ids]
+                        for mid in missing_ids:
+                            logger.info(
+                                "Profile enabled_plugins references missing plugin %s for task %s — skipping",
+                                mid, task.id,
+                            )
+                        disabled = [p for p in all_rows if not p.enabled]
+                        for p in disabled:
+                            logger.info(
+                                "Profile enabled_plugins references globally-disabled plugin %s (%s) for task %s — skipping",
+                                p.id, p.plugin_name, task.id,
+                            )
+                        rows = sorted(
+                            [p for p in all_rows if p.enabled], key=lambda p: p.plugin_name,
+                        )
+                        scopes = await _resolve_plugin_scopes(_pl_session, rows)
+                    for ps in scopes:
+                        ready = await _wait_for_plugin(ps.plugin.id)
+                        if not ready:
+                            logger.warning(
+                                "Plugin %s not ready for task %s — emitting plugin_unavailable",
+                                ps.plugin.plugin_name, task.id,
+                            )
+                            try:
+                                await publish_event(
+                                    "plugin_unavailable",
+                                    {
+                                        "task_id": str(task.id),
+                                        "plugin_id": str(ps.plugin.id),
+                                        "plugin_name": ps.plugin.plugin_name,
+                                    },
+                                )
+                            except Exception:
+                                logger.exception("Failed to publish plugin_unavailable event")
+                            continue
+                        for s in _parse_plugin_skills(ps.plugin, ps.scope):
+                            s["_plugin_name"] = ps.plugin.plugin_name
+                            plugin_skills.append(s)
+                        for ns_name, cfg in _namespaced_mcp_servers(ps.plugin, ps.scope).items():
+                            plugin_mcp_servers[ns_name] = cfg
+            except Exception:
+                logger.exception("Failed to load plugin skills/MCP — proceeding without")
+
+        skills, plugin_conflict_map = merge_skills_with_plugins(
+            db_skills, git_skills, system_skills, plugin_skills,
+        )
+        settings["_plugin_mcp_servers"] = plugin_mcp_servers
+        settings["_plugin_conflicts"] = plugin_conflict_map
+
+        # Merge plugin-sourced MCP servers (already namespaced as `<plugin>__<server>`)
+        # into the final mcp_servers dict. Must come after plugin discovery above so
+        # plugin_mcp_servers is populated.
+        if plugin_mcp_servers:
+            mcp_servers.setdefault("mcpServers", {})
+            for ns_name, cfg in plugin_mcp_servers.items():
+                if ns_name not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"][ns_name] = cfg
+
+        # Persist skill_conflicts back to affected plugin rows so the API surfaces them.
+        # Key by plugin ID, not name — `plugin_name` is only unique within a
+        # marketplace, so a name-based UPDATE could touch unrelated rows in
+        # other marketplaces or manual installs.
+        if plugin_conflict_map:
+            try:
+                from sqlalchemy import update as _sa_update
+                name_to_id: dict[str, "uuid.UUID"] = {
+                    ps.plugin.plugin_name: ps.plugin.id for ps in scopes
+                }
+                async with async_session() as _pl_session:
+                    for plugin_name, conflicts in plugin_conflict_map.items():
+                        pid = name_to_id.get(plugin_name)
+                        if pid is None:
+                            continue
+                        await _pl_session.execute(
+                            _sa_update(Plugin)
+                            .where(Plugin.id == pid)
+                            .values(skill_conflicts=conflicts)
+                        )
+                    await _pl_session.commit()
+            except Exception:
+                logger.exception("Failed to persist plugin skill_conflicts")
 
         # Apply profile skill filter: DB skills filtered by UUID, non-DB (git + system) skills by flag.
         # The `_profile_include_git_skills` flag (sourced from the legacy `include_git_skills`

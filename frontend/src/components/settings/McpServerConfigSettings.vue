@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
+import { fetchPlugins, type Plugin } from '../../composables/useApi'
 
 const props = defineProps<{
   mcpServersText: string
@@ -76,6 +77,26 @@ async function save() {
   }
 }
 
+const pluginMcpEntries = ref<{ plugin: string; raw: string; namespaced: string }[]>([])
+
+async function loadPluginMcpEntries() {
+  try {
+    const result = await fetchPlugins()
+    const plugins: Plugin[] = Array.isArray(result) ? result : []
+    pluginMcpEntries.value = plugins.flatMap((p) =>
+      (p.mcp_servers || []).map((server) => ({
+        plugin: p.plugin_name,
+        raw: server.raw,
+        namespaced: server.namespaced,
+      })),
+    )
+  } catch {
+    pluginMcpEntries.value = []
+  }
+}
+
+onMounted(loadPluginMcpEntries)
+
 defineExpose({ isDirty })
 </script>
 
@@ -113,6 +134,17 @@ defineExpose({ isDirty })
           {{ saving ? 'Saving...' : 'Save MCP Config' }}
         </button>
         <span v-if="isDirty" class="text-xs text-amber-600">Unsaved changes</span>
+      </div>
+
+      <div v-if="pluginMcpEntries.length > 0" class="mt-4 border-t border-gray-200 pt-3" data-testid="plugin-mcp-entries">
+        <div class="text-xs font-semibold text-gray-600 mb-1">Plugin-contributed MCP servers (read-only)</div>
+        <ul class="space-y-0.5 text-xs text-gray-700">
+          <li v-for="entry in pluginMcpEntries" :key="entry.namespaced" class="flex items-center gap-2 flex-wrap">
+            <span class="font-mono">{{ entry.namespaced }}</span>
+            <span class="text-gray-400">(raw: {{ entry.raw }})</span>
+            <span class="inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700">from plugin: {{ entry.plugin }}</span>
+          </li>
+        </ul>
       </div>
     </div>
   </div>

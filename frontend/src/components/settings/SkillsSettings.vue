@@ -17,6 +17,8 @@ interface Skill {
   files: SkillFile[]
   created_at: string
   updated_at: string
+  source?: string | null
+  plugin_name?: string | null
 }
 
 const auth = useAuthStore()
@@ -313,14 +315,21 @@ onMounted(() => loadSkills())
       <div v-for="skill in skills" :key="skill.id" class="rounded-md border border-gray-200">
         <div class="flex items-start justify-between p-3">
           <div class="flex-1 cursor-pointer" @click="toggleSkillFiles(skill.id)">
-            <div class="text-sm font-medium text-gray-800">{{ skill.name }}</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-medium text-gray-800">{{ skill.name }}</span>
+              <span
+                v-if="skill.plugin_name"
+                class="inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700"
+                :data-testid="`skill-plugin-badge-${skill.id}`"
+              >from plugin: {{ skill.plugin_name }}</span>
+            </div>
             <div class="text-xs text-gray-500">{{ skill.description }}</div>
             <div class="text-xs text-gray-400 mt-1">{{ skill.files?.length || 0 }} file(s)</div>
           </div>
           <div class="flex gap-2 ml-3 shrink-0">
             <button @click="toggleSkillFiles(skill.id)" class="text-xs text-gray-500 hover:text-gray-700" data-testid="skill-files-toggle">{{ expandedSkillId === skill.id ? 'Hide Files' : 'Files' }}</button>
-            <button @click="openEditSkill(skill)" class="text-xs text-blue-600 hover:text-blue-800" data-testid="skill-edit">Edit</button>
-            <button @click="requestDeleteSkill(skill.id)" :disabled="skillsSaving" class="text-xs text-red-600 hover:text-red-800 disabled:opacity-50" data-testid="skill-delete">Delete</button>
+            <button v-if="!skill.plugin_name" @click="openEditSkill(skill)" class="text-xs text-blue-600 hover:text-blue-800" data-testid="skill-edit">Edit</button>
+            <button v-if="!skill.plugin_name" @click="requestDeleteSkill(skill.id)" :disabled="skillsSaving" class="text-xs text-red-600 hover:text-red-800 disabled:opacity-50" data-testid="skill-delete">Delete</button>
           </div>
         </div>
 

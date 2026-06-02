@@ -336,6 +336,7 @@ async def db_session():
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
+        enabled_plugins TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -428,6 +429,7 @@ async def retry_session_factory(db_session):
                 litellm_mcp_servers TEXT,
                 skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
+        enabled_plugins TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -2386,6 +2388,46 @@ class TestMergeSkills:
         assert sorted(s["name"] for s in result) == ["code-review", "research"]
 
 
+class TestMergeSkillsWithPlugins:
+    """Tests for the plugin-aware variant `merge_skills_with_plugins()`."""
+
+    def test_db_wins_over_plugin(self, caplog):
+        from task_manager import merge_skills_with_plugins
+        db = [{"name": "post", "description": "DB", "instructions": "d", "files": []}]
+        plugin = [{"name": "post", "description": "Plugin", "instructions": "p",
+                   "files": [], "_plugin_name": "slack-toolkit"}]
+        merged, conflicts = merge_skills_with_plugins(db, [], None, plugin)
+        assert len(merged) == 1
+        assert merged[0]["description"] == "DB"
+        assert "slack-toolkit" in conflicts
+        assert any(c["skill"] == "post" and c["other"] == "db" for c in conflicts["slack-toolkit"])
+
+    def test_plugin_wins_over_git_and_system(self):
+        from task_manager import merge_skills_with_plugins
+        plugin = [{"name": "notify", "description": "Plug", "instructions": "p",
+                   "files": [], "_plugin_name": "p1"}]
+        git = [{"name": "notify", "description": "Git", "instructions": "g", "files": []}]
+        system = [{"name": "notify", "description": "Sys", "instructions": "s", "files": []}]
+        merged, _ = merge_skills_with_plugins([], git, system, plugin)
+        by_name = {s["name"]: s for s in merged}
+        assert by_name["notify"]["description"] == "Plug"
+
+    def test_plugin_vs_plugin_alphabetical_tiebreak(self):
+        from task_manager import merge_skills_with_plugins
+        # Caller pre-sorts plugin_skills by plugin name; the function preserves
+        # first-wins behaviour for plugin-vs-plugin collisions.
+        plugins = [
+            {"name": "share", "description": "from acme", "instructions": "a",
+             "files": [], "_plugin_name": "acme"},
+            {"name": "share", "description": "from beta", "instructions": "b",
+             "files": [], "_plugin_name": "beta"},
+        ]
+        merged, conflicts = merge_skills_with_plugins([], [], None, plugins)
+        by_name = {s["name"]: s for s in merged}
+        assert by_name["share"]["description"] == "from acme"
+        assert "beta" in conflicts
+
+
 class TestLoadSystemSkills:
     """Tests for load_system_skills()."""
 
@@ -2639,6 +2681,7 @@ class TestGitFailureRetry:
                     litellm_mcp_servers TEXT,
                     skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
+        enabled_plugins TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
                 )

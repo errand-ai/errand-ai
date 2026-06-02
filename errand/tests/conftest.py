@@ -13,6 +13,7 @@ from database import get_session
 from task_generator_routes import _require_admin as _tg_require_admin
 from webhook_trigger_routes import _require_admin as _wt_require_admin
 from jira_credential_routes import _require_admin as _jc_require_admin
+from plugin_routes import _require_admin as _pl_require_admin
 
 FAKE_USER_CLAIMS = {
     "sub": "test-user-id",
@@ -146,8 +147,49 @@ CREATE TABLE IF NOT EXISTS task_profiles (
     litellm_mcp_servers TEXT,
     skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
+    enabled_plugins TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_MARKETPLACES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS marketplaces (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source_type TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    ref TEXT,
+    auth_token_encrypted TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT 1,
+    predefined BOOLEAN NOT NULL DEFAULT 0,
+    cached_manifest TEXT,
+    last_synced_at DATETIME,
+    last_sync_status TEXT,
+    last_sync_error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_PLUGINS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS plugins (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    marketplace_id VARCHAR(36) REFERENCES marketplaces(id) ON DELETE SET NULL,
+    plugin_name TEXT NOT NULL,
+    source_type TEXT,
+    source_url TEXT,
+    ref TEXT,
+    auth_token_encrypted TEXT,
+    installed_version TEXT NOT NULL,
+    latest_available_version TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT 0,
+    manifest TEXT,
+    ignored_artifacts TEXT,
+    skill_conflicts TEXT,
+    installed_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_checked_at DATETIME,
+    UNIQUE(marketplace_id, plugin_name)
 )
 """
 
@@ -249,6 +291,8 @@ async def _create_tables(engine):
         await conn.execute(text(_WEBHOOK_TRIGGERS_TABLE_SQL))
         await conn.execute(text(_EXTERNAL_TASK_REFS_TABLE_SQL))
         await conn.execute(text(_MODEL_METADATA_CACHE_TABLE_SQL))
+        await conn.execute(text(_MARKETPLACES_TABLE_SQL))
+        await conn.execute(text(_PLUGINS_TABLE_SQL))
 
 
 @pytest.fixture()
@@ -291,6 +335,7 @@ async def client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[_tg_require_admin] = override_require_admin_reject
     app.dependency_overrides[_wt_require_admin] = override_require_admin_reject
     app.dependency_overrides[_jc_require_admin] = override_require_admin_reject
+    app.dependency_overrides[_pl_require_admin] = override_require_admin_reject
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -328,6 +373,7 @@ async def admin_client_with_session(fake_valkey) -> AsyncGenerator[tuple[AsyncCl
     app.dependency_overrides[_tg_require_admin] = override_require_admin
     app.dependency_overrides[_wt_require_admin] = override_require_admin
     app.dependency_overrides[_jc_require_admin] = override_require_admin
+    app.dependency_overrides[_pl_require_admin] = override_require_admin
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
