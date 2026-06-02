@@ -42,6 +42,7 @@ SETTINGS_REGISTRY = {
     "max_retry_attempts": {"env_var": "MAX_RETRY_ATTEMPTS", "sensitive": False, "default": 5},
     "task_log_buffer_max_entries": {"env_var": None, "sensitive": False, "default": 5000},
     "task_log_buffer_ttl_seconds": {"env_var": None, "sensitive": False, "default": 86400},
+    "plugin_poll_interval_seconds": {"env_var": None, "sensitive": False, "default": 21600},
 }
 
 # Keys excluded from API responses

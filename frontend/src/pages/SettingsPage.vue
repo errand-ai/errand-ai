@@ -37,6 +37,7 @@ const taskProcessingTimeout = ref(30)
 const transcriptionTimeout = ref(30)
 const archiveAfterDays = ref(3)
 const maxConcurrentTasks = ref(3)
+const pluginPollIntervalSeconds = ref(21600)
 const mcpApiKey = ref<string | null>(null)
 const sshPublicKey = ref<string | null>(null)
 const gitSshHosts = ref<string[]>([])
@@ -112,6 +113,7 @@ async function loadSettings() {
     timezoneValue.value = extractValue(data, 'timezone', 'UTC')
     archiveAfterDays.value = extractValue(data, 'archive_after_days', 3)
     maxConcurrentTasks.value = extractValue(data, 'max_concurrent_tasks', 3)
+    pluginPollIntervalSeconds.value = extractValue(data, 'plugin_poll_interval_seconds', 21600)
     skillsGitRepo.value = extractValue(data, 'skills_git_repo', null)
   } catch {
     error.value = 'Failed to load settings. Please check your connection.'
@@ -133,6 +135,7 @@ provide('settings-state', {
   timezoneValue,
   archiveAfterDays,
   maxConcurrentTasks,
+  pluginPollIntervalSeconds,
   mcpApiKey,
   sshPublicKey,
   gitSshHosts,

@@ -9,9 +9,11 @@ import {
   fetchLitellmMcpServers,
   fetchProviders,
   fetchProviderModels,
+  fetchPlugins,
   type ModelInfo,
   type TaskProfile,
   type LlmProviderData,
+  type Plugin,
 } from '../../composables/useApi'
 import { useAuthStore } from '../../stores/auth'
 
@@ -34,6 +36,8 @@ const defaultLlmTimeout = ref<string>('')
 const availableMcpServers = ref<string[]>([])
 const availableLitellmServers = ref<string[]>([])
 const availableSkills = ref<{ id: string; name: string }[]>([])
+const availablePlugins = ref<Plugin[]>([])
+const expandedPluginIds = ref<Set<string>>(new Set())
 
 // Form fields
 const formName = ref('')
@@ -54,6 +58,7 @@ const formLitellmSelected = ref<string[]>([])
 const formSkillMode = ref<'inherit' | 'none' | 'select'>('inherit')
 const formSkillSelected = ref<string[]>([])
 const formIncludeGitSkills = ref(true)
+const formEnabledPlugins = ref<string[]>([])
 
 // Delete dialog
 const showDeleteDialog = ref(false)
@@ -78,6 +83,29 @@ const overrideSummary = computed(() => {
     return overrides.length ? overrides.join(', ') : 'No overrides'
   }
 })
+
+const pluginsSummary = computed(() => {
+  return (profile: TaskProfile) => {
+    const count = profile.enabled_plugins?.length ?? 0
+    return count > 0 ? `Plugins: ${count}` : 'Plugins: None'
+  }
+})
+
+const staleEnabledPlugins = computed(() => {
+  const known = new Set(availablePlugins.value.map((p) => p.id))
+  return formEnabledPlugins.value.filter((id) => !known.has(id))
+})
+
+function togglePluginExpanded(id: string) {
+  const next = new Set(expandedPluginIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedPluginIds.value = next
+}
+
+function clearStalePlugin(id: string) {
+  formEnabledPlugins.value = formEnabledPlugins.value.filter((row) => row !== id)
+}
 
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -151,6 +179,11 @@ async function loadOptions() {
       availableSkills.value = data.map((s: any) => ({ id: s.id, name: s.name }))
     }
   } catch { /* ignore */ }
+
+  try {
+    const allPlugins = await fetchPlugins()
+    availablePlugins.value = Array.isArray(allPlugins) ? allPlugins.filter((p) => p.enabled) : []
+  } catch { /* ignore */ }
 }
 
 async function loadModelsForProvider(providerId: string) {
@@ -189,6 +222,8 @@ function resetForm() {
   formSkillMode.value = 'inherit'
   formSkillSelected.value = []
   formIncludeGitSkills.value = true
+  formEnabledPlugins.value = []
+  expandedPluginIds.value = new Set()
 }
 
 function openAdd() {
@@ -249,6 +284,8 @@ function openEdit(profile: TaskProfile) {
     formSkillSelected.value = [...profile.skill_ids]
   }
   formIncludeGitSkills.value = profile.include_git_skills ?? true
+  formEnabledPlugins.value = Array.isArray(profile.enabled_plugins) ? [...profile.enabled_plugins] : []
+  expandedPluginIds.value = new Set()
 
   showForm.value = true
 }
@@ -304,6 +341,8 @@ function buildPayload(): Record<string, unknown> {
     payload.skill_ids = formSkillSelected.value
     payload.include_git_skills = formIncludeGitSkills.value
   }
+
+  payload.enabled_plugins = [...formEnabledPlugins.value]
 
   return payload
 }
@@ -405,6 +444,7 @@ onMounted(() => {
               <div class="mt-1 text-xs text-gray-400">
                 <span v-if="profile.model && profile.model.model" class="mr-3">Model: {{ profile.model.model }}</span>
                 <span>{{ overrideSummary(profile) }}</span>
+                <span class="ml-3" :data-testid="`profile-plugins-summary-${profile.id}`">{{ pluginsSummary(profile) }}</span>
               </div>
             </div>
             <div class="flex gap-2 ml-3 shrink-0">
@@ -646,6 +686,75 @@ onMounted(() => {
                 <input type="checkbox" v-model="formIncludeGitSkills" class="text-blue-600" />
                 Include Git Repository Skills
               </label>
+            </div>
+          </div>
+
+          <div data-testid="profile-plugins-control">
+            <label class="block text-xs font-medium text-gray-600 mb-2">Plugins</label>
+            <div v-if="availablePlugins.length === 0 && staleEnabledPlugins.length === 0" class="text-xs text-gray-400" data-testid="profile-plugins-empty">
+              No enabled plugins available.
+            </div>
+            <div v-else class="space-y-1 ml-4">
+              <div
+                v-for="plugin in availablePlugins"
+                :key="plugin.id"
+                class="rounded border border-gray-100"
+                :data-testid="`profile-plugin-row-${plugin.id}`"
+              >
+                <div class="flex items-center gap-1.5 p-2">
+                  <input
+                    type="checkbox"
+                    :value="plugin.id"
+                    v-model="formEnabledPlugins"
+                    class="text-blue-600"
+                    :data-testid="`profile-plugin-checkbox-${plugin.id}`"
+                  />
+                  <button
+                    type="button"
+                    class="flex-1 text-left text-xs text-gray-700"
+                    @click="togglePluginExpanded(plugin.id)"
+                  >
+                    {{ plugin.plugin_name }}
+                    <span class="text-gray-400 ml-1">v{{ plugin.installed_version }}</span>
+                  </button>
+                </div>
+                <div
+                  v-if="expandedPluginIds.has(plugin.id)"
+                  class="border-t border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600 space-y-1"
+                  :data-testid="`profile-plugin-preview-${plugin.id}`"
+                >
+                  <div v-if="plugin.skills.length > 0">
+                    <span class="font-semibold">Skills:</span> {{ plugin.skills.join(', ') }}
+                  </div>
+                  <div v-if="plugin.mcp_servers.length > 0">
+                    <span class="font-semibold">MCP servers:</span>
+                    <ul class="ml-3">
+                      <li v-for="server in plugin.mcp_servers" :key="server.raw">
+                        <span class="font-mono">{{ server.raw }}</span>
+                        <span class="text-gray-400"> → </span>
+                        <span class="font-mono">{{ server.namespaced }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-for="staleId in staleEnabledPlugins"
+                :key="staleId"
+                class="flex items-center gap-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700"
+                :data-testid="`profile-plugin-stale-${staleId}`"
+              >
+                <span class="flex-1">Removed plugin: <span class="font-mono">{{ staleId }}</span></span>
+                <button
+                  type="button"
+                  class="text-xs text-red-700 hover:text-red-900 underline"
+                  @click="clearStalePlugin(staleId)"
+                  :data-testid="`profile-plugin-stale-clear-${staleId}`"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           </div>
 

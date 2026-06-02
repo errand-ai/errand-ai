@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS task_profiles (
     litellm_mcp_servers TEXT,
     skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
+        enabled_plugins TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

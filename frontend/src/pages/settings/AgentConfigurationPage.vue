@@ -6,11 +6,15 @@ import SkillsSettings from '../../components/settings/SkillsSettings.vue'
 import SkillsRepoSettings from '../../components/settings/SkillsRepoSettings.vue'
 import McpServerConfigSettings from '../../components/settings/McpServerConfigSettings.vue'
 import LitellmMcpSettings from '../../components/settings/LitellmMcpSettings.vue'
+import MarketplacesSettings from '../../components/settings/MarketplacesSettings.vue'
+import PluginsSettings from '../../components/settings/PluginsSettings.vue'
+import PluginPollIntervalSettings from '../../components/settings/PluginPollIntervalSettings.vue'
 
 const {
   systemPrompt,
   mcpServersText,
   skillsGitRepo,
+  pluginPollIntervalSeconds,
   saveSettings,
 } = inject<any>('settings-state')
 
@@ -60,4 +64,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
   />
 
   <LitellmMcpSettings class="mt-6" :save-settings="saveSettings" />
+
+  <MarketplacesSettings />
+
+  <PluginsSettings />
+
+  <PluginPollIntervalSettings
+    :initial-value="pluginPollIntervalSeconds"
+    :save-settings="saveSettings"
+  />
 </template>

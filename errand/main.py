@@ -223,6 +223,65 @@ async def lifespan(app: FastAPI):
     from model_metadata import run_periodic_refresh
     model_metadata_task = asyncio.create_task(run_periodic_refresh(async_session))
 
+    # Plugin marketplace cache warm + background poller
+    from plugin_marketplace import (
+        ensure_cache_layout,
+        warm_plugin_caches,
+        run_marketplace_poller,
+        sync_marketplace,
+    )
+    from models import Marketplace as _MP
+
+    async def _warm_plugin_caches_bg():
+        try:
+            ensure_cache_layout()
+            async with async_session() as warm_session:
+                ssh_result = await warm_session.execute(
+                    select(Setting).where(Setting.key == "ssh_private_key")
+                )
+                ssh_setting = ssh_result.scalar_one_or_none()
+                ssh_private_key = ssh_setting.value if ssh_setting else None
+                # First, ensure enabled marketplaces have a cached clone so
+                # relative-source plugins resolve. The disk cache is ephemeral
+                # so a fresh container restart needs to re-fetch.
+                mp_result = await warm_session.execute(
+                    select(_MP).where(_MP.enabled.is_(True))
+                )
+                for mp in mp_result.scalars():
+                    try:
+                        await sync_marketplace(mp, warm_session, ssh_private_key=ssh_private_key)
+                    except Exception:
+                        logger.exception("Startup sync failed for marketplace %s", mp.name)
+                await warm_session.commit()
+                await warm_plugin_caches(warm_session, ssh_private_key=ssh_private_key)
+        except Exception:
+            logger.exception("Plugin cache warm failed")
+
+    plugin_warm_task = asyncio.create_task(_warm_plugin_caches_bg())
+
+    async def _get_plugin_poll_interval():
+        async with async_session() as s:
+            result = await s.execute(
+                select(Setting).where(Setting.key == "plugin_poll_interval_seconds")
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return 21600
+            try:
+                return int(row.value)
+            except (TypeError, ValueError):
+                return 21600
+
+    async def _get_ssh_private_key():
+        async with async_session() as s:
+            result = await s.execute(select(Setting).where(Setting.key == "ssh_private_key"))
+            row = result.scalar_one_or_none()
+            return row.value if row else None
+
+    plugin_poller_task = asyncio.create_task(
+        run_marketplace_poller(async_session, _get_plugin_poll_interval, _get_ssh_private_key)
+    )
+
     scheduler_task = asyncio.create_task(run_scheduler())
     zombie_cleanup_task = asyncio.create_task(run_zombie_cleanup())
     slack_updater_task = asyncio.create_task(
@@ -286,6 +345,8 @@ async def lifespan(app: FastAPI):
     external_updater_task.cancel()
     version_checker_task.cancel()
     email_poller_task.cancel()
+    plugin_poller_task.cancel()
+    plugin_warm_task.cancel()
     await telemetry_reporter.stop()
 
     # Stop cloud client
@@ -347,6 +408,10 @@ app.include_router(webhook_trigger_router)
 app.include_router(jira_credential_router)
 app.include_router(webhook_receiver_router)
 app.include_router(google_router)
+
+from plugin_routes import marketplaces_router, plugins_router  # noqa: E402
+app.include_router(marketplaces_router)
+app.include_router(plugins_router)
 
 app.mount("/mcp", create_mcp_app())
 
@@ -1161,6 +1226,12 @@ async def update_settings(
             continue  # Skills managed via /api/skills
         if key in EXCLUDED_KEYS:
             continue
+        if key == "plugin_poll_interval_seconds":
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="plugin_poll_interval_seconds must be a non-negative integer",
+                )
         # Check if this key is env-sourced (readonly)
         meta = SETTINGS_REGISTRY.get(key)
         if meta and meta["env_var"]:
@@ -2145,9 +2216,26 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "litellm_mcp_servers": p.litellm_mcp_servers,
         "skill_ids": p.skill_ids,
         "include_git_skills": p.include_git_skills,
+        "enabled_plugins": p.enabled_plugins,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
+
+
+def _validate_enabled_plugins(value):
+    """Validate enabled_plugins: None or list of UUID strings."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail="enabled_plugins must be a list of UUID strings or null")
+    for item in value:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=422, detail="enabled_plugins entries must be UUID strings")
+        try:
+            uuid.UUID(item)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=422, detail=f"invalid UUID in enabled_plugins: {item}")
+    return value
 
 
 def _validate_llm_timeout(value):
@@ -2219,6 +2307,7 @@ async def create_task_profile(
         litellm_mcp_servers=body.get("litellm_mcp_servers"),
         skill_ids=body.get("skill_ids"),
         include_git_skills=body.get("include_git_skills") is not False,
+        enabled_plugins=_validate_enabled_plugins(body.get("enabled_plugins")),
     )
     session.add(profile)
     await session.commit()
@@ -2276,6 +2365,9 @@ async def update_task_profile(
         if val is not None and not isinstance(val, bool):
             raise HTTPException(status_code=422, detail="include_git_skills must be a boolean")
         profile.include_git_skills = val is not False
+
+    if "enabled_plugins" in body:
+        profile.enabled_plugins = _validate_enabled_plugins(body["enabled_plugins"])
 
     if "llm_timeout" in body:
         profile.llm_timeout = _validate_llm_timeout(body["llm_timeout"])

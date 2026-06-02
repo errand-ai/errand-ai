@@ -77,6 +77,10 @@ function mockFetch(responses: Record<string, any> = {}) {
     if (url === '/api/skills') {
       return { ok: true, status: 200, json: () => Promise.resolve([]) }
     }
+    if (url === '/api/plugins' && (!opts || !opts.method || opts.method === 'GET')) {
+      const data = responses['/api/plugins'] ?? []
+      return { ok: true, status: 200, json: () => Promise.resolve(data) }
+    }
     return { ok: true, status: 200, json: () => Promise.resolve({}) }
   })
 }
@@ -182,6 +186,118 @@ describe('TaskProfilesPage', () => {
     expect(cards[1].text()).toContain('Prompt')
     expect(cards[1].text()).toContain('Max turns')
     expect(cards[1].text()).toContain('MCP')
+  })
+
+  it('shows "Plugins: N" summary on profile cards', async () => {
+    const fetchFn = mockFetch({
+      '/api/task-profiles': [
+        { ...mockProfiles[0], enabled_plugins: ['pl-a', 'pl-b'] },
+        { ...mockProfiles[1], enabled_plugins: null },
+      ],
+    })
+    const { wrapper } = await mountPage(fetchFn)
+    const cards = wrapper.findAll('[data-testid="profile-card"]')
+    expect(cards[0].text()).toContain('Plugins: 2')
+    expect(cards[1].text()).toContain('Plugins: None')
+  })
+
+  it('plugin multi-select lists enabled plugins only and saves selection', async () => {
+    const plugins = [
+      {
+        id: 'pl-a',
+        plugin_name: 'slack-toolkit',
+        marketplace_id: 'mp-1',
+        marketplace_name: 'acme',
+        installed_version: '1.2.0',
+        latest_available_version: '1.2.0',
+        enabled: true,
+        manifest: null,
+        ignored_artifacts: null,
+        skill_conflicts: null,
+        update_available: false,
+        skills: ['post-message'],
+        mcp_servers: [{ raw: 'slack', namespaced: 'slack-toolkit__slack' }],
+        installed_at: null,
+        last_checked_at: null,
+      },
+      {
+        id: 'pl-b',
+        plugin_name: 'research-pack',
+        marketplace_id: null,
+        marketplace_name: null,
+        installed_version: '0.1.0',
+        latest_available_version: null,
+        enabled: false,
+        manifest: null,
+        ignored_artifacts: null,
+        skill_conflicts: null,
+        update_available: false,
+        skills: [],
+        mcp_servers: [],
+        installed_at: null,
+        last_checked_at: null,
+      },
+    ]
+    const fetchFn = mockFetch({ '/api/plugins': plugins })
+    const { wrapper } = await mountPage(fetchFn)
+    await wrapper.find('[data-testid="profile-add"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="profile-plugin-row-pl-a"]').exists()).toBe(true)
+    // disabled plugin is excluded
+    expect(wrapper.find('[data-testid="profile-plugin-row-pl-b"]').exists()).toBe(false)
+
+    // Expand preview
+    await wrapper.find('[data-testid="profile-plugin-row-pl-a"] button').trigger('click')
+    expect(wrapper.find('[data-testid="profile-plugin-preview-pl-a"]').text()).toContain('post-message')
+    expect(wrapper.find('[data-testid="profile-plugin-preview-pl-a"]').text()).toContain('slack-toolkit__slack')
+
+    // Check the plugin and save
+    await wrapper.find('[data-testid="profile-name-input"]').setValue('new-profile')
+    await wrapper.find('[data-testid="profile-plugin-checkbox-pl-a"]').setValue(true)
+    await wrapper.find('[data-testid="profile-save"]').trigger('click')
+    await flushPromises()
+
+    const postCalls = fetchFn.mock.calls.filter((call) => {
+      const opts = call[1] as RequestInit | undefined
+      return call[0] === '/api/task-profiles' && opts?.method === 'POST'
+    })
+    expect(postCalls).toHaveLength(1)
+    const body = JSON.parse((postCalls[0][1] as RequestInit).body as string)
+    expect(body.enabled_plugins).toEqual(['pl-a'])
+  })
+
+  it('shows stale plugin indicator for unknown enabled_plugins IDs and clears it', async () => {
+    const plugins = [
+      {
+        id: 'pl-known',
+        plugin_name: 'known',
+        marketplace_id: null,
+        marketplace_name: null,
+        installed_version: '1.0.0',
+        latest_available_version: null,
+        enabled: true,
+        manifest: null,
+        ignored_artifacts: null,
+        skill_conflicts: null,
+        update_available: false,
+        skills: [],
+        mcp_servers: [],
+        installed_at: null,
+        last_checked_at: null,
+      },
+    ]
+    const fetchFn = mockFetch({
+      '/api/task-profiles': [{ ...mockProfiles[0], enabled_plugins: ['pl-known', 'pl-missing'] }],
+      '/api/plugins': plugins,
+    })
+    const { wrapper } = await mountPage(fetchFn)
+    await wrapper.findAll('[data-testid="profile-edit"]')[0].trigger('click')
+    await flushPromises()
+    const stale = wrapper.find('[data-testid="profile-plugin-stale-pl-missing"]')
+    expect(stale.exists()).toBe(true)
+    expect(stale.text()).toContain('Removed plugin')
+    await wrapper.find('[data-testid="profile-plugin-stale-clear-pl-missing"]').trigger('click')
+    expect(wrapper.find('[data-testid="profile-plugin-stale-pl-missing"]').exists()).toBe(false)
   })
 
   it('shows delete confirmation dialog', async () => {

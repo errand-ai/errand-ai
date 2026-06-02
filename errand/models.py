@@ -201,6 +201,7 @@ class TaskProfile(Base):
     include_git_skills: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
+    enabled_plugins: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -368,6 +369,70 @@ class ExternalTaskRef(Base):
     )
     task: Mapped["Task"] = relationship(lazy="raise")
     trigger: Mapped[Optional["WebhookTrigger"]] = relationship(back_populates="external_refs", lazy="raise")
+
+
+class Marketplace(Base):
+    __tablename__ = "marketplaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auth_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    predefined: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    cached_manifest: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_sync_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class Plugin(Base):
+    __tablename__ = "plugins"
+    __table_args__ = (
+        UniqueConstraint("marketplace_id", "plugin_name", name="uq_plugins_marketplace_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    marketplace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("marketplaces.id", ondelete="SET NULL"), nullable=True
+    )
+    plugin_name: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auth_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    installed_version: Mapped[str] = mapped_column(Text, nullable=False)
+    latest_available_version: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    manifest: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    ignored_artifacts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    skill_conflicts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ModelMetadataCache(Base):
