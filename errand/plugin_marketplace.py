@@ -381,11 +381,12 @@ async def sync_marketplace(
         marketplace.last_sync_error = None
     except MarketplaceFetchError as exc:
         marketplace.last_sync_status = "error"
-        marketplace.last_sync_error = str(exc)
+        # Store only the short error class+message; full traceback goes to logs.
+        marketplace.last_sync_error = type(exc).__name__ + ": fetch failed"
         logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         marketplace.last_sync_status = "error"
-        marketplace.last_sync_error = f"unexpected: {exc}"
+        marketplace.last_sync_error = "unexpected error (see server logs)"
         logger.exception("Unexpected sync failure for marketplace %s", marketplace.name)
     finally:
         marketplace.last_synced_at = datetime.now(timezone.utc)
@@ -413,18 +414,18 @@ _SAFE_SEGMENT_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
 def _safe_segment(name: str) -> str:
     """Sanitize a name for use as a single path segment.
 
-    Replaces every character outside [A-Za-z0-9._-] with `_`, then verifies
-    the result matches the allowlist. The strict regex check after substitution
-    acts as a sanitizer barrier — anything reaching this function's return
-    value is guaranteed to be a safe filename component.
+    Pipeline (each step is a sanitizer barrier):
+      1. `os.path.basename` strips any directory components (CodeQL recognised).
+      2. Regex substitution restricts to `[A-Za-z0-9._-]`.
+      3. Leading dots collapsed so the segment never resolves to `.` or `..`.
+      4. `re.fullmatch` against the allowlist; fall back to `_` on any mismatch.
     """
     if not isinstance(name, str) or not name:
         return "_"
-    cleaned = _re.sub(r"[^A-Za-z0-9._-]", "_", name)
-    # Collapse leading dots so the segment never resolves to . or ..
+    cleaned = os.path.basename(name)
+    cleaned = _re.sub(r"[^A-Za-z0-9._-]", "_", cleaned)
     cleaned = cleaned.lstrip(".") or "_"
-    if not _SAFE_SEGMENT_RE.match(cleaned):
-        # Defense-in-depth — should be unreachable after the sub() above.
+    if not _SAFE_SEGMENT_RE.fullmatch(cleaned):
         cleaned = "_"
     return cleaned
 
