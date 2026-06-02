@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -145,6 +145,11 @@ class NormalizedSource:
     unsupported_reason: Optional[str] = None
 
 
+def _looks_like_git_url(url: str) -> bool:
+    """True when an http(s) URL clearly refers to a git repository."""
+    return url.endswith(".git") or url.startswith(("git@", "ssh://", "git://"))
+
+
 def normalize_plugin_source(src: Any, marketplace_base: Optional[Path] = None) -> NormalizedSource:
     """Convert a `source` value from marketplace.json into a NormalizedSource."""
     if isinstance(src, str):
@@ -152,8 +157,13 @@ def normalize_plugin_source(src: Any, marketplace_base: Optional[Path] = None) -
             return NormalizedSource(kind="relative", path=src)
         if src.count("/") == 1 and "://" not in src:
             return NormalizedSource(kind="github", url=src)
-        if src.startswith(("http://", "https://", "git@", "ssh://", "git://")):
+        if src.startswith(("git@", "ssh://", "git://")):
             return NormalizedSource(kind="git", url=src)
+        if src.startswith(("http://", "https://")):
+            return NormalizedSource(
+                kind="git" if _looks_like_git_url(src) else "http",
+                url=src,
+            )
         if os.path.isabs(src):
             return NormalizedSource(kind="local", url=src)
         return NormalizedSource(kind="relative", path=src)
@@ -165,7 +175,8 @@ def normalize_plugin_source(src: Any, marketplace_base: Optional[Path] = None) -
         if obj.source == "github" and obj.repo:
             return NormalizedSource(kind="github", url=obj.repo, ref=obj.ref or obj.sha)
         if obj.source == "url" and obj.url:
-            return NormalizedSource(kind="git", url=obj.url, ref=obj.ref or obj.sha)
+            kind = "git" if _looks_like_git_url(obj.url) else "http"
+            return NormalizedSource(kind=kind, url=obj.url, ref=obj.ref or obj.sha)
         if obj.source == "git-subdir" and obj.url:
             return NormalizedSource(kind="git", url=obj.url, ref=obj.ref or obj.sha, path=obj.path)
         if obj.source == "npm":
@@ -237,7 +248,7 @@ def _git_clone(url: str, ref: Optional[str], dest: Path, ssh_private_key: Option
             try:
                 os.unlink(key_file)
             except OSError:
-                pass
+                logger.debug("Failed to remove temp SSH key file %s", key_file, exc_info=True)
 
 
 _ALLOWED_HTTP_SCHEMES = ("https://", "http://")
@@ -681,7 +692,10 @@ async def update_plugin(
             try:
                 bearer = decrypt_blob(marketplace.auth_token_encrypted).get("token")
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to decrypt marketplace token for %s — proceeding unauthenticated",
+                    marketplace.name, exc_info=True,
+                )
     else:
         resolved = NormalizedSource(
             kind=plugin.source_type,  # type: ignore[arg-type]
@@ -693,7 +707,10 @@ async def update_plugin(
             try:
                 bearer = decrypt_blob(plugin.auth_token_encrypted).get("token")
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to decrypt plugin token for %s — proceeding unauthenticated",
+                    plugin.plugin_name, exc_info=True,
+                )
 
     new_dir = plugin_install_dir(scope, plugin.plugin_name, new_version)
     await _fetch_plugin_into(resolved, new_dir, bearer, ssh_private_key, marketplace)
@@ -753,7 +770,7 @@ def parse_plugin_mcp_servers(plugin: Plugin, scope: str) -> dict[str, dict]:
             if isinstance(raw.get("mcpServers"), dict):
                 inline = raw["mcpServers"]
         except json.JSONDecodeError:
-            pass
+            logger.debug("Invalid JSON in %s — falling back to .mcp.json", plugin_json_path)
     if inline is not None:
         return inline
     mcp_json_path = plugin_root / ".mcp.json"
@@ -765,7 +782,7 @@ def parse_plugin_mcp_servers(plugin: Plugin, scope: str) -> dict[str, dict]:
                     return raw["mcpServers"]
                 return raw
         except json.JSONDecodeError:
-            pass
+            logger.debug("Invalid JSON in %s — returning empty MCP map", mcp_json_path)
     return {}
 
 
@@ -796,6 +813,16 @@ async def warm_plugin_caches(
     plugins = list(result.scalars())
     if not plugins:
         return
+    # Preload every plugin's marketplace synchronously before the concurrent warm
+    # phase. AsyncSession is not safe for concurrent use, so we must not call
+    # session.get(...) from inside the per-plugin coroutines.
+    mp_ids = {p.marketplace_id for p in plugins if p.marketplace_id is not None}
+    marketplaces_by_id: dict[uuid.UUID, Marketplace] = {}
+    if mp_ids:
+        mp_result = await session.execute(select(Marketplace).where(Marketplace.id.in_(mp_ids)))
+        for mp in mp_result.scalars():
+            marketplaces_by_id[mp.id] = mp
+
     sem = asyncio.Semaphore(concurrency)
     loop = asyncio.get_event_loop()
 
@@ -810,7 +837,7 @@ async def warm_plugin_caches(
             scope = "manual"
             marketplace = None
             if plugin.marketplace_id is not None:
-                marketplace = await session.get(Marketplace, plugin.marketplace_id)
+                marketplace = marketplaces_by_id.get(plugin.marketplace_id)
                 if marketplace is not None:
                     scope = marketplace.name
             install_dir = plugin_install_dir(scope, plugin.plugin_name, plugin.installed_version)
@@ -835,7 +862,10 @@ async def warm_plugin_caches(
                         try:
                             bearer = decrypt_blob(marketplace.auth_token_encrypted).get("token")
                         except Exception:
-                            pass
+                            logger.warning(
+                                "Warm: failed to decrypt marketplace token for %s",
+                                marketplace.name, exc_info=True,
+                            )
                 else:
                     resolved = NormalizedSource(
                         kind=plugin.source_type,  # type: ignore[arg-type]
@@ -847,7 +877,10 @@ async def warm_plugin_caches(
                         try:
                             bearer = decrypt_blob(plugin.auth_token_encrypted).get("token")
                         except Exception:
-                            pass
+                            logger.warning(
+                                "Warm: failed to decrypt plugin token for %s",
+                                plugin.plugin_name, exc_info=True,
+                            )
                 await _fetch_plugin_into(resolved, install_dir, bearer, ssh_private_key, marketplace)
                 logger.info("Warmed plugin cache for %s@%s", plugin.plugin_name, plugin.installed_version)
                 if fut is not None and not fut.done():

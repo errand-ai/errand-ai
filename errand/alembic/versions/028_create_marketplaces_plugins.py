@@ -55,6 +55,17 @@ def upgrade() -> None:
         sa.UniqueConstraint("marketplace_id", "plugin_name", name="uq_plugins_marketplace_name"),
     )
 
+    # Postgres treats NULLs as distinct in UNIQUE constraints, so manual installs
+    # (marketplace_id IS NULL) could otherwise have duplicate plugin_name rows.
+    # A partial unique index enforces uniqueness on the manual-install slice.
+    op.create_index(
+        "uq_plugins_manual_name",
+        "plugins",
+        ["plugin_name"],
+        unique=True,
+        postgresql_where=sa.text("marketplace_id IS NULL"),
+    )
+
     op.add_column(
         "task_profiles",
         sa.Column("enabled_plugins", sa.JSON(), nullable=True),
@@ -77,5 +88,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("task_profiles", "enabled_plugins")
+    op.drop_index("uq_plugins_manual_name", table_name="plugins")
     op.drop_table("plugins")
     op.drop_table("marketplaces")

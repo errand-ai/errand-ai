@@ -1646,14 +1646,6 @@ class TaskManager:
         # Cloud storage usage instructions are delivered via the `cloud-storage`
         # system skill (loaded below by the registry) — no inline prompt block.
 
-        # Inject plugin-sourced MCP servers (already namespaced as `<plugin>__<server>`)
-        plugin_mcps = settings.get("_plugin_mcp_servers") or {}
-        if plugin_mcps:
-            mcp_servers.setdefault("mcpServers", {})
-            for ns_name, cfg in plugin_mcps.items():
-                if ns_name not in mcp_servers["mcpServers"]:
-                    mcp_servers["mcpServers"][ns_name] = cfg
-
         # Google Workspace: inject the access token as GOOGLE_WORKSPACE_CLI_TOKEN
         # so the gws CLI in the task-runner image is authenticated. The matching
         # gws agent skills are added to the skills archive below.
@@ -1801,16 +1793,33 @@ class TaskManager:
         settings["_plugin_mcp_servers"] = plugin_mcp_servers
         settings["_plugin_conflicts"] = plugin_conflict_map
 
+        # Merge plugin-sourced MCP servers (already namespaced as `<plugin>__<server>`)
+        # into the final mcp_servers dict. Must come after plugin discovery above so
+        # plugin_mcp_servers is populated.
+        if plugin_mcp_servers:
+            mcp_servers.setdefault("mcpServers", {})
+            for ns_name, cfg in plugin_mcp_servers.items():
+                if ns_name not in mcp_servers["mcpServers"]:
+                    mcp_servers["mcpServers"][ns_name] = cfg
+
         # Persist skill_conflicts back to affected plugin rows so the API surfaces them.
+        # Key by plugin ID, not name — `plugin_name` is only unique within a
+        # marketplace, so a name-based UPDATE could touch unrelated rows in
+        # other marketplaces or manual installs.
         if plugin_conflict_map:
             try:
-                from models import Plugin as _PluginModel
                 from sqlalchemy import update as _sa_update
+                name_to_id: dict[str, "uuid.UUID"] = {
+                    ps.plugin.plugin_name: ps.plugin.id for ps in scopes
+                }
                 async with async_session() as _pl_session:
                     for plugin_name, conflicts in plugin_conflict_map.items():
+                        pid = name_to_id.get(plugin_name)
+                        if pid is None:
+                            continue
                         await _pl_session.execute(
-                            _sa_update(_PluginModel)
-                            .where(_PluginModel.plugin_name == plugin_name)
+                            _sa_update(Plugin)
+                            .where(Plugin.id == pid)
                             .values(skill_conflicts=conflicts)
                         )
                     await _pl_session.commit()

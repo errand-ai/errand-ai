@@ -231,8 +231,9 @@ async def test_install_rejects_relative_path_traversal(session, tmp_path):
 @pytest.mark.asyncio
 async def test_wait_for_plugin_success(session):
     import asyncio
+    import uuid as _uuid
     import plugin_marketplace
-    pid = uuid.uuid4() if False else __import__("uuid").uuid4()
+    pid = _uuid.uuid4()
     fut = asyncio.get_event_loop().create_future()
     plugin_marketplace._warm_futures[pid] = fut
     fut.set_result(True)

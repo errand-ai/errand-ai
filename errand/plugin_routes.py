@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -21,7 +21,6 @@ from plugin_marketplace import (
     MarketplaceManifest,
     PluginInstallError,
     install_plugin,
-    namespaced_mcp_servers,
     parse_plugin_mcp_servers,
     parse_plugin_skills,
     resolve_plugin_scopes,
@@ -116,7 +115,9 @@ def _serialize_marketplace(mp: Marketplace) -> dict:
 
 
 def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
-    skills = parse_plugin_skills(plugin, scope) if plugin.enabled or True else []
+    # Always parse — the API surfaces what a plugin would contribute even when
+    # disabled so admins can review before enabling.
+    skills = parse_plugin_skills(plugin, scope)
     skill_names = [s["name"] for s in skills]
     raw_mcps = parse_plugin_mcp_servers(plugin, scope)
     mcp_pairs = [
@@ -204,22 +205,27 @@ async def patch_marketplace(
     if mp is None:
         raise HTTPException(status_code=404, detail="marketplace not found")
 
+    # Use model_fields_set so explicit `null` clears a field while omission leaves
+    # it unchanged. Without this, `null` and "field omitted" both surface as None.
+    fields_set = body.model_fields_set
     needs_resync = False
-    if body.enabled is not None:
+    if "enabled" in fields_set and body.enabled is not None:
         mp.enabled = body.enabled
-    if body.name is not None and body.name != mp.name:
+    if "name" in fields_set and body.name is not None and body.name != mp.name:
         existing = await session.execute(select(Marketplace).where(Marketplace.name == body.name))
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(status_code=409, detail="name already in use")
         mp.name = body.name
-    if body.source_url is not None and body.source_url != mp.source_url:
+    if "source_url" in fields_set and body.source_url is not None and body.source_url != mp.source_url:
         mp.source_url = body.source_url
         needs_resync = True
-    if body.ref is not None and body.ref != mp.ref:
-        mp.ref = body.ref
-        needs_resync = True
-    token_value = body.auth_token if body.auth_token is not None else body.auth_credential_id
-    if body.auth_token is not None or body.auth_credential_id is not None:
+    if "ref" in fields_set:
+        new_ref = body.ref or None  # explicit null or empty string clears the ref
+        if new_ref != mp.ref:
+            mp.ref = new_ref
+            needs_resync = True
+    if "auth_token" in fields_set or "auth_credential_id" in fields_set:
+        token_value = body.auth_token if "auth_token" in fields_set else body.auth_credential_id
         mp.auth_token_encrypted = (
             encrypt_blob({"token": token_value}) if token_value else None
         )
