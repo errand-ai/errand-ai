@@ -425,16 +425,16 @@ _SAFE_SEGMENT_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
 def _safe_segment(name: str) -> str:
     """Sanitize a name for use as a single path segment.
 
-    Pipeline (each step is a sanitizer barrier):
-      1. `os.path.basename` strips any directory components (CodeQL recognised).
-      2. Regex substitution restricts to `[A-Za-z0-9._-]`.
-      3. Leading dots collapsed so the segment never resolves to `.` or `..`.
-      4. `re.fullmatch` against the allowlist; fall back to `_` on any mismatch.
+    Replaces every character outside [A-Za-z0-9._-] with `_` (so e.g.
+    `anthropics/claude-plugins-official` becomes
+    `anthropics_claude-plugins-official` — preserving the org prefix that
+    `os.path.basename` would otherwise strip). Leading dots are collapsed
+    so the segment can never resolve to `.` or `..`, and the result is
+    re-validated against the allowlist as a final sanitizer barrier.
     """
     if not isinstance(name, str) or not name:
         return "_"
-    cleaned = os.path.basename(name)
-    cleaned = _re.sub(r"[^A-Za-z0-9._-]", "_", cleaned)
+    cleaned = _re.sub(r"[^A-Za-z0-9._-]", "_", name)
     cleaned = cleaned.lstrip(".") or "_"
     if not _SAFE_SEGMENT_RE.fullmatch(cleaned):
         cleaned = "_"

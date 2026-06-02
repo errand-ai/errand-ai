@@ -132,6 +132,7 @@ def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
         "id": str(plugin.id),
         "plugin_name": plugin.plugin_name,
         "marketplace_id": str(plugin.marketplace_id) if plugin.marketplace_id else None,
+        "marketplace_name": scope if plugin.marketplace_id else None,
         "installed_version": plugin.installed_version,
         "latest_available_version": plugin.latest_available_version,
         "enabled": plugin.enabled,

@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from pathlib import Path
 
 
 async def test_marketplace_list_empty_admin(admin_client):

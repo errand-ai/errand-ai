@@ -7,15 +7,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
-import models
-from models import Base, Marketplace, Plugin
+from models import Marketplace, Plugin
 
 
 @pytest_asyncio.fixture
@@ -230,10 +229,8 @@ async def test_install_rejects_relative_path_traversal(session, tmp_path):
 
 @pytest.mark.asyncio
 async def test_wait_for_plugin_success(session):
-    import asyncio
-    import uuid as _uuid
     import plugin_marketplace
-    pid = _uuid.uuid4()
+    pid = uuid.uuid4()
     fut = asyncio.get_event_loop().create_future()
     plugin_marketplace._warm_futures[pid] = fut
     fut.set_result(True)
@@ -242,10 +239,8 @@ async def test_wait_for_plugin_success(session):
 
 @pytest.mark.asyncio
 async def test_wait_for_plugin_returns_false_on_failure(session):
-    import asyncio
     import plugin_marketplace
-    import uuid as _uuid
-    pid = _uuid.uuid4()
+    pid = uuid.uuid4()
     fut = asyncio.get_event_loop().create_future()
     plugin_marketplace._warm_futures[pid] = fut
     fut.set_result(False)
@@ -255,9 +250,8 @@ async def test_wait_for_plugin_returns_false_on_failure(session):
 @pytest.mark.asyncio
 async def test_wait_for_plugin_no_future_returns_true(session):
     import plugin_marketplace
-    import uuid as _uuid
     # No registered warm — assumed cached, returns True immediately
-    assert await plugin_marketplace.wait_for_plugin(_uuid.uuid4(), timeout=0.5) is True
+    assert await plugin_marketplace.wait_for_plugin(uuid.uuid4(), timeout=0.5) is True
 
 
 @pytest.mark.asyncio
