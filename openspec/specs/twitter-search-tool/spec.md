@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: search_tweets MCP tool
-The MCP server SHALL expose a `search_tweets` tool that accepts `query` (str, required) and `max_results` (int, optional, default 10, max 100). The tool SHALL search recent tweets (last 7 days) using `TwitterPlatform.search()`. The tool SHALL return a JSON string containing an array of tweet objects, each with `tweet_id`, `text`, `created_at`, `author_id`, `author_username`, and `public_metrics`. The tool SHALL require X API Basic tier or higher. If the API returns a 403 Forbidden error, the tool SHALL return a clear error message indicating that search requires Basic tier access.
+The MCP server SHALL expose a `search_tweets` tool that accepts `query` (str, required) and `max_results` (int, optional, default 10, max 100). The tool SHALL search recent tweets using `TwitterPlatform.search()` when Twitter/X credentials are configured. The tool SHALL return a JSON string containing an array of tweet objects, each with `tweet_id`, `text`, `created_at`, `author_id`, `author_username`, and `public_metrics`. The Twitter/X credential path SHALL require X API Basic tier or higher. If the API returns a 403 Forbidden error and no Xquik-compatible backend is configured, the tool SHALL return a clear error message indicating that search requires Basic tier access.
 
 #### Scenario: Search for tweets by keyword
 - **WHEN** the agent calls `search_tweets` with query "kubernetes security"
@@ -22,6 +22,14 @@ The MCP server SHALL expose a `search_tweets` tool that accepts `query` (str, re
 #### Scenario: Twitter credentials not configured
 - **WHEN** the agent calls `search_tweets` and no Twitter credentials are available
 - **THEN** the tool returns an error: "Twitter API credentials not configured"
+
+#### Scenario: Xquik-compatible search backend
+- **WHEN** the agent calls `search_tweets`, no Twitter credentials are available, and `XQUIK_API_KEY` or `HERMES_TWEET_API_KEY` is configured
+- **THEN** the tool searches through the Xquik-compatible backend and returns the same tweet array schema
+
+#### Scenario: X API tier fallback to Xquik-compatible backend
+- **WHEN** the agent calls `search_tweets`, Twitter credentials return the Basic-tier error, and `XQUIK_API_KEY` or `HERMES_TWEET_API_KEY` is configured
+- **THEN** the tool searches through the Xquik-compatible backend instead of returning the Basic-tier error
 
 ### Requirement: TwitterPlatform search method override
 The `TwitterPlatform` class SHALL override the `search(query: str, **kwargs)` method from the Platform base class. The method SHALL use `client.search_recent_tweets(query=query, max_results=max_results, tweet_fields=["created_at", "public_metrics", "text"], expansions=["author_id"], user_fields=["username"])` to search and return results with author usernames resolved from the expansions.

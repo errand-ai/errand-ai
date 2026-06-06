@@ -210,6 +210,9 @@ def no_twitter_env(monkeypatch):
     monkeypatch.delenv("TWITTER_API_SECRET", raising=False)
     monkeypatch.delenv("TWITTER_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("TWITTER_ACCESS_SECRET", raising=False)
+    monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_TWEET_API_KEY", raising=False)
+    monkeypatch.delenv("XQUIK_BASE_URL", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +539,61 @@ async def test_search_tweets_no_results(twitter_env):
     assert result == []
 
 
+async def test_search_tweets_xquik_backend(no_twitter_env, monkeypatch):
+    """Xquik-compatible credentials can satisfy search without Twitter credentials."""
+    monkeypatch.setenv("XQUIK_API_KEY", "xq_test")
+    monkeypatch.setenv("XQUIK_BASE_URL", "https://xquik.example")
+    calls = []
+
+    class MockAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "data": [{
+                    "id": "123",
+                    "text": "Kubernetes is great",
+                    "createdAt": "2026-04-26T12:00:00Z",
+                    "author": {"id": "55", "username": "k8sfan"},
+                    "likeCount": 20,
+                    "replyCount": 2,
+                }]
+            }
+            return response
+
+    with patch("httpx.AsyncClient", MockAsyncClient):
+        from mcp_server import search_tweets
+        result = json.loads(await search_tweets("kubernetes", max_results=5))
+
+    assert calls[0][0] == "https://xquik.example/api/v1/x/tweets/search"
+    assert calls[0][1]["params"] == {"q": "kubernetes", "limit": 10}
+    assert calls[0][1]["headers"]["X-API-Key"] == "xq_test"
+    assert result == [{
+        "tweet_id": "123",
+        "text": "Kubernetes is great",
+        "created_at": "2026-04-26T12:00:00Z",
+        "author_id": "55",
+        "author_username": "k8sfan",
+        "public_metrics": {
+            "like_count": 20,
+            "retweet_count": 0,
+            "reply_count": 2,
+            "quote_count": 0,
+            "impression_count": 0,
+        },
+    }]
+
+
 async def test_search_tweets_403_tier_error(twitter_env):
     """403 error returns tier requirement message."""
     import tweepy
@@ -551,6 +609,44 @@ async def test_search_tweets_403_tier_error(twitter_env):
 
     assert "error" in result
     assert "basic tier" in result["error"].lower()
+
+
+async def test_search_tweets_xquik_fallback_after_basic_tier_error(twitter_env, monkeypatch):
+    """Xquik-compatible search is used when X API credentials lack search access."""
+    import tweepy
+
+    monkeypatch.setenv("XQUIK_API_KEY", "xq_test")
+    calls = []
+
+    class MockAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {"tweets": [{"tweetId": "789", "fullText": "fallback result"}]}
+            return response
+
+    with patch("tweepy.Client") as MockClient, patch("httpx.AsyncClient", MockAsyncClient):
+        instance = MockClient.return_value
+        instance.search_recent_tweets.side_effect = tweepy.Forbidden(
+            MagicMock(status_code=403)
+        )
+
+        from mcp_server import search_tweets
+        result = json.loads(await search_tweets("test"))
+
+    assert calls[0][1]["params"] == {"q": "test", "limit": 10}
+    assert result[0]["tweet_id"] == "789"
+    assert result[0]["text"] == "fallback result"
 
 
 async def test_search_tweets_no_credentials(no_twitter_env):
