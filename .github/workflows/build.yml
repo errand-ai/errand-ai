@@ -93,6 +93,7 @@ jobs:
 
   build-errand:
     needs: [version, test]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -130,6 +131,7 @@ jobs:
 
   build-task-runner:
     needs: [version, test]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -164,6 +166,7 @@ jobs:
 
   helm:
     needs: [version, build-errand, build-task-runner]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
