@@ -81,9 +81,9 @@ Get the authenticated user's recent tweets with metrics.
 ### search_tweets
 
 Search recent tweets. Uses the configured X API credentials by default. When
-`XQUIK_API_KEY` or `HERMES_TWEET_API_KEY` is configured, the tool can use a
-Xquik-compatible read backend for search if Twitter credentials are unavailable
-or the X API account lacks Basic-tier search access.
+`XQUIK_API_KEY` is configured, the tool can use a Xquik-compatible read backend
+for search if Twitter credentials are unavailable or the X API account lacks
+Basic-tier search access.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -149,7 +149,7 @@ Twitter tools use the existing credential flow:
 
 For search-only public tweet discovery, `search_tweets` can also use an
 Xquik-compatible backend:
-1. Set `XQUIK_API_KEY` or `HERMES_TWEET_API_KEY`
+1. Set `XQUIK_API_KEY`
 2. Optionally set `XQUIK_BASE_URL` (default `https://xquik.com`)
 
 RSS feed tool requires no credentials — feeds are public HTTP resources.

@@ -24,11 +24,11 @@ The MCP server SHALL expose a `search_tweets` tool that accepts `query` (str, re
 - **THEN** the tool returns an error: "Twitter API credentials not configured"
 
 #### Scenario: Xquik-compatible search backend
-- **WHEN** the agent calls `search_tweets`, no Twitter credentials are available, and `XQUIK_API_KEY` or `HERMES_TWEET_API_KEY` is configured
+- **WHEN** the agent calls `search_tweets`, no Twitter credentials are available, and `XQUIK_API_KEY` is configured
 - **THEN** the tool searches through the Xquik-compatible backend and returns the same tweet array schema
 
 #### Scenario: X API tier fallback to Xquik-compatible backend
-- **WHEN** the agent calls `search_tweets`, Twitter credentials return the Basic-tier error, and `XQUIK_API_KEY` or `HERMES_TWEET_API_KEY` is configured
+- **WHEN** the agent calls `search_tweets`, Twitter credentials return the Basic-tier error, and `XQUIK_API_KEY` is configured
 - **THEN** the tool searches through the Xquik-compatible backend instead of returning the Basic-tier error
 
 ### Requirement: TwitterPlatform search method override

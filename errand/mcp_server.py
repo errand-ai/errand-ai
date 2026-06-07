@@ -630,7 +630,7 @@ def _load_xquik_search_config() -> tuple[str, str] | None:
     """Load optional Xquik-compatible search config from environment variables."""
     import os
 
-    api_key = os.environ.get("XQUIK_API_KEY") or os.environ.get("HERMES_TWEET_API_KEY")
+    api_key = os.environ.get("XQUIK_API_KEY")
     if not api_key:
         return None
 
@@ -704,7 +704,7 @@ def _normalize_search_tweet(tweet: object) -> dict:
 
 
 async def _search_tweets_with_xquik(query: str, max_results: int) -> list[dict]:
-    """Search public tweets through an optional Xquik/Hermes Tweet-compatible backend."""
+    """Search public tweets through an optional Xquik-compatible backend."""
     config = _load_xquik_search_config()
     if not config:
         raise ValueError("Twitter API credentials not configured")

@@ -211,7 +211,6 @@ def no_twitter_env(monkeypatch):
     monkeypatch.delenv("TWITTER_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("TWITTER_ACCESS_SECRET", raising=False)
     monkeypatch.delenv("XQUIK_API_KEY", raising=False)
-    monkeypatch.delenv("HERMES_TWEET_API_KEY", raising=False)
     monkeypatch.delenv("XQUIK_BASE_URL", raising=False)
 
 
