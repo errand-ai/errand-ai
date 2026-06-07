@@ -80,7 +80,10 @@ Get the authenticated user's recent tweets with metrics.
 
 ### search_tweets
 
-Search recent tweets (last 7 days). **Requires X API Basic tier.**
+Search recent tweets. Uses the configured X API credentials by default. When
+`XQUIK_API_KEY` is configured, the tool can use a Xquik-compatible read backend
+for search if Twitter credentials are unavailable or the X API account lacks
+Basic-tier search access.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -126,7 +129,7 @@ Search recent tweets (last 7 days). **Requires X API Basic tier.**
 | retweet | Yes | Yes |
 | get_tweet_metrics | Yes | Yes |
 | get_my_recent_tweets | Yes | Yes |
-| **search_tweets** | **No** | **Yes** |
+| **search_tweets** | With Xquik-compatible backend | Yes |
 
 ### Required App Permissions
 
@@ -143,5 +146,10 @@ All tools require **Read and Write** permissions on the X developer app. The exi
 Twitter tools use the existing credential flow:
 1. Database credentials via platform registry (`load_credentials("twitter", session)`)
 2. Environment variable fallback: `TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_SECRET`
+
+For search-only public tweet discovery, `search_tweets` can also use an
+Xquik-compatible backend:
+1. Set `XQUIK_API_KEY`
+2. Optionally set `XQUIK_BASE_URL` (default `https://xquik.com`)
 
 RSS feed tool requires no credentials — feeds are public HTTP resources.

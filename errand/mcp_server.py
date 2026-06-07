@@ -626,6 +626,113 @@ async def _load_twitter_credentials() -> dict | None:
     return credentials
 
 
+def _load_xquik_search_config() -> tuple[str, str] | None:
+    """Load optional Xquik-compatible search config from environment variables."""
+    import os
+
+    api_key = os.environ.get("XQUIK_API_KEY")
+    if not api_key:
+        return None
+
+    base_url = os.environ.get("XQUIK_BASE_URL", "https://xquik.com").rstrip("/")
+    return api_key, base_url
+
+
+def _first_tweet_value(value: object, keys: list[str]) -> str:
+    """Return the first scalar value for any key in a nested tweet payload."""
+    if not isinstance(value, dict):
+        return ""
+
+    for key in keys:
+        candidate = value.get(key)
+        if candidate not in (None, ""):
+            return str(candidate)
+
+    for child in value.values():
+        nested = _first_tweet_value(child, keys)
+        if nested:
+            return nested
+
+    return ""
+
+
+def _tweet_metric_value(value: object, keys: list[str]) -> int:
+    raw = _first_tweet_value(value, keys)
+    if not raw:
+        return 0
+
+    try:
+        return int(raw.replace(",", ""))
+    except ValueError:
+        return 0
+
+
+def _tweet_list(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return []
+
+    for key in ("data", "tweets", "results", "items"):
+        candidate = value.get(key)
+        if isinstance(candidate, list):
+            return candidate
+        nested = _tweet_list(candidate)
+        if nested:
+            return nested
+
+    return []
+
+
+def _normalize_search_tweet(tweet: object) -> dict:
+    author = tweet.get("author", {}) if isinstance(tweet, dict) else {}
+    return {
+        "tweet_id": _first_tweet_value(tweet, ["tweet_id", "tweetId", "id", "id_str", "rest_id"]),
+        "text": _first_tweet_value(tweet, ["text", "full_text", "fullText", "content"]),
+        "created_at": _first_tweet_value(tweet, ["created_at", "createdAt", "creation_date", "creationDate", "date"]),
+        "author_id": _first_tweet_value(tweet, ["author_id", "authorId", "user_id", "userId"])
+        or _first_tweet_value(author, ["id", "id_str", "user_id", "userId", "rest_id"]),
+        "author_username": _first_tweet_value(tweet, ["author_username", "authorUsername", "username", "handle", "screen_name"]),
+        "public_metrics": {
+            "like_count": _tweet_metric_value(tweet, ["like_count", "likeCount", "favorite_count", "favoriteCount", "likes"]),
+            "retweet_count": _tweet_metric_value(tweet, ["retweet_count", "retweetCount", "retweets"]),
+            "reply_count": _tweet_metric_value(tweet, ["reply_count", "replyCount", "replies"]),
+            "quote_count": _tweet_metric_value(tweet, ["quote_count", "quoteCount", "quotes"]),
+            "impression_count": _tweet_metric_value(tweet, ["impression_count", "impressionCount", "views", "view_count", "viewCount"]),
+        },
+    }
+
+
+async def _search_tweets_with_xquik(query: str, max_results: int) -> list[dict]:
+    """Search public tweets through an optional Xquik-compatible backend."""
+    config = _load_xquik_search_config()
+    if not config:
+        raise ValueError("Twitter API credentials not configured")
+
+    api_key, base_url = config
+    limit = max(10, min(max_results, 100))
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{base_url}/api/v1/x/tweets/search",
+            params={"q": query, "limit": limit},
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "X-API-Key": api_key,
+            },
+        )
+
+    if response.status_code >= 400:
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = {"error": response.text}
+        message = _first_tweet_value(error_body, ["message", "error", "detail"]) or response.text
+        raise ValueError(f"Xquik search failed: {message}")
+
+    return [_normalize_search_tweet(tweet) for tweet in _tweet_list(response.json())]
+
+
 # --- Slack outbound messaging tools ----------------------------------------
 #
 # slack_message and slack_reply let the task-runner originate Slack messages.
@@ -1056,12 +1163,15 @@ async def get_my_recent_tweets(max_results: int = 10) -> str:
 
 @mcp.tool()
 async def search_tweets(query: str, max_results: int = 10) -> str:
-    """Search recent tweets (last 7 days) by query. Requires X API Basic tier. Returns JSON array of tweets."""
+    """Search recent tweets by query. Uses Twitter/X credentials or optional Xquik-compatible search."""
     from platforms import get_registry
 
     credentials = await _load_twitter_credentials()
     if not credentials:
-        return json.dumps({"error": "Twitter API credentials not configured"})
+        try:
+            return json.dumps(await _search_tweets_with_xquik(query, max_results))
+        except Exception as e:
+            return json.dumps({"error": str(e)})
 
     registry = get_registry()
     platform = registry.get("twitter")
@@ -1072,6 +1182,11 @@ async def search_tweets(query: str, max_results: int = 10) -> str:
         result = await platform.search(query, credentials=credentials, max_results=max_results)
         return json.dumps(result.get("results", []))
     except ValueError as e:
+        if "basic tier" in str(e).lower() and _load_xquik_search_config():
+            try:
+                return json.dumps(await _search_tweets_with_xquik(query, max_results))
+            except Exception as fallback_error:
+                return json.dumps({"error": str(fallback_error)})
         return json.dumps({"error": str(e)})
     except Exception as e:
         return json.dumps({"error": str(e)})
