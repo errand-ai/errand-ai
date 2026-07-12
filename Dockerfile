@@ -38,7 +38,8 @@ RUN <<EOF
   # Accept both the modern (manylinux_2_28) and legacy (manylinux2014 / _2_17) glibc
   # baselines: pip's --platform does not auto-accept older tags, and our pinned deps
   # are split across both (e.g. asyncpg 0.31 is 2_28-only, psycopg2-binary 2.9.12 is
-  # 2014-only). The 3.13-slim (trixie, glibc 2.41) runtime satisfies both.
+  # 2014-only). The 3.13-slim runtime's glibc (>= 2.28 on current Debian bases)
+  # satisfies both manylinux baselines.
   grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
     --only-binary=:all: \
