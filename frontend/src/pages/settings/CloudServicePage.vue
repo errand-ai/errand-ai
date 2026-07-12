@@ -161,7 +161,7 @@ onMounted(async () => {
 
 <template>
   <div class="space-y-6">
-    <div class="rounded-lg bg-white p-6 shadow">
+    <div class="rounded-lg bg-white p-6 shadow-sm">
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Cloud Service</h3>
       <p class="text-sm text-gray-500 mb-6">
         Connect your instance to Errand Cloud to receive webhooks without configuring port forwarding.
@@ -169,8 +169,8 @@ onMounted(async () => {
 
       <!-- Loading state -->
       <div v-if="loading" class="space-y-3">
-        <div class="h-4 w-48 rounded bg-gray-200 animate-pulse"></div>
-        <div class="h-4 w-32 rounded bg-gray-200 animate-pulse"></div>
+        <div class="h-4 w-48 rounded-sm bg-gray-200 animate-pulse"></div>
+        <div class="h-4 w-32 rounded-sm bg-gray-200 animate-pulse"></div>
       </div>
 
       <!-- Not configured -->
@@ -244,7 +244,7 @@ onMounted(async () => {
     <!-- Cloud Endpoints -->
     <div
       v-if="isConnected || webhookTriggers.length > 0"
-      class="rounded-lg bg-white p-6 shadow"
+      class="rounded-lg bg-white p-6 shadow-sm"
     >
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Cloud Endpoints</h3>
 

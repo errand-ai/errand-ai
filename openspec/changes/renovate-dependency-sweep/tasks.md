@@ -27,12 +27,12 @@
 
 ## 4. Pass 3 — Frontend majors (branch `deps-pass-3-frontend-majors`, VERSION minor bump)
 
-- [ ] 4.1 Create branch from latest `main` and bump `VERSION` (minor); split this pass into two PRs if step 1.1 showed the failures are independent
-- [ ] 4.2 Migrate Tailwind CSS 3 → 4 (`#167`): update `frontend/package.json`, switch to the `@tailwindcss/postcss` plugin, migrate the config to the v4 format (`@theme`/CSS-first), and resolve removed/renamed utilities
-- [ ] 4.3 Upgrade TypeScript 6 → 7 (`#197`) and fix any new type errors surfaced by `vue-tsc -b`
-- [ ] 4.4 Bump `@errand-ai/ui-components` 0.6 → 0.9 (from `#136`) and adjust call sites per the 1.1 findings
-- [ ] 4.5 Verify: `npm run test` (vitest, 440) green + `vue-tsc -b` build succeeds; **manual visual check** — run the app and diff key screens (kanban, task form, settings) for Tailwind v4 regressions
-- [ ] 4.6 Open PR(s), confirm CI green + frontend static assets build into the image, merge, then close Renovate PRs `#167`, `#197`
+- [x] 4.1 Create branch from latest `main` and bump `VERSION` (minor)
+- [x] 4.2 Migrate Tailwind CSS 3 → 4 (`#167`): ran `@tailwindcss/upgrade` — `@tailwindcss/postcss` plugin, `@import "tailwindcss"` + `@plugin`/`@source` in `main.css`, deleted `tailwind.config.js`, autoprefixer removed, ~30 templates renamed (appearance-preserving: `rounded`→`rounded-sm`, `shadow`→`shadow-sm`, `shadow-sm`→`shadow-xs`, `outline-none`→`outline-hidden`)
+- [~] 4.3 **DEFERRED — TypeScript 6 → 7 (`#197`)**: TS 7 is the native (Go) compiler; its package drops `typescript/lib/tsc`, which `vue-tsc` (all released versions, incl. 3.3.7) still resolves → `vue-tsc -b` crashes, breaking the build's type-check. No `vue-tsc` supports the native compiler yet. Kept at `~6.0.0`; `#197` stays open pending Vue tooling support (see design D7).
+- [x] 4.4 Bump `@errand-ai/ui-components` 0.6 → 0.9 (from `#136`) — no call-site changes needed; validated in isolation (vue-tsc 0 errors, vitest 389 passed)
+- [x] 4.5 Verify: vitest **389 passed** + `npm run build` (vue-tsc + vite) exit 0 (v4 CSS compiles). Live visual QA of authenticated screens (kanban, task form, settings) deferred to the PR deployment — the SPA is auth-gated and can't render meaningfully without the backend
+- [ ] 4.6 Open PR, confirm CI green + frontend static assets build into the image, merge, then close Renovate PR `#167` (`#197` remains open — deferred per 4.3)
 
 ## 5. Pass 4 — Python interpreter 3.11/3.12 → 3.13 (branch `deps-pass-4-python-313`, VERSION minor bump)
 
@@ -48,6 +48,6 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 Confirm all nine Renovate PRs (`#136`, `#141`, `#151`, `#167`, `#185`, `#188`, `#195`, `#196`, `#197`) are closed
+- [ ] 6.1 Confirm the eight addressed Renovate PRs (`#136`, `#141`, `#151`, `#167`, `#185`, `#188`, `#195`, `#196`) are closed. `#197` (TypeScript 7) intentionally remains open — deferred per design D7
 - [ ] 6.2 Run `/opsx:sync` to sync the `task-runner-image` delta into `openspec/specs/`, reconciling final base-image names with what actually shipped (per Pass 4 outcome)
 - [ ] 6.3 Run `/opsx:archive` to archive the change

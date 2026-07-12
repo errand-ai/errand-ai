@@ -45,7 +45,7 @@ async function save() {
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="skills-repo-section">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="skills-repo-section">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">Skills Repository</h3>
 
     <div class="space-y-4">

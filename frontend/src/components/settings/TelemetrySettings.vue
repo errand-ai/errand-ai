@@ -54,7 +54,7 @@ defineExpose({ isDirty })
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">Usage Telemetry</h3>
 
     <div class="py-2">
@@ -76,14 +76,14 @@ defineExpose({ isDirty })
           :class="[
             localEnabled ? 'bg-blue-600' : 'bg-gray-200',
             isReadonly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
-            'relative ml-4 inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+            'relative ml-4 inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
           ]"
           @click="!isReadonly && (localEnabled = !localEnabled)"
         >
           <span
             :class="[
               localEnabled ? 'translate-x-5' : 'translate-x-0',
-              'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+              'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out',
             ]"
           />
         </button>

@@ -850,7 +850,7 @@ describe('SettingsPage', () => {
       // Select model for title gen
       await selects[1].setValue('gpt-4o')
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -921,7 +921,7 @@ describe('SettingsPage', () => {
       // Select model for task processing
       await selects[3].setValue('gpt-4o')
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -1007,7 +1007,7 @@ describe('SettingsPage', () => {
       const transcriptionSelect = wrapper.find('[data-testid="transcription-model-select"]')
       await transcriptionSelect.setValue('whisper-1')
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -1022,7 +1022,7 @@ describe('SettingsPage', () => {
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -1184,7 +1184,7 @@ describe('SettingsPage', () => {
       await wrapper.find('[data-testid="task-processing-timeout-input"]').setValue(180)
       await wrapper.find('[data-testid="transcription-timeout-input"]').setValue(45)
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       const saveBtn = llmSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -1207,7 +1207,7 @@ describe('SettingsPage', () => {
 
       const { wrapper } = await mountSettings('/settings/tasks')
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       expect(llmSection!.text()).not.toContain('Unsaved changes')
 
       await wrapper.find('[data-testid="task-processing-timeout-input"]').setValue(60)
@@ -1271,7 +1271,7 @@ describe('SettingsPage', () => {
       const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
       await logLevelSelect.setValue('ERROR')
 
-      const taskMgmtSection = wrapper.findAll('.shadow').find(el => el.text().includes('Task Management') && el.text().includes('Archive'))
+      const taskMgmtSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('Task Management') && el.text().includes('Archive'))
       const saveBtn = taskMgmtSection!.findAll('button').find(b => b.text() === 'Save')
       await saveBtn!.trigger('click')
       await flushPromises()
@@ -1293,7 +1293,7 @@ describe('SettingsPage', () => {
       const { wrapper } = await mountSettings('/settings/tasks')
 
       // Find the timezone select by looking in the Task Management section
-      const taskMgmtSection = wrapper.findAll('.shadow').find(el => el.text().includes('Timezone'))
+      const taskMgmtSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('Timezone'))
       const selects = taskMgmtSection!.findAll('select')
       expect((selects[0].element as HTMLSelectElement).value).toBe('UTC')
     })
@@ -1310,7 +1310,7 @@ describe('SettingsPage', () => {
       await selects[0].setValue('prov-1')
       await nextTick()
 
-      const llmSection = wrapper.findAll('.shadow').find(el => el.text().includes('LLM Models'))
+      const llmSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('LLM Models'))
       expect(llmSection!.text()).toContain('Unsaved changes')
     })
   })

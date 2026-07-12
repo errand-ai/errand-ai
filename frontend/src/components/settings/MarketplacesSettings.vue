@@ -188,7 +188,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="marketplaces-section">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="marketplaces-section">
     <div class="flex items-center justify-between mb-3">
       <div>
         <h3 class="text-lg font-semibold text-gray-800">
@@ -253,7 +253,7 @@ onMounted(load)
                 :checked="m.enabled"
                 :disabled="togglingIds.has(m.id)"
                 @change="toggleEnabled(m)"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                class="h-4 w-4 rounded-sm border-gray-300 text-blue-600 focus:ring-blue-500"
                 :data-testid="`marketplace-toggle-${m.id}`"
               />
               Enabled

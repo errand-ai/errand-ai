@@ -387,7 +387,7 @@ onMounted(loadData)
 </script>
 
 <template>
-  <div class="mt-6 rounded-lg bg-white p-6 shadow" data-testid="webhook-triggers-section">
+  <div class="mt-6 rounded-lg bg-white p-6 shadow-sm" data-testid="webhook-triggers-section">
     <div class="flex items-center justify-between mb-4">
       <h3 class="text-lg font-semibold text-gray-800">Webhook Triggers</h3>
       <button
@@ -423,13 +423,13 @@ onMounted(loadData)
         <div
           v-for="trigger in triggers"
           :key="trigger.id"
-          class="flex items-center justify-between py-3 cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded"
+          class="flex items-center justify-between py-3 cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded-sm"
           data-testid="trigger-row"
           @click="openEdit(trigger)"
         >
           <div class="flex items-center gap-3">
             <span class="text-sm font-medium text-gray-800">{{ trigger.name }}</span>
-            <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">{{ trigger.source }}</span>
+            <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-sm">{{ trigger.source }}</span>
           </div>
           <div class="flex items-center gap-3" @click.stop>
             <label class="relative inline-flex items-center cursor-pointer">
@@ -440,7 +440,7 @@ onMounted(loadData)
                 @change="toggleEnabled(trigger)"
                 :data-testid="`trigger-toggle-${trigger.id}`"
               />
-              <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+              <div class="w-9 h-5 bg-gray-200 peer-focus:outline-hidden peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
             </label>
           </div>
         </div>
@@ -516,7 +516,7 @@ onMounted(loadData)
                 type="checkbox"
                 :checked="formEventTypes.includes(evt)"
                 @change="toggleEventType(evt)"
-                class="rounded border-gray-300"
+                class="rounded-sm border-gray-300"
               />
               {{ evt }}
             </label>
@@ -535,7 +535,7 @@ onMounted(loadData)
                 type="checkbox"
                 :checked="formIssueTypes.includes(it)"
                 @change="toggleIssueType(it)"
-                class="rounded border-gray-300"
+                class="rounded-sm border-gray-300"
               />
               {{ it }}
             </label>
@@ -597,7 +597,7 @@ onMounted(loadData)
           <label class="block text-xs font-medium text-gray-600 mb-1">Content Types</label>
           <div class="flex gap-2 flex-wrap">
             <label v-for="ct in GITHUB_CONTENT_TYPES" :key="ct" class="inline-flex items-center gap-1 text-xs">
-              <input type="checkbox" :checked="formContentTypes.includes(ct)" @change="toggleContentType(ct)" class="rounded border-gray-300" />
+              <input type="checkbox" :checked="formContentTypes.includes(ct)" @change="toggleContentType(ct)" class="rounded-sm border-gray-300" />
               {{ ct }}
             </label>
           </div>
@@ -609,17 +609,17 @@ onMounted(loadData)
         <h5 class="text-sm font-medium text-gray-700">Completion Actions</h5>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formAssignTo" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formAssignTo" class="rounded-sm border-gray-300" />
           Assign to service account
         </label>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formAddComment" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formAddComment" class="rounded-sm border-gray-300" />
           Add comment with task reference
         </label>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formCommentOutput" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formCommentOutput" class="rounded-sm border-gray-300" />
           Comment output on complete
         </label>
 
@@ -651,12 +651,12 @@ onMounted(loadData)
         <h5 class="text-sm font-medium text-gray-700">Actions</h5>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formAddComment" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formAddComment" class="rounded-sm border-gray-300" />
           Post comments on issue (task started, completed, failed)
         </label>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formCommentOutput" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formCommentOutput" class="rounded-sm border-gray-300" />
           Include task output in completion comment
         </label>
 
@@ -677,7 +677,7 @@ onMounted(loadData)
         </div>
 
         <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="formCopilotReview" class="rounded border-gray-300" />
+          <input type="checkbox" v-model="formCopilotReview" class="rounded-sm border-gray-300" />
           Request Copilot review on PRs
         </label>
 

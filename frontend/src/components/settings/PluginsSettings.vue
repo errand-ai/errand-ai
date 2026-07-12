@@ -261,7 +261,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="plugins-section">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="plugins-section">
     <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
       <div>
         <h3 class="text-lg font-semibold text-gray-800">
@@ -352,7 +352,7 @@ onMounted(load)
                 :checked="plugin.enabled"
                 :disabled="togglingIds.has(plugin.id)"
                 @change="togglePluginEnabled(plugin)"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                class="h-4 w-4 rounded-sm border-gray-300 text-blue-600 focus:ring-blue-500"
                 :data-testid="`plugin-toggle-${plugin.id}`"
               />
               Enabled

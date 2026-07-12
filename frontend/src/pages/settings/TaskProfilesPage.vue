@@ -422,9 +422,9 @@ onMounted(() => {
     </div>
 
     <div v-if="loading" class="space-y-3">
-      <div v-for="n in 3" :key="n" class="rounded-lg bg-white p-4 shadow">
-        <div class="h-5 w-40 rounded bg-gray-200 animate-pulse mb-2"></div>
-        <div class="h-4 w-64 rounded bg-gray-200 animate-pulse"></div>
+      <div v-for="n in 3" :key="n" class="rounded-lg bg-white p-4 shadow-sm">
+        <div class="h-5 w-40 rounded-sm bg-gray-200 animate-pulse mb-2"></div>
+        <div class="h-4 w-64 rounded-sm bg-gray-200 animate-pulse"></div>
       </div>
     </div>
 
@@ -434,7 +434,7 @@ onMounted(() => {
         <div
           v-for="profile in profiles"
           :key="profile.id"
-          class="rounded-lg bg-white p-4 shadow"
+          class="rounded-lg bg-white p-4 shadow-sm"
           data-testid="profile-card"
         >
           <div class="flex items-start justify-between">
@@ -471,7 +471,7 @@ onMounted(() => {
       <!-- Empty state -->
       <div
         v-if="profiles.length === 0 && !showForm && !loading"
-        class="rounded-lg bg-white p-6 shadow text-center"
+        class="rounded-lg bg-white p-6 shadow-sm text-center"
         data-testid="profiles-empty-state"
       >
         <p class="text-sm text-gray-500 mb-3">No task profiles defined. Profiles let you configure different models, tools, and instructions for different types of tasks.</p>
@@ -485,7 +485,7 @@ onMounted(() => {
       </div>
 
       <!-- Add/Edit form -->
-      <div v-if="showForm" class="rounded-lg bg-white p-6 shadow" data-testid="profile-form">
+      <div v-if="showForm" class="rounded-lg bg-white p-6 shadow-sm" data-testid="profile-form">
         <h3 class="text-lg font-semibold text-gray-800 mb-4">{{ editingId ? 'Edit Profile' : 'New Profile' }}</h3>
 
         <div class="space-y-4">
@@ -698,7 +698,7 @@ onMounted(() => {
               <div
                 v-for="plugin in availablePlugins"
                 :key="plugin.id"
-                class="rounded border border-gray-100"
+                class="rounded-sm border border-gray-100"
                 :data-testid="`profile-plugin-row-${plugin.id}`"
               >
                 <div class="flex items-center gap-1.5 p-2">
@@ -742,7 +742,7 @@ onMounted(() => {
               <div
                 v-for="staleId in staleEnabledPlugins"
                 :key="staleId"
-                class="flex items-center gap-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700"
+                class="flex items-center gap-2 rounded-sm border border-red-200 bg-red-50 p-2 text-xs text-red-700"
                 :data-testid="`profile-plugin-stale-${staleId}`"
               >
                 <span class="flex-1">Removed plugin: <span class="font-mono">{{ staleId }}</span></span>

@@ -110,7 +110,7 @@ onMounted(loadData)
       </p>
 
       <!-- Email Trigger Card -->
-      <div class="rounded-lg bg-white p-6 shadow" data-testid="email-trigger-card">
+      <div class="rounded-lg bg-white p-6 shadow-sm" data-testid="email-trigger-card">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-gray-800">Email Trigger</h3>
           <label class="relative inline-flex items-center cursor-pointer" data-testid="email-enabled-toggle">
@@ -120,7 +120,7 @@ onMounted(loadData)
               class="sr-only peer"
               :disabled="!emailCredentialsConfigured"
             />
-            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
+            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-hidden peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
             <span class="ml-2 text-sm text-gray-600">{{ emailEnabled ? 'Enabled' : 'Disabled' }}</span>
           </label>
         </div>

@@ -109,7 +109,7 @@ async function confirmRegenerate() {
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">MCP API Key</h3>
 
     <div v-if="mcpApiKey" class="space-y-4">

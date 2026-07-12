@@ -82,6 +82,10 @@ Because no distroless base offers 3.14, standardise the fleet on **Python 3.13**
 ### Build note — manylinux baseline (discovered in Pass 2)
 The root `Dockerfile`'s wheel-download stage pinned `--platform manylinux2014` (glibc 2.17). pip's `--platform` does **not** auto-accept older *or* newer manylinux tags — it matches only the exact stated baseline (plus its own lower aliases). Our pinned deps straddle two baselines: `asyncpg==0.31.0` ships cp312 linux wheels as `manylinux_2_28` only, while `psycopg2-binary==2.9.12` (and `cffi`) ship `manylinux2014`/`_2_17` only. A single `--platform` therefore fails one or the other. Fix: pass **both** `--platform manylinux_2_28_${ARCH}` and `--platform manylinux2014_${ARCH}`; the `python:3.12-slim` (bookworm, glibc 2.36) runtime satisfies both. Verified by a real `docker build --target build` for linux/amd64. Pass 4 (3.13 / trixie, glibc 2.41) inherits this corrected logic — only the `--python-version`/`--abi` change to 313.
 
+### D7 — TypeScript 7 deferred (discovered in Pass 3)
+`typescript@7` is the **native (Go) compiler port**, distributed as the `typescript` package with `@typescript/typescript-*` platform binaries and an `exports` map that no longer includes `./lib/tsc`. `vue-tsc` — which the build uses for Vue SFC type-checking (`"build": "vue-tsc -b && vite build"`, also run in CI's image build) — resolves `typescript/lib/tsc` internally, so it crashes under TS 7. Every released `vue-tsc` (through 3.3.7, peer `typescript >=5.0.0`) has this dependency; none supports the native compiler yet. TS 7 is therefore **held at `~6.0.0`** and split out of this sweep; `#197` stays open. Re-attempt when Vue tooling (vue-tsc / vue-language-tools) ships native-compiler support, as its own change. Pass 3 lands Tailwind 4 + ui-components 0.9 without it. (`vite build` itself uses esbuild and is unaffected — only the `vue-tsc` type-check gate blocks.)
+
 ## Open Questions
 
-- None outstanding. D6 (Python target) is decided: **3.13, keep distroless.** All preflight questions resolved above.
+- **`#197` (TypeScript 7) remains open** — deferred per D7, blocked on `vue-tsc` supporting the native compiler. Not closable as part of this sweep.
+- D6 (Python target) decided: **3.13, keep distroless.** All preflight questions resolved above.

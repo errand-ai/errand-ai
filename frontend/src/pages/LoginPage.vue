@@ -38,7 +38,7 @@ async function handleLogin() {
 
 <template>
   <div class="min-h-screen flex items-center justify-center bg-gray-100">
-    <div class="max-w-md w-full bg-white rounded-lg shadow p-8">
+    <div class="max-w-md w-full bg-white rounded-lg shadow-sm p-8">
       <div class="text-center mb-6">
         <img src="/logo.png" alt="Logo" class="h-16 mx-auto mb-4" />
         <h1 class="text-2xl font-bold text-gray-900">Sign in to Errand</h1>
@@ -52,7 +52,7 @@ async function handleLogin() {
             required
             autocomplete="username"
             data-testid="login-username"
-            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
           />
         </div>
         <div>
@@ -63,7 +63,7 @@ async function handleLogin() {
             required
             autocomplete="current-password"
             data-testid="login-password"
-            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
           />
         </div>
         <div v-if="errorMsg" class="text-sm text-red-600" data-testid="login-error">{{ errorMsg }}</div>

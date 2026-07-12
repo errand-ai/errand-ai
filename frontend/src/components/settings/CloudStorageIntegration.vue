@@ -118,7 +118,7 @@ onBeforeUnmount(stopPolling)
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="cloud-storage-integration">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="cloud-storage-integration">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">Cloud Storage</h3>
 
     <div v-if="loading" class="text-sm text-gray-500">Loading...</div>

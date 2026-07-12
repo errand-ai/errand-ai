@@ -75,13 +75,13 @@ onMounted(loadStatus)
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="jira-credential-card">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="jira-credential-card">
     <div class="flex items-center justify-between mb-4">
       <h3 class="text-lg font-semibold text-gray-800">Jira</h3>
       <span
         v-if="!loading"
         :class="status?.status === 'connected' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'"
-        class="px-2 py-0.5 rounded text-xs font-medium"
+        class="px-2 py-0.5 rounded-sm text-xs font-medium"
         data-testid="jira-status-badge"
       >
         {{ status?.status === 'connected' ? 'Connected' : 'Not Connected' }}

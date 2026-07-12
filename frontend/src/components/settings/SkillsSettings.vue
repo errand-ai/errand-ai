@@ -302,7 +302,7 @@ onMounted(() => loadSkills())
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="skills-section">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="skills-section">
     <h3 class="text-lg font-semibold text-gray-800 mb-1">
       Skills
       <span class="ml-2 text-sm font-normal text-gray-500">({{ skills.length }})</span>

@@ -65,7 +65,7 @@ defineExpose({ isDirty })
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">Task Management</h3>
 
     <div class="divide-y divide-gray-200">
