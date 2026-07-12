@@ -49,7 +49,7 @@ async def test_conditional_capabilities_omitted_when_disabled(unauth_client, mon
     """cloud_storage, litellm_mcp and jira are absent when their features are off."""
     import platforms
 
-    monkeypatch.setattr(platforms, "get_registry", lambda: _FakeRegistry())
+    monkeypatch.setattr(platforms, "get_registry", _FakeRegistry)
 
     resp = await unauth_client.get("/api/capabilities")
     caps = resp.json()["capabilities"]
