@@ -150,6 +150,16 @@ USER root
 RUN ["/bin/busybox", "sh", "-c", "/bin/busybox --install -s /bin"]
 # Create skill-deps directory writable by nonroot for entrypoint dependency installation
 RUN ["/bin/busybox", "sh", "-c", "mkdir -p /opt/skill-deps && chown 65532:65532 /opt/skill-deps"]
+# Remove the interpreter's package-bootstrap surface as root at build time: ensurepip
+# (stdlib, root-owned) and any leaked pip in site-packages. The entrypoint runs as
+# nonroot and cannot delete these root-owned paths (the rm would EPERM and be
+# silently ignored), so this hardening must happen here. Runtime skill-dependency
+# installation is unaffected: it uses the staged pip at /opt/pip-bootstrap (see
+# entrypoint.sh), which is separate from ensurepip and removed post-install.
+RUN PYVER=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])') && \
+    rm -rf "/usr/lib/python${PYVER}/ensurepip" \
+           "/usr/local/lib/python${PYVER}/site-packages/pip" \
+           "/usr/local/lib/python${PYVER}/site-packages"/pip-*
 USER nonroot
 
 # Copy .ssh directory (permissions 700 preserved from git-builder)
