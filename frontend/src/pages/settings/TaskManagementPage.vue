@@ -9,6 +9,7 @@ import type { LlmProviderData, ModelSetting } from '../../composables/useApi'
 // TaskManagementCard and TelemetryCard (library) own their own state and register
 // with <SettingsShell> for unsaved-changes guarding. LlmProviderSettings and
 // LlmModelSettings stay local (Wave 2) and still read from settings-state.
+// settings-state is always provided by SettingsPage; fail fast if it is missing.
 const {
   llmModel,
   taskProcessingModel,
@@ -16,7 +17,7 @@ const {
   titleGenerationTimeout,
   taskProcessingTimeout,
   transcriptionTimeout,
-} = inject<any>('settings-state') ?? {}
+} = inject<any>('settings-state')
 
 const providerRef = ref<InstanceType<typeof LlmProviderSettings> | null>(null)
 const llmModelRef = ref<InstanceType<typeof LlmModelSettings> | null>(null)

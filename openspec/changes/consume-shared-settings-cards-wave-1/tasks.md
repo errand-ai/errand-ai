@@ -2,10 +2,13 @@
 
 ### Backend (capabilities)
 
-- [x] Locate the `/api/capabilities` handler (likely `errand/main.py` or `errand/capabilities.py`). — no endpoint existed; added `get_ui_capabilities()` in `capabilities.py` + a public `GET /api/capabilities` route in `main.py`.
-- [x] Add the five always-on Wave 1 keys: `system_prompt`, `mcp_servers`, `skills_git_repo`, `task_management`, `telemetry`.
-- [x] Add conditional advertisement for `cloud_storage`, `jira`, `litellm_mcp` based on existing runtime detection. — `cloud_storage`←`ONEDRIVE_MCP_URL`, `jira`←platform registry, `litellm_mcp`←`litellm` provider row or `OPENAI_BASE_URL`.
-- [x] Add a backend test verifying always-on keys are present and conditional keys gate correctly. — `errand/tests/test_capabilities_endpoint.py`.
+> **Correction after cross-repo review (errand-cloud PR #59).** The first pass added a *separate* `get_ui_capabilities()` + `/api/capabilities` route and left `get_capabilities()` untouched — which left the Cloud (whose only capability source is `get_capabilities()` via the WebSocket `register` message) still advertising kebab-case pre-Wave-1 keys, so every card self-gated away. Reworked to a single source: `get_capabilities()` now advertises the Wave 1 keys in **snake_case** (renaming `mcp-servers`→`mcp_servers`, `litellm-mcp`→`litellm_mcp`) and the `/api/capabilities` route (needed by the locally-served SPA, which can't see the WebSocket relay) is backed by that same function.
+
+- [x] Update the capability source `get_capabilities()` in `errand/capabilities.py` (Trap 1: NOT a separate route — `get_capabilities()` feeds the errand-cloud WebSocket `register`). Add the five always-on Wave 1 keys: `system_prompt`, `mcp_servers`, `skills_git_repo`, `task_management`, `telemetry`.
+- [x] Rename kebab→snake (Trap 2): `mcp-servers`→`mcp_servers`, `litellm-mcp`→`litellm_mcp` (rename, don't advertise both). Pre-Wave-1 keys (`tasks`, `settings`, `task-profiles`, `platforms`, `voice-input`) retained.
+- [x] Add conditional advertisement for `cloud_storage`, `jira`, `litellm_mcp` by runtime detection. — `cloud_storage`←`ONEDRIVE_MCP_URL`, `jira`←platform registry, `litellm_mcp`←`litellm` provider row or `OPENAI_BASE_URL` (proxy-detected, so the enabling card can appear).
+- [x] Back the public `GET /api/capabilities` route (for the local SPA) with `get_capabilities()` — single source of truth shared with cloud registration.
+- [x] Backend tests verifying always-on keys, snake_case (no legacy kebab), and conditional gating — `test_capabilities.py` (direct) + `test_capabilities_endpoint.py` (HTTP).
 
 ### Frontend dependency bump
 

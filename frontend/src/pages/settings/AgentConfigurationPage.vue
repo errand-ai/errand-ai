@@ -14,8 +14,9 @@ import PluginPollIntervalSettings from '../../components/settings/PluginPollInte
 // The migrated library cards (SystemPromptCard, SkillsRepoCard, McpServersCard,
 // LitellmMcpCard) own their own load/save and register with <SettingsShell> for
 // unsaved-changes guarding, so this page no longer tracks their dirty state.
-// PluginPollIntervalSettings still reads from the shared settings-state provider.
-const { pluginPollIntervalSeconds, saveSettings } = inject<any>('settings-state') ?? {}
+// PluginPollIntervalSettings still reads from the shared settings-state provider,
+// which SettingsPage always provides (fail fast if it is ever missing).
+const { pluginPollIntervalSeconds, saveSettings } = inject<any>('settings-state')
 </script>
 
 <template>

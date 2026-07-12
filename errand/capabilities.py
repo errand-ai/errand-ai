@@ -30,66 +30,65 @@ def get_server_version() -> str:
     return "unknown"
 
 
-async def get_capabilities() -> list[str]:
-    """Derive capabilities list from runtime configuration.
-
-    Always-present capabilities:
-    - tasks, settings, mcp-servers, task-profiles, platforms
-
-    Conditional capabilities:
-    - voice-input: present when transcription_model is configured
-    - litellm-mcp: present when LiteLLM MCP servers setting has entries
-    """
-    capabilities = ["tasks", "settings", "mcp-servers", "task-profiles", "platforms"]
-
-    async with database.async_session() as session:
-        # Check for voice-input (transcription model configured)
-        result = await session.execute(
-            select(Setting).where(Setting.key == "transcription_model")
-        )
-        setting = result.scalar_one_or_none()
-        if setting and setting.value:
-            capabilities.append("voice-input")
-
-        # Check for litellm-mcp (LiteLLM MCP servers enabled)
-        result = await session.execute(
-            select(Setting).where(Setting.key == "litellm_mcp_servers")
-        )
-        setting = result.scalar_one_or_none()
-        if setting and setting.value and isinstance(setting.value, list) and len(setting.value) > 0:
-            capabilities.append("litellm-mcp")
-
-    return capabilities
-
-
-# Capability keys consumed by the shared `@errand-ai/ui-components` settings
-# cards (Wave 1). These use their own vocabulary (snake_case, per-card) and are
-# distinct from the hyphenated cloud-registration capabilities above.
-UI_ALWAYS_ON_CAPABILITIES = [
+# The single set of capabilities advertised to consumers. This is the ONE
+# capability source: it is sent to errand-cloud in the WebSocket `register`
+# message (`cloud_client._send_register`) AND returned by `GET /api/capabilities`
+# for the locally-served SPA. The shared `@errand-ai/ui-components` settings
+# cards (desktop AND cloud) gate on the snake_case keys, so the Wave 1 keys MUST
+# be snake_case — advertising kebab-case (`mcp-servers`) hides those cards.
+ALWAYS_ON_CAPABILITIES = [
+    # Wave 1 settings cards (snake_case — consumed by the shared card library).
     "system_prompt",
     "mcp_servers",
     "skills_git_repo",
     "task_management",
     "telemetry",
+    # Pre-Wave-1 capabilities (consumed by errand-cloud for other features).
+    "tasks",
+    "settings",
+    "task-profiles",
+    "platforms",
 ]
 
 
-async def get_ui_capabilities(session: AsyncSession) -> list[str]:
-    """Capability keys advertised to the settings UI via ``GET /api/capabilities``.
+async def _detect_conditional_capabilities(
+    session: AsyncSession, capabilities: list[str]
+) -> None:
+    """Append DB-conditional capabilities in place, using ``session``."""
+    # voice-input: a transcription model is configured.
+    result = await session.execute(
+        select(Setting).where(Setting.key == "transcription_model")
+    )
+    setting = result.scalar_one_or_none()
+    if setting and setting.value:
+        capabilities.append("voice-input")
 
-    Always-on keys drive cards that are always available. Conditional keys gate
-    optional integrations through the library's ``<CapabilityGate>``: if a key
-    is absent the corresponding card does not render.
+    # litellm_mcp: a LiteLLM proxy is detected (a `litellm` provider row, or the
+    # legacy OPENAI_BASE_URL env var). This gates the LiteLLM MCP settings card,
+    # which is what enables/disables servers — so it must appear whenever a proxy
+    # exists, not only once servers have already been enabled.
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.provider_type == "litellm").limit(1)
+    )
+    if result.scalar_one_or_none() is not None or os.environ.get("OPENAI_BASE_URL"):
+        capabilities.append("litellm_mcp")
 
-    Conditional keys:
-    - ``cloud_storage`` — a cloud-storage provider (OneDrive) is configured in
-      this server build (its MCP URL is set).
-    - ``jira`` — the Jira platform integration is registered.
-    - ``litellm_mcp`` — a LiteLLM proxy is detected at runtime (a ``litellm``
-      LLM provider row exists, or the legacy ``OPENAI_BASE_URL`` env var is set).
+
+async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
+    """Derive the capability list advertised to errand-cloud and the local SPA.
+
+    Always-on keys are unconditional. Conditional keys reflect runtime config:
+    - ``voice-input`` — a transcription model is configured
+    - ``litellm_mcp`` — a LiteLLM proxy is detected
+    - ``cloud_storage`` — the OneDrive MCP URL is configured in this server build
+    - ``jira`` — the Jira platform integration is registered
+
+    Pass ``session`` to reuse a request-scoped session (e.g. the HTTP route);
+    omit it and a session is opened internally (e.g. cloud registration).
     """
-    capabilities = list(UI_ALWAYS_ON_CAPABILITIES)
+    capabilities = list(ALWAYS_ON_CAPABILITIES)
 
+    # Env/registry checks need no DB session.
     if os.environ.get("ONEDRIVE_MCP_URL"):
         capabilities.append("cloud_storage")
 
@@ -101,10 +100,10 @@ async def get_ui_capabilities(session: AsyncSession) -> list[str]:
     except Exception:
         logger.debug("jira capability probe failed", exc_info=True)
 
-    result = await session.execute(
-        select(LlmProvider).where(LlmProvider.provider_type == "litellm").limit(1)
-    )
-    if result.scalar_one_or_none() is not None or os.environ.get("OPENAI_BASE_URL"):
-        capabilities.append("litellm_mcp")
+    if session is not None:
+        await _detect_conditional_capabilities(session, capabilities)
+    else:
+        async with database.async_session() as own_session:
+            await _detect_conditional_capabilities(own_session, capabilities)
 
     return capabilities

@@ -1,7 +1,14 @@
-"""Tests for GET /api/capabilities (settings-UI capability advertisement)."""
+"""Tests for GET /api/capabilities (server capability advertisement)."""
 import pytest
 
-from capabilities import UI_ALWAYS_ON_CAPABILITIES
+# Wave 1 settings cards gate on these snake_case keys.
+WAVE1_ALWAYS_ON = [
+    "system_prompt",
+    "mcp_servers",
+    "skills_git_repo",
+    "task_management",
+    "telemetry",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -13,33 +20,43 @@ def _clean_conditional_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_capabilities_public_and_always_on(unauth_client):
-    """Endpoint is public and always advertises the five always-on Wave 1 keys."""
+    """Endpoint is public and always advertises the Wave 1 keys in snake_case."""
     resp = await unauth_client.get("/api/capabilities")
 
     assert resp.status_code == 200
     data = resp.json()
     assert "version" in data
     caps = data["capabilities"]
-    for key in UI_ALWAYS_ON_CAPABILITIES:
+    for key in WAVE1_ALWAYS_ON:
         assert key in caps
-    # Sanity: the always-on set is exactly these five keys.
-    assert set(UI_ALWAYS_ON_CAPABILITIES) == {
-        "system_prompt",
-        "mcp_servers",
-        "skills_git_repo",
-        "task_management",
-        "telemetry",
-    }
+    # The endpoint returns the same set as cloud registration; Wave 1 keys are
+    # snake_case, so the legacy kebab spelling must not appear.
+    assert "mcp-servers" not in caps
+
+
+class _FakeRegistry:
+    """Minimal platform registry stub: reports the given platform ids as registered."""
+
+    def __init__(self, registered: set[str] | None = None):
+        self._registered = registered or set()
+
+    def get(self, platform_id: str):
+        return object() if platform_id in self._registered else None
 
 
 @pytest.mark.asyncio
-async def test_conditional_capabilities_omitted_when_disabled(unauth_client):
-    """cloud_storage and litellm_mcp are absent when their features are off."""
+async def test_conditional_capabilities_omitted_when_disabled(unauth_client, monkeypatch):
+    """cloud_storage, litellm_mcp and jira are absent when their features are off."""
+    import platforms
+
+    monkeypatch.setattr(platforms, "get_registry", lambda: _FakeRegistry())
+
     resp = await unauth_client.get("/api/capabilities")
     caps = resp.json()["capabilities"]
 
     assert "cloud_storage" not in caps
     assert "litellm_mcp" not in caps
+    assert "jira" not in caps
 
 
 @pytest.mark.asyncio
@@ -62,3 +79,16 @@ async def test_litellm_mcp_advertised_when_proxy_detected(unauth_client, monkeyp
     caps = resp.json()["capabilities"]
 
     assert "litellm_mcp" in caps
+
+
+@pytest.mark.asyncio
+async def test_jira_advertised_when_registered(unauth_client, monkeypatch):
+    """jira is advertised when the Jira platform integration is registered."""
+    import platforms
+
+    monkeypatch.setattr(platforms, "get_registry", lambda: _FakeRegistry({"jira"}))
+
+    resp = await unauth_client.get("/api/capabilities")
+    caps = resp.json()["capabilities"]
+
+    assert "jira" in caps

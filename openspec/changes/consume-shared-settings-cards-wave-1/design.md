@@ -69,23 +69,27 @@ Other section pages unchanged in this phase.
 
 ## Backend capability advertisement
 
-The errand server's `/api/capabilities` endpoint currently advertises a small set (e.g. `llm`, `tasks`). Wave 1 adds:
+> **Correction (implementation).** The original design assumed a standalone `/api/capabilities` endpoint advertising a small set (e.g. `llm`, `tasks`). That endpoint did **not** exist. The real capability source is `errand/capabilities.py::get_capabilities()`, whose only consumer was the errand-cloud WebSocket `register` message (`cloud_client._send_register`), and it emitted **kebab-case** pre-Wave-1 keys (`mcp-servers`, `litellm-mcp`, …). Two consumers must agree:
+>
+> - **Cloud UI** — reads capabilities from the register message relayed via errand-cloud's `/api/cloud/server-info`.
+> - **Desktop/local UI** — served directly by the errand server; it can't see the WebSocket relay, so it needs an HTTP channel.
+
+`get_capabilities(session=None)` is therefore the **single source of truth**. It is sent to errand-cloud in the register message *and* returned by a thin public `GET /api/capabilities` route (backed by the same function) for the local SPA. Both consumers gate on identical keys.
+
+Wave 1 keys are advertised in **snake_case** (the shared cards gate on `mcp_servers` / `litellm_mcp`, so the legacy kebab spellings are renamed, not duplicated):
 
 ```python
-# pseudocode — actual location: errand/main.py or wherever capabilities are defined
-WAVE_1_CAPS = [
-    "system_prompt",
-    "mcp_servers",
-    "skills_git_repo",
-    "task_management",
-    "telemetry",
-    "cloud_storage",     # only if cloud-storage feature is enabled in this server
-    "jira",              # only if jira feature is enabled
-    "litellm_mcp",       # only if LiteLLM proxy is detected
+ALWAYS_ON_CAPABILITIES = [
+    # Wave 1 cards (snake_case, gated by the shared library)
+    "system_prompt", "mcp_servers", "skills_git_repo", "task_management", "telemetry",
+    # Pre-Wave-1 (other errand-cloud features)
+    "tasks", "settings", "task-profiles", "platforms",
 ]
+# conditional: voice-input (transcription model), litellm_mcp (LiteLLM proxy detected),
+#              cloud_storage (ONEDRIVE_MCP_URL), jira (Jira platform registered)
 ```
 
-Capabilities for *optional* features (`cloud_storage`, `jira`, `litellm_mcp`) SHALL be advertised based on runtime detection (existing logic), not unconditionally. Capabilities for always-available features (`system_prompt`, `mcp_servers`, `skills_git_repo`, `task_management`, `telemetry`) SHALL be advertised unconditionally.
+Optional features (`cloud_storage`, `jira`, `litellm_mcp`, `voice-input`) SHALL be advertised by runtime detection; the always-on keys SHALL be advertised unconditionally. `litellm_mcp` is detected by a LiteLLM proxy being present (a `litellm` provider row or `OPENAI_BASE_URL`), not by servers already being enabled — otherwise the card that enables them could never appear.
 
 ## Out of scope
 

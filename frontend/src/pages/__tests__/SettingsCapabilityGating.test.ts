@@ -24,7 +24,7 @@ vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 function mountWithCapabilities(capabilities: string[]) {
   const capsRef = ref<ServerCapabilities>({
-    version: '0.129.0',
+    version: 'test',
     capabilities,
     connected: true,
   })

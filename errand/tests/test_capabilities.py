@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import capabilities as cap_module
 
+# Raw DDL (Postgres-specific column types like JSONB can't be rendered on
+# SQLite via Base.metadata). get_capabilities() reads both tables.
 _SETTINGS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT NOT NULL PRIMARY KEY,
@@ -17,13 +19,32 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """
 
+_LLM_PROVIDERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    provider_type TEXT DEFAULT 'unknown' NOT NULL,
+    is_default INTEGER DEFAULT 0 NOT NULL,
+    source TEXT DEFAULT 'database' NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 @pytest.fixture()
 async def cap_db():
-    """Set up an in-memory DB for capability tests."""
+    """Set up an in-memory DB for capability tests.
+
+    Creates the ``settings`` and ``llm_providers`` tables because
+    ``get_capabilities()`` queries both (LiteLLM proxy detection).
+    """
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
     async with engine.begin() as conn:
         await conn.execute(text(_SETTINGS_TABLE_SQL))
+        await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
 
     test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -58,17 +79,30 @@ def test_get_server_version_missing():
 
 
 @pytest.mark.asyncio
-async def test_capabilities_minimal(cap_db):
-    """Minimal capabilities when no optional features are configured."""
+async def test_capabilities_always_on(cap_db, monkeypatch):
+    """Always-on keys are present (snake_case for Wave 1); conditionals absent."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
     capabilities = await cap_module.get_capabilities()
-    assert "tasks" in capabilities
-    assert "settings" in capabilities
-    assert "mcp-servers" in capabilities
-    assert "task-profiles" in capabilities
-    assert "platforms" in capabilities
-    # Optional capabilities should NOT be present
-    assert "voice-input" not in capabilities
+
+    for key in [
+        "system_prompt",
+        "mcp_servers",
+        "skills_git_repo",
+        "task_management",
+        "telemetry",
+        "tasks",
+        "settings",
+        "task-profiles",
+        "platforms",
+    ]:
+        assert key in capabilities
+    # Wave 1 cards gate on snake_case — the legacy kebab spellings are gone.
+    assert "mcp-servers" not in capabilities
     assert "litellm-mcp" not in capabilities
+    # Conditional keys should NOT be present with no config.
+    assert "voice-input" not in capabilities
+    assert "litellm_mcp" not in capabilities
 
 
 @pytest.mark.asyncio
@@ -86,50 +120,32 @@ async def test_capabilities_with_voice_input(cap_db):
 
 
 @pytest.mark.asyncio
-async def test_capabilities_with_litellm_mcp(cap_db):
-    """litellm-mcp capability present when LiteLLM MCP servers are configured."""
-    async with cap_db() as session:
-        await session.execute(
-            text("INSERT INTO settings (key, value) VALUES ('litellm_mcp_servers', :val)"),
-            {"val": json.dumps(["server1", "server2"])},
-        )
-        await session.commit()
+async def test_litellm_mcp_present_when_proxy_env_set(cap_db, monkeypatch):
+    """litellm_mcp present when a LiteLLM proxy is detected (legacy env var)."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://litellm.example")
 
     capabilities = await cap_module.get_capabilities()
-    assert "litellm-mcp" in capabilities
+    assert "litellm_mcp" in capabilities
 
 
 @pytest.mark.asyncio
-async def test_capabilities_full_set(cap_db):
-    """Full capability set when all optional features are configured."""
+async def test_litellm_mcp_present_when_provider_row_exists(cap_db, monkeypatch):
+    """litellm_mcp present when a `litellm` LLM provider row exists."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    from models import LlmProvider
+
     async with cap_db() as session:
-        await session.execute(
-            text("INSERT INTO settings (key, value) VALUES ('transcription_model', :val)"),
-            {"val": json.dumps("whisper-1")},
-        )
-        await session.execute(
-            text("INSERT INTO settings (key, value) VALUES ('litellm_mcp_servers', :val)"),
-            {"val": json.dumps(["server1"])},
+        session.add(
+            LlmProvider(
+                name="lite",
+                provider_type="litellm",
+                base_url="https://litellm.example",
+                api_key_encrypted="x",
+                is_default=False,
+                source="database",
+            )
         )
         await session.commit()
 
     capabilities = await cap_module.get_capabilities()
-    assert "voice-input" in capabilities
-    assert "litellm-mcp" in capabilities
-    # All always-present capabilities
-    for cap in ["tasks", "settings", "mcp-servers", "task-profiles", "platforms"]:
-        assert cap in capabilities
-
-
-@pytest.mark.asyncio
-async def test_capabilities_empty_litellm_list(cap_db):
-    """Empty litellm_mcp_servers list should not add litellm-mcp capability."""
-    async with cap_db() as session:
-        await session.execute(
-            text("INSERT INTO settings (key, value) VALUES ('litellm_mcp_servers', :val)"),
-            {"val": json.dumps([])},
-        )
-        await session.commit()
-
-    capabilities = await cap_module.get_capabilities()
-    assert "litellm-mcp" not in capabilities
+    assert "litellm_mcp" in capabilities
