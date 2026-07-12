@@ -33,6 +33,34 @@ vi.mock('../../composables/useApi', async (importOriginal) => {
   }
 })
 
+// Mock shared library settings cards + shell (their behavior is covered by the
+// library's own tests). The shell stub renders section labels, the error prop,
+// and the default slot so child pages still mount.
+vi.mock('@errand-ai/ui-components', () => ({
+  SettingsShell: {
+    name: 'SettingsShell',
+    props: ['sections', 'loading', 'error'],
+    emits: ['section-change'],
+    template: `
+      <div data-testid="settings-shell">
+        <div v-if="error" data-testid="settings-error">{{ error }}</div>
+        <nav data-testid="settings-sidebar">
+          <a v-for="s in sections" :key="s.id">{{ s.label }}</a>
+        </nav>
+        <slot />
+      </div>
+    `,
+  },
+  SystemPromptCard: { name: 'SystemPromptCard', template: '<div data-testid="system-prompt-card">System Prompt</div>' },
+  SkillsRepoCard: { name: 'SkillsRepoCard', template: '<div data-testid="skills-repo-card">Skills Repository</div>' },
+  McpServersCard: { name: 'McpServersCard', template: '<div data-testid="mcp-servers-card">MCP Servers</div>' },
+  LitellmMcpCard: { name: 'LitellmMcpCard', template: '<div data-testid="litellm-mcp-card">LiteLLM</div>' },
+  TaskManagementCard: { name: 'TaskManagementCard', template: '<div data-testid="task-management-card">Task Management</div>' },
+  TelemetryCard: { name: 'TelemetryCard', template: '<div data-testid="telemetry-card">Telemetry</div>' },
+  CloudStorageCard: { name: 'CloudStorageCard', template: '<div data-testid="cloud-storage-card">Cloud storage</div>' },
+  JiraCredentialCard: { name: 'JiraCredentialCard', template: '<div data-testid="jira-credential-card">Jira</div>' },
+}))
+
 import { fetchProviders, fetchProviderModels, saveLlmModelsAndTimeouts } from '../../composables/useApi'
 
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -115,59 +143,34 @@ describe('SettingsPage', () => {
     vi.unstubAllGlobals()
   })
 
-  // --- Layout and Navigation ---
+  // --- Shell layout ---
 
-  describe('Layout and navigation', () => {
-    it('renders sidebar with all navigation items', async () => {
+  describe('Shell layout', () => {
+    it('mounts SettingsShell with all eight section labels', async () => {
       const { wrapper } = await mountSettings()
 
-      const sidebar = wrapper.find('[data-testid="settings-sidebar"]')
-      expect(sidebar.exists()).toBe(true)
-
-      const links = sidebar.findAll('a')
-      expect(links).toHaveLength(8)
-      expect(links[0].text()).toBe('Agent Configuration')
-      expect(links[1].text()).toBe('Task Management')
-      expect(links[2].text()).toBe('Security')
-      expect(links[3].text()).toBe('Task Profiles')
-      expect(links[4].text()).toBe('Integrations')
-      expect(links[5].text()).toBe('Task Generators')
-      expect(links[6].text()).toBe('Cloud Service')
-      expect(links[7].text()).toBe('User Management')
+      expect(wrapper.find('[data-testid="settings-shell"]').exists()).toBe(true)
+      const links = wrapper.find('[data-testid="settings-sidebar"]').findAll('a')
+      expect(links.map(l => l.text())).toEqual([
+        'Agent Configuration',
+        'Task Management',
+        'Security',
+        'Task Profiles',
+        'Integrations',
+        'Task Generators',
+        'Cloud Service',
+        'User Management',
+      ])
     })
 
-    it('highlights active sidebar link', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
+    it('navigates when the shell emits section-change', async () => {
+      const { wrapper, router } = await mountSettings('/settings/agent')
 
-      const sidebar = wrapper.find('[data-testid="settings-sidebar"]')
-      const links = sidebar.findAll('a')
-      expect(links[0].classes()).toContain('bg-gray-100')
-      expect(links[0].classes()).toContain('text-gray-900')
-      expect(links[1].classes()).toContain('text-gray-600')
-    })
+      const shell = wrapper.findComponent({ name: 'SettingsShell' })
+      shell.vm.$emit('section-change', 'tasks')
+      await flushPromises()
 
-    it('highlights correct link when navigating to different sub-page', async () => {
-      const { wrapper } = await mountSettings('/settings/security')
-
-      const sidebar = wrapper.find('[data-testid="settings-sidebar"]')
-      const links = sidebar.findAll('a')
-      expect(links[2].classes()).toContain('bg-gray-100')
-      expect(links[0].classes()).toContain('text-gray-600')
-    })
-
-    it('shows skeleton loading state before settings load', async () => {
-      const router = makeSettingsRouter()
-      await router.push('/settings/agent')
-      await router.isReady()
-
-      const wrapper = mount(
-        { template: '<router-view />' },
-        { global: { plugins: [router] } },
-      )
-
-      const skeleton = wrapper.find('[data-testid="settings-skeleton"]')
-      expect(skeleton.exists()).toBe(true)
-      expect(skeleton.findAll('.animate-pulse').length).toBeGreaterThanOrEqual(4)
+      expect(router.currentRoute.value.name).toBe('settings-tasks')
     })
 
     it('shows access denied on 403', async () => {
@@ -198,214 +201,6 @@ describe('SettingsPage', () => {
   // --- Sub-page: Agent Configuration ---
 
   describe('Agent Configuration sub-page', () => {
-    it('renders Agent Configuration sections after loading', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      expect(wrapper.text()).toContain('System Prompt')
-      expect(wrapper.text()).toContain('Skills')
-      expect(wrapper.text()).toContain('MCP Server Configuration')
-    })
-
-    it('loads existing system prompt into textarea', async () => {
-      fetchMock = mockSettingsAndSkills({ system_prompt: 'Hello world' })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const textarea = wrapper.find('textarea')
-      expect((textarea.element as HTMLTextAreaElement).value).toBe('Hello world')
-    })
-
-    it('saves system prompt on button click', async () => {
-      let callCount = 0
-      fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
-        callCount++
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        if (_opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ system_prompt: 'new prompt' }) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      await wrapper.find('textarea').setValue('new prompt')
-      const saveButtons = wrapper.findAll('button').filter(b => b.text() === 'Save')
-      await saveButtons[0].trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT'
-      )
-      expect(putCall).toBeTruthy()
-      expect(JSON.parse(putCall![1].body)).toEqual({ system_prompt: 'new prompt' })
-      expect(toastMock.success).toHaveBeenCalledWith('System prompt saved.')
-    })
-
-    // --- MCP Server Configuration ---
-
-    it('MCP section is collapsed by default', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const textareas = wrapper.findAll('textarea')
-      expect(textareas.length).toBe(1)
-      expect(wrapper.text()).toContain('MCP Server Configuration')
-    })
-
-    it('MCP section expands on click', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      expect(mcpButton).toBeTruthy()
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      expect(textareas.length).toBe(2)
-    })
-
-    it('loads MCP servers into text box when expanded', async () => {
-      const mcpConfig = { servers: [{ name: 'test-server' }] }
-      fetchMock = mockSettingsAndSkills({ mcp_servers: mcpConfig })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      expect((mcpTextarea.element as HTMLTextAreaElement).value).toContain('test-server')
-    })
-
-    it('shows JSON validation error for invalid JSON', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      await mcpTextarea.setValue('not valid json {{{')
-
-      const saveButtons = wrapper.findAll('button')
-      const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
-      await saveMcpButton!.trigger('click')
-      await flushPromises()
-
-      expect(wrapper.text()).toContain('Invalid JSON')
-    })
-
-    it('saves valid MCP JSON configuration', async () => {
-      fetchMock = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      await mcpTextarea.setValue('{"mcpServers": {"test": {"url": "http://localhost:4000/mcp"}}}')
-
-      const saveButtons = wrapper.findAll('button')
-      const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
-      await saveMcpButton!.trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT'
-      )
-      expect(putCall).toBeTruthy()
-      expect(JSON.parse(putCall![1].body as string)).toEqual({
-        mcp_servers: { mcpServers: { test: { url: 'http://localhost:4000/mcp' } } },
-      })
-      expect(toastMock.success).toHaveBeenCalledWith('MCP configuration saved.')
-    })
-
-    it('rejects STDIO MCP server configuration', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      await mcpTextarea.setValue(JSON.stringify({
-        mcpServers: { local: { command: 'npx', args: ['-y', 'some-mcp-server'] } },
-      }))
-
-      const saveButtons = wrapper.findAll('button')
-      const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
-      await saveMcpButton!.trigger('click')
-      await flushPromises()
-
-      expect(wrapper.text()).toContain('STDIO transport')
-      expect(wrapper.text()).toContain("Server 'local'")
-    })
-
-    it('rejects MCP server entry missing url field', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      await mcpTextarea.setValue(JSON.stringify({
-        mcpServers: { test: { headers: { key: 'value' } } },
-      }))
-
-      const saveButtons = wrapper.findAll('button')
-      const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
-      await saveMcpButton!.trigger('click')
-      await flushPromises()
-
-      expect(wrapper.text()).toContain("missing required 'url' field")
-      expect(wrapper.text()).toContain("Server 'test'")
-    })
-
-    it('accepts valid HTTP Streaming MCP configuration', async () => {
-      fetchMock = vi.fn().mockImplementation((url: string) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      const buttons = wrapper.findAll('button')
-      const mcpButton = buttons.find(b => b.text().includes('MCP Server Configuration'))
-      await mcpButton!.trigger('click')
-
-      const textareas = wrapper.findAll('textarea')
-      const mcpTextarea = textareas[textareas.length - 1]
-      await mcpTextarea.setValue(JSON.stringify({
-        mcpServers: {
-          argocd: {
-            url: 'http://localhost:4000/argocd/mcp',
-            headers: { 'x-litellm-api-key': 'Bearer sk-1234' },
-          },
-        },
-      }))
-
-      const saveButtons = wrapper.findAll('button')
-      const saveMcpButton = saveButtons.find(b => b.text().includes('Save MCP Config'))
-      await saveMcpButton!.trigger('click')
-      await flushPromises()
-
-      expect(toastMock.success).toHaveBeenCalledWith('MCP configuration saved.')
-    })
-
     // --- Skills ---
 
     it('shows Skills section with skill list', async () => {
@@ -621,128 +416,6 @@ describe('SettingsPage', () => {
       expect(wrapper.text()).toContain('extract.py')
     })
 
-    // --- Skills Repository ---
-
-    it('renders Skills Repository section', async () => {
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      expect(wrapper.find('[data-testid="skills-repo-section"]').exists()).toBe(true)
-      expect(wrapper.text()).toContain('Skills Repository')
-    })
-
-    it('loads existing skills_git_repo config into form fields', async () => {
-      fetchMock = mockSettingsAndSkills({
-        skills_git_repo: {
-          url: 'git@github.com:org/skills.git',
-          branch: 'main',
-          path: 'skills',
-        },
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-      await nextTick()
-
-      const urlInput = wrapper.find('[data-testid="skills-repo-url"]').element as HTMLInputElement
-      const branchInput = wrapper.find('[data-testid="skills-repo-branch"]').element as HTMLInputElement
-      const pathInput = wrapper.find('[data-testid="skills-repo-path"]').element as HTMLInputElement
-      expect(urlInput.value).toBe('git@github.com:org/skills.git')
-      expect(branchInput.value).toBe('main')
-      expect(pathInput.value).toBe('skills')
-    })
-
-    it('saves skills repo with all fields', async () => {
-      fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      await wrapper.find('[data-testid="skills-repo-url"]').setValue('git@github.com:org/skills.git')
-      await wrapper.find('[data-testid="skills-repo-branch"]').setValue('main')
-      await wrapper.find('[data-testid="skills-repo-path"]').setValue('skills')
-      await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
-      )
-      expect(putCall).toBeTruthy()
-      const body = JSON.parse(putCall![1].body as string)
-      expect(body.skills_git_repo).toEqual({
-        url: 'git@github.com:org/skills.git',
-        branch: 'main',
-        path: 'skills',
-      })
-      expect(toastMock.success).toHaveBeenCalledWith('Skills repository settings saved.')
-    })
-
-    it('saves skills repo with URL only (omits empty branch/path)', async () => {
-      fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      await wrapper.find('[data-testid="skills-repo-url"]').setValue('git@github.com:org/skills.git')
-      await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
-      )
-      const body = JSON.parse(putCall![1].body as string)
-      expect(body.skills_git_repo).toEqual({ url: 'git@github.com:org/skills.git' })
-      expect(body.skills_git_repo.branch).toBeUndefined()
-      expect(body.skills_git_repo.path).toBeUndefined()
-    })
-
-    it('clears skills repo config when URL is empty', async () => {
-      fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        if (opts?.method === 'PUT') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-        return Promise.resolve({
-          ok: true, status: 200,
-          json: () => Promise.resolve({ skills_git_repo: { url: 'git@github.com:org/skills.git' } }),
-        })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-      await nextTick()
-
-      await wrapper.find('[data-testid="skills-repo-url"]').setValue('')
-      await wrapper.find('[data-testid="skills-repo-save"]').trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT' && call[0] === '/api/settings'
-      )
-      const body = JSON.parse(putCall![1].body as string)
-      expect(body.skills_git_repo).toBeNull()
-    })
-
-    // --- Unsaved changes ---
-
-    it('shows unsaved changes indicator on system prompt modification', async () => {
-      fetchMock = mockSettingsAndSkills({ system_prompt: 'original prompt' })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/agent')
-
-      expect(wrapper.text()).not.toContain('Unsaved changes')
-
-      await wrapper.find('textarea').setValue('modified prompt')
-      await nextTick()
-
-      expect(wrapper.text()).toContain('Unsaved changes')
-    })
   })
 
   // --- Sub-page: Task Management ---
@@ -1221,83 +894,6 @@ describe('SettingsPage', () => {
       expect(wrapper.find('[data-testid="llm-timeout-input"]').exists()).toBe(false)
     })
 
-    // --- Task Management Card ---
-
-    it('displays Task Management card with timezone, archive, and log level', async () => {
-      setupProviderMocks()
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      expect(wrapper.text()).toContain('Timezone')
-      expect(wrapper.text()).toContain('Archive after (days)')
-      expect(wrapper.text()).toContain('Task Runner Log Level')
-    })
-
-    it('renders Task Runner log level dropdown with default INFO', async () => {
-      setupProviderMocks()
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
-      expect(logLevelSelect.exists()).toBe(true)
-      expect((logLevelSelect.element as HTMLSelectElement).value).toBe('INFO')
-
-      const options = logLevelSelect.findAll('option')
-      const optionValues = options.map(o => o.text())
-      expect(optionValues).toEqual(['INFO', 'DEBUG', 'WARNING', 'ERROR'])
-    })
-
-    it('loads task runner log level from settings', async () => {
-      setupProviderMocks()
-      fetchMock = mockSettingsAndSkills({ task_runner_log_level: 'DEBUG' })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
-      expect((logLevelSelect.element as HTMLSelectElement).value).toBe('DEBUG')
-    })
-
-    it('saves task management settings (timezone, archive days, log level) on Save click', async () => {
-      setupProviderMocks()
-      fetchMock = vi.fn().mockImplementation((url: string) => {
-        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
-      })
-      vi.stubGlobal('fetch', fetchMock)
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      const logLevelSelect = wrapper.find('[data-testid="task-runner-log-level-select"]')
-      await logLevelSelect.setValue('ERROR')
-
-      const taskMgmtSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('Task Management') && el.text().includes('Archive'))
-      const saveBtn = taskMgmtSection!.findAll('button').find(b => b.text() === 'Save')
-      await saveBtn!.trigger('click')
-      await flushPromises()
-
-      const putCall = fetchMock.mock.calls.find(
-        (call: any[]) => call[1]?.method === 'PUT' && call[1]?.body?.includes('task_runner_log_level')
-      )
-      expect(putCall).toBeTruthy()
-      const body = JSON.parse(putCall![1].body as string)
-      expect(body.task_runner_log_level).toBe('ERROR')
-      expect(body.timezone).toBeTruthy()
-      expect(body.archive_after_days).toBeTruthy()
-      expect(toastMock.success).toHaveBeenCalledWith('Task management settings saved.')
-    })
-
-    it('timezone defaults to UTC when no setting exists', async () => {
-      setupProviderMocks()
-
-      const { wrapper } = await mountSettings('/settings/tasks')
-
-      // Find the timezone select by looking in the Task Management section
-      const taskMgmtSection = wrapper.findAll('.shadow-sm').find(el => el.text().includes('Timezone'))
-      const selects = taskMgmtSection!.findAll('select')
-      expect((selects[0].element as HTMLSelectElement).value).toBe('UTC')
-    })
-
     // --- Unsaved changes ---
 
     it('shows unsaved changes indicator on provider change', async () => {
@@ -1643,17 +1239,19 @@ describe('SettingsPage', () => {
     it('Agent Configuration renders correct components', async () => {
       const { wrapper } = await mountSettings('/settings/agent')
 
-      expect(wrapper.text()).toContain('System Prompt')
+      expect(wrapper.find('[data-testid="system-prompt-card"]').exists()).toBe(true)
       expect(wrapper.text()).toContain('Skills')
-      expect(wrapper.text()).toContain('Skills Repository')
-      expect(wrapper.text()).toContain('MCP Server Configuration')
+      expect(wrapper.find('[data-testid="skills-repo-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="mcp-servers-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="litellm-mcp-card"]').exists()).toBe(true)
     })
 
     it('Task Management renders correct components', async () => {
       const { wrapper } = await mountSettings('/settings/tasks')
 
       expect(wrapper.text()).toContain('LLM Models')
-      expect(wrapper.text()).toContain('Task Management')
+      expect(wrapper.find('[data-testid="task-management-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="telemetry-card"]').exists()).toBe(true)
     })
 
     it('Security renders correct components', async () => {
@@ -1666,6 +1264,8 @@ describe('SettingsPage', () => {
     it('Integrations renders correct components', async () => {
       const { wrapper } = await mountSettings('/settings/integrations')
 
+      expect(wrapper.find('[data-testid="cloud-storage-card"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="jira-credential-card"]').exists()).toBe(true)
       expect(wrapper.text()).toContain('Platform')
     })
   })

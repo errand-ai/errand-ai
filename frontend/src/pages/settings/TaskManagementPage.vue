@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { inject, ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
+import { TaskManagementCard, TelemetryCard } from '@errand-ai/ui-components'
 import LlmProviderSettings from '../../components/settings/LlmProviderSettings.vue'
 import LlmModelSettings from '../../components/settings/LlmModelSettings.vue'
-import TaskManagementSettings from '../../components/settings/TaskManagementSettings.vue'
-import TelemetrySettings from '../../components/settings/TelemetrySettings.vue'
 import type { LlmProviderData, ModelSetting } from '../../composables/useApi'
 
+// TaskManagementCard and TelemetryCard (library) own their own state and register
+// with <SettingsShell> for unsaved-changes guarding. LlmProviderSettings and
+// LlmModelSettings stay local (Wave 2) and still read from settings-state.
 const {
   llmModel,
   taskProcessingModel,
@@ -14,17 +16,10 @@ const {
   titleGenerationTimeout,
   taskProcessingTimeout,
   transcriptionTimeout,
-  timezoneValue,
-  archiveAfterDays,
-  maxConcurrentTasks,
-  taskRunnerLogLevel,
-  saveSettings,
-} = inject<any>('settings-state')
+} = inject<any>('settings-state') ?? {}
 
 const providerRef = ref<InstanceType<typeof LlmProviderSettings> | null>(null)
 const llmModelRef = ref<InstanceType<typeof LlmModelSettings> | null>(null)
-const taskMgmtRef = ref<InstanceType<typeof TaskManagementSettings> | null>(null)
-const telemetryRef = ref<InstanceType<typeof TelemetrySettings> | null>(null)
 
 const providers = ref<LlmProviderData[]>([])
 
@@ -44,9 +39,7 @@ function toModelSetting(val: any): ModelSetting {
   return { provider_id: null, model: typeof val === 'string' ? val : '' }
 }
 
-const hasUnsavedChanges = computed(() =>
-  llmModelRef.value?.isDirty || taskMgmtRef.value?.isDirty || telemetryRef.value?.isDirty
-)
+const hasUnsavedChanges = computed(() => !!llmModelRef.value?.isDirty)
 
 function onBeforeUnload(e: BeforeUnloadEvent) {
   if (hasUnsavedChanges.value) {
@@ -94,18 +87,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @update:transcription-timeout="transcriptionTimeout = $event"
   />
 
-  <TaskManagementSettings
-    ref="taskMgmtRef"
-    :timezone="timezoneValue"
-    :archive-after-days="archiveAfterDays"
-    :max-concurrent-tasks="maxConcurrentTasks"
-    :task-runner-log-level="taskRunnerLogLevel"
-    :save-settings="saveSettings"
-    @update:timezone="timezoneValue = $event"
-    @update:archive-after-days="archiveAfterDays = $event"
-    @update:max-concurrent-tasks="maxConcurrentTasks = $event"
-    @update:task-runner-log-level="taskRunnerLogLevel = $event"
-  />
+  <TaskManagementCard />
 
-  <TelemetrySettings ref="telemetryRef" />
+  <TelemetryCard />
 </template>

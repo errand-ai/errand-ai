@@ -1,6 +1,6 @@
-import { createApp } from 'vue'
+import { createApp, ref } from 'vue'
 import { createPinia } from 'pinia'
-import { createErrandUI, createDirectApi } from '@errand-ai/ui-components'
+import { createErrandUI, createDirectApi, type ServerCapabilities } from '@errand-ai/ui-components'
 import router from './router'
 import App from './App.vue'
 import { useAuthStore } from './stores/auth'
@@ -42,7 +42,28 @@ const api = createDirectApi({
   },
 })
 
-const errandUI = createErrandUI({ api })
+// Server capabilities gate which shared settings cards render (e.g. CloudStorageCard,
+// LitellmMcpCard). The endpoint is public, so we fetch it fire-and-forget at bootstrap;
+// the reactive ref updates the injected capabilities and gated cards re-render on arrival.
+// If the fetch fails the defaults leave optional cards hidden rather than erroring.
+const capabilities = ref<ServerCapabilities>({ version: null, capabilities: [], connected: false })
+
+fetch('/api/capabilities')
+  .then((resp) => (resp.ok ? resp.json() : null))
+  .then((data) => {
+    if (data) {
+      capabilities.value = {
+        version: data.version ?? null,
+        capabilities: Array.isArray(data.capabilities) ? data.capabilities : [],
+        connected: true,
+      }
+    }
+  })
+  .catch(() => {
+    /* leave defaults — capability-gated cards stay hidden */
+  })
+
+const errandUI = createErrandUI({ api, capabilities })
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- npm link causes duplicate Vue type trees
 app.use({ install: (a: any) => errandUI.install(a) })
 app.mount('#app')
