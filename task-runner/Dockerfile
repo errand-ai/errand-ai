@@ -70,7 +70,7 @@ RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googlework
     mkdir -p /gws-skills && \
     cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
 
-FROM node:22-bookworm-slim AS node-builder
+FROM node:24-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
 # Stage npm for entrypoint-phase skill dependency installation
 RUN mkdir -p /npm-staging && cp -rL /usr/local/lib/node_modules/npm /npm-staging/lib && \
