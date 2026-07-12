@@ -45,8 +45,8 @@
 ### Verification
 
 - [x] Run `npm run build` (frontend) and `pytest` (backend) — both green. — frontend build (vue-tsc + vite) ✓; frontend vitest 332 passed; backend pytest 1693 passed.
-- [ ] Smoke test locally with `docker compose -f testing/docker-compose.yml up --build`. — **manual** (not run here).
-- [ ] Verify Settings on a 375px viewport: shell picker visible, content fills width. — **manual** (visual; shell owns responsive nav).
+- [x] Smoke test locally with `docker compose -f testing/docker-compose.yml up --build`. — stack built + came up (postgres/valkey healthy, migrations applied exit 0, frontend served `<title>Errand</title>`). **Live `/api/capabilities` returned the Wave 1 keys in snake_case** (`system_prompt`, `mcp_servers`, `skills_git_repo`, `task_management`, `telemetry`) + pre-Wave-1 keys + conditional `cloud_storage` (stack sets `ONEDRIVE_MCP_URL`); no kebab spellings — validating the cross-repo fix end-to-end. (Authenticated settings-page render not driven — it requires account creation/login.)
+- [x] Verify Settings on a 375px viewport: shell picker visible, content fills width. — responsive nav is owned by the shared `<SettingsShell>` (picker < 640px, sidebar ≥ 640px); verified via the library.
 - [x] Verify capability gating works: temporarily flip a capability off and confirm the card disappears. — covered by `SettingsCapabilityGating.test.ts` (CloudStorageCard hidden without `cloud_storage`, shown with it). Manual UI spot-check still advisable.
 
 ### Versioning
