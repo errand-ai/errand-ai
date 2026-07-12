@@ -61,10 +61,10 @@ rm -rf "$PYTHON_DEPS/pip" "$PYTHON_DEPS"/pip-* 2>/dev/null || true
 rm -rf "$NODE_DEPS/node_modules/npm" 2>/dev/null || true
 # Remove any residual npm from global node_modules (should already be excluded at build)
 rm -rf /usr/local/lib/node_modules/npm 2>/dev/null || true
-# Remove pip from base Python site-packages (in case it leaked)
-rm -rf /usr/local/lib/python3.11/site-packages/pip /usr/local/lib/python3.11/site-packages/pip-* 2>/dev/null || true
-# Remove ensurepip from the Python stdlib
-rm -rf /usr/lib/python3.11/ensurepip 2>/dev/null || true
+# NOTE: pip in the base site-packages and ensurepip in the stdlib are removed at
+# BUILD time as root (see task-runner/Dockerfile) — the entrypoint runs as nonroot
+# and cannot delete those root-owned paths. Skill deps still install above via the
+# staged pip at $PIP_BOOTSTRAP, which is removed just above (line: rm -rf "$PIP_BOOTSTRAP").
 # Clean npm cache
 rm -rf /home/nonroot/.npm 2>/dev/null || true
 

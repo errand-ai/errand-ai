@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim-trixie AS builder
 WORKDIR /build
 COPY task-runner/requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
@@ -21,19 +21,27 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_$
     | tar xz -C /tmp && cp "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh
 # Create .ssh directory with correct permissions (preserved by COPY --from)
 RUN mkdir -p /home/nonroot/.ssh && chmod 700 /home/nonroot/.ssh
-# Stage shared libraries needed by git, ssh, and busybox into an arch-independent
-# path. ldd lists all .so dependencies; we copy them preserving the full directory
-# structure so the dynamic linker finds them regardless of architecture.
-# We exclude libraries already present in the distroless base image to avoid
-# glibc version conflicts.
+# Stage shared libraries needed by git, ssh, and busybox. ldd lists all .so
+# dependencies; we copy each preserving its soname filename (what the dynamic
+# linker looks up) but rewrite a leading /lib/ destination to /usr/lib/. This
+# matters for merged-/usr: the distroless python3-debian13 (trixie) base has /lib
+# as a symlink to /usr/lib, so staging a real top-level /lib directory would
+# collide with that symlink on `COPY /staged-libs/ /` ("cannot copy to
+# non-directory"). We exclude libraries already present in the distroless base to
+# avoid version conflicts — notably libssl/libcrypto: the base (trixie, OpenSSL
+# 3.5) provides the OPENSSL_3.3.0 symbols its Python 3.13 _ssl needs, and still
+# satisfies the older OPENSSL_3.0.0 symbols the staged bookworm git/curl require;
+# staging bookworm's OpenSSL 3.0 here would shadow the base and break Python _ssl.
 RUN mkdir -p /staged-libs && \
-    echo "libc.so libdl.so libm.so libpthread.so librt.so libresolv.so libz.so libexpat.so libgcc_s.so libnsl.so libutil.so libcrypt.so liblzma.so libtirpc.so libtinfo.so libncursesw.so libreadline.so libhistory.so libbz2.so libcom_err.so libkeyutils.so" > /tmp/skip_libs && \
+    echo "libc.so libdl.so libm.so libpthread.so librt.so libresolv.so libz.so libexpat.so libgcc_s.so libnsl.so libutil.so libcrypt.so liblzma.so libtirpc.so libtinfo.so libncursesw.so libreadline.so libhistory.so libbz2.so libcom_err.so libkeyutils.so libssl.so libcrypto.so" > /tmp/skip_libs && \
     for bin in /usr/bin/git /usr/bin/ssh /usr/bin/ssh-keygen /usr/bin/ssh-keyscan /usr/lib/git-core/git-remote-https /bin/busybox /usr/bin/curl /usr/bin/jq; do \
       ldd "$bin" 2>/dev/null | awk '/ => \// {print $3}' | while read lib; do \
         basename=$(basename "$lib" | sed 's/\.so.*/.so/') ; \
         if ! grep -qw "$basename" /tmp/skip_libs; then \
-          mkdir -p "/staged-libs$(dirname "$lib")" && \
-          cp -L "$lib" "/staged-libs$lib" 2>/dev/null || true ; \
+          dest="$lib" ; \
+          case "$dest" in /lib/*) dest="/usr$dest" ;; esac ; \
+          mkdir -p "/staged-libs$(dirname "$dest")" && \
+          cp -L "$lib" "/staged-libs$dest" 2>/dev/null || true ; \
         fi ; \
       done ; \
     done
@@ -46,8 +54,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # Map Docker's TARGETARCH to the gws release tarball target triple.
 # We use the *-unknown-linux-musl* targets because they ship a statically
-# linked binary that runs on any Linux base — the gnu builds require
-# GLIBC_2.39 which Debian 12 (the distroless base) does not provide.
+# linked binary that runs on any Linux base, independent of the distroless
+# base's glibc version. (Debian 13 / trixie provides GLIBC_2.39, so the gnu
+# build would also work now, but the static musl build keeps gws decoupled
+# from the base image and avoids re-checking on future base bumps.)
 # Verify the tarball against the SHA256 published on the same release before
 # extracting, to mitigate MITM / compromised-artifact supply-chain risk.
 RUN case "${TARGETARCH}" in \
@@ -84,8 +94,8 @@ RUN OPENSPEC_ENTRY=$(readlink -f /usr/local/bin/openspec) && \
     echo "exec /usr/local/bin/node $OPENSPEC_ENTRY \"\$@\"" >> /usr/local/bin/openspec-sh && \
     chmod +x /usr/local/bin/openspec-sh
 
-FROM gcr.io/distroless/python3-debian12:nonroot
-COPY --from=builder /install /usr/local/lib/python3.11/site-packages
+FROM gcr.io/distroless/python3-debian13:nonroot
+COPY --from=builder /install /usr/local/lib/python3.13/site-packages
 COPY --from=builder --chown=65532:65532 /pip-staging /opt/pip-bootstrap
 COPY task-runner/main.py /app/main.py
 COPY task-runner/tool_registry.py /app/tool_registry.py
@@ -140,11 +150,21 @@ USER root
 RUN ["/bin/busybox", "sh", "-c", "/bin/busybox --install -s /bin"]
 # Create skill-deps directory writable by nonroot for entrypoint dependency installation
 RUN ["/bin/busybox", "sh", "-c", "mkdir -p /opt/skill-deps && chown 65532:65532 /opt/skill-deps"]
+# Remove the interpreter's package-bootstrap surface as root at build time: ensurepip
+# (stdlib, root-owned) and any leaked pip in site-packages. The entrypoint runs as
+# nonroot and cannot delete these root-owned paths (the rm would EPERM and be
+# silently ignored), so this hardening must happen here. Runtime skill-dependency
+# installation is unaffected: it uses the staged pip at /opt/pip-bootstrap (see
+# entrypoint.sh), which is separate from ensurepip and removed post-install.
+RUN PYVER=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])') && \
+    rm -rf "/usr/lib/python${PYVER}/ensurepip" \
+           "/usr/local/lib/python${PYVER}/site-packages/pip" \
+           "/usr/local/lib/python${PYVER}/site-packages"/pip-*
 USER nonroot
 
 # Copy .ssh directory (permissions 700 preserved from git-builder)
 COPY --from=git-builder --chown=65532:65532 /home/nonroot/.ssh /home/nonroot/.ssh
 
-ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
+ENV PYTHONPATH=/usr/local/lib/python3.13/site-packages
 WORKDIR /workspace
 ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]

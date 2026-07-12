@@ -20,7 +20,7 @@ RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googlework
     cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
 
 # Stage 2: Download Python wheels (runs natively, downloads wheels for target platform)
-FROM --platform=$BUILDPLATFORM python:3.12 AS build
+FROM --platform=$BUILDPLATFORM python:3.13 AS build
 ARG TARGETPLATFORM
 WORKDIR /app
 COPY errand/requirements.txt .
@@ -38,21 +38,22 @@ RUN <<EOF
   # Accept both the modern (manylinux_2_28) and legacy (manylinux2014 / _2_17) glibc
   # baselines: pip's --platform does not auto-accept older tags, and our pinned deps
   # are split across both (e.g. asyncpg 0.31 is 2_28-only, psycopg2-binary 2.9.12 is
-  # 2014-only). The 3.12-slim (bookworm, glibc 2.36) runtime satisfies both.
+  # 2014-only). The 3.13-slim runtime's glibc (>= 2.28 on current Debian bases)
+  # satisfies both manylinux baselines.
   grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
     --only-binary=:all: \
     --platform "manylinux_2_28_${ARCH}" \
     --platform "manylinux2014_${ARCH}" \
-    --python-version 312 \
+    --python-version 313 \
     --implementation cp \
-    --abi cp312 \
+    --abi cp313 \
     -d /wheels \
     -r requirements-filtered.txt
 EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
-FROM python:3.12-slim
+FROM python:3.13-slim
 ARG APP_VERSION="dev"
 ENV APP_VERSION=$APP_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client && rm -rf /var/lib/apt/lists/*

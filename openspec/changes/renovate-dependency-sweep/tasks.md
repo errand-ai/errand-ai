@@ -38,12 +38,12 @@
 
 <!-- Target is 3.13 (keep distroless), per design D6 — no distroless base offers 3.14. -->
 
-- [ ] 5.1 Create branch from latest `main` and bump `VERSION` (minor)
-- [ ] 5.2 `errand/Dockerfile`: bump base `python:3.12` → `python:3.13` **and** correct the hard-coded `COPY .../python3.12/site-packages` path so it matches the new interpreter (`python3.13`)
-- [ ] 5.3 `Dockerfile` (root, multi-stage): bump the wheel-download and runtime stages `python:3.12`/`3.12-slim` → 3.13, and fix any hard-coded `python3.12` site-packages copy path
-- [ ] 5.4 `task-runner/Dockerfile`: bump the python builder `python:3.11-slim` → `python:3.13-slim-trixie` and the final distroless runtime `gcr.io/distroless/python3-debian12` → `python3-debian13` (Python 3.13), keeping build/runtime on the same Debian release (trixie) for ABI compatibility
-- [ ] 5.5 Bump CI `python-version` '3.12' → '3.13' in `.github/workflows/build.yml`
-- [ ] 5.6 Verify: full `docker build` of both errand and task-runner images succeeds on amd64 + arm64; `python3 --version` in the task-runner image reports 3.13.x; errand + task-runner pytest green; `docker compose up --build` smoke test passes
+- [x] 5.1 Create branch from latest `main` and bump `VERSION` (minor)
+- [x] 5.2 `errand/Dockerfile`: bump base `python:3.12` → `python:3.13` **and** correct the hard-coded `COPY .../python3.12/site-packages` path so it matches the new interpreter (`python3.13`)
+- [x] 5.3 `Dockerfile` (root, multi-stage): bump the wheel-download and runtime stages `python:3.12`/`3.12-slim` → 3.13, and fix any hard-coded `python3.12` site-packages copy path
+- [x] 5.4 `task-runner/Dockerfile`: bump the python builder `python:3.11-slim` → `python:3.13-slim-trixie` and the final distroless runtime `gcr.io/distroless/python3-debian12` → `python3-debian13` (Python 3.13), keeping build/runtime on the same Debian release (trixie) for ABI compatibility
+- [x] 5.5 Bump CI `python-version` '3.12' → '3.13' in `.github/workflows/build.yml`
+- [x] 5.6 Verify: full `docker build` of both errand and task-runner images succeeds on amd64 + arm64; `python3 --version` in the task-runner image reports 3.13.x; errand + task-runner pytest green; `docker compose up --build` smoke test passes
 - [ ] 5.7 Open PR, confirm CI green + both images build + push, validate on K8s, merge, then close Renovate PR `#136` (final piece)
 
 ## 6. Close-out
