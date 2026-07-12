@@ -62,9 +62,9 @@ rm -rf "$NODE_DEPS/node_modules/npm" 2>/dev/null || true
 # Remove any residual npm from global node_modules (should already be excluded at build)
 rm -rf /usr/local/lib/node_modules/npm 2>/dev/null || true
 # Remove pip from base Python site-packages (in case it leaked)
-rm -rf /usr/local/lib/python3.11/site-packages/pip /usr/local/lib/python3.11/site-packages/pip-* 2>/dev/null || true
+rm -rf /usr/local/lib/python3.13/site-packages/pip /usr/local/lib/python3.13/site-packages/pip-* 2>/dev/null || true
 # Remove ensurepip from the Python stdlib
-rm -rf /usr/lib/python3.11/ensurepip 2>/dev/null || true
+rm -rf /usr/lib/python3.13/ensurepip 2>/dev/null || true
 # Clean npm cache
 rm -rf /home/nonroot/.npm 2>/dev/null || true
 
