@@ -23,7 +23,7 @@
 - [x] 3.4 Apply `#136`'s Python library patch/minor bumps in `errand/requirements.txt` (fastapi 0.139, sqlalchemy 2.0.51, asyncpg 0.31, alembic 1.18.5, psycopg2-binary 2.9.12, openai 2.45, docker 7.2) — **excluding** the redis 7.4.1 and `kubernetes <36` re-pins (superseded by 3.2/3.3)
 - [x] 3.5 Apply `#136`'s test-dependency bumps in `errand/requirements-test.txt` (pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis 2.36.2) and the litellm image bump in `deploy/docker-compose.yml`
 - [x] 3.6 Verify: errand pytest + task-runner pytest green; `docker compose up --build` smoke test — dispatch a task through the runner and confirm redis/valkey pub-sub + k8s/docker runtime paths work
-- [ ] 3.7 Open PR, confirm CI green + images build, validate on K8s, merge, then close Renovate PRs `#188`, `#185` (and mark their content in `#136` as landed)
+- [x] 3.7 Open PR, confirm CI green + images build, validate on K8s, merge, then close Renovate PRs `#188`, `#185` (and mark their content in `#136` as landed)
 
 ## 4. Pass 3 — Frontend majors (branch `deps-pass-3-frontend-majors`, VERSION minor bump)
 
@@ -32,7 +32,7 @@
 - [~] 4.3 **DEFERRED — TypeScript 6 → 7 (`#197`)**: TS 7 is the native (Go) compiler; its package drops `typescript/lib/tsc`, which `vue-tsc` (all released versions, incl. 3.3.7) still resolves → `vue-tsc -b` crashes, breaking the build's type-check. No `vue-tsc` supports the native compiler yet. Kept at `~6.0.0`; `#197` stays open pending Vue tooling support (see design D7).
 - [x] 4.4 Bump `@errand-ai/ui-components` 0.6 → 0.9 (from `#136`) — no call-site changes needed; validated in isolation (vue-tsc 0 errors, vitest 389 passed)
 - [x] 4.5 Verify: vitest **389 passed** + `npm run build` (vue-tsc + vite) exit 0 (v4 CSS compiles). Live visual QA of authenticated screens (kanban, task form, settings) deferred to the PR deployment — the SPA is auth-gated and can't render meaningfully without the backend
-- [ ] 4.6 Open PR, confirm CI green + frontend static assets build into the image, merge, then close Renovate PR `#167` (`#197` remains open — deferred per 4.3)
+- [x] 4.6 Open PR, confirm CI green + frontend static assets build into the image, merge, then close Renovate PR `#167` (`#197` remains open — deferred per 4.3)
 
 ## 5. Pass 4 — Python interpreter 3.11/3.12 → 3.13 (branch `deps-pass-4-python-313`, VERSION minor bump)
 
@@ -44,10 +44,10 @@
 - [x] 5.4 `task-runner/Dockerfile`: bump the python builder `python:3.11-slim` → `python:3.13-slim-trixie` and the final distroless runtime `gcr.io/distroless/python3-debian12` → `python3-debian13` (Python 3.13), keeping build/runtime on the same Debian release (trixie) for ABI compatibility
 - [x] 5.5 Bump CI `python-version` '3.12' → '3.13' in `.github/workflows/build.yml`
 - [x] 5.6 Verify: full `docker build` of both errand and task-runner images succeeds on amd64 + arm64; `python3 --version` in the task-runner image reports 3.13.x; errand + task-runner pytest green; `docker compose up --build` smoke test passes
-- [ ] 5.7 Open PR, confirm CI green + both images build + push, validate on K8s, merge, then close Renovate PR `#136` (final piece)
+- [x] 5.7 Open PR, confirm CI green + both images build + push, validate on K8s, merge, then close Renovate PR `#136` (final piece)
 
 ## 6. Close-out
 
-- [ ] 6.1 Confirm the eight addressed Renovate PRs (`#136`, `#141`, `#151`, `#167`, `#185`, `#188`, `#195`, `#196`) are closed. `#197` (TypeScript 7) intentionally remains open — deferred per design D7
-- [ ] 6.2 Run `/opsx:sync` to sync the `task-runner-image` delta into `openspec/specs/`, reconciling final base-image names with what actually shipped (per Pass 4 outcome)
-- [ ] 6.3 Run `/opsx:archive` to archive the change
+- [x] 6.1 Confirm the eight addressed Renovate PRs (`#136`, `#141`, `#151`, `#167`, `#185`, `#188`, `#195`, `#196`) are closed. `#197` (TypeScript 7) intentionally remains open — deferred per design D7
+- [x] 6.2 Run `/opsx:sync` to sync the `task-runner-image` delta into `openspec/specs/`, reconciling final base-image names with what actually shipped (per Pass 4 outcome)
+- [x] 6.3 Run `/opsx:archive` to archive the change
