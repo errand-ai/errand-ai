@@ -101,7 +101,7 @@ defineExpose({ isDirty })
 </script>
 
 <template>
-  <div class="rounded-lg bg-white p-6 shadow">
+  <div class="rounded-lg bg-white p-6 shadow-sm">
     <button
       @click="expanded = !expanded"
       class="flex w-full items-center justify-between text-left"

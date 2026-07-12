@@ -92,12 +92,12 @@ defineExpose({ isDirty })
 </script>
 
 <template>
-  <div v-if="loading" class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="litellm-mcp-loading">
-    <div class="h-5 w-56 rounded bg-gray-200 animate-pulse mb-3"></div>
-    <div class="h-4 w-full rounded bg-gray-200 animate-pulse"></div>
+  <div v-if="loading" class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="litellm-mcp-loading">
+    <div class="h-5 w-56 rounded-sm bg-gray-200 animate-pulse mb-3"></div>
+    <div class="h-4 w-full rounded-sm bg-gray-200 animate-pulse"></div>
   </div>
 
-  <div v-else-if="available && data" class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="litellm-mcp-settings">
+  <div v-else-if="available && data" class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="litellm-mcp-settings">
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-lg font-semibold text-gray-800">MCP Servers (via LiteLLM)</h3>
       <button
@@ -127,7 +127,7 @@ defineExpose({ isDirty })
             :checked="localEnabled.has(String(alias))"
             @change="toggle(String(alias))"
             :data-testid="`litellm-toggle-${alias}`"
-            class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            class="h-4 w-4 rounded-sm border-gray-300 text-blue-600 focus:ring-blue-500"
           />
           <button
             @click="toggleExpand(String(alias))"

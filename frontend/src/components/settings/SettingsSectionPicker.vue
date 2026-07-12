@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
     <button
       ref="triggerEl"
       type="button"
-      class="flex w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-left text-sm font-medium text-gray-900 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      class="flex w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-left text-sm font-medium text-gray-900 shadow-xs hover:bg-gray-50 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
       :aria-expanded="open"
       aria-haspopup="listbox"
       data-testid="settings-section-picker-button"
@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
     >
       <span class="truncate">{{ activeLabel }}</span>
       <svg
-        class="ml-2 h-4 w-4 flex-shrink-0 text-gray-500 transition-transform"
+        class="ml-2 h-4 w-4 shrink-0 text-gray-500 transition-transform"
         :class="open ? 'rotate-180' : ''"
         viewBox="0 0 20 20"
         fill="currentColor"
@@ -170,7 +170,7 @@ onBeforeUnmount(() => {
       ref="listEl"
       role="listbox"
       tabindex="-1"
-      class="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-auto rounded-md border border-gray-200 bg-white py-1 shadow-lg focus:outline-none"
+      class="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-auto rounded-md border border-gray-200 bg-white py-1 shadow-lg focus:outline-hidden"
       data-testid="settings-section-picker-panel"
     >
       <li
@@ -179,7 +179,7 @@ onBeforeUnmount(() => {
         role="option"
         tabindex="-1"
         :aria-selected="section.to === activeRoute"
-        class="cursor-pointer px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:bg-gray-100 focus:outline-none"
+        class="cursor-pointer px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 focus:bg-gray-100 focus:outline-hidden"
         :class="section.to === activeRoute ? 'bg-gray-100 font-medium text-gray-900' : ''"
         :data-testid="`settings-section-picker-option-${section.id}`"
         @click="selectSection(section)"

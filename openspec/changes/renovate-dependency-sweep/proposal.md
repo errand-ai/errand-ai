@@ -8,7 +8,7 @@ Address all nine open Renovate PRs, staged by risk into four implementation pass
 
 - **Pass 1 — Security + safe infra**: `cryptography` 46→48 (security, `#196`); `actions/checkout` v6→v7 (`#195`); Node 20/22→24 in CI and the task-runner (`#141`); `valkey` dev-compose image 8→9 (`#151`) plus aligning the Helm `valkey` chart dependency 0.9.x→0.10.x.
 - **Pass 2 — Backend libraries**: `redis` client 7.4→8 (`#188`); `kubernetes` client 35→36 (`#185`); and the Python *library* patch/minor bumps carried by `#136` (fastapi, sqlalchemy, asyncpg, alembic, psycopg2, openai, docker, litellm image, test deps).
-- **Pass 3 — Frontend majors**: Tailwind CSS 3→4 (`#167`); TypeScript 6→7 (`#197`); `@errand-ai/ui-components` 0.6→0.9 (carried by `#136`, prime suspect for the current vitest failures). **BREAKING** build-tooling migration (Tailwind v4 config format, new PostCSS plugin).
+- **Pass 3 — Frontend majors**: Tailwind CSS 3→4 (`#167`) and `@errand-ai/ui-components` 0.6→0.9 (carried by `#136`). **BREAKING** build-tooling migration (Tailwind v4 config format, new PostCSS plugin). **TypeScript 6→7 (`#197`) is deferred** — TS 7's native compiler is incompatible with `vue-tsc` (see design D7); `#197` stays open.
 - **Pass 4 — Python interpreter 3.11/3.12 → 3.13**: errand image (fix the hard-coded `python3.12/site-packages` copy path), task-runner image (build stage **and** the distroless runtime base, which currently provides Python 3.11), and the CI Python version. Target is **3.13**, not `#136`'s literal 3.14, because no distroless base provides 3.14 and the task-runner's final stage is distroless by design (see design D6). This is the one genuinely broken piece of `#136`, done deliberately and last.
 - **Dissolve `#136`**: its contents are correctly distributed across passes 2, 3, and 4 rather than merged as the half-broken bundle Renovate authored.
 
@@ -28,4 +28,4 @@ No product behaviour changes are intended; correctness is guarded by the existin
 - **Build/CI**: `.github/workflows/build.yml`, `Dockerfile`, `errand/Dockerfile`, `task-runner/Dockerfile`, `deploy/docker-compose.yml` (and `testing/docker-compose.yml` if it carries the same tags).
 - **Runtime surfaces to smoke-test**: Redis/Valkey pub-sub and caching (redis 8 / valkey 9), Kubernetes task execution (client 36), and the Python 3.13 interpreter across both images.
 - **Frontend**: Tailwind v4 + TypeScript 7 migration affects the Vite build (`vue-tsc -b`) and all component styling; `@errand-ai/ui-components` 0.9 may require call-site adjustments.
-- **Renovate PRs closed**: `#196`, `#195`, `#141`, `#151`, `#188`, `#185`, `#167`, `#197`, `#136`.
+- **Renovate PRs closed**: `#196`, `#195`, `#141`, `#151`, `#188`, `#185`, `#167`, `#136`. (`#197` TypeScript 7 stays open — deferred, see design D7.)

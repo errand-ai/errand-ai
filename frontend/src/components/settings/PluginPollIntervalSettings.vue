@@ -49,7 +49,7 @@ async function save() {
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow" data-testid="plugin-poll-interval-section">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm" data-testid="plugin-poll-interval-section">
     <h3 class="text-lg font-semibold text-gray-800 mb-1">Plugin Update Polling</h3>
     <p class="text-sm text-gray-500 mb-3">How often the server resyncs enabled marketplaces and refreshes plugin update availability.</p>
 

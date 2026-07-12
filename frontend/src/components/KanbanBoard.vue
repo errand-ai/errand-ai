@@ -104,7 +104,7 @@ onUnmounted(() => store.stop())
   <!-- Skeleton loading state -->
   <div v-if="store.loading && store.tasks.length === 0" class="flex gap-4 overflow-x-auto pb-4" data-testid="skeleton-loading">
     <div v-for="i in 5" :key="i" class="min-w-[240px] flex-1 rounded-lg bg-gray-100 p-4">
-      <div class="mb-3 h-4 w-24 animate-pulse rounded bg-gray-300"></div>
+      <div class="mb-3 h-4 w-24 animate-pulse rounded-sm bg-gray-300"></div>
       <div class="space-y-2">
         <div class="h-16 animate-pulse rounded-lg bg-gray-200"></div>
         <div class="h-16 animate-pulse rounded-lg bg-gray-200"></div>

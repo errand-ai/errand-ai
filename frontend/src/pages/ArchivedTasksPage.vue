@@ -107,7 +107,7 @@ onMounted(async () => {
         <div class="h-9 w-32 animate-pulse rounded-md bg-gray-200"></div>
       </div>
       <div class="space-y-2">
-        <div v-for="i in 5" :key="i" class="h-12 animate-pulse rounded bg-gray-200"></div>
+        <div v-for="i in 5" :key="i" class="h-12 animate-pulse rounded-sm bg-gray-200"></div>
       </div>
     </div>
 
@@ -131,12 +131,12 @@ onMounted(async () => {
           v-model="searchQuery"
           type="text"
           placeholder="Search tasks..."
-          class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
           data-testid="search-input"
         />
         <select
           v-model="statusFilter"
-          class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
           data-testid="status-filter"
         >
           <option value="all">All</option>
@@ -203,7 +203,7 @@ onMounted(async () => {
               <button
                 v-if="task.output"
                 type="button"
-                class="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+                class="rounded-sm border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
                 @click.stop="outputTask = task"
               >
                 View Output

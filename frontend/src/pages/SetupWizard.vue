@@ -253,7 +253,7 @@ async function completeSetup() {
       </div>
 
       <!-- Step 1: Create Admin Account -->
-      <div v-if="currentStep === 1" class="bg-white rounded-lg shadow p-8" data-testid="setup-step1">
+      <div v-if="currentStep === 1" class="bg-white rounded-lg shadow-sm p-8" data-testid="setup-step1">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Create Admin Account</h2>
         <p class="text-sm text-gray-500 mb-6">Set up your administrator credentials.</p>
         <form @submit.prevent="createAdmin" class="space-y-4">
@@ -265,7 +265,7 @@ async function completeSetup() {
               required
               autocomplete="username"
               data-testid="setup-username"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             />
           </div>
           <div>
@@ -276,7 +276,7 @@ async function completeSetup() {
               required
               autocomplete="new-password"
               data-testid="setup-password"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             />
           </div>
           <div>
@@ -287,7 +287,7 @@ async function completeSetup() {
               required
               autocomplete="new-password"
               data-testid="setup-confirm-password"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             />
             <p v-if="passwordMismatch" class="mt-1 text-sm text-red-600" data-testid="setup-password-mismatch">Passwords do not match.</p>
           </div>
@@ -304,7 +304,7 @@ async function completeSetup() {
       </div>
 
       <!-- Step 2: LLM Provider -->
-      <div v-if="currentStep === 2" class="bg-white rounded-lg shadow p-8" data-testid="setup-step2">
+      <div v-if="currentStep === 2" class="bg-white rounded-lg shadow-sm p-8" data-testid="setup-step2">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">LLM Provider Configuration</h2>
         <p class="text-sm text-gray-500 mb-6">Configure your LLM provider (OpenAI-compatible API).</p>
         <div class="space-y-4">
@@ -316,7 +316,7 @@ async function completeSetup() {
               placeholder="default"
               :disabled="providerUrlReadonly"
               data-testid="setup-provider-name"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />
           </div>
           <div>
@@ -328,7 +328,7 @@ async function completeSetup() {
                 placeholder="https://api.openai.com/v1"
                 :disabled="providerUrlReadonly"
                 data-testid="setup-provider-url"
-                class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+                class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
               />
               <div v-if="providerUrlReadonly" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
                 <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -346,7 +346,7 @@ async function completeSetup() {
                 placeholder="sk-..."
                 :disabled="apiKeyReadonly"
                 data-testid="setup-api-key"
-                class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+                class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
               />
               <div v-if="apiKeyReadonly" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
                 <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -381,7 +381,7 @@ async function completeSetup() {
       </div>
 
       <!-- Step 3: Model Selection -->
-      <div v-if="currentStep === 3" class="bg-white rounded-lg shadow p-8" data-testid="setup-step3">
+      <div v-if="currentStep === 3" class="bg-white rounded-lg shadow-sm p-8" data-testid="setup-step3">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Model Selection</h2>
         <p class="text-sm text-gray-500 mb-6">Choose which models to use for different tasks.</p>
         <div class="space-y-4">
@@ -390,7 +390,7 @@ async function completeSetup() {
             <select
               v-model="titleModel"
               data-testid="setup-title-model"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             >
               <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
               <option v-if="!models.includes(titleModel)" :value="titleModel">{{ titleModel }}</option>
@@ -401,7 +401,7 @@ async function completeSetup() {
             <select
               v-model="taskModel"
               data-testid="setup-task-model"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             >
               <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
               <option v-if="!models.includes(taskModel)" :value="taskModel">{{ taskModel }}</option>

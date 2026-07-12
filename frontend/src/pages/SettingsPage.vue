@@ -158,11 +158,11 @@ onMounted(() => {
     </div>
 
     <div v-if="loading" class="space-y-6" data-testid="settings-skeleton">
-      <div v-for="n in 4" :key="n" class="rounded-lg bg-white p-6 shadow">
-        <div class="h-5 w-48 rounded bg-gray-200 animate-pulse mb-4"></div>
+      <div v-for="n in 4" :key="n" class="rounded-lg bg-white p-6 shadow-sm">
+        <div class="h-5 w-48 rounded-sm bg-gray-200 animate-pulse mb-4"></div>
         <div class="space-y-3">
-          <div class="h-4 w-full rounded bg-gray-200 animate-pulse"></div>
-          <div class="h-4 w-3/4 rounded bg-gray-200 animate-pulse"></div>
+          <div class="h-4 w-full rounded-sm bg-gray-200 animate-pulse"></div>
+          <div class="h-4 w-3/4 rounded-sm bg-gray-200 animate-pulse"></div>
         </div>
       </div>
     </div>
@@ -175,7 +175,7 @@ onMounted(() => {
         @change="(to: string) => router.push(to)"
       />
 
-      <nav class="hidden sm:block w-48 flex-shrink-0" data-testid="settings-sidebar">
+      <nav class="hidden sm:block w-48 shrink-0" data-testid="settings-sidebar">
         <div class="sticky top-6 space-y-1">
           <router-link
             v-for="section in sections"

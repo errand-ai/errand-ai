@@ -167,7 +167,7 @@ async function changePassword() {
 <template>
   <div class="space-y-6">
     <!-- Authentication Mode / OIDC Configuration -->
-    <div class="rounded-lg bg-white p-6 shadow" data-testid="oidc-section">
+    <div class="rounded-lg bg-white p-6 shadow-sm" data-testid="oidc-section">
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Authentication Mode</h3>
       <p class="text-sm text-gray-500 mb-4">Configure SSO via OpenID Connect to enable organization-level access control.</p>
 
@@ -181,7 +181,7 @@ async function changePassword() {
               placeholder="https://auth.example.com/realms/myrealm/.well-known/openid-configuration"
               :disabled="isReadonly('oidc_discovery_url')"
               data-testid="oidc-discovery-url"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />
             <div v-if="isReadonly('oidc_discovery_url')" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
               <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -199,7 +199,7 @@ async function changePassword() {
               type="text"
               :disabled="isReadonly('oidc_client_id')"
               data-testid="oidc-client-id"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />
             <div v-if="isReadonly('oidc_client_id')" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
               <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -217,7 +217,7 @@ async function changePassword() {
               type="password"
               :disabled="isReadonly('oidc_client_secret')"
               data-testid="oidc-client-secret"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />
             <div v-if="isReadonly('oidc_client_secret')" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
               <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -236,7 +236,7 @@ async function changePassword() {
               placeholder="resource_access.errand.roles"
               :disabled="isReadonly('oidc_roles_claim')"
               data-testid="oidc-roles-claim"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
+              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500"
             />
             <div v-if="isReadonly('oidc_roles_claim')" class="absolute right-2 top-1/2 -translate-y-1/2 mt-0.5" title="Set via environment variable">
               <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -284,7 +284,7 @@ async function changePassword() {
     </div>
 
     <!-- Local Admin Account -->
-    <div class="rounded-lg bg-white p-6 shadow" data-testid="local-admin-section">
+    <div class="rounded-lg bg-white p-6 shadow-sm" data-testid="local-admin-section">
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Local Admin Account</h3>
       <p class="text-sm text-gray-500 mb-4">Manage your local administrator account.</p>
 
@@ -303,7 +303,7 @@ async function changePassword() {
             type="password"
             autocomplete="current-password"
             data-testid="current-password"
-            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
           />
         </div>
 
@@ -314,7 +314,7 @@ async function changePassword() {
             type="password"
             autocomplete="new-password"
             data-testid="new-password"
-            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
           />
         </div>
 
@@ -325,7 +325,7 @@ async function changePassword() {
             type="password"
             autocomplete="new-password"
             data-testid="confirm-new-password"
-            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
           />
           <p v-if="passwordMismatch" class="mt-1 text-sm text-red-600">Passwords do not match.</p>
         </div>

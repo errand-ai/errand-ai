@@ -168,7 +168,7 @@ defineExpose({ isDirty })
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">LLM Models</h3>
 
     <div v-if="providers.length === 0" class="text-sm text-gray-500 mb-4">
@@ -205,7 +205,7 @@ defineExpose({ isDirty })
       </div>
       <p
         v-if="isReasoningModel(llmModelName, llmModels)"
-        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1"
         data-testid="llm-reasoning-warning"
       >
         This is a reasoning model. It may be slower and less reliable for structured output tasks like title generation. Consider using a non-reasoning model.
@@ -253,7 +253,7 @@ defineExpose({ isDirty })
       </div>
       <p
         v-if="isNonReasoningModel(taskModelName, taskModels)"
-        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+        class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1"
         data-testid="task-non-reasoning-warning"
       >
         This is not a reasoning model. Reasoning models are recommended for task processing to support complex workflows and tool calling. Consider using a reasoning model.

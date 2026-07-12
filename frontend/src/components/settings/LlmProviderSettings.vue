@@ -132,7 +132,7 @@ onMounted(loadProviders)
 </script>
 
 <template>
-  <div class="mb-6 rounded-lg bg-white p-6 shadow">
+  <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-lg font-semibold text-gray-800">LLM Providers</h3>
       <button
