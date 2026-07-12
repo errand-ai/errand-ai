@@ -29,6 +29,7 @@ RUN <<EOF
   case "$TARGETPLATFORM" in
     linux/amd64) ARCH="x86_64" ;;
     linux/arm64) ARCH="aarch64" ;;
+    *) echo "Unsupported or unset TARGETPLATFORM: '$TARGETPLATFORM' (expected linux/amd64 or linux/arm64)" >&2; exit 1 ;;
   esac
   # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
   # Build them into wheels in stage 2 so stage 3 can install offline without setuptools.
