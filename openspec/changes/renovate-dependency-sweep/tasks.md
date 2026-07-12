@@ -13,16 +13,16 @@
 - [x] 2.4 Bump Node 20/22 → 24: `setup-node` in `.github/workflows/build.yml` and the `node-builder` stage in `task-runner/Dockerfile` (`#141`)
 - [x] 2.5 Bump `valkey/valkey` image 8 → 9-alpine in `deploy/docker-compose.yml` (and `testing/docker-compose.yml` if 1.4 found it), and align the Helm `valkey` chart dependency 0.9.x → 0.10.x in `helm/errand/Chart.yaml` + regenerate `Chart.lock` (`#151` + `#136`'s chart bump)
 - [x] 2.6 Verify: errand pytest + task-runner pytest + frontend vitest all green; `docker compose up --build` starts cleanly (valkey 9 healthy)
-- [ ] 2.7 Open PR, confirm CI green + Helm chart packages, validate Helm deploy (dry-run/ArgoCD), merge, then close Renovate PRs `#196`, `#195`, `#141`, `#151`
+- [x] 2.7 Open PR, confirm CI green + Helm chart packages, validate Helm deploy (dry-run/ArgoCD), merge, then close Renovate PRs `#196`, `#195`, `#141`, `#151`
 
 ## 3. Pass 2 — Backend libraries (branch `deps-pass-2-backend-libs`, VERSION minor bump)
 
-- [ ] 3.1 Create branch from latest `main` and bump `VERSION` (minor)
-- [ ] 3.2 Bump `redis[hiredis]` 7.4.0 → 8.0.1 (`#188`); review redis-py 8 changelog for connection/API breaking changes affecting pub-sub usage
-- [ ] 3.3 Bump `kubernetes` client `>=28.0.0,<36` → `>=36.0.2,<37` (`#185`); review k8s client 36 changelog for model/enum changes touching `k8s-task-execution`
-- [ ] 3.4 Apply `#136`'s Python library patch/minor bumps in `errand/requirements.txt` (fastapi 0.139, sqlalchemy 2.0.51, asyncpg 0.31, alembic 1.18.5, psycopg2-binary 2.9.12, openai 2.45, docker 7.2) — **excluding** the redis 7.4.1 and `kubernetes <36` re-pins (superseded by 3.2/3.3)
-- [ ] 3.5 Apply `#136`'s test-dependency bumps in `errand/requirements-test.txt` (pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis 2.36.2) and the litellm image bump in `deploy/docker-compose.yml`
-- [ ] 3.6 Verify: errand pytest + task-runner pytest green; `docker compose up --build` smoke test — dispatch a task through the runner and confirm redis/valkey pub-sub + k8s/docker runtime paths work
+- [x] 3.1 Create branch from latest `main` and bump `VERSION` (minor)
+- [x] 3.2 Bump `redis[hiredis]` 7.4.0 → 8.0.1 (`#188`); review redis-py 8 changelog for connection/API breaking changes affecting pub-sub usage
+- [x] 3.3 Bump `kubernetes` client `>=28.0.0,<36` → `>=36.0.2,<37` (`#185`); review k8s client 36 changelog for model/enum changes touching `k8s-task-execution`
+- [x] 3.4 Apply `#136`'s Python library patch/minor bumps in `errand/requirements.txt` (fastapi 0.139, sqlalchemy 2.0.51, asyncpg 0.31, alembic 1.18.5, psycopg2-binary 2.9.12, openai 2.45, docker 7.2) — **excluding** the redis 7.4.1 and `kubernetes <36` re-pins (superseded by 3.2/3.3)
+- [x] 3.5 Apply `#136`'s test-dependency bumps in `errand/requirements-test.txt` (pytest 9.1.1, pytest-asyncio 1.4.0, fakeredis 2.36.2) and the litellm image bump in `deploy/docker-compose.yml`
+- [x] 3.6 Verify: errand pytest + task-runner pytest green; `docker compose up --build` smoke test — dispatch a task through the runner and confirm redis/valkey pub-sub + k8s/docker runtime paths work
 - [ ] 3.7 Open PR, confirm CI green + images build, validate on K8s, merge, then close Renovate PRs `#188`, `#185` (and mark their content in `#136` as landed)
 
 ## 4. Pass 3 — Frontend majors (branch `deps-pass-3-frontend-majors`, VERSION minor bump)

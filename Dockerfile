@@ -27,17 +27,23 @@ COPY errand/requirements.txt .
 RUN <<EOF
   set -e
   case "$TARGETPLATFORM" in
-    linux/amd64) PLATFORM="manylinux2014_x86_64" ;;
-    linux/arm64) PLATFORM="manylinux2014_aarch64" ;;
+    linux/amd64) ARCH="x86_64" ;;
+    linux/arm64) ARCH="aarch64" ;;
+    *) echo "Unsupported or unset TARGETPLATFORM: '$TARGETPLATFORM' (expected linux/amd64 or linux/arm64)" >&2; exit 1 ;;
   esac
   # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
   # Build them into wheels in stage 2 so stage 3 can install offline without setuptools.
   pip wheel --no-cache-dir --no-deps -w /wheels "feedparser>=6.0,<7" sgmllib3k
-  # Download remaining packages as binary wheels for the target platform
+  # Download remaining packages as binary wheels for the target platform.
+  # Accept both the modern (manylinux_2_28) and legacy (manylinux2014 / _2_17) glibc
+  # baselines: pip's --platform does not auto-accept older tags, and our pinned deps
+  # are split across both (e.g. asyncpg 0.31 is 2_28-only, psycopg2-binary 2.9.12 is
+  # 2014-only). The 3.12-slim (bookworm, glibc 2.36) runtime satisfies both.
   grep -v '^feedparser' requirements.txt > requirements-filtered.txt
   pip download --no-cache-dir \
     --only-binary=:all: \
-    --platform "$PLATFORM" \
+    --platform "manylinux_2_28_${ARCH}" \
+    --platform "manylinux2014_${ARCH}" \
     --python-version 312 \
     --implementation cp \
     --abi cp312 \

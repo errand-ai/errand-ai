@@ -79,6 +79,9 @@ Per pass: branch from latest `main` → bump `VERSION` (semver: patch for Pass 1
 ### D6 — Python interpreter target: 3.13, keep distroless (DECIDED 2026-07-12)
 Because no distroless base offers 3.14, standardise the fleet on **Python 3.13** rather than 3.14: errand image → `python:3.13-slim`, task-runner build stage → `python:3.13-slim-trixie`, task-runner final → `gcr.io/distroless/python3-debian13:nonroot`, CI → 3.13. This keeps the task-runner distroless (preserving its hardening spec) and lands ABI-matched build/runtime stages, while still clearing the stale 3.11/3.12 pins. `#136`'s literal 3.14 is treated as "latest interpreter that fits our runtime constraints" = 3.13. **Alternative rejected:** pushing to 3.14 by dropping the task-runner to a non-distroless `python:3.14-slim` runtime — gains one minor version at the cost of the distroless hardening property. **User confirmed 3.13 (keep distroless).**
 
+### Build note — manylinux baseline (discovered in Pass 2)
+The root `Dockerfile`'s wheel-download stage pinned `--platform manylinux2014` (glibc 2.17). pip's `--platform` does **not** auto-accept older *or* newer manylinux tags — it matches only the exact stated baseline (plus its own lower aliases). Our pinned deps straddle two baselines: `asyncpg==0.31.0` ships cp312 linux wheels as `manylinux_2_28` only, while `psycopg2-binary==2.9.12` (and `cffi`) ship `manylinux2014`/`_2_17` only. A single `--platform` therefore fails one or the other. Fix: pass **both** `--platform manylinux_2_28_${ARCH}` and `--platform manylinux2014_${ARCH}`; the `python:3.12-slim` (bookworm, glibc 2.36) runtime satisfies both. Verified by a real `docker build --target build` for linux/amd64. Pass 4 (3.13 / trixie, glibc 2.41) inherits this corrected logic — only the `--python-version`/`--abi` change to 313.
+
 ## Open Questions
 
 - None outstanding. D6 (Python target) is decided: **3.13, keep distroless.** All preflight questions resolved above.
