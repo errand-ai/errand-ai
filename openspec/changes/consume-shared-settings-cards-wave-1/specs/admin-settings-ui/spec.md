@@ -2,7 +2,7 @@
 
 ### Requirement: Settings page layout
 
-The Settings page SHALL use the shared `<SettingsShell>` component from `@errand-ai/ui-components` to provide section navigation and responsive layout. The shell SHALL render in router mode (`<router-view />` slot) and the eight section routes (`/settings/agent`, `/tasks`, `/security`, `/profiles`, `/integrations`, `/task-generators`, `/cloud`, `/users`) SHALL be unchanged.
+The Settings page SHALL use the shared `<SettingsShell>` component from `@errand-ai/ui-components` to provide section navigation and responsive layout. The shell SHALL render in router mode (`<router-view />` slot) and the eight section routes (`/settings/agent`, `/settings/tasks`, `/settings/security`, `/settings/profiles`, `/settings/integrations`, `/settings/task-generators`, `/settings/cloud`, `/settings/users`) SHALL be unchanged.
 
 The locally-defined `SettingsSectionPicker.vue` (introduced in `mobile-settings-subnav-dropdown`) SHALL be removed; the shell now provides responsive nav internally.
 

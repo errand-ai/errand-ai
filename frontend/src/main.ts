@@ -51,10 +51,15 @@ const capabilities = ref<ServerCapabilities>({ version: null, capabilities: [], 
 fetch('/api/capabilities')
   .then((resp) => (resp.ok ? resp.json() : null))
   .then((data) => {
-    if (data) {
+    // Only mark connected on a well-formed, non-empty capabilities array. The
+    // library treats an EMPTY list as "capability info unavailable" and renders
+    // gated cards permissively, so on a missing/malformed/empty response we keep
+    // the initial disconnected state (gated cards stay hidden) rather than
+    // flipping every optional card on.
+    if (data && Array.isArray(data.capabilities) && data.capabilities.length > 0) {
       capabilities.value = {
         version: data.version ?? null,
-        capabilities: Array.isArray(data.capabilities) ? data.capabilities : [],
+        capabilities: data.capabilities,
         connected: true,
       }
     }
