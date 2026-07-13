@@ -1,27 +1,36 @@
-## ADDED Requirements
+## Requirements
 
-### Requirement: Capability detection from runtime configuration
+### Requirement: Server capability advertisement
 
-The server SHALL determine its capabilities from runtime configuration state at the time of cloud connection. Capabilities SHALL be re-evaluated on each connection (including reconnections).
+`errand/capabilities.py::get_capabilities()` is the single capability source, re-evaluated on each cloud connection (including reconnections). Its result SHALL be advertised to BOTH consumers so they gate cards identically:
+- errand-cloud, via the WebSocket `register` message (`cloud_client._send_register`);
+- the locally-served SPA, via a public `GET /api/capabilities` route backed by the same function.
 
-Capability derivation rules:
-- `tasks` — always present
-- `settings` — always present
-- `mcp-servers` — always present (MCP server management is a core feature)
-- `voice-input` — present when a `transcription_model` setting is configured AND LLM client is available
-- `task-profiles` — always present (the feature exists even if no profiles are defined)
-- `litellm-mcp` — present when LiteLLM proxy is detected (the `litellm_mcp_servers` setting endpoint returns `available: true`)
-- `platforms` — always present (platform credential management is a core feature)
+`get_capabilities()` SHALL advertise the following Wave 1 keys in **snake_case** (the shared `@errand-ai/ui-components` settings cards gate on these exact spellings; the legacy kebab-case keys `mcp-servers`/`litellm-mcp` are renamed, not duplicated):
 
-#### Scenario: Full capability set
+- `system_prompt` — always advertised
+- `mcp_servers` — always advertised
+- `skills_git_repo` — always advertised
+- `task_management` — always advertised
+- `telemetry` — always advertised
+- `cloud_storage` — advertised when the OneDrive MCP URL is configured in the server build
+- `jira` — advertised when the Jira platform integration is registered
+- `litellm_mcp` — advertised when a LiteLLM proxy is detected at runtime (a `litellm` provider row exists, or `OPENAI_BASE_URL` is set)
 
-- **WHEN** the server has a transcription model configured and LiteLLM proxy is available
-- **THEN** the capabilities list includes all capabilities: `["tasks", "settings", "mcp-servers", "voice-input", "task-profiles", "litellm-mcp", "platforms"]`
+Pre-Wave-1 keys (`tasks`, `settings`, `task-profiles`, `platforms`, and conditional `voice-input`) SHALL remain advertised for other errand-cloud features.
 
-#### Scenario: Minimal capability set
+#### Scenario: Always-on capability advertised (both channels)
+- **WHEN** `get_capabilities()` is evaluated (for cloud registration or `GET /api/capabilities`)
+- **THEN** the `capabilities` array SHALL include `"system_prompt"`, `"mcp_servers"`, `"skills_git_repo"`, `"task_management"`, `"telemetry"`
+- **AND** SHALL NOT include the legacy kebab spelling `"mcp-servers"`
 
-- **WHEN** the server has no transcription model and no LiteLLM proxy
-- **THEN** the capabilities list includes: `["tasks", "settings", "mcp-servers", "task-profiles", "platforms"]`
+#### Scenario: Conditional capability advertised when feature enabled
+- **WHEN** a LiteLLM proxy is detected
+- **THEN** the `capabilities` array SHALL include `"litellm_mcp"`
+
+#### Scenario: Conditional capability omitted when feature disabled
+- **WHEN** no LiteLLM proxy is detected
+- **THEN** the `capabilities` array SHALL NOT include `"litellm_mcp"`
 
 ### Requirement: Server version from VERSION file
 
