@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { inject, ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { toast } from 'vue-sonner'
+import { useSettingsApi } from '../../composables/useSettingsApi'
 
 const auth = useAuthStore()
-const { settingsMetadata, saveSettings } = inject<any>('settings-state')
+
+// Self-loading (post-Wave-2): the OIDC section loads its own settings metadata
+// from /api/settings on mount and saves via the shared settings API, rather than
+// injecting a `provide('settings-state')` parent.
+const { loadSettings, saveSettings } = useSettingsApi()
+const settingsMetadata = ref<Record<string, any>>({})
 
 // OIDC configuration
 const discoveryUrl = ref('')
@@ -44,8 +50,13 @@ const userDisplayName = computed(() => {
   return auth.userDisplay || 'admin'
 })
 
-onMounted(() => {
-  // Pre-fill OIDC fields from metadata
+onMounted(async () => {
+  // Load settings, then pre-fill OIDC fields from the metadata payload.
+  try {
+    settingsMetadata.value = await loadSettings()
+  } catch {
+    return
+  }
   if (settingsMetadata.value?.oidc_discovery_url?.value) {
     discoveryUrl.value = settingsMetadata.value.oidc_discovery_url.value
   }

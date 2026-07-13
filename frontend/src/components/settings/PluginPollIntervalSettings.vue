@@ -1,18 +1,29 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
+import { useSettingsApi, extractSettingValue } from '../../composables/useSettingsApi'
 
-const props = defineProps<{
-  initialValue: number
-  saveSettings: (data: Record<string, unknown>) => Promise<void>
-}>()
+// Self-loading (post-Wave-2): loads its own `plugin_poll_interval_seconds` from
+// /api/settings on mount and saves via the shared settings API, rather than
+// receiving `initialValue`/`saveSettings` from a `provide('settings-state')` parent.
+const { loadSettings, saveSettings } = useSettingsApi()
 
-const localValue = ref<string>(String(props.initialValue ?? 21600))
+const DEFAULT_INTERVAL = 21600
+
+const initialValue = ref<number>(DEFAULT_INTERVAL)
+const localValue = ref<string>(String(DEFAULT_INTERVAL))
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-watch(() => props.initialValue, (next) => {
-  localValue.value = String(next ?? 21600)
+onMounted(async () => {
+  try {
+    const data = await loadSettings()
+    const next = Number(extractSettingValue(data, 'plugin_poll_interval_seconds', DEFAULT_INTERVAL))
+    initialValue.value = Number.isFinite(next) ? next : DEFAULT_INTERVAL
+    localValue.value = String(initialValue.value)
+  } catch {
+    /* keep the default interval on load failure */
+  }
 })
 
 const parsed = computed(() => {
@@ -25,7 +36,7 @@ const parsed = computed(() => {
 
 const disabledHint = computed(() => parsed.value === 0)
 
-const isDirty = computed(() => String(props.initialValue) !== String(localValue.value ?? '').trim())
+const isDirty = computed(() => String(initialValue.value) !== String(localValue.value ?? '').trim())
 
 async function save() {
   const value = parsed.value
@@ -36,7 +47,8 @@ async function save() {
   saving.value = true
   error.value = null
   try {
-    await props.saveSettings({ plugin_poll_interval_seconds: value })
+    await saveSettings({ plugin_poll_interval_seconds: value })
+    initialValue.value = value
     toast.success(value === 0 ? 'Plugin polling disabled.' : 'Polling interval saved.')
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Failed to save polling interval.'

@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { CloudStorageCard, JiraCredentialCard } from '@errand-ai/ui-components'
-import PlatformSettings from '../../components/settings/PlatformSettings.vue'
-import GoogleWorkspaceIntegration from '../../components/settings/GoogleWorkspaceIntegration.vue'
+import {
+  GoogleWorkspaceCard,
+  CloudStorageCard,
+  JiraCredentialCard,
+  PlatformsCard,
+} from '@errand-ai/ui-components'
+
+// All four cards come from @errand-ai/ui-components and are gated by the server's
+// advertised capabilities (google_workspace, cloud_storage, jira, platforms).
 </script>
 
 <template>
-  <GoogleWorkspaceIntegration />
+  <GoogleWorkspaceCard />
   <CloudStorageCard />
   <JiraCredentialCard />
-  <PlatformSettings />
+  <PlatformsCard />
 </template>

@@ -1,42 +1,39 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
-import { useAuthStore } from '../../stores/auth'
+import { useSettingsApi, extractSettingValue } from '../../composables/useSettingsApi'
 
-const props = defineProps<{
-  sshPublicKey: string | null
-  gitSshHosts: string[]
-  saveSettings: (data: Record<string, unknown>) => Promise<void>
-}>()
+// Self-loading (post-Wave-2): this server-admin card loads its own slice of
+// /api/settings on mount and saves via the shared settings API, rather than
+// receiving state from a `provide('settings-state')` parent.
+const { settingsFetch, loadSettings, saveSettings } = useSettingsApi()
 
-const emit = defineEmits<{
-  'update:sshPublicKey': [value: string]
-  'update:gitSshHosts': [value: string[]]
-}>()
+const DEFAULT_SSH_HOSTS = ['github.com', 'bitbucket.org']
 
-const auth = useAuthStore()
+const sshPublicKey = ref<string | null>(null)
 const keyCopied = ref(false)
 const regenerating = ref(false)
 const showRegenerateDialog = ref(false)
 const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
-const localHosts = ref([...props.gitSshHosts])
+const localHosts = ref<string[]>([])
 const newHost = ref('')
 const hostsError = ref<string | null>(null)
 const hostsSaving = ref(false)
 
-async function sshFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
+onMounted(async () => {
+  try {
+    const data = await loadSettings()
+    sshPublicKey.value = extractSettingValue(data, 'ssh_public_key', null)
+    const hosts = extractSettingValue(data, 'git_ssh_hosts', null)
+    localHosts.value = Array.isArray(hosts) ? [...hosts] : [...DEFAULT_SSH_HOSTS]
+  } catch {
+    localHosts.value = [...DEFAULT_SSH_HOSTS]
   }
-  if (auth.token) {
-    headers['Authorization'] = `Bearer ${auth.token}`
-  }
-  return fetch(url, { ...options, headers })
-}
+})
 
 async function copyKey() {
-  if (!props.sshPublicKey) return
-  await navigator.clipboard.writeText(props.sshPublicKey)
+  if (!sshPublicKey.value) return
+  await navigator.clipboard.writeText(sshPublicKey.value)
   keyCopied.value = true
   toast.success('SSH public key copied.')
   setTimeout(() => { keyCopied.value = false }, 2000)
@@ -61,13 +58,13 @@ async function confirmRegenerate() {
   showRegenerateDialog.value = false
   regenerating.value = true
   try {
-    const res = await sshFetch('/api/settings/regenerate-ssh-key', { method: 'POST' })
+    const res = await settingsFetch('/api/settings/regenerate-ssh-key', { method: 'POST' })
     if (!res.ok) {
       toast.error(`Failed to regenerate SSH key (HTTP ${res.status})`)
       return
     }
     const data = await res.json()
-    emit('update:sshPublicKey', data.ssh_public_key)
+    sshPublicKey.value = data.ssh_public_key
     toast.success('SSH key regenerated.')
   } catch {
     toast.error('Failed to regenerate SSH key. Please check your connection.')
@@ -96,8 +93,7 @@ async function saveHosts() {
   hostsSaving.value = true
   hostsError.value = null
   try {
-    await props.saveSettings({ git_ssh_hosts: localHosts.value })
-    emit('update:gitSshHosts', [...localHosts.value])
+    await saveSettings({ git_ssh_hosts: localHosts.value })
     toast.success('SSH hosts saved.')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'Failed to save SSH hosts.')

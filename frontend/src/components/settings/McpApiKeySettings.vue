@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
-import { useAuthStore } from '../../stores/auth'
+import { useSettingsApi, extractSettingValue } from '../../composables/useSettingsApi'
 
-const props = defineProps<{
-  mcpApiKey: string | null
-}>()
+// Self-loading (post-Wave-2): loads its own `mcp_api_key` from /api/settings on
+// mount rather than receiving it from a `provide('settings-state')` parent.
+const { settingsFetch, loadSettings } = useSettingsApi()
 
-const emit = defineEmits<{
-  'update:mcpApiKey': [value: string]
-}>()
-
-const auth = useAuthStore()
+const mcpApiKey = ref<string | null>(null)
 const revealed = ref(false)
 const keyCopied = ref(false)
 const configCopied = ref(false)
@@ -19,15 +15,14 @@ const regenerating = ref(false)
 const showRegenerateDialog = ref(false)
 const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
 
-async function keyFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
+onMounted(async () => {
+  try {
+    const data = await loadSettings()
+    mcpApiKey.value = extractSettingValue(data, 'mcp_api_key', null)
+  } catch {
+    /* leave key null — the empty state prompts a backend restart */
   }
-  if (auth.token) {
-    headers['Authorization'] = `Bearer ${auth.token}`
-  }
-  return fetch(url, { ...options, headers })
-}
+})
 
 function mcpExampleConfig(): string {
   const host = window.location.origin
@@ -36,7 +31,7 @@ function mcpExampleConfig(): string {
       'errand': {
         url: `${host}/mcp`,
         headers: {
-          Authorization: `Bearer ${props.mcpApiKey || '<api-key>'}`
+          Authorization: `Bearer ${mcpApiKey.value || '<api-key>'}`
         }
       }
     }
@@ -58,8 +53,8 @@ function mcpMaskedConfig(): string {
 }
 
 async function copyKey() {
-  if (!props.mcpApiKey) return
-  await navigator.clipboard.writeText(props.mcpApiKey)
+  if (!mcpApiKey.value) return
+  await navigator.clipboard.writeText(mcpApiKey.value)
   keyCopied.value = true
   toast.success('API key copied.')
   setTimeout(() => { keyCopied.value = false }, 2000)
@@ -91,13 +86,13 @@ async function confirmRegenerate() {
   showRegenerateDialog.value = false
   regenerating.value = true
   try {
-    const res = await keyFetch('/api/settings/regenerate-mcp-key', { method: 'POST' })
+    const res = await settingsFetch('/api/settings/regenerate-mcp-key', { method: 'POST' })
     if (!res.ok) {
       toast.error(`Failed to regenerate key (HTTP ${res.status})`)
       return
     }
     const data = await res.json()
-    emit('update:mcpApiKey', data.mcp_api_key)
+    mcpApiKey.value = data.mcp_api_key
     revealed.value = false
     toast.success('API key regenerated.')
   } catch {

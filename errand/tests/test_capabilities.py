@@ -80,8 +80,10 @@ def test_get_server_version_missing():
 
 @pytest.mark.asyncio
 async def test_capabilities_always_on(cap_db, monkeypatch):
-    """Always-on keys are present (snake_case for Wave 1); conditionals absent."""
+    """Always-on keys are present (snake_case for Wave 1/2); conditionals absent."""
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
 
     capabilities = await cap_module.get_capabilities()
 
@@ -103,6 +105,38 @@ async def test_capabilities_always_on(cap_db, monkeypatch):
     # Conditional keys should NOT be present with no config.
     assert "voice-input" not in capabilities
     assert "litellm_mcp" not in capabilities
+    assert "google_workspace" not in capabilities
+
+
+@pytest.mark.asyncio
+async def test_capabilities_wave_2_always_on(cap_db, monkeypatch):
+    """Wave 2 always-on card keys are advertised (snake_case for the card library)."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    capabilities = await cap_module.get_capabilities()
+
+    for key in ["llm_providers", "llm_models", "platforms", "task_profiles"]:
+        assert key in capabilities
+
+
+@pytest.mark.asyncio
+async def test_google_workspace_present_when_oauth_configured(cap_db, monkeypatch):
+    """google_workspace present when Google OAuth client credentials are set."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+    capabilities = await cap_module.get_capabilities()
+    assert "google_workspace" in capabilities
+
+
+@pytest.mark.asyncio
+async def test_google_workspace_absent_when_credentials_partial(cap_db, monkeypatch):
+    """google_workspace absent unless BOTH client id and secret are configured."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+
+    capabilities = await cap_module.get_capabilities()
+    assert "google_workspace" not in capabilities
 
 
 @pytest.mark.asyncio
