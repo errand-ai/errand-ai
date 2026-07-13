@@ -1,25 +1,30 @@
 <script setup lang="ts">
-import { onMounted, ref, provide, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onMounted, ref, provide } from 'vue'
+import { useRouter } from 'vue-router'
+import { SettingsShell } from '@errand-ai/ui-components'
+import type { SettingsSection } from '@errand-ai/ui-components'
 import { useAuthStore } from '../stores/auth'
-import SettingsSectionPicker from '../components/settings/SettingsSectionPicker.vue'
 
 const auth = useAuthStore()
-const route = useRoute()
 const router = useRouter()
 
-const sections = [
-  { id: 'agent', label: 'Agent Configuration', to: '/settings/agent' },
-  { id: 'tasks', label: 'Task Management', to: '/settings/tasks' },
-  { id: 'security', label: 'Security', to: '/settings/security' },
-  { id: 'profiles', label: 'Task Profiles', to: '/settings/profiles' },
-  { id: 'integrations', label: 'Integrations', to: '/settings/integrations' },
-  { id: 'task-generators', label: 'Task Generators', to: '/settings/task-generators' },
-  { id: 'cloud', label: 'Cloud Service', to: '/settings/cloud' },
-  { id: 'users', label: 'User Management', to: '/settings/users' },
+// Section ids map 1:1 to the child route path segment / route name (`settings-<id>`).
+// <SettingsShell> derives the active section from the current route and emits
+// `section-change` on navigation; we translate that into a router push.
+const sections: SettingsSection[] = [
+  { id: 'agent', label: 'Agent Configuration' },
+  { id: 'tasks', label: 'Task Management' },
+  { id: 'security', label: 'Security' },
+  { id: 'profiles', label: 'Task Profiles' },
+  { id: 'integrations', label: 'Integrations' },
+  { id: 'task-generators', label: 'Task Generators' },
+  { id: 'cloud', label: 'Cloud Service' },
+  { id: 'users', label: 'User Management' },
 ]
 
-const activeRoute = computed(() => route.path)
+function onSectionChange(id: string) {
+  router.push({ name: `settings-${id}` })
+}
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 const DEFAULT_TASK_PROCESSING_MODEL = 'claude-sonnet-4-5-20250929'
@@ -151,47 +156,16 @@ onMounted(() => {
 
 <template>
   <div class="mx-auto max-w-6xl">
-    <h2 class="text-2xl font-bold text-gray-900 mb-6">Settings</h2>
-
-    <div v-if="error" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-      {{ error }}
-    </div>
-
-    <div v-if="loading" class="space-y-6" data-testid="settings-skeleton">
-      <div v-for="n in 4" :key="n" class="rounded-lg bg-white p-6 shadow-sm">
-        <div class="h-5 w-48 rounded-sm bg-gray-200 animate-pulse mb-4"></div>
-        <div class="space-y-3">
-          <div class="h-4 w-full rounded-sm bg-gray-200 animate-pulse"></div>
-          <div class="h-4 w-3/4 rounded-sm bg-gray-200 animate-pulse"></div>
-        </div>
-      </div>
-    </div>
-
-    <div v-else class="flex flex-col sm:flex-row sm:gap-8">
-      <SettingsSectionPicker
-        class="sm:hidden mb-4"
-        :sections="sections"
-        :active-route="activeRoute"
-        @change="(to: string) => router.push(to)"
-      />
-
-      <nav class="hidden sm:block w-48 shrink-0" data-testid="settings-sidebar">
-        <div class="sticky top-6 space-y-1">
-          <router-link
-            v-for="section in sections"
-            :key="section.id"
-            :to="section.to"
-            class="block px-3 py-2 text-sm rounded-md"
-            :class="route.path === section.to ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'"
-          >
-            {{ section.label }}
-          </router-link>
-        </div>
-      </nav>
-
-      <div class="min-w-0 sm:flex-1">
-        <router-view />
-      </div>
-    </div>
+    <SettingsShell
+      :sections="sections"
+      :loading="loading"
+      :error="error"
+      @section-change="onSectionChange"
+    >
+      <!-- Wave 2 cards still consume the `settings-state` provided after loadSettings.
+           Those cards snapshot their props on mount, so the sub-page must not mount
+           until settings have loaded, matching the pre-shell `v-else` ordering. -->
+      <router-view v-if="!loading" />
+    </SettingsShell>
   </div>
 </template>

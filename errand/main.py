@@ -64,6 +64,7 @@ from scheduler import run_scheduler, release_lock
 from task_manager import TaskManager
 from telemetry import TelemetryReporter
 from version_checker import run_version_checker, get_version_info
+from capabilities import get_server_version, get_capabilities
 from zombie_cleanup import run_zombie_cleanup, release_zombie_lock
 
 security = HTTPBearer()
@@ -419,6 +420,22 @@ app.mount("/mcp", create_mcp_app())
 @app.get("/api/version")
 async def api_version():
     return get_version_info()
+
+
+@app.get("/api/capabilities")
+async def api_capabilities(session: AsyncSession = Depends(get_session)):
+    """Advertise server capabilities to the locally-served SPA.
+
+    Returns the same `get_capabilities()` set that errand-cloud receives via the
+    WebSocket `register` message, so the desktop and cloud UIs gate cards
+    identically. Public (no auth): the frontend fetches this at bootstrap —
+    potentially before login — to populate the capabilities provided to
+    `@errand-ai/ui-components`. An absent key hides the corresponding card.
+    """
+    return {
+        "version": get_server_version(),
+        "capabilities": await get_capabilities(session),
+    }
 
 
 # --- Auth helpers ---
