@@ -188,7 +188,7 @@ async function changePassword() {
       <p class="text-sm text-gray-500 mb-4">Configure SSO via OpenID Connect to enable organization-level access control.</p>
 
       <div v-if="settingsLoadError" class="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700" data-testid="oidc-load-error">
-        {{ settingsLoadError }} Existing SSO settings could not be loaded.
+        Could not load existing SSO settings — {{ settingsLoadError }}
       </div>
 
       <div class="space-y-4">

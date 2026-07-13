@@ -34,7 +34,7 @@ export function useSettingsApi() {
   }
 
   /** Load the full `/api/settings` payload (metadata format). Throws on non-OK. */
-  async function loadSettings(): Promise<Record<string, any>> {
+  async function loadSettings(): Promise<SettingsMetadata> {
     const res = await settingsFetch('/api/settings')
     if (res.status === 403) throw new Error('Access denied — admin role required.')
     if (!res.ok) throw new Error(`Failed to load settings (HTTP ${res.status})`)
