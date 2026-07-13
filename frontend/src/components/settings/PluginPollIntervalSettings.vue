@@ -21,8 +21,12 @@ onMounted(async () => {
     const next = Number(extractSettingValue(data, 'plugin_poll_interval_seconds', DEFAULT_INTERVAL))
     initialValue.value = Number.isFinite(next) ? next : DEFAULT_INTERVAL
     localValue.value = String(initialValue.value)
-  } catch {
-    /* keep the default interval on load failure */
+  } catch (e) {
+    // Surface the failure: the input falls back to the default, which may not be
+    // the real server value — the admin should know before saving over it.
+    const msg = e instanceof Error ? e.message : 'Failed to load polling interval.'
+    error.value = `${msg} Showing the default — the current value may be stale.`
+    toast.error(error.value)
   }
 })
 

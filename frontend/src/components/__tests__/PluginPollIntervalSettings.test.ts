@@ -60,6 +60,16 @@ describe('PluginPollIntervalSettings', () => {
     expect(input.value).toBe('21600')
   })
 
+  it('surfaces a load error when GET /api/settings fails (value may be stale)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 403, json: () => Promise.resolve({ detail: 'Admin role required' }) }),
+    )
+    const wrapper = mount(PluginPollIntervalSettings)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="plugin-poll-error"]').exists()).toBe(true)
+  })
+
   it('shows "Polling disabled" when value is 0', async () => {
     const { wrapper } = await mountLoaded()
     await wrapper.find('[data-testid="plugin-poll-interval-input"]').setValue('0')
