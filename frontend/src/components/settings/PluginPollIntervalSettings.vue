@@ -14,6 +14,9 @@ const initialValue = ref<number>(DEFAULT_INTERVAL)
 const localValue = ref<string>(String(DEFAULT_INTERVAL))
 const saving = ref(false)
 const error = ref<string | null>(null)
+// The input is hidden until the initial load resolves, so the async result can't
+// clobber a fast typist's edit and the default value isn't shown as if it were real.
+const loading = ref(true)
 
 onMounted(async () => {
   try {
@@ -27,6 +30,8 @@ onMounted(async () => {
     const msg = e instanceof Error ? e.message : 'Failed to load polling interval.'
     error.value = `${msg} Showing the default — the current value may be stale.`
     toast.error(error.value)
+  } finally {
+    loading.value = false
   }
 })
 
@@ -71,29 +76,33 @@ async function save() {
 
     <div v-if="error" class="mb-2 text-sm text-red-600" data-testid="plugin-poll-error">{{ error }}</div>
 
-    <div class="flex items-center gap-3">
-      <label class="block text-xs font-medium text-gray-600">Interval (seconds)</label>
-      <input
-        v-model="localValue"
-        type="number"
-        min="0"
-        step="1"
-        class="w-40 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-        data-testid="plugin-poll-interval-input"
-      />
-      <span v-if="disabledHint" class="text-xs text-amber-600" data-testid="plugin-poll-disabled-hint">Polling disabled</span>
-    </div>
+    <div v-if="loading" class="text-sm text-gray-500" data-testid="plugin-poll-loading">Loading…</div>
 
-    <div class="mt-3 flex items-center gap-3">
-      <button
-        @click="save"
-        :disabled="saving || !isDirty"
-        class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        data-testid="plugin-poll-save"
-      >
-        {{ saving ? 'Saving...' : 'Save' }}
-      </button>
-      <span v-if="isDirty" class="text-xs text-amber-600">Unsaved changes</span>
-    </div>
+    <template v-else>
+      <div class="flex items-center gap-3">
+        <label class="block text-xs font-medium text-gray-600">Interval (seconds)</label>
+        <input
+          v-model="localValue"
+          type="number"
+          min="0"
+          step="1"
+          class="w-40 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          data-testid="plugin-poll-interval-input"
+        />
+        <span v-if="disabledHint" class="text-xs text-amber-600" data-testid="plugin-poll-disabled-hint">Polling disabled</span>
+      </div>
+
+      <div class="mt-3 flex items-center gap-3">
+        <button
+          @click="save"
+          :disabled="saving || !isDirty"
+          class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          data-testid="plugin-poll-save"
+        >
+          {{ saving ? 'Saving...' : 'Save' }}
+        </button>
+        <span v-if="isDirty" class="text-xs text-amber-600">Unsaved changes</span>
+      </div>
+    </template>
   </div>
 </template>

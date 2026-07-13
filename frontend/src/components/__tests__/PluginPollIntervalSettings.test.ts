@@ -60,6 +60,14 @@ describe('PluginPollIntervalSettings', () => {
     expect(input.value).toBe('21600')
   })
 
+  it('shows a loading placeholder before the initial load resolves (no flash of the default)', () => {
+    stubFetch(21600)
+    const wrapper = mount(PluginPollIntervalSettings)
+    // Synchronously, before flushPromises: loading state, input not yet rendered.
+    expect(wrapper.find('[data-testid="plugin-poll-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="plugin-poll-interval-input"]').exists()).toBe(false)
+  })
+
   it('surfaces a load error when GET /api/settings fails (value may be stale)', async () => {
     vi.stubGlobal(
       'fetch',

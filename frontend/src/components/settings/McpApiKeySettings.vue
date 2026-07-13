@@ -16,7 +16,9 @@ const showRegenerateDialog = ref(false)
 const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
 // Distinguish a failed load from a genuinely-absent key so a transient error or
 // 403 doesn't render the misleading "No API key — restart the backend" state.
+// `loading` also prevents that state from flashing before the fetch resolves.
 const loadError = ref<string | null>(null)
+const loading = ref(true)
 
 onMounted(async () => {
   try {
@@ -25,6 +27,8 @@ onMounted(async () => {
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : 'Failed to load MCP API key.'
     toast.error(loadError.value)
+  } finally {
+    loading.value = false
   }
 })
 
@@ -111,7 +115,9 @@ async function confirmRegenerate() {
   <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">MCP API Key</h3>
 
-    <div v-if="mcpApiKey" class="space-y-4">
+    <div v-if="loading" class="text-sm text-gray-500" data-testid="mcp-loading">Loading…</div>
+
+    <div v-else-if="mcpApiKey" class="space-y-4">
       <!-- Key display -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
