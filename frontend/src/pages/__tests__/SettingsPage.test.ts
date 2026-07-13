@@ -428,6 +428,23 @@ describe('SettingsPage', () => {
       expect(wrapper.text()).toContain('No API key generated')
     })
 
+    it('surfaces a load error instead of the misleading empty state when settings fail to load', async () => {
+      // Both server-admin cards self-load /api/settings; a 403/transient failure
+      // must not render the "restart the backend to auto-generate" remediation.
+      fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+        return Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({ detail: 'Admin role required' }) })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const { wrapper } = await mountSettings('/settings/security')
+
+      expect(wrapper.find('[data-testid="mcp-load-error"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="ssh-load-error"]').exists()).toBe(true)
+      expect(wrapper.text()).not.toContain('No API key generated')
+      expect(wrapper.text()).not.toContain('No SSH key generated')
+    })
+
     it('reveals and hides API key on toggle', async () => {
       fetchMock = mockSettingsAndSkills({ mcp_api_key: 'secret-key-value' })
       vi.stubGlobal('fetch', fetchMock)

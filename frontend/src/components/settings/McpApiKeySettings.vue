@@ -14,13 +14,17 @@ const configCopied = ref(false)
 const regenerating = ref(false)
 const showRegenerateDialog = ref(false)
 const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
+// Distinguish a failed load from a genuinely-absent key so a transient error or
+// 403 doesn't render the misleading "No API key — restart the backend" state.
+const loadError = ref<string | null>(null)
 
 onMounted(async () => {
   try {
     const data = await loadSettings()
     mcpApiKey.value = extractSettingValue(data, 'mcp_api_key', null)
-  } catch {
-    /* leave key null — the empty state prompts a backend restart */
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : 'Failed to load MCP API key.'
+    toast.error(loadError.value)
   }
 })
 
@@ -154,6 +158,10 @@ async function confirmRegenerate() {
           {{ configCopied ? 'Copied!' : 'Copy Configuration' }}
         </button>
       </div>
+    </div>
+
+    <div v-else-if="loadError" class="text-sm text-red-600" data-testid="mcp-load-error">
+      {{ loadError }}
     </div>
 
     <div v-else class="text-sm text-gray-500">

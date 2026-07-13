@@ -19,6 +19,10 @@ const localHosts = ref<string[]>([])
 const newHost = ref('')
 const hostsError = ref<string | null>(null)
 const hostsSaving = ref(false)
+// Distinguish a failed load from a genuinely-absent key: on failure we must not
+// render the "No SSH key — restart the backend" remediation (it would be wrong
+// for a transient error or 403).
+const loadError = ref<string | null>(null)
 
 onMounted(async () => {
   try {
@@ -26,8 +30,10 @@ onMounted(async () => {
     sshPublicKey.value = extractSettingValue(data, 'ssh_public_key', null)
     const hosts = extractSettingValue(data, 'git_ssh_hosts', null)
     localHosts.value = Array.isArray(hosts) ? [...hosts] : [...DEFAULT_SSH_HOSTS]
-  } catch {
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : 'Failed to load SSH key settings.'
     localHosts.value = [...DEFAULT_SSH_HOSTS]
+    toast.error(loadError.value)
   }
 })
 
@@ -169,6 +175,10 @@ async function saveHosts() {
           </button>
         </div>
       </div>
+    </div>
+
+    <div v-else-if="loadError" class="text-sm text-red-600" data-testid="ssh-load-error">
+      {{ loadError }}
     </div>
 
     <div v-else class="text-sm text-gray-500" data-testid="ssh-no-key">
