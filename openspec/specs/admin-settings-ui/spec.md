@@ -9,15 +9,15 @@ The Settings page SHALL use the shared `<SettingsShell>` component from `@errand
 The eight settings sections and their composition SHALL be:
 
 - **Agent Configuration** (`/settings/agent`): `<SystemPromptCard>`, `<SkillsSettings>` (local, Wave 3), `<SkillsRepoCard>`, `<McpServersCard>`, `<LitellmMcpCard>` — in that order. The LiteLLM MCP card SHALL be conditionally visible via its `litellm_mcp` capability gate.
-- **Task Management** (`/settings/tasks`): `<LlmProviderSettings>` (local, Wave 2), `<LlmModelSettings>` (local, Wave 2), `<TaskManagementCard>`, `<TelemetryCard>` — in that order.
-- **Security** (`/settings/security`): unchanged (`GitSshKeySettings`, `McpApiKeySettings` remain local — server-admin only).
-- **Task Profiles** (`/settings/profiles`): unchanged (Wave 2).
-- **Integrations** (`/settings/integrations`): `<GoogleWorkspaceIntegration>` (local, Wave 2), `<CloudStorageCard>`, `<JiraCredentialCard>` (library), `<PlatformSettings>` (local, Wave 2).
+- **Task Management** (`/settings/tasks`): `<LlmProviderCard>`, `<LlmModelCard>`, `<TaskManagementCard>`, `<TelemetryCard>` — all from `@errand-ai/ui-components`, in that order.
+- **Security** (`/settings/security`): unchanged (`GitSshKeySettings`, `McpApiKeySettings` remain local — server-admin only; each self-loads its own state).
+- **Task Profiles** (`/settings/profiles`): `<TaskProfileListCard>` from `@errand-ai/ui-components` (the list and add/edit modal are internal to the card); the page-local list and edit logic SHALL NOT exist.
+- **Integrations** (`/settings/integrations`): `<GoogleWorkspaceCard>`, `<CloudStorageCard>`, `<JiraCredentialCard>`, `<PlatformsCard>` — all from `@errand-ai/ui-components`.
 - **Task Generators** (`/settings/task-generators`): unchanged.
 - **Cloud Service** (`/settings/cloud`): unchanged.
 - **User Management** (`/settings/users`): unchanged.
 
-The migrated cards (`SystemPromptCard`, `McpServersCard`, `SkillsRepoCard`, `LitellmMcpCard`, `TaskManagementCard`, `TelemetryCard`, `CloudStorageCard`, `JiraCredentialCard`) are supplied by `@errand-ai/ui-components`; the previous local equivalents and the local `SettingsSectionPicker.vue` SHALL NOT exist.
+The migrated cards — Wave 1 (`SystemPromptCard`, `McpServersCard`, `SkillsRepoCard`, `LitellmMcpCard`, `TaskManagementCard`, `TelemetryCard`, `CloudStorageCard`, `JiraCredentialCard`) and Wave 2 (`LlmProviderCard`, `LlmModelCard`, `GoogleWorkspaceCard`, `PlatformsCard`, `TaskProfileListCard`) — are supplied by `@errand-ai/ui-components`; the previous local equivalents and the local `SettingsSectionPicker.vue` SHALL NOT exist.
 
 #### Scenario: Sidebar at sm and above
 - **WHEN** an admin navigates to `/settings/*` on a viewport >= 640px
@@ -34,43 +34,39 @@ The migrated cards (`SystemPromptCard`, `McpServersCard`, `SkillsRepoCard`, `Lit
 
 #### Scenario: Replaced cards no longer exist locally
 - **WHEN** the codebase is searched
-- **THEN** `frontend/src/components/settings/SystemPromptSettings.vue`, `McpServerConfigSettings.vue`, `SkillsRepoSettings.vue`, `TaskManagementSettings.vue`, `TelemetrySettings.vue`, `CloudStorageIntegration.vue`, `LitellmMcpSettings.vue`, the local `JiraCredentialCard.vue`, and `SettingsSectionPicker.vue` SHALL NOT exist
+- **THEN** the Wave 1 locals `frontend/src/components/settings/SystemPromptSettings.vue`, `McpServerConfigSettings.vue`, `SkillsRepoSettings.vue`, `TaskManagementSettings.vue`, `TelemetrySettings.vue`, `CloudStorageIntegration.vue`, `LitellmMcpSettings.vue`, the local `JiraCredentialCard.vue`, and `SettingsSectionPicker.vue` SHALL NOT exist
+- **AND** the Wave 2 locals `LlmProviderSettings.vue`, `LlmModelSettings.vue`, `GoogleWorkspaceIntegration.vue`, `PlatformSettings.vue`, and `PlatformCredentialForm.vue` SHALL NOT exist
 
-### Requirement: Cards own their own state
+#### Scenario: Wave 2 cards rendered from library
+- **WHEN** an admin navigates to `/settings/tasks`
+- **THEN** the page SHALL render `<LlmProviderCard>`, `<LlmModelCard>`, `<TaskManagementCard>`, `<TelemetryCard>` imported from `@errand-ai/ui-components`
+- **AND** SHALL NOT render any locally-defined LLM provider or LLM model component
 
-Settings cards rendered via the shared library SHALL NOT depend on `provide('settings-state', ...)` from the parent `SettingsPage`. Each card SHALL load and save its own data via `useApi()`.
+#### Scenario: Task Profiles uses list card with internal modal
+- **WHEN** an admin navigates to `/settings/profiles`
+- **THEN** the page SHALL render exactly one component: `<TaskProfileListCard>` from `@errand-ai/ui-components`
+- **WHEN** the admin clicks Edit on a profile row
+- **THEN** the modal SHALL open *inside* the list card (not at page level)
+- **WHEN** the viewport is < 640px
+- **THEN** the modal SHALL render as a full-screen sheet with focus trapped
 
-The `provide('settings-state')` block in `SettingsPage.vue` MAY remain to support cards still local (Wave 2 cards) but SHALL be removed in the change that completes Wave 2.
+### Requirement: SettingsPage no longer provides shared state
 
-#### Scenario: Library card loads independently
-- **WHEN** `<SystemPromptCard>` mounts inside the Agent Configuration page
-- **THEN** the card SHALL fetch settings via `useApi()` itself
+The `SettingsPage.vue` SHALL NOT use `provide('settings-state', ...)`. All settings cards — library cards and the remaining server-admin locals — SHALL load and save their own state independently.
+
+The local `loadSettings`, `saveSettings`, `extractValue`, `settingsMetadata` helpers and the per-key refs (e.g. `systemPrompt`, `mcpServersText`, `llmModel`) SHALL NOT exist in `SettingsPage.vue`; it is purely the navigation shell. The remaining local consumers (`GitSshKeySettings`, `McpApiKeySettings`, `PluginPollIntervalSettings`, and the `UserManagementPage` OIDC section) SHALL load their own state via a shared settings API helper (`useSettingsApi()`) or direct fetch.
+
+#### Scenario: SettingsPage has no provide
+- **WHEN** the codebase is searched
+- **THEN** `pages/SettingsPage.vue` SHALL NOT contain `provide('settings-state'`
+- **AND** SHALL NOT define refs like `systemPrompt`, `mcpServersText`, `llmModel`, etc.
+
+#### Scenario: Server-admin cards load themselves
+- **WHEN** `<GitSshKeySettings>` mounts
+- **THEN** it SHALL fetch its own state via `useSettingsApi()` (or its existing direct API helper)
 - **AND** SHALL NOT inject any provider keyed `'settings-state'`
 
-### Requirement: Per-role timeout inputs adjacent to model selectors
-The Task Management page's "LLM Models" section SHALL render three model groups — "Title generation", "Default task processing", and "Transcription" — and each group SHALL include both its model selector and a timeout input rendered immediately below the selector. Each timeout input SHALL be a number input with `min=1`, integer step, and a "seconds" suffix label. Each input SHALL bind to its respective settings key:
-
-| Group | Settings key |
-|---|---|
-| Title generation | `title_generation_timeout` |
-| Default task processing | `task_processing_timeout` |
-| Transcription | `transcription_timeout` |
-
-When the page is saved, the frontend SHALL include all three timeout values in the `PUT /api/settings` payload alongside the model selections. The previous standalone generic "LLM Timeout" input SHALL be removed from the page.
-
-#### Scenario: Three timeout inputs render adjacent to model selectors
-- **WHEN** an admin navigates to `/settings/tasks`
-- **THEN** the "LLM Models" section displays three groups, each with a model selector and a timeout input directly below it
-
-#### Scenario: Saving sends all three timeout values
-- **WHEN** an admin sets the title timeout to 20, the task processing timeout to 180, and the transcription timeout to 45 and clicks Save
-- **THEN** the frontend sends `PUT /api/settings` with `title_generation_timeout: 20`, `task_processing_timeout: 180`, and `transcription_timeout: 45`
-
-#### Scenario: Defaults shown when no settings exist
-- **WHEN** an admin loads the page and none of the three timeout settings exist in the database
-- **THEN** all three timeout inputs display `30`
-
-#### Scenario: Legacy generic input removed
-- **WHEN** an admin navigates to `/settings/tasks`
-- **THEN** no standalone "LLM Timeout" input exists outside the per-model groups
+#### Scenario: Load failure surfaced, not swallowed
+- **WHEN** a self-loading server-admin card's initial `/api/settings` request fails (e.g. transient error or 403)
+- **THEN** the card SHALL surface the load error rather than rendering its "no key generated" / blank-form empty state as if the value were genuinely absent
 
