@@ -43,6 +43,13 @@ ALWAYS_ON_CAPABILITIES = [
     "skills_git_repo",
     "task_management",
     "telemetry",
+    # Wave 2 settings cards (snake_case — consumed by the shared card library).
+    # `platforms` (below) is also a Wave 2 card key and is already advertised.
+    # The kebab-case `task-profiles` below is a separate pre-Wave-1 key consumed
+    # by errand-cloud; the Wave 2 TaskProfileListCard gates on `task_profiles`.
+    "llm_providers",
+    "llm_models",
+    "task_profiles",
     # Pre-Wave-1 capabilities (consumed by errand-cloud for other features).
     "tasks",
     "settings",
@@ -81,6 +88,7 @@ async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
     - ``voice-input`` — a transcription model is configured
     - ``litellm_mcp`` — a LiteLLM proxy is detected
     - ``cloud_storage`` — the OneDrive MCP URL is configured in this server build
+    - ``google_workspace`` — Google OAuth client credentials are configured
     - ``jira`` — the Jira platform integration is registered
 
     Pass ``session`` to reuse a request-scoped session (e.g. the HTTP route);
@@ -91,6 +99,14 @@ async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
     # Env/registry checks need no DB session.
     if os.environ.get("ONEDRIVE_MCP_URL"):
         capabilities.append("cloud_storage")
+
+    # google_workspace: the server build has Google OAuth client credentials
+    # configured — the same gate that makes the Google Workspace authorize/
+    # callback routes available (see integration_routes._has_local_credentials
+    # for the `google_drive` provider). Without both, the GoogleWorkspaceCard
+    # has nothing to connect to and stays hidden.
+    if os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"):
+        capabilities.append("google_workspace")
 
     try:
         from platforms import get_registry

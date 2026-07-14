@@ -1,33 +1,36 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
-import { useAuthStore } from '../../stores/auth'
+import { useSettingsApi, extractSettingValue } from '../../composables/useSettingsApi'
 
-const props = defineProps<{
-  mcpApiKey: string | null
-}>()
+// Self-loading (post-Wave-2): loads its own `mcp_api_key` from /api/settings on
+// mount rather than receiving it from a `provide('settings-state')` parent.
+const { settingsFetch, loadSettings } = useSettingsApi()
 
-const emit = defineEmits<{
-  'update:mcpApiKey': [value: string]
-}>()
-
-const auth = useAuthStore()
+const mcpApiKey = ref<string | null>(null)
 const revealed = ref(false)
 const keyCopied = ref(false)
 const configCopied = ref(false)
 const regenerating = ref(false)
 const showRegenerateDialog = ref(false)
 const regenerateDialogRef = ref<HTMLDialogElement | null>(null)
+// Distinguish a failed load from a genuinely-absent key so a transient error or
+// 403 doesn't render the misleading "No API key — restart the backend" state.
+// `loading` also prevents that state from flashing before the fetch resolves.
+const loadError = ref<string | null>(null)
+const loading = ref(true)
 
-async function keyFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
+onMounted(async () => {
+  try {
+    const data = await loadSettings()
+    mcpApiKey.value = extractSettingValue(data, 'mcp_api_key', null)
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : 'Failed to load MCP API key.'
+    toast.error(loadError.value)
+  } finally {
+    loading.value = false
   }
-  if (auth.token) {
-    headers['Authorization'] = `Bearer ${auth.token}`
-  }
-  return fetch(url, { ...options, headers })
-}
+})
 
 function mcpExampleConfig(): string {
   const host = window.location.origin
@@ -36,7 +39,7 @@ function mcpExampleConfig(): string {
       'errand': {
         url: `${host}/mcp`,
         headers: {
-          Authorization: `Bearer ${props.mcpApiKey || '<api-key>'}`
+          Authorization: `Bearer ${mcpApiKey.value || '<api-key>'}`
         }
       }
     }
@@ -58,8 +61,8 @@ function mcpMaskedConfig(): string {
 }
 
 async function copyKey() {
-  if (!props.mcpApiKey) return
-  await navigator.clipboard.writeText(props.mcpApiKey)
+  if (!mcpApiKey.value) return
+  await navigator.clipboard.writeText(mcpApiKey.value)
   keyCopied.value = true
   toast.success('API key copied.')
   setTimeout(() => { keyCopied.value = false }, 2000)
@@ -91,13 +94,13 @@ async function confirmRegenerate() {
   showRegenerateDialog.value = false
   regenerating.value = true
   try {
-    const res = await keyFetch('/api/settings/regenerate-mcp-key', { method: 'POST' })
+    const res = await settingsFetch('/api/settings/regenerate-mcp-key', { method: 'POST' })
     if (!res.ok) {
       toast.error(`Failed to regenerate key (HTTP ${res.status})`)
       return
     }
     const data = await res.json()
-    emit('update:mcpApiKey', data.mcp_api_key)
+    mcpApiKey.value = data.mcp_api_key
     revealed.value = false
     toast.success('API key regenerated.')
   } catch {
@@ -112,7 +115,9 @@ async function confirmRegenerate() {
   <div class="mb-6 rounded-lg bg-white p-6 shadow-sm">
     <h3 class="text-lg font-semibold text-gray-800 mb-3">MCP API Key</h3>
 
-    <div v-if="mcpApiKey" class="space-y-4">
+    <div v-if="loading" class="text-sm text-gray-500" data-testid="mcp-loading">Loading…</div>
+
+    <div v-else-if="mcpApiKey" class="space-y-4">
       <!-- Key display -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">API Key</label>
@@ -159,6 +164,10 @@ async function confirmRegenerate() {
           {{ configCopied ? 'Copied!' : 'Copy Configuration' }}
         </button>
       </div>
+    </div>
+
+    <div v-else-if="loadError" class="text-sm text-red-600" data-testid="mcp-load-error">
+      {{ loadError }}
     </div>
 
     <div v-else class="text-sm text-gray-500">

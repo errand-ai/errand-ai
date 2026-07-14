@@ -1,27 +1,13 @@
 <script setup lang="ts">
-import { inject } from 'vue'
 import GitSshKeySettings from '../../components/settings/GitSshKeySettings.vue'
 import McpApiKeySettings from '../../components/settings/McpApiKeySettings.vue'
 
-const {
-  mcpApiKey,
-  sshPublicKey,
-  gitSshHosts,
-  saveSettings,
-} = inject<any>('settings-state')
+// Both server-admin cards self-load their own state (post-Wave-2), so this page
+// no longer injects or threads the shared settings-state provider.
 </script>
 
 <template>
-  <GitSshKeySettings
-    :ssh-public-key="sshPublicKey"
-    :git-ssh-hosts="gitSshHosts"
-    :save-settings="saveSettings"
-    @update:ssh-public-key="sshPublicKey = $event"
-    @update:git-ssh-hosts="gitSshHosts = $event"
-  />
+  <GitSshKeySettings />
 
-  <McpApiKeySettings
-    :mcp-api-key="mcpApiKey"
-    @update:mcp-api-key="mcpApiKey = $event"
-  />
+  <McpApiKeySettings />
 </template>

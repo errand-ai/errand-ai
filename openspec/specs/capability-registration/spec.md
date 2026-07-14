@@ -1,3 +1,10 @@
+## Purpose
+
+Defines the single capability set the errand server derives at runtime and
+advertises identically to both consumers — errand-cloud (via the WebSocket
+`register` message) and the locally-served SPA (via `GET /api/capabilities`) — so
+the shared settings cards gate consistently, plus how the server version is reported.
+
 ## Requirements
 
 ### Requirement: Server capability advertisement
@@ -19,6 +26,14 @@
 
 Pre-Wave-1 keys (`tasks`, `settings`, `task-profiles`, `platforms`, and conditional `voice-input`) SHALL remain advertised for other errand-cloud features.
 
+`get_capabilities()` SHALL additionally advertise the following Wave 2 settings-card keys in **snake_case** (consumed by the shared `@errand-ai/ui-components` cards):
+
+- `llm_providers` — always advertised
+- `llm_models` — always advertised
+- `task_profiles` — always advertised (distinct from the pre-Wave-1 kebab-case `task-profiles`, which remains for errand-cloud)
+- `platforms` — always advertised (also a pre-Wave-1 key)
+- `google_workspace` — advertised when Google OAuth client credentials (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`) are configured in the server build
+
 #### Scenario: Always-on capability advertised (both channels)
 - **WHEN** `get_capabilities()` is evaluated (for cloud registration or `GET /api/capabilities`)
 - **THEN** the `capabilities` array SHALL include `"system_prompt"`, `"mcp_servers"`, `"skills_git_repo"`, `"task_management"`, `"telemetry"`
@@ -31,6 +46,16 @@ Pre-Wave-1 keys (`tasks`, `settings`, `task-profiles`, `platforms`, and conditio
 #### Scenario: Conditional capability omitted when feature disabled
 - **WHEN** no LiteLLM proxy is detected
 - **THEN** the `capabilities` array SHALL NOT include `"litellm_mcp"`
+
+#### Scenario: Wave 2 always-on keys advertised
+- **WHEN** any client requests `GET /api/capabilities`
+- **THEN** the response `capabilities` array SHALL include `"llm_providers"`, `"llm_models"`, `"platforms"`, `"task_profiles"`
+
+#### Scenario: Google Workspace conditional
+- **WHEN** Google OAuth client credentials are configured in the server build
+- **THEN** `GET /api/capabilities` SHALL include `"google_workspace"`
+- **WHEN** Google OAuth client credentials are not configured
+- **THEN** `GET /api/capabilities` SHALL NOT include `"google_workspace"`
 
 ### Requirement: Server version from VERSION file
 

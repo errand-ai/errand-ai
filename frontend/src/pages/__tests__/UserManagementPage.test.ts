@@ -111,6 +111,20 @@ describe('UserManagementPage', () => {
     expect(wrapper.find('[data-testid="oidc-roles-claim"]').exists()).toBe(true)
   })
 
+  it('surfaces a load error banner when settings fail to load', async () => {
+    // The OIDC section self-loads /api/settings; a 403/transient failure must be
+    // surfaced rather than silently leaving the form blank.
+    fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/skills') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve({ detail: 'Admin role required' }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { wrapper } = await mountUsers()
+
+    expect(wrapper.find('[data-testid="oidc-load-error"]').exists()).toBe(true)
+  })
+
   it('renders Local Admin Account section', async () => {
     const { wrapper } = await mountUsers()
 

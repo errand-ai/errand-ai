@@ -4,6 +4,7 @@ __pycache__/
 dist/
 .env
 *.egg-info/
+*.tsbuildinfo
 .venv/
 .playwright-mcp/
 screenshots/

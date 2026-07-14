@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { inject, ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { toast } from 'vue-sonner'
+import { useSettingsApi } from '../../composables/useSettingsApi'
 
 const auth = useAuthStore()
-const { settingsMetadata, saveSettings } = inject<any>('settings-state')
+
+// Self-loading (post-Wave-2): the OIDC section loads its own settings metadata
+// from /api/settings on mount and saves via the shared settings API, rather than
+// injecting a `provide('settings-state')` parent.
+const { loadSettings, saveSettings } = useSettingsApi()
+const settingsMetadata = ref<Record<string, any>>({})
+// Surface a settings-load failure so the OIDC form isn't silently left blank
+// (with wrong readonly/configured inferences) on a transient error or 403.
+const settingsLoadError = ref<string | null>(null)
 
 // OIDC configuration
 const discoveryUrl = ref('')
@@ -44,8 +53,15 @@ const userDisplayName = computed(() => {
   return auth.userDisplay || 'admin'
 })
 
-onMounted(() => {
-  // Pre-fill OIDC fields from metadata
+onMounted(async () => {
+  // Load settings, then pre-fill OIDC fields from the metadata payload.
+  try {
+    settingsMetadata.value = await loadSettings()
+  } catch (e) {
+    settingsLoadError.value = e instanceof Error ? e.message : 'Failed to load SSO settings.'
+    toast.error(settingsLoadError.value)
+    return
+  }
   if (settingsMetadata.value?.oidc_discovery_url?.value) {
     discoveryUrl.value = settingsMetadata.value.oidc_discovery_url.value
   }
@@ -170,6 +186,10 @@ async function changePassword() {
     <div class="rounded-lg bg-white p-6 shadow-sm" data-testid="oidc-section">
       <h3 class="text-lg font-semibold text-gray-900 mb-1">Authentication Mode</h3>
       <p class="text-sm text-gray-500 mb-4">Configure SSO via OpenID Connect to enable organization-level access control.</p>
+
+      <div v-if="settingsLoadError" class="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700" data-testid="oidc-load-error">
+        Could not load existing SSO settings — {{ settingsLoadError }}
+      </div>
 
       <div class="space-y-4">
         <div>
