@@ -1854,8 +1854,8 @@ async def cloud_auth_disconnect(
         # Delete credentials
         await session.delete(cred)
 
-        # Delete cloud_endpoints and cloud_endpoint_error settings
-        for key in ("cloud_endpoints", "cloud_endpoint_error"):
+        # Delete cloud_endpoints, cloud_endpoint_error and cloud_payment_warning settings
+        for key in ("cloud_endpoints", "cloud_endpoint_error", "cloud_payment_warning"):
             result = await session.execute(
                 select(Setting).where(Setting.key == key)
             )
@@ -1922,6 +1922,13 @@ async def cloud_status(
     cloud_url = await _get_cloud_url(session)
     subscription = await fetch_subscription_status(cred_data, cloud_url) if cloud_url else None
 
+    # Load payment warning if present (stored by the cloud client on a
+    # subscription_alert). Surfaced inside the subscription object.
+    result = await session.execute(
+        select(Setting).where(Setting.key == "cloud_payment_warning")
+    )
+    payment_warning_setting = result.scalar_one_or_none()
+
     # Extract email from access token if not already stored (pre-email credentials)
     email = cred_data.get("email", "")
     if not email and cred_data.get("access_token"):
@@ -1940,6 +1947,15 @@ async def cloud_status(
     }
     if subscription is not None:
         resp["subscription"] = subscription
+    if payment_warning_setting and isinstance(payment_warning_setting.value, dict):
+        # Ensure a subscription object exists so the frontend can key off
+        # subscription.payment_warning even when the cloud subscription fetch
+        # returned nothing.
+        sub = resp.get("subscription")
+        if not isinstance(sub, dict):
+            sub = {}
+            resp["subscription"] = sub
+        sub["payment_warning"] = payment_warning_setting.value
     if error_setting and isinstance(error_setting.value, dict):
         detail = error_setting.value.get("detail")
         if isinstance(detail, str) and detail.strip():

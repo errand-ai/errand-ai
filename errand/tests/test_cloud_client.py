@@ -618,3 +618,181 @@ class TestSendAndAwait:
         )
 
         assert result is None
+
+
+def _mock_session_ctx(scalar_return):
+    """Build a mocked async_session context manager whose single execute()
+    returns a result with scalar_one_or_none() == scalar_return."""
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=scalar_return)
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.delete = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx, session
+
+
+class TestSubscriptionAlert:
+    """Payment failure notifications relayed from errand-cloud."""
+
+    ALERT_FAILED = {
+        "type": "subscription_alert",
+        "alert": "payment_failed",
+        "plan": "monthly",
+        "attempt_count": 1,
+        "next_retry_at": "2026-03-12T14:00:00Z",
+        "final_attempt": False,
+    }
+
+    @pytest.mark.asyncio
+    async def test_message_dispatch_subscription_alert(self):
+        """_handle_message routes subscription_alert to the handler."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+
+        with patch.object(client, "_handle_subscription_alert", new_callable=AsyncMock) as mock_handler:
+            await client._handle_message(ws, dict(self.ALERT_FAILED))
+
+        mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_payment_failed_stores_warning(self):
+        """payment_failed persists the cloud_payment_warning Setting and publishes an SSE event."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+        ctx, session = _mock_session_ctx(None)  # no existing setting → insert
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_subscription_alert(ws, dict(self.ALERT_FAILED))
+
+        session.add.assert_called_once()
+        stored = session.add.call_args[0][0]
+        assert stored.key == "cloud_payment_warning"
+        assert stored.value == {
+            "alert": "payment_failed",
+            "plan": "monthly",
+            "attempt_count": 1,
+            "next_retry_at": "2026-03-12T14:00:00Z",
+            "final_attempt": False,
+        }
+        session.commit.assert_awaited_once()
+        mock_publish.assert_awaited_once()
+        assert mock_publish.call_args[0][0] == "subscription_alert"
+        assert mock_publish.call_args[0][1]["alert"] == "payment_failed"
+
+    @pytest.mark.asyncio
+    async def test_payment_failed_updates_existing_warning(self):
+        """payment_failed overwrites an existing warning rather than inserting a duplicate."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+        existing = MagicMock()
+        ctx, session = _mock_session_ctx(existing)
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock):
+            await client._handle_subscription_alert(ws, dict(self.ALERT_FAILED))
+
+        session.add.assert_not_called()
+        assert existing.value["final_attempt"] is False
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_payment_succeeded_clears_warning(self):
+        """payment_succeeded deletes the cloud_payment_warning Setting when present."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+        existing = MagicMock()
+        ctx, session = _mock_session_ctx(existing)
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_subscription_alert(ws, {
+                "type": "subscription_alert",
+                "alert": "payment_succeeded",
+                "plan": "monthly",
+            })
+
+        session.delete.assert_awaited_once_with(existing)
+        session.commit.assert_awaited_once()
+        mock_publish.assert_awaited_once()
+        assert mock_publish.call_args[0][1]["alert"] == "payment_succeeded"
+
+    @pytest.mark.asyncio
+    async def test_payment_succeeded_no_warning_is_noop(self):
+        """payment_succeeded with no stored warning does not attempt a delete."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+        ctx, session = _mock_session_ctx(None)
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock):
+            await client._handle_subscription_alert(ws, {
+                "type": "subscription_alert",
+                "alert": "payment_succeeded",
+            })
+
+        session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_alert_forwarded_to_desktop_when_system_subscribed(self):
+        """When system is subscribed, the alert is forwarded as a push_event."""
+        client = CloudWebSocketClient()
+        client._subscriptions = {"system": 1}
+        ws = AsyncMock()
+        ctx, _ = _mock_session_ctx(None)
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock):
+            await client._handle_subscription_alert(ws, dict(self.ALERT_FAILED))
+
+        ws.send.assert_awaited_once()
+        sent = json.loads(ws.send.call_args[0][0])
+        assert sent["type"] == "push_event"
+        assert sent["channel"] == "system"
+        assert sent["data"]["alert"] == "payment_failed"
+        assert sent["data"]["type"] == "subscription_alert"
+
+    @pytest.mark.asyncio
+    async def test_alert_not_forwarded_when_system_not_subscribed(self):
+        """Without a system subscription no push_event is sent, but the SSE event still fires."""
+        client = CloudWebSocketClient()
+        client._subscriptions = {}
+        ws = AsyncMock()
+        ctx, _ = _mock_session_ctx(None)
+
+        with patch("cloud_client.async_session", return_value=ctx), \
+             patch("cloud_client.publish_event", new_callable=AsyncMock) as mock_publish:
+            await client._handle_subscription_alert(ws, dict(self.ALERT_FAILED))
+
+        ws.send.assert_not_called()
+        mock_publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_webhook_message_not_treated_as_alert(self):
+        """A webhook message still drains via dispatch and never touches payment handling."""
+        client = CloudWebSocketClient()
+        ws = AsyncMock()
+
+        with patch("cloud_dispatch.dispatch_cloud_webhook", new_callable=AsyncMock) as mock_dispatch, \
+             patch.object(client, "_store_payment_warning", new_callable=AsyncMock) as mock_store, \
+             patch.object(client, "_clear_payment_warning", new_callable=AsyncMock) as mock_clear:
+            await client._handle_message(ws, {
+                "type": "webhook",
+                "id": "msg-777",
+                "integration": "slack",
+                "endpoint_type": "events",
+                "body": "{}",
+            })
+
+        mock_dispatch.assert_awaited_once()
+        mock_store.assert_not_called()
+        mock_clear.assert_not_called()
+        # Still ACKs the webhook.
+        sent = json.loads(ws.send.call_args[0][0])
+        assert sent["type"] == "ack"
+        assert sent["id"] == "msg-777"

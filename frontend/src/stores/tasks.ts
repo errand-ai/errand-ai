@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import { fetchTasks, createTask, updateTask as apiUpdateTask, deleteTask as apiDeleteTask, type TaskData, type TaskStatus } from '../composables/useApi'
 import { useAuthStore } from './auth'
 
@@ -43,6 +44,23 @@ export const useTaskStore = defineStore('tasks', () => {
       return
     }
 
+    // Payment alerts from errand-cloud (relayed via the cloud client). The
+    // alert payload is nested under "task" by publish_event.
+    if (msg.event === 'subscription_alert') {
+      const payload = msg.task as unknown as Record<string, unknown> | undefined
+      const alert = payload?.alert
+      if (alert === 'payment_failed') {
+        toast.warning(
+          payload?.final_attempt === true
+            ? 'Cloud payment failed — your subscription has expired'
+            : 'Cloud payment failed — we will retry shortly',
+        )
+      } else if (alert === 'payment_succeeded') {
+        toast.success('Cloud payment succeeded')
+      }
+      return
+    }
+
     if (!msg?.task) return
 
     if (msg.event === 'task_created') {
@@ -79,7 +97,7 @@ export const useTaskStore = defineStore('tasks', () => {
     }
 
     // Handle named SSE events
-    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status', 'cloud_storage_connected', 'cloud_storage_error']
+    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status', 'cloud_storage_connected', 'cloud_storage_error', 'subscription_alert']
     for (const eventType of eventTypes) {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
         try {
@@ -232,5 +250,5 @@ export const useTaskStore = defineStore('tasks', () => {
     stopPolling()
   }
 
-  return { tasks, loading, error, sseStatus, cloudStatus, cloudStorageChanged, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, sseStatus, cloudStatus, cloudStorageChanged, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling, handleSseEvent }
 })

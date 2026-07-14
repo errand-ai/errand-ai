@@ -223,6 +223,89 @@ class CloudWebSocketClient:
         elif msg_type == "unsubscribe":
             await self._handle_unsubscribe(message)
 
+        elif msg_type == "subscription_alert":
+            await self._handle_subscription_alert(ws, message)
+
+    # --- Subscription (payment) alert handling ---
+
+    async def _handle_subscription_alert(self, ws, message: dict) -> None:
+        """Handle a subscription_alert message from errand-cloud.
+
+        Payment alerts originate in errand-cloud (Stripe integration) and arrive
+        over the WebSocket tunnel. We persist a payment warning for the Cloud
+        Service settings page, forward the alert to errand-desktop as a
+        ``push_event`` on the ``system`` channel (when subscribed), and
+        re-publish it on the local event bus so the web UI can raise a toast.
+
+        Messages without ``type == "subscription_alert"`` never reach this
+        handler — they are dispatched to their existing branches (webhook,
+        proxy_request, …) by ``_handle_message``.
+        """
+        alert = message.get("alert")
+
+        if alert == "payment_failed":
+            await self._store_payment_warning(message)
+        elif alert == "payment_succeeded":
+            await self._clear_payment_warning()
+
+        # Forward to errand-desktop via the existing push_event mechanism, but
+        # only when the desktop has subscribed to the system channel.
+        if "system" in self._subscriptions:
+            try:
+                await ws.send(json.dumps({
+                    "type": "push_event",
+                    "channel": "system",
+                    "data": message,
+                }))
+            except Exception:
+                logger.exception("Failed to forward subscription_alert to desktop")
+
+        # Re-publish on the local event bus so the web UI can raise a toast.
+        await publish_event("subscription_alert", {
+            "alert": alert,
+            "plan": message.get("plan"),
+            "attempt_count": message.get("attempt_count"),
+            "next_retry_at": message.get("next_retry_at"),
+            "final_attempt": message.get("final_attempt"),
+        })
+
+    async def _store_payment_warning(self, message: dict) -> None:
+        """Persist a payment failure alert in the cloud_payment_warning Setting."""
+        warning = {
+            "alert": message.get("alert"),
+            "plan": message.get("plan"),
+            "attempt_count": message.get("attempt_count"),
+            "next_retry_at": message.get("next_retry_at"),
+            "final_attempt": message.get("final_attempt"),
+        }
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Setting).where(Setting.key == "cloud_payment_warning")
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    existing.value = warning
+                else:
+                    session.add(Setting(key="cloud_payment_warning", value=warning))
+                await session.commit()
+        except Exception:
+            logger.exception("Failed to store cloud_payment_warning setting")
+
+    async def _clear_payment_warning(self) -> None:
+        """Delete the cloud_payment_warning Setting if it exists."""
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Setting).where(Setting.key == "cloud_payment_warning")
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    await session.delete(existing)
+                    await session.commit()
+        except Exception:
+            logger.exception("Failed to clear cloud_payment_warning setting")
+
     # --- OAuth proxy handlers ---
 
     async def _handle_oauth_tokens(self, message: dict) -> None:

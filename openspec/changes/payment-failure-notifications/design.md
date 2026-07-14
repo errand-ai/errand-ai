@@ -2,13 +2,12 @@
 
 ### Message Flow
 
-errand-cloud publishes `subscription_alert` messages to the Valkey pubsub channel `tenant:{id}:notify`. The errand-server WebSocket client already listens on this channel in its pubsub loop. Currently it only triggers webhook drain on messages — we extend it to handle structured JSON alert messages.
+When a Stripe renewal fails, errand-cloud relays a `subscription_alert` message to the connected errand-server over the existing WebSocket tunnel (the same connection that carries `webhook`, `proxy_request`, and `oauth_tokens` messages). The errand-server WebSocket client already dispatches inbound messages by their `type` field in `CloudWebSocketClient._handle_message`; we add a `subscription_alert` branch alongside the existing ones. Messages of other types (or non-JSON frames, which are rejected before dispatch) are unaffected and continue to their existing handlers.
 
 ```
 errand-cloud                errand-server              errand-desktop
      │                           │                          │
-     │ Valkey pubsub             │                          │
-     │ tenant:{id}:notify        │                          │
+     │ WebSocket tunnel          │                          │
      │ {"type":                  │                          │
      │  "subscription_alert",    │                          │
      │  "alert":"payment_failed",│                          │
@@ -37,9 +36,9 @@ errand-cloud                errand-server              errand-desktop
      │                           │ }                          │
 ```
 
-### Pubsub Message Handling
+### Message Handling
 
-Extend the WebSocket client's pubsub loop to parse incoming messages as JSON. If the message has `"type": "subscription_alert"`, handle it as a payment notification rather than triggering webhook drain.
+Add a `subscription_alert` branch to `CloudWebSocketClient._handle_message`. Inbound tunnel frames are already parsed as JSON and dispatched by their `type` field; when `"type": "subscription_alert"`, handle it as a payment notification. Other message types (`webhook`, `proxy_request`, …) continue to their existing branches.
 
 Message format from errand-cloud:
 
@@ -73,8 +72,8 @@ On the Cloud Service settings page (`/settings/cloud`), when `payment_warning` i
 
 ### Desktop Forwarding
 
-Forward the `subscription_alert` payload to errand-desktop via the existing WebSocket event mechanism (structured task events / SSE pattern). errand-desktop will handle native macOS notifications independently.
+Forward the `subscription_alert` payload to errand-desktop by sending a `push_event` on the `system` channel over the WebSocket tunnel — the same push_event mechanism used to forward subscribed Valkey channels — but only when the desktop has subscribed to `system`. errand-desktop handles native macOS notifications independently.
 
 ### Toast Notification
 
-Show a vue-sonner toast in the errand-server web UI when a payment alert is received via the pubsub → WebSocket event flow, using the existing toast notification system.
+The handler also re-publishes the alert on the local event bus (`publish_event("subscription_alert", …)`), which reaches the errand-server web UI over the existing SSE stream (`/api/events`). The frontend raises a vue-sonner toast using the existing toast notification system.

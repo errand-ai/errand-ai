@@ -1,20 +1,20 @@
 ## ADDED Requirements
 
 ### Requirement: Payment warning stored from subscription alert
-The backend SHALL store payment alert data in the Settings table under the key `cloud_payment_warning` when a `subscription_alert` message is received via Valkey pubsub.
+The backend SHALL store payment alert data in the Settings table under the key `cloud_payment_warning` when a `subscription_alert` message is received over the WebSocket tunnel.
 
 #### Scenario: Payment failed alert received
-- **WHEN** the pubsub loop receives a message on `tenant:{id}:notify` with `{"type": "subscription_alert", "alert": "payment_failed", ...}`
+- **WHEN** the WebSocket client receives a `subscription_alert` message with `{"type": "subscription_alert", "alert": "payment_failed", ...}`
 - **THEN** the backend SHALL store the alert payload as a JSON object in the `cloud_payment_warning` Setting
 - **THEN** the stored object SHALL include `alert`, `plan`, `attempt_count`, `next_retry_at`, and `final_attempt` fields from the message
 
 #### Scenario: Payment succeeded clears warning
-- **WHEN** the pubsub loop receives a `subscription_alert` message with `"alert": "payment_succeeded"`
+- **WHEN** the WebSocket client receives a `subscription_alert` message with `"alert": "payment_succeeded"`
 - **THEN** the backend SHALL delete the `cloud_payment_warning` Setting if it exists
 
-#### Scenario: Non-alert pubsub messages unaffected
-- **WHEN** the pubsub loop receives a message that does not have `"type": "subscription_alert"`
-- **THEN** the message SHALL be handled by the existing webhook drain logic as before
+#### Scenario: Non-alert messages unaffected
+- **WHEN** the WebSocket client receives a message that does not have `"type": "subscription_alert"`
+- **THEN** the message SHALL be handled by its existing branch as before
 
 ### Requirement: Payment warning exposed in cloud status API
 The `GET /api/cloud/status` endpoint SHALL include payment warning data in the `subscription` object when a `cloud_payment_warning` Setting exists.

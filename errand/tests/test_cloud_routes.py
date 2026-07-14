@@ -456,6 +456,91 @@ class TestCloudStatus:
         assert "subscription" not in data
         assert "endpoint_error" not in data
 
+    @pytest.mark.asyncio
+    async def test_status_includes_payment_warning_in_subscription(self, cloud_client):
+        """A cloud_payment_warning Setting surfaces under subscription.payment_warning."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        warning = {
+            "alert": "payment_failed",
+            "plan": "monthly",
+            "attempt_count": 1,
+            "next_retry_at": "2026-03-12T14:00:00Z",
+            "final_attempt": False,
+        }
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(key="cloud_payment_warning", value=warning))
+            await session.commit()
+
+        sub_data = {"active": True, "expires_at": "2026-12-31T23:59:59Z"}
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=sub_data):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["subscription"]["active"] is True
+        assert data["subscription"]["payment_warning"] == warning
+
+    @pytest.mark.asyncio
+    async def test_status_payment_warning_without_subscription_fetch(self, cloud_client):
+        """A payment warning surfaces even when the cloud subscription fetch returns nothing."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        warning = {
+            "alert": "payment_failed",
+            "plan": "monthly",
+            "attempt_count": 3,
+            "next_retry_at": None,
+            "final_attempt": True,
+        }
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(key="cloud_payment_warning", value=warning))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["subscription"]["payment_warning"] == warning
+
+    @pytest.mark.asyncio
+    async def test_status_omits_payment_warning_when_absent(self, cloud_client):
+        """No cloud_payment_warning Setting → subscription carries no payment_warning."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            await session.commit()
+
+        sub_data = {"active": True, "expires_at": "2026-12-31T23:59:59Z"}
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=sub_data):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "payment_warning" not in data["subscription"]
+
 
 class TestCloudDisconnectCleansEndpointError:
     @pytest.mark.asyncio
@@ -489,6 +574,41 @@ class TestCloudDisconnectCleansEndpointError:
         async with session_maker() as session:
             result = await session.execute(
                 select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )
+            assert result.scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_deletes_payment_warning_setting(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        from sqlalchemy import select
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(
+                key="cloud_payment_warning",
+                value={"alert": "payment_failed", "plan": "monthly", "attempt_count": 1,
+                       "next_retry_at": "2026-03-12T14:00:00Z", "final_attempt": False},
+            ))
+            await session.commit()
+
+        with patch("cloud_client.stop_cloud_client", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints", new_callable=AsyncMock), \
+             patch("cloud_endpoints.revoke_cloud_endpoints_for_integration", new_callable=AsyncMock), \
+             patch("main._get_cloud_url", new_callable=AsyncMock, return_value="https://test.cloud"), \
+             patch("main.publish_event", new_callable=AsyncMock):
+            resp = await client.post("/api/cloud/auth/disconnect")
+
+        assert resp.status_code == 200
+
+        async with session_maker() as session:
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_payment_warning")
             )
             assert result.scalar_one_or_none() is None
 
