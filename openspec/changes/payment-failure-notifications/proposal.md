@@ -1,10 +1,10 @@
 ## Why
 
-errand-cloud is integrating Stripe for paid subscriptions. When a renewal payment fails, errand-cloud publishes a `subscription_alert` message via Valkey pubsub. The errand-server (local relay) needs to receive these alerts and surface them to the user — both in the Cloud Service settings page and by forwarding to errand-desktop for native OS notifications.
+errand-cloud is integrating Stripe for paid subscriptions. When a renewal payment fails, errand-cloud relays a `subscription_alert` message to the connected errand-server over the existing WebSocket tunnel. The errand-server (local relay) needs to receive these alerts and surface them to the user — both in the Cloud Service settings page and by forwarding to errand-desktop for native OS notifications.
 
 ## What Changes
 
-- Handle new `subscription_alert` message type from Valkey pubsub (`tenant:{id}:notify` channel)
+- Handle new `subscription_alert` message type relayed over the WebSocket tunnel (dispatched by `type` in the cloud client's `_handle_message`)
 - Display payment status alongside "Subscription expires" on the Cloud Service settings page
 - Forward payment alert events to errand-desktop via the existing IPC/communication channel
 - Alert types: `payment_failed` (with retry info), `payment_succeeded` (resolution), `subscription_expired` (final failure)

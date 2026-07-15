@@ -47,7 +47,7 @@ The WebSocket client SHALL handle `subscription_alert` messages relayed by erran
 #### Scenario: Subscription alert received over the tunnel
 - **WHEN** the client receives a tunnel message with `"type": "subscription_alert"`
 - **THEN** the client SHALL route it to the subscription-alert handler rather than any other message branch
-- **THEN** the client SHALL forward the alert payload to errand-desktop via the existing push_event mechanism as a `push_event` with channel `system`
+- **THEN** the client SHALL forward the alert payload to errand-desktop as a `push_event` on the `system` channel when that channel is subscribed (see the forwarding scenario below)
 
 #### Scenario: Non-alert message over the tunnel
 - **WHEN** the client receives a tunnel message whose `type` is not `subscription_alert` (e.g. `webhook`), or a non-JSON frame
