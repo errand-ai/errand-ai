@@ -102,7 +102,9 @@ export const useTaskStore = defineStore('tasks', () => {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data)
-          handleSseEvent({ event: eventType, ...data })
+          // Spread data first so the listener's `eventType` always wins, even
+          // if a payload ever carries a mismatched `event` field.
+          handleSseEvent({ ...data, event: eventType })
         } catch {
           // Ignore malformed events
         }

@@ -33,7 +33,10 @@ interface CloudStatus {
   slack_configured?: boolean
   detail?: string
   endpoint_error?: { detail: string }
-  subscription?: { active: boolean; expires_at: string | null; payment_warning?: PaymentWarning }
+  // `active`/`expires_at` are optional: /api/cloud/status may return a
+  // subscription object carrying only `payment_warning` when the cloud
+  // subscription fetch yields nothing but a payment warning is stored.
+  subscription?: { active?: boolean; expires_at?: string | null; payment_warning?: PaymentWarning }
 }
 
 const cloudStatus = ref<CloudStatus>({ status: 'not_configured' })
