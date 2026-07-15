@@ -145,7 +145,7 @@ describe('subscription_alert toast', () => {
     const store = useTaskStore()
     store.handleSseEvent({
       event: 'subscription_alert',
-      task: { alert: 'payment_failed', final_attempt: false } as unknown as TaskData,
+      task: { alert: 'payment_failed', final_attempt: false },
     })
     expect(toastMock.warning).toHaveBeenCalledTimes(1)
     expect(toastMock.warning.mock.calls[0][0]).toContain('retry')
@@ -156,7 +156,7 @@ describe('subscription_alert toast', () => {
     const store = useTaskStore()
     store.handleSseEvent({
       event: 'subscription_alert',
-      task: { alert: 'payment_failed', final_attempt: true } as unknown as TaskData,
+      task: { alert: 'payment_failed', final_attempt: true },
     })
     expect(toastMock.warning).toHaveBeenCalledTimes(1)
     expect(toastMock.warning.mock.calls[0][0]).toContain('expired')
@@ -166,7 +166,7 @@ describe('subscription_alert toast', () => {
     const store = useTaskStore()
     store.handleSseEvent({
       event: 'subscription_alert',
-      task: { alert: 'payment_succeeded' } as unknown as TaskData,
+      task: { alert: 'payment_succeeded' },
     })
     expect(toastMock.success).toHaveBeenCalledTimes(1)
     expect(toastMock.warning).not.toHaveBeenCalled()

@@ -7,7 +7,7 @@ errand-cloud is integrating Stripe for paid subscriptions. When a renewal paymen
 - Handle new `subscription_alert` message type relayed over the WebSocket tunnel (dispatched by `type` in the cloud client's `_handle_message`)
 - Display payment status alongside "Subscription expires" on the Cloud Service settings page
 - Forward payment alert events to errand-desktop via the existing IPC/communication channel
-- Alert types: `payment_failed` (with retry info), `payment_succeeded` (resolution), `subscription_expired` (final failure)
+- Alert types: `payment_failed` (with retry info; final failure is signalled by `final_attempt: true`, not a separate alert), `payment_succeeded` (resolution)
 
 ## Capabilities
 
