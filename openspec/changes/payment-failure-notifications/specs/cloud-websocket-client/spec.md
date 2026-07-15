@@ -40,18 +40,18 @@ Channel mapping:
 - **WHEN** no subscribe messages have been received (or all channels unsubscribed)
 - **THEN** no push_event messages are sent through the tunnel
 
-### Requirement: Subscription alert handling in pubsub loop
+### Requirement: Subscription alert handling
 
-The WebSocket client's pubsub loop SHALL handle `subscription_alert` messages from the `tenant:{id}:notify` channel as structured JSON events rather than triggering webhook drain.
+The WebSocket client SHALL handle `subscription_alert` messages relayed by errand-cloud over the WebSocket tunnel, dispatched by `type` in `_handle_message` alongside the existing message types (`webhook`, `proxy_request`, `oauth_tokens`, …).
 
-#### Scenario: Subscription alert received on notify channel
-- **WHEN** the pubsub loop receives a message on `tenant:{id}:notify` with valid JSON containing `"type": "subscription_alert"`
-- **THEN** the client SHALL NOT trigger webhook drain for this message
-- **THEN** the client SHALL forward the alert payload to errand-desktop via the existing WebSocket event mechanism as a `push_event` with channel `system`
+#### Scenario: Subscription alert received over the tunnel
+- **WHEN** the client receives a tunnel message with `"type": "subscription_alert"`
+- **THEN** the client SHALL route it to the subscription-alert handler rather than any other message branch
+- **THEN** the client SHALL forward the alert payload to errand-desktop as a `push_event` on the `system` channel when that channel is subscribed (see the forwarding scenario below)
 
-#### Scenario: Non-alert message on notify channel
-- **WHEN** the pubsub loop receives a message on `tenant:{id}:notify` that is not valid JSON or does not have `"type": "subscription_alert"`
-- **THEN** the client SHALL handle it via the existing webhook drain logic
+#### Scenario: Non-alert message over the tunnel
+- **WHEN** the client receives a tunnel message whose `type` is not `subscription_alert` (e.g. `webhook`), or a non-JSON frame
+- **THEN** the message SHALL be handled by its existing branch (non-JSON frames are rejected before dispatch, `webhook` messages still dispatch and ACK as before)
 
 #### Scenario: Subscription alert forwarded to desktop
 - **WHEN** a `subscription_alert` message is received and the `system` channel is subscribed

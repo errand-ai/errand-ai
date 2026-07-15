@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import { fetchTasks, createTask, updateTask as apiUpdateTask, deleteTask as apiDeleteTask, type TaskData, type TaskStatus } from '../composables/useApi'
 import { useAuthStore } from './auth'
 
@@ -27,12 +28,15 @@ export const useTaskStore = defineStore('tasks', () => {
 
   // --- SSE integration ---
 
-  function handleSseEvent(msg: { event: string; task?: TaskData; status?: string }) {
+  // `task` carries the event's data payload, whose shape depends on `event`:
+  // a TaskData for task_* events, or an arbitrary object (cloud status,
+  // payment alert) for the others — hence the union.
+  function handleSseEvent(msg: { event: string; task?: TaskData | Record<string, unknown>; status?: string }) {
     if (!msg?.event) return
 
     // Handle cloud status events (status is nested under "task" key from publish_event)
     if (msg.event === 'cloud_status') {
-      const taskObj = msg.task as unknown as Record<string, unknown> | undefined
+      const taskObj = msg.task as Record<string, unknown> | undefined
       const status = msg.status ?? taskObj?.status
       cloudStatus.value = (status as CloudConnectionStatus) ?? 'disconnected'
       return
@@ -43,19 +47,39 @@ export const useTaskStore = defineStore('tasks', () => {
       return
     }
 
+    // Payment alerts from errand-cloud (relayed via the cloud client). The
+    // alert payload is nested under "task" by publish_event.
+    if (msg.event === 'subscription_alert') {
+      const payload = msg.task as Record<string, unknown> | undefined
+      const alert = payload?.alert
+      if (alert === 'payment_failed') {
+        toast.warning(
+          payload?.final_attempt === true
+            ? 'Cloud payment failed — your subscription has expired'
+            : 'Cloud payment failed — we will retry shortly',
+        )
+      } else if (alert === 'payment_succeeded') {
+        toast.success('Cloud payment succeeded')
+      }
+      return
+    }
+
     if (!msg?.task) return
 
+    // The remaining events (task_created/updated/deleted) always carry a TaskData.
+    const task = msg.task as TaskData
+
     if (msg.event === 'task_created') {
-      const exists = tasks.value.some((t) => t.id === msg.task!.id)
+      const exists = tasks.value.some((t) => t.id === task.id)
       if (!exists) {
-        tasks.value = [...tasks.value, msg.task]
+        tasks.value = [...tasks.value, task]
       }
     } else if (msg.event === 'task_updated') {
       tasks.value = tasks.value.map((t) =>
-        t.id === msg.task!.id ? msg.task! : t
+        t.id === task.id ? task : t
       )
     } else if (msg.event === 'task_deleted') {
-      tasks.value = tasks.value.filter((t) => t.id !== msg.task!.id)
+      tasks.value = tasks.value.filter((t) => t.id !== task.id)
     }
   }
 
@@ -79,12 +103,14 @@ export const useTaskStore = defineStore('tasks', () => {
     }
 
     // Handle named SSE events
-    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status', 'cloud_storage_connected', 'cloud_storage_error']
+    const eventTypes = ['task_created', 'task_updated', 'task_deleted', 'cloud_status', 'cloud_storage_connected', 'cloud_storage_error', 'subscription_alert']
     for (const eventType of eventTypes) {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data)
-          handleSseEvent({ event: eventType, ...data })
+          // Spread data first so the listener's `eventType` always wins, even
+          // if a payload ever carries a mismatched `event` field.
+          handleSseEvent({ ...data, event: eventType })
         } catch {
           // Ignore malformed events
         }
@@ -232,5 +258,5 @@ export const useTaskStore = defineStore('tasks', () => {
     stopPolling()
   }
 
-  return { tasks, loading, error, sseStatus, cloudStatus, cloudStorageChanged, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling }
+  return { tasks, loading, error, sseStatus, cloudStatus, cloudStorageChanged, tasksByStatus, load, addTask, updateTask, removeTask, start, stop, startPolling, stopPolling, handleSseEvent }
 })

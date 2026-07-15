@@ -3,6 +3,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useTaskStore } from '../tasks'
 import type { TaskData } from '../../composables/useApi'
 
+// Mock vue-sonner
+const { toastMock } = vi.hoisted(() => {
+  return { toastMock: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }
+})
+vi.mock('vue-sonner', () => ({ toast: toastMock }))
+
 // Mock useApi to prevent real fetch calls
 vi.mock('../../composables/useApi', async () => {
   const actual = await vi.importActual<typeof import('../../composables/useApi')>('../../composables/useApi')
@@ -124,5 +130,45 @@ describe('tasksByStatus sorting', () => {
     ]
 
     expect(store.tasksByStatus('completed')).toEqual([])
+  })
+})
+
+describe('subscription_alert toast', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    toastMock.success.mockClear()
+    toastMock.warning.mockClear()
+    toastMock.error.mockClear()
+  })
+
+  it('shows a warning toast on a retryable payment failure', () => {
+    const store = useTaskStore()
+    store.handleSseEvent({
+      event: 'subscription_alert',
+      task: { alert: 'payment_failed', final_attempt: false },
+    })
+    expect(toastMock.warning).toHaveBeenCalledTimes(1)
+    expect(toastMock.warning.mock.calls[0][0]).toContain('retry')
+    expect(toastMock.success).not.toHaveBeenCalled()
+  })
+
+  it('shows a warning toast mentioning expiry on the final payment failure', () => {
+    const store = useTaskStore()
+    store.handleSseEvent({
+      event: 'subscription_alert',
+      task: { alert: 'payment_failed', final_attempt: true },
+    })
+    expect(toastMock.warning).toHaveBeenCalledTimes(1)
+    expect(toastMock.warning.mock.calls[0][0]).toContain('expired')
+  })
+
+  it('shows a success toast when payment succeeds', () => {
+    const store = useTaskStore()
+    store.handleSseEvent({
+      event: 'subscription_alert',
+      task: { alert: 'payment_succeeded' },
+    })
+    expect(toastMock.success).toHaveBeenCalledTimes(1)
+    expect(toastMock.warning).not.toHaveBeenCalled()
   })
 })

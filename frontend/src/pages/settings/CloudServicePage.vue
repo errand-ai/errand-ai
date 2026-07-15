@@ -17,6 +17,14 @@ interface CloudEndpoint {
   token: string
 }
 
+interface PaymentWarning {
+  alert: string
+  plan?: string
+  attempt_count?: number
+  next_retry_at?: string | null
+  final_attempt?: boolean
+}
+
 interface CloudStatus {
   status: 'not_configured' | 'connected' | 'disconnected' | 'error'
   tenant_id?: string
@@ -25,7 +33,10 @@ interface CloudStatus {
   slack_configured?: boolean
   detail?: string
   endpoint_error?: { detail: string }
-  subscription?: { active: boolean; expires_at: string | null }
+  // `active`/`expires_at` are optional: /api/cloud/status may return a
+  // subscription object carrying only `payment_warning` when the cloud
+  // subscription fetch yields nothing but a payment warning is stored.
+  subscription?: { active?: boolean; expires_at?: string | null; payment_warning?: PaymentWarning }
 }
 
 const cloudStatus = ref<CloudStatus>({ status: 'not_configured' })
@@ -43,14 +54,26 @@ const hasEndpoints = computed(
   () => (cloudStatus.value.endpoints?.length ?? 0) > 0 || webhookTriggers.value.length > 0,
 )
 const hasEndpointError = computed(() => !!cloudStatus.value.endpoint_error?.detail)
+function formatDate(iso: string): string | null {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return null
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+}
 const subscriptionExpiry = computed(() => {
   const expiresAt = cloudStatus.value.subscription?.expires_at
   if (!expiresAt) return null
-  const d = new Date(expiresAt)
-  if (isNaN(d.getTime())) return null
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+  return formatDate(expiresAt)
 })
 const subscriptionInactive = computed(() => cloudStatus.value.subscription?.active === false)
+const paymentWarning = computed(() => cloudStatus.value.subscription?.payment_warning ?? null)
+const paymentWarningFinal = computed(() => paymentWarning.value?.final_attempt === true)
+const paymentWarningMessage = computed(() => {
+  const w = paymentWarning.value
+  if (!w) return null
+  if (w.final_attempt) return 'Payment failed — subscription expired'
+  const retry = w.next_retry_at ? formatDate(w.next_retry_at) : null
+  return retry ? `Payment failed — retrying ${retry}` : 'Payment failed'
+})
 
 async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -202,6 +225,20 @@ onMounted(async () => {
           Subscription expires {{ subscriptionExpiry }}
         </p>
         <div v-else class="mb-4"></div>
+
+        <!-- Payment failure warning -->
+        <p
+          v-if="paymentWarningMessage"
+          class="text-sm mb-4 flex items-center gap-1.5"
+          :class="paymentWarningFinal ? 'text-red-600' : 'text-amber-600'"
+          data-testid="cloud-payment-warning"
+        >
+          <span
+            class="inline-block h-2 w-2 rounded-full"
+            :class="paymentWarningFinal ? 'bg-red-500' : 'bg-amber-500'"
+          ></span>
+          {{ paymentWarningMessage }}
+        </p>
 
         <div class="flex items-center gap-3">
           <a

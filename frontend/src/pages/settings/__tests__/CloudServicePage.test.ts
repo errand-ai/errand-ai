@@ -374,6 +374,85 @@ describe('CloudServicePage', () => {
     expect(wrapper.find('[data-testid="cloud-subscription-warning"]').exists()).toBe(false)
   })
 
+  it('shows amber retry payment warning when final_attempt is false', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      subscription: {
+        active: true,
+        expires_at: '2026-04-15T00:00:00Z',
+        payment_warning: {
+          alert: 'payment_failed',
+          plan: 'monthly',
+          attempt_count: 1,
+          next_retry_at: '2026-03-12T14:00:00Z',
+          final_attempt: false,
+        },
+      },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const warning = wrapper.find('[data-testid="cloud-payment-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('Payment failed — retrying')
+    expect(warning.text()).toContain('12 Mar 2026')
+    expect(warning.classes()).toContain('text-amber-600')
+    expect(warning.classes()).not.toContain('text-red-600')
+  })
+
+  it('shows red expired payment warning when final_attempt is true', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      subscription: {
+        active: false,
+        expires_at: '2026-03-01T00:00:00Z',
+        payment_warning: {
+          alert: 'payment_failed',
+          plan: 'monthly',
+          attempt_count: 4,
+          next_retry_at: null,
+          final_attempt: true,
+        },
+      },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const warning = wrapper.find('[data-testid="cloud-payment-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('Payment failed — subscription expired')
+    expect(warning.classes()).toContain('text-red-600')
+  })
+
+  it('does not show payment warning when absent', async () => {
+    vi.stubGlobal('fetch', stubFetch({
+      status: 'connected',
+      tenant_id: 'tenant-abc',
+      endpoints: [],
+      subscription: { active: true, expires_at: '2026-04-15T00:00:00Z' },
+    }))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="cloud-payment-warning"]').exists()).toBe(false)
+  })
+
   it('shows Manage Account link when connected', async () => {
     vi.stubGlobal('fetch', stubFetch({
       status: 'connected',
