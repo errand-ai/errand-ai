@@ -96,7 +96,7 @@ The backend SHALL expose `GET /api/cloud/status` requiring the `admin` role. The
 - **WHEN** cloud credentials exist with status "connected" and the WebSocket client is active
 - **THEN** the response SHALL be `{"status": "connected", "tenant_id": "...", "endpoints": [...], "slack_configured": bool}`
 - **THEN** the response SHALL include `"subscription": {"active": bool, "expires_at": str | null}` when the cloud service subscription API responds successfully
-- **THEN** the response SHALL include `"subscription.payment_warning": {alert, plan, attempt_count, next_retry_at, final_attempt}` when a `cloud_payment_warning` Setting exists
+- **THEN** the `subscription` object SHALL include a nested `payment_warning` field `{alert, plan, attempt_count, next_retry_at, final_attempt}` when a `cloud_payment_warning` Setting exists
 - **THEN** the response SHALL include `"endpoint_error": {"detail": str}` when a registration failure is stored in the `cloud_endpoint_error` Setting
 
 #### Scenario: Disconnected

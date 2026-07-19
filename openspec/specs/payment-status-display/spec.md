@@ -1,5 +1,3 @@
-# payment-status-display Specification
-
 ## Purpose
 Surface Errand Cloud subscription payment failures and recoveries to the user: persist a warning from `subscription_alert` events, expose it via the cloud status API, render an amber/red indicator on the Cloud Service settings page, and raise a toast in the web UI.
 
