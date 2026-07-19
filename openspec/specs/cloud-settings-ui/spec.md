@@ -1,5 +1,7 @@
-## Requirements
+## Purpose
 
+The Cloud Service settings subpage lets an admin connect the local errand instance to Errand Cloud, view connection and subscription status (including payment warnings), and manage the webhook endpoints registered through the cloud relay.
+## Requirements
 ### Requirement: Cloud Service settings subpage
 The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/cloud` for managing the errand-cloud connection.
 
@@ -24,6 +26,12 @@ The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/clou
 - **WHEN** cloud credentials exist with status "connected" AND the status response includes `subscription.active === false`
 - **THEN** the page SHALL display a warning indicator alongside the subscription expiry
 - **THEN** the page SHALL show the message "Your Errand Cloud subscription has expired. Endpoint registration is unavailable."
+
+#### Scenario: Connected state with payment warning
+- **WHEN** cloud credentials exist with status "connected" AND the status response includes `subscription.payment_warning`
+- **THEN** the page SHALL display a payment warning indicator alongside the subscription expiry line
+- **THEN** the indicator colour SHALL be amber/orange for retryable failures and red for final failures
+- **THEN** the warning message SHALL reflect the alert type (see payment-status-display spec)
 
 #### Scenario: Error state
 - **WHEN** cloud credentials exist with status "error"
@@ -88,6 +96,7 @@ The backend SHALL expose `GET /api/cloud/status` requiring the `admin` role. The
 - **WHEN** cloud credentials exist with status "connected" and the WebSocket client is active
 - **THEN** the response SHALL be `{"status": "connected", "tenant_id": "...", "endpoints": [...], "slack_configured": bool}`
 - **THEN** the response SHALL include `"subscription": {"active": bool, "expires_at": str | null}` when the cloud service subscription API responds successfully
+- **THEN** the `subscription` object SHALL include a nested `payment_warning` field `{alert, plan, attempt_count, next_retry_at, final_attempt}` when a `cloud_payment_warning` Setting exists
 - **THEN** the response SHALL include `"endpoint_error": {"detail": str}` when a registration failure is stored in the `cloud_endpoint_error` Setting
 
 #### Scenario: Disconnected
@@ -97,3 +106,4 @@ The backend SHALL expose `GET /api/cloud/status` requiring the `admin` role. The
 #### Scenario: Error
 - **WHEN** cloud credentials exist with status "error"
 - **THEN** the response SHALL be `{"status": "error", "detail": "..."}`
+
