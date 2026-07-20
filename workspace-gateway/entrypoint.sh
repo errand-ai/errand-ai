@@ -24,6 +24,9 @@
 #   WORKSPACE_FOLDER          folder within the remote to serve (default: root)
 #   WORKSPACE_RCLONE_CONF     path to the mounted (read-only) rclone.conf
 #                             (default: /config-ro/rclone.conf)
+#   WORKSPACE_CONFIG_RW       writable path the read-only config is copied to,
+#                             so `rclone rc config/update` can persist
+#                             (default: /config-rw/rclone.conf)
 #   WORKSPACE_ADDR            NFS listen address (default: :2049)
 #   WORKSPACE_POLL_INTERVAL   change poll interval (default: 15s)
 #   WORKSPACE_CACHE_DIR       VFS cache dir (default: /cache)

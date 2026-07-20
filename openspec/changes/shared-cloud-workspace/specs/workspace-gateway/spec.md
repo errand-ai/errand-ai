@@ -69,7 +69,7 @@ The refresher's use of `config/update` SHALL satisfy the constraints validated b
 
 ### Requirement: Network exposure restricted
 
-The gateway's NFS port SHALL only be reachable from task-runner containers and the errand server. On Kubernetes this SHALL be enforced with a NetworkPolicy selecting task-runner Job pods by their existing labels; on docker-compose by network membership. NFSv3 itself carries no authentication and SHALL NOT be exposed outside the deployment's network boundary.
+The gateway's NFS port SHALL only be reachable from task-runner containers and the errand server. On Kubernetes this SHALL be enforced with a NetworkPolicy selecting task-runner Job pods and the server by their existing labels. Because kubelet performs the task Job's NFS mount from the **node** network namespace (mount traffic arrives from the node IP, not the task-runner pod IP), the NetworkPolicy SHALL additionally permit the configured node/pod CIDRs (`ipBlock`), or the mount is blocked; this is exposed as a required, operator-configured value. On docker-compose the port is published to the host loopback for the host-performed NFS mount. NFSv3 itself carries no authentication and SHALL NOT be exposed outside the deployment's network boundary.
 
 #### Scenario: Unrelated pod cannot reach the gateway
 
@@ -87,9 +87,9 @@ The gateway SHALL run as a restart-managed workload (a Deployment on Kubernetes;
 
 ### Requirement: Gateway health is observable
 
-The gateway SHALL expose health information sufficient for the settings UI and for log-based alerting: last successful cloud poll, pending upload count, and auth state.
+The gateway SHALL expose health information sufficient for the settings UI and for log-based alerting: last successful cloud authentication/refresh time, pending upload count, and auth state. (The refresher reports token-refresh timing as the freshness proxy — rclone's ChangeNotify polling does not expose a discrete "last poll" timestamp via the rc API; the effective poll cadence is documented in design.md, finding F6.)
 
 #### Scenario: Health readable while degraded
 
 - **WHEN** the gateway has lost cloud connectivity but is still serving cached files
-- **THEN** health output shows stale last-poll time and a non-zero pending upload count
+- **THEN** health output shows an error/stale auth state (a failed or stale last-refresh time) and a non-zero pending upload count

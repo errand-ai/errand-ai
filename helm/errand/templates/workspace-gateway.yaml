@@ -188,6 +188,14 @@ spec:
             matchLabels:
               app.kubernetes.io/name: {{ .Chart.Name }}
               app.kubernetes.io/component: server
+        # Node/pod CIDRs: kubelet performs the task Job's NFS mount from the
+        # node network, so mount traffic arrives from the node IP (not the
+        # task-runner pod IP). Without these, an enforced NetworkPolicy blocks
+        # the mount and breaks /shared. Configure via workspace.networkPolicy.allowedCIDRs.
+        {{- range $ws.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $ws.service.port }}

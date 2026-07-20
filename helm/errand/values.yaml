@@ -89,6 +89,14 @@ workspace:
     intervalSeconds: 3000         # ~50 min (tokens live ~60 min)
   networkPolicy:
     enabled: true
+    # IMPORTANT: Kubernetes performs the NFS mount for the task Job's PVC from
+    # the kubelet in the NODE network namespace, so the mount traffic originates
+    # from the node IP — NOT the task-runner pod IP. A podSelector-only ingress
+    # rule therefore blocks the mount when NetworkPolicy is enforced. List the
+    # cluster's node (and/or pod) CIDRs here so the gateway accepts that traffic;
+    # leave empty only if your CNI exempts node-originated traffic from policy.
+    allowedCIDRs: []
+    # - "10.0.0.0/8"      # example: node/pod CIDR
 
 database:
   existingSecret: content-manager-db

@@ -3,8 +3,6 @@ config → runtime mount spec, across the docker / kubernetes / apple paths, plu
 the disabled and requested-but-unconfigured cases.
 """
 
-import pytest
-
 from task_manager import _resolve_workspace_mounts
 
 

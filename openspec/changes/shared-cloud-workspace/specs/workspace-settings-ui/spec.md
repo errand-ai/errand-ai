@@ -16,12 +16,12 @@ The settings UI SHALL provide a Shared Workspace section where an admin can view
 
 ### Requirement: Gateway health readout
 
-The settings UI SHALL display gateway health: last successful cloud poll, pending upload count, and auth state, sourced from the errand server's workspace status endpoint. Degraded states (stale poll, auth failure, growing pending uploads) SHALL be visually distinguished so sync breakage is never silent.
+The settings UI SHALL display gateway health: last successful auth/refresh time, pending upload count, and auth state, sourced from the errand server's workspace status endpoint (`WorkspaceGatewayHealth`). Degraded states (auth failure, growing pending uploads, or no recent gateway report) SHALL be visually distinguished so sync breakage is never silent.
 
 #### Scenario: Healthy gateway
 
-- **WHEN** the gateway is polling and has no pending uploads
-- **THEN** the health readout shows a healthy state with the last poll time
+- **WHEN** the gateway is authenticated and has no pending uploads
+- **THEN** the health readout shows a healthy state with the last successful refresh time
 
 #### Scenario: Auth failure surfaced
 

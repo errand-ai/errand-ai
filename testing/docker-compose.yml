@@ -194,6 +194,11 @@ services:
       WORKSPACE_ADDR: ":2049"
       WORKSPACE_RC_ADDR: "127.0.0.1:5572"
       WORKSPACE_CACHE_DIR: /cache
+    # Publish the NFS port to the host: the `workspace-shared` volume below is
+    # mounted by the Docker daemon on the HOST, which cannot resolve the
+    # `workspace-gateway` service name nor reach an unpublished container port.
+    ports:
+      - "12049:2049"
     volumes:
       - ${WORKSPACE_RCLONE_CONF:-./rclone.conf}:/config-ro/rclone.conf:ro
       - workspace-cache:/cache
@@ -233,7 +238,10 @@ volumes:
     driver: local
     driver_opts:
       type: nfs
-      o: "addr=workspace-gateway,nolock,soft,vers=3,port=2049,mountport=2049"
+      # Mounted by the host Docker daemon → target the published host port on
+      # localhost (see the workspace-gateway `ports` mapping), not the
+      # container-network service name.
+      o: "addr=127.0.0.1,nolock,soft,vers=3,port=12049,mountport=12049"
       device: ":/"
 
 networks:
