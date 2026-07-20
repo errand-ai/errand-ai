@@ -141,9 +141,14 @@ async def lifespan(app: FastAPI):
                     await register_workspace_bearer(_ws_valkey, _ws_bearer)
                     logger.info("Shared workspace enabled — registered workspace refresh bearer")
                 else:
+                    # No valid bearer to register — also revoke any previously
+                    # registered (possibly rotated/stale) bearers so they don't
+                    # linger valid on the refresh endpoints until TTL expiry.
+                    await invalidate_all_workspace_bearers(_ws_valkey)
                     logger.warning(
                         "WORKSPACE_ENABLED is set but WORKSPACE_BEARER is empty; "
-                        "the gateway token-refresher cannot authenticate"
+                        "the gateway token-refresher cannot authenticate "
+                        "(revoked any previously-registered workspace bearers)"
                     )
             else:
                 await invalidate_all_workspace_bearers(_ws_valkey)
@@ -2538,10 +2543,13 @@ _WORKSPACE_HEALTH_TTL_SECONDS = 120
 def _workspace_deployment_config() -> dict:
     """Read-only workspace deployment config from env (set by Helm/compose)."""
     enabled = os.environ.get("WORKSPACE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    # Only surface provider/folder when the feature is actually enabled — compose
+    # gives WORKSPACE_PROVIDER/FOLDER non-empty defaults even when disabled, and
+    # reporting them for a disabled workspace is a confusing/contradictory status.
     return {
         "enabled": enabled,
-        "provider": os.environ.get("WORKSPACE_PROVIDER", "") or None,
-        "folder": os.environ.get("WORKSPACE_FOLDER", "") or None,
+        "provider": (os.environ.get("WORKSPACE_PROVIDER", "") or None) if enabled else None,
+        "folder": (os.environ.get("WORKSPACE_FOLDER", "") or None) if enabled else None,
     }
 
 

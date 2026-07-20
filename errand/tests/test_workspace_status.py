@@ -67,10 +67,16 @@ async def test_health_ingest_and_status_roundtrip(admin_client_with_session, fak
 async def test_status_disabled_when_not_configured(admin_client_with_session, fake_valkey, monkeypatch):
     client, _ = admin_client_with_session
     monkeypatch.delenv("WORKSPACE_ENABLED", raising=False)
+    # Even if provider/folder env defaults are present (as in compose), a disabled
+    # workspace must not report them — that would be a contradictory status.
+    monkeypatch.setenv("WORKSPACE_PROVIDER", "google_drive")
+    monkeypatch.setenv("WORKSPACE_FOLDER", "Errand")
     resp = await client.get("/api/workspace/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["enabled"] is False
+    assert body["provider"] is None
+    assert body["folder"] is None
     assert body["health"] is None
 
 
