@@ -924,8 +924,17 @@ def _resolve_workspace_mounts(settings: dict):
         host_path = os.path.join(host_base, subpath) if subpath else host_base
         return [WorkspaceMount(container_path=container_path, host_path=host_path)], False
     if named_volume:
-        # Named volumes cannot carry a subpath; the volume is expected to already
-        # point at the intended workspace (sub)folder.
+        if subpath:
+            # A Docker named volume cannot be scoped to a subpath. Refuse rather
+            # than silently mounting the whole workspace, which would give the
+            # task a broader mount than the profile requested (data-exposure).
+            logger.warning(
+                "Shared workspace: profile requests subpath %r but the deployment "
+                "uses a named volume (WORKSPACE_VOLUME), which cannot scope to a "
+                "subpath; not mounting. Use WORKSPACE_HOST_PATH for subpath support.",
+                subpath,
+            )
+            return None, True
         return [WorkspaceMount(container_path=container_path, host_path=named_volume)], False
     return None, True
 

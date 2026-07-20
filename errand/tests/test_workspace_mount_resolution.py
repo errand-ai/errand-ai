@@ -61,14 +61,25 @@ def test_docker_host_path_folds_subpath(monkeypatch):
     assert mounts[0].pvc_claim_name is None
 
 
-def test_docker_named_volume_ignores_subpath(monkeypatch):
+def test_docker_named_volume_without_subpath(monkeypatch):
     monkeypatch.setenv("WORKSPACE_ENABLED", "true")
     monkeypatch.setenv("CONTAINER_RUNTIME", "docker")
     monkeypatch.delenv("WORKSPACE_HOST_PATH", raising=False)
     monkeypatch.setenv("WORKSPACE_VOLUME", "workspace-nfs")
-    mounts, unconfigured = _resolve_workspace_mounts(_settings(True, subpath="ignored"))
+    mounts, unconfigured = _resolve_workspace_mounts(_settings(True, subpath=None))
     assert unconfigured is False
     assert mounts[0].host_path == "workspace-nfs"
+
+
+def test_docker_named_volume_with_subpath_refused(monkeypatch):
+    """A named volume can't scope to a subpath — refuse rather than over-mount."""
+    monkeypatch.setenv("WORKSPACE_ENABLED", "true")
+    monkeypatch.setenv("CONTAINER_RUNTIME", "docker")
+    monkeypatch.delenv("WORKSPACE_HOST_PATH", raising=False)
+    monkeypatch.setenv("WORKSPACE_VOLUME", "workspace-nfs")
+    mounts, unconfigured = _resolve_workspace_mounts(_settings(True, subpath="reports"))
+    assert mounts is None
+    assert unconfigured is True
 
 
 def test_docker_without_source_is_unconfigured(monkeypatch):

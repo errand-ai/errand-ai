@@ -88,12 +88,12 @@ spec:
             - name: ERRAND_WORKSPACE_BEARER
               valueFrom:
                 secretKeyRef:
-                  name: {{ $ws.bearerSecret | quote }}
+                  name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" $ws.bearerSecret | quote }}
                   key: {{ $ws.bearerKey | quote }}
       volumes:
         - name: config-ro
           secret:
-            secretName: {{ $ws.configSecret | quote }}
+            secretName: {{ required "workspace.configSecret is required when workspace.enabled=true" $ws.configSecret | quote }}
             items:
               - key: rclone.conf
                 path: rclone.conf

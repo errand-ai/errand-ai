@@ -138,6 +138,7 @@ def do_refresh(cfg: Config, health: dict) -> None:
         health["auth_state"] = "ok"
         health["last_refresh_at"] = _now_iso()
         health["last_refresh_ok"] = True
+        health.pop("last_error", None)  # clear any stale error from a prior failure
         _log("token_refreshed", provider=cfg.provider, expires_at=token.get("expires_at"))
     except Exception as exc:  # noqa: BLE001 — never crash the loop
         health["auth_state"] = "error"
