@@ -100,3 +100,14 @@ def test_apple_runtime_uses_host_path(monkeypatch):
     mounts, unconfigured = _resolve_workspace_mounts(_settings(True, subpath="reports"))
     assert unconfigured is False
     assert mounts[0].host_path == "/Users/x/Drive/Errand/reports"
+
+
+def test_apple_runtime_rejects_named_volume(monkeypatch):
+    """A Docker named volume is not a valid Apple-bridge mount source."""
+    monkeypatch.setenv("WORKSPACE_ENABLED", "true")
+    monkeypatch.setenv("CONTAINER_RUNTIME", "apple")
+    monkeypatch.delenv("WORKSPACE_HOST_PATH", raising=False)
+    monkeypatch.setenv("WORKSPACE_VOLUME", "workspace-nfs")
+    mounts, unconfigured = _resolve_workspace_mounts(_settings(True))
+    assert mounts is None
+    assert unconfigured is True

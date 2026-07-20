@@ -130,8 +130,8 @@ def report_health(cfg: Config, health: dict) -> None:
         _log("health_report_failed", error=str(exc))
 
 
-def do_refresh(cfg: Config, health: dict) -> None:
-    """Run one refresh cycle, updating `health` in place."""
+def do_refresh(cfg: Config, health: dict) -> bool:
+    """Run one refresh cycle, updating `health` in place. Returns success."""
     try:
         token = fetch_access_token(cfg)
         push_token_to_rclone(cfg, token["access_token"], int(token.get("expires_at", 0)))
@@ -140,12 +140,14 @@ def do_refresh(cfg: Config, health: dict) -> None:
         health["last_refresh_ok"] = True
         health.pop("last_error", None)  # clear any stale error from a prior failure
         _log("token_refreshed", provider=cfg.provider, expires_at=token.get("expires_at"))
+        return True
     except Exception as exc:  # noqa: BLE001 — never crash the loop
         health["auth_state"] = "error"
         health["last_refresh_at"] = _now_iso()
         health["last_refresh_ok"] = False
         health["last_error"] = str(exc)
         _log("token_refresh_failed", provider=cfg.provider, error=str(exc))
+        return False
 
 
 def main() -> None:
@@ -153,14 +155,16 @@ def main() -> None:
     health: dict = {"auth_state": "starting", "provider": cfg.provider}
     _log("startup", provider=cfg.provider, remote=cfg.remote, refresh_interval=cfg.refresh_interval)
 
-    do_refresh(cfg, health)  # refresh immediately on start
-    last_refresh = time.monotonic()
+    # `last_refresh` advances ONLY on a successful refresh — a failed attempt
+    # (including the initial one) must be retried on the fast health-loop cadence,
+    # not left unauthenticated until a full refresh interval elapses.
+    last_refresh = time.monotonic() if do_refresh(cfg, health) else 0.0
 
     while True:
         now = time.monotonic()
-        if now - last_refresh >= cfg.refresh_interval:
-            do_refresh(cfg, health)
-            last_refresh = now
+        if last_refresh == 0.0 or now - last_refresh >= cfg.refresh_interval:
+            if do_refresh(cfg, health):
+                last_refresh = now
         health.update(read_rclone_stats(cfg))
         report_health(cfg, health)
         time.sleep(cfg.health_interval)

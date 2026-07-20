@@ -327,7 +327,10 @@ export async function fetchTranscriptionStatus(): Promise<{ enabled: boolean }> 
 
 /**
  * Shared-workspace deployment status + gateway health (admin).
- * `enabled` is false when the deployment has no workspace gateway configured;
+ * `enabled` is false when the deployment has no workspace gateway configured.
+ * As a safe fallback, this also returns the disabled default (enabled:false,
+ * health:null) on any non-OK response (e.g. a transient server error) rather
+ * than throwing — callers should treat that as "disabled or unavailable".
  * `health` is null when the gateway has not reported within its TTL (degraded).
  */
 export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {

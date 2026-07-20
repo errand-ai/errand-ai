@@ -917,13 +917,15 @@ def _resolve_workspace_mounts(settings: dict):
             container_path=container_path, pvc_claim_name=claim, subpath=subpath,
         )], False
 
-    # Docker (incl. compose gateway) and Apple use a host-path / named-volume source.
+    # Docker (incl. compose gateway) and Apple use a host-path source; a named
+    # volume is a Docker-only concept (the Apple bridge expects an absolute host
+    # path, so a named volume there would be an invalid mount source).
     host_base = os.environ.get("WORKSPACE_HOST_PATH", "").strip()
     named_volume = os.environ.get("WORKSPACE_VOLUME", "").strip()
     if host_base:
         host_path = os.path.join(host_base, subpath) if subpath else host_base
         return [WorkspaceMount(container_path=container_path, host_path=host_path)], False
-    if named_volume:
+    if named_volume and runtime_type == "docker":
         if subpath:
             # A Docker named volume cannot be scoped to a subpath. Refuse rather
             # than silently mounting the whole workspace, which would give the
