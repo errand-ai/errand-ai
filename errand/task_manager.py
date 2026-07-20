@@ -2001,7 +2001,10 @@ class TaskManager:
         workspace_mounts, workspace_unconfigured = _resolve_workspace_mounts(settings)
         if workspace_unconfigured:
             logger.warning(
-                "Task %s requested a shared workspace but this deployment has none configured",
+                "Task %s requested a shared workspace but it is unavailable or "
+                "misconfigured on this deployment (not configured, or configured "
+                "but incompatible with the request — e.g. missing PVC claim, or a "
+                "named volume cannot honor the profile subpath)",
                 task.id,
             )
             try:
@@ -2009,7 +2012,7 @@ class TaskManager:
                     "workspace_unavailable",
                     {
                         "task_id": str(task.id),
-                        "detail": "profile requested a shared workspace but no workspace gateway is configured on this deployment",
+                        "detail": "profile requested a shared workspace but it is unavailable or misconfigured on this deployment",
                     },
                 )
             except Exception:

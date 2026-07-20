@@ -151,7 +151,9 @@ def do_refresh(cfg: Config, health: dict) -> bool:
         health["auth_state"] = "ok"
         health["last_refresh_at"] = _now_iso()
         health["last_refresh_ok"] = True
-        health.pop("last_error", None)  # clear any stale error from a prior failure
+        # Clear failure-only fields so a recovered gateway doesn't still look failing.
+        health.pop("last_error", None)
+        health.pop("last_attempt_at", None)
         _log("token_refreshed", provider=cfg.provider, expires_at=token.get("expires_at"))
         return True
     except Exception as exc:  # noqa: BLE001 — never crash the loop

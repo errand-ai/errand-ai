@@ -38,34 +38,35 @@ _require_refresh_bearer = require_refresh_bearer(GOOGLE_TASK_BEARER_PREFIX)
 @router.post("/refresh-token")
 async def refresh_google_token(
     request: Request,
-    task_id: str = Depends(_require_refresh_bearer),
+    caller: str = Depends(_require_refresh_bearer),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Force-refresh the stored google_drive OAuth credential.
 
-    Bypasses the 5-minute remaining-life buffer used at task-start. Intended
-    for the task-runner's mid-task recovery path when it has observed an
-    UNAUTHENTICATED response from a Google API call.
+    Bypasses the 5-minute remaining-life buffer used at task-start. Intended for
+    the task-runner's mid-task recovery path and the workspace gateway. The
+    dependency returns the caller identity — a task id or the literal
+    ``"workspace"`` — used for logging.
     """
     creds = await load_credentials("google_drive", session)
     if not creds:
         logger.info(
-            "refresh-token: provider=google_drive task_id=%s status=not_configured",
-            task_id or "-",
+            "refresh-token: provider=google_drive caller=%s status=not_configured",
+            caller or "-",
         )
         raise HTTPException(status_code=404, detail="no Google credentials configured")
 
     refreshed = await force_refresh_token("google_drive", creds, session)
     if not refreshed:
         logger.warning(
-            "refresh-token: provider=google_drive task_id=%s status=upstream_failed",
-            task_id or "-",
+            "refresh-token: provider=google_drive caller=%s status=upstream_failed",
+            caller or "-",
         )
         raise HTTPException(status_code=502, detail="upstream refresh failed")
 
     logger.info(
-        "refresh-token: provider=google_drive task_id=%s status=ok expires_at=%s",
-        task_id or "-", refreshed.get("expires_at"),
+        "refresh-token: provider=google_drive caller=%s status=ok expires_at=%s",
+        caller or "-", refreshed.get("expires_at"),
     )
 
     return {
