@@ -154,6 +154,37 @@ class TestDockerRuntime:
         kwargs = client.containers.create.call_args.kwargs
         assert kwargs["volumes"]["/host/ws"]["mode"] == "ro"
 
+    def test_prepare_named_volume_source_must_exist(self):
+        """A non-absolute source is a named volume; if it doesn't exist, fail fast."""
+        from docker.errors import NotFound
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+        client.volumes.get.side_effect = NotFound("no such volume")
+
+        with pytest.raises(RuntimeError, match="no Docker volume by that name exists"):
+            runtime.prepare(
+                image="img:latest", env={}, files={"f.txt": "c"},
+                mounts=[WorkspaceMount(container_path="/shared", host_path="workspace-nfs")],
+            )
+        client.containers.create.assert_not_called()
+
+    def test_prepare_existing_named_volume_mounts(self):
+        """A non-absolute source that exists as a Docker volume is mounted."""
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+        client.volumes.get.return_value = MagicMock()  # volume exists
+
+        runtime.prepare(
+            image="img:latest", env={}, files={"f.txt": "c"},
+            mounts=[WorkspaceMount(container_path="/shared", host_path="workspace-nfs")],
+        )
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["volumes"] == {"workspace-nfs": {"bind": "/shared", "mode": "rw"}}
+
     def test_run_yields_log_lines(self):
         """run() streams container logs and yields individual lines."""
         runtime, client = self._make_runtime()

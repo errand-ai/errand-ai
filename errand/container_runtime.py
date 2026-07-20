@@ -258,10 +258,26 @@ class DockerRuntime(ContainerRuntime):
         # (the compose gateway defines an NFS-backed named volume); Docker
         # treats a non-absolute source as a named volume automatically.
         if mounts:
+            from docker.errors import NotFound
+
             volume_map: dict[str, dict[str, str]] = {}
             for m in mounts:
                 if not m.host_path:
                     continue
+                # A non-absolute source is a Docker *named volume*. Docker would
+                # silently create a missing one, mounting an empty local volume
+                # at /shared and masking a misconfigured workspace (e.g. a
+                # WORKSPACE_VOLUME typo, or the NFS volume never created). Verify
+                # it exists and fail fast with a clear error instead.
+                if not m.host_path.startswith("/"):
+                    try:
+                        self.client.volumes.get(m.host_path)
+                    except NotFound:
+                        raise RuntimeError(
+                            f"shared-workspace mount source {m.host_path!r} is not an "
+                            f"absolute host path and no Docker volume by that name exists; "
+                            f"refusing to mount an empty auto-created volume at {m.container_path}"
+                        )
                 volume_map[m.host_path] = {
                     "bind": m.container_path,
                     "mode": "ro" if m.read_only else "rw",
