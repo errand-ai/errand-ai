@@ -29,6 +29,8 @@
 #                             (default: /config-rw/rclone.conf)
 #   WORKSPACE_ADDR            NFS listen address (default: :2049)
 #   WORKSPACE_POLL_INTERVAL   change poll interval (default: 15s)
+#   WORKSPACE_DIR_CACHE_TIME  dir-cache lifetime, decoupled from polling to keep
+#                             metadata off the provider API (default: 5m; F5)
 #   WORKSPACE_CACHE_DIR       VFS cache dir (default: /cache)
 #   WORKSPACE_CACHE_MAX_SIZE  VFS cache max size (default: 5G)
 #   WORKSPACE_RC_ADDR         rc bind address (default: 127.0.0.1:5572)
@@ -41,6 +43,12 @@ CONF_RO="${WORKSPACE_RCLONE_CONF:-/config-ro/rclone.conf}"
 CONF_RW="${WORKSPACE_CONFIG_RW:-/config-rw/rclone.conf}"
 ADDR="${WORKSPACE_ADDR:-:2049}"
 POLL="${WORKSPACE_POLL_INTERVAL:-15s}"
+# Directory-cache lifetime is decoupled from the poll interval on purpose: change
+# polling (--poll-interval) already invalidates cached entries when the cloud
+# changes, so a *long* dir-cache-time keeps metadata (readdir/stat) served from
+# cache instead of hitting the provider API — mitigating quota pressure (design.md
+# finding F5). Keep polling short; keep dir cache long.
+DIR_CACHE_TIME="${WORKSPACE_DIR_CACHE_TIME:-5m}"
 CACHE_DIR="${WORKSPACE_CACHE_DIR:-/cache}"
 CACHE_MAX="${WORKSPACE_CACHE_MAX_SIZE:-5G}"
 RC_ADDR="${WORKSPACE_RC_ADDR:-127.0.0.1:5572}"
@@ -65,7 +73,7 @@ exec rclone serve nfs "$TARGET" \
   --vfs-cache-mode=full \
   --cache-dir="$CACHE_DIR" \
   --vfs-cache-max-size="$CACHE_MAX" \
-  --dir-cache-time="$POLL" \
+  --dir-cache-time="$DIR_CACHE_TIME" \
   --poll-interval="$POLL" \
   --drive-skip-gdocs \
   --rc --rc-addr="$RC_ADDR" --rc-no-auth \

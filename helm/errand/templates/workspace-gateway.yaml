@@ -141,6 +141,12 @@ spec:
   storageClassName: ""
   mountOptions:
     {{- toYaml $ws.nfsMountOptions | nindent 4 }}
+    # rclone serve nfs exposes everything on a single port and does NOT register
+    # with rpcbind/portmapper, so the client must be told the port explicitly —
+    # otherwise the mount attempts portmapper (111) discovery and fails. Pinned
+    # to the Service port so they always stay in sync.
+    - port={{ $ws.service.port }}
+    - mountport={{ $ws.service.port }}
   nfs:
     server: {{ $ws.service.clusterIP | quote }}
     path: "/"
