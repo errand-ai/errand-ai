@@ -156,7 +156,10 @@ def do_refresh(cfg: Config, health: dict) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 — never crash the loop
         health["auth_state"] = "error"
-        health["last_refresh_at"] = _now_iso()
+        # Do NOT touch last_refresh_at — it is the last *successful* refresh time;
+        # a failed attempt is represented by last_refresh_ok/last_error/last_attempt_at
+        # so the health view can't look "recent" while auth is actually failing.
+        health["last_attempt_at"] = _now_iso()
         health["last_refresh_ok"] = False
         health["last_error"] = str(exc)
         _log("token_refresh_failed", provider=cfg.provider, error=str(exc))
