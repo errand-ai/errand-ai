@@ -55,12 +55,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_env(name: str) -> str:
+    """Return a required env var, failing fast if unset OR empty.
+
+    Empty values are common with compose/Helm defaults; without this the
+    refresher would loop on 401s/rc errors instead of surfacing a clear
+    configuration error.
+    """
+    val = os.environ.get(name, "").strip()
+    if not val:
+        raise SystemExit(f"required env var {name} is unset or empty")
+    return val
+
+
 class Config:
     def __init__(self) -> None:
-        self.api_url = os.environ["ERRAND_API_URL"].rstrip("/")
-        self.bearer = os.environ["ERRAND_WORKSPACE_BEARER"]
-        self.provider = os.environ["WORKSPACE_PROVIDER"]
-        self.remote = os.environ["WORKSPACE_REMOTE"]
+        self.api_url = _require_env("ERRAND_API_URL").rstrip("/")
+        self.bearer = _require_env("ERRAND_WORKSPACE_BEARER")
+        self.provider = _require_env("WORKSPACE_PROVIDER")
+        self.remote = _require_env("WORKSPACE_REMOTE")
         self.rc_url = os.environ.get("RCLONE_RC_URL", "http://127.0.0.1:5572").rstrip("/")
         self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "3000"))
         self.health_interval = int(os.environ.get("HEALTH_INTERVAL_SECONDS", "30"))
