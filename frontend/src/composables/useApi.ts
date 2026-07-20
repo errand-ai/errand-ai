@@ -38,8 +38,26 @@ export interface TaskProfile {
   skill_ids: string[] | null
   include_git_skills: boolean
   enabled_plugins?: string[] | null
+  shared_workspace_enabled: boolean
+  shared_workspace_subpath: string | null
   created_at: string
   updated_at: string
+}
+
+export interface WorkspaceGatewayHealth {
+  auth_state?: string
+  last_refresh_at?: string
+  last_refresh_ok?: boolean
+  pending_uploads?: number | null
+  last_error?: string
+  reported_at?: number
+}
+
+export interface WorkspaceStatus {
+  enabled: boolean
+  provider: string | null
+  folder: string | null
+  health: WorkspaceGatewayHealth | null
 }
 
 export interface TagData {
@@ -304,6 +322,17 @@ export async function saveTaskProcessingModel(setting: ModelSetting): Promise<Re
 export async function fetchTranscriptionStatus(): Promise<{ enabled: boolean }> {
   const res = await authFetch(`${BASE}/transcribe/status`)
   if (!res.ok) return { enabled: false }
+  return res.json()
+}
+
+/**
+ * Shared-workspace deployment status + gateway health (admin).
+ * `enabled` is false when the deployment has no workspace gateway configured;
+ * `health` is null when the gateway has not reported within its TTL (degraded).
+ */
+export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {
+  const res = await authFetch(`${BASE}/workspace/status`)
+  if (!res.ok) return { enabled: false, provider: null, folder: null, health: null }
   return res.json()
 }
 

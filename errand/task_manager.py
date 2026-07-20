@@ -677,6 +677,12 @@ SYSTEM_SKILL_REGISTRY: list[dict] = [
         "condition": lambda ctx: True,
         "exempt_from_profile_filter": True,
     },
+    {
+        "name": "shared-workspace",
+        "path": "shared-workspace",
+        "condition": lambda ctx: bool(ctx.get("shared_workspace_enabled")),
+        "exempt_from_profile_filter": True,
+    },
 ]
 
 
@@ -871,7 +877,57 @@ async def _resolve_profile(session: AsyncSession, task: Task, settings: dict) ->
         resolved["_profile_include_git_skills"] = profile.include_git_skills
     resolved["_profile_enabled_plugins"] = profile.enabled_plugins or []
 
+    resolved["_profile_shared_workspace_enabled"] = bool(profile.shared_workspace_enabled)
+    resolved["_profile_shared_workspace_subpath"] = profile.shared_workspace_subpath
+
     return resolved
+
+
+def _resolve_workspace_mounts(settings: dict):
+    """Resolve the profile's shared-workspace config into runtime mount specs.
+
+    Returns ``(mounts, requested_but_unconfigured)`` where ``mounts`` is a list
+    of `WorkspaceMount` (or None) and the bool flags the specific case where the
+    profile enabled the workspace but this deployment has no workspace gateway
+    configured — the caller emits a warning transcript event in that case.
+
+    Deployment-level workspace config comes from env vars set by Helm/compose
+    (change section 7): ``WORKSPACE_ENABLED`` gates the feature; the source is a
+    Kubernetes PVC (``WORKSPACE_PVC_CLAIM``) for the kubernetes runtime, or a
+    host path (``WORKSPACE_HOST_PATH``, subpath folded in) / named volume
+    (``WORKSPACE_VOLUME``) for the docker and apple runtimes.
+    """
+    from container_runtime import WorkspaceMount
+
+    if not settings.get("_profile_shared_workspace_enabled"):
+        return None, False
+
+    if os.environ.get("WORKSPACE_ENABLED", "").strip().lower() not in ("1", "true", "yes"):
+        return None, True
+
+    container_path = os.environ.get("WORKSPACE_CONTAINER_PATH", "/shared")
+    subpath = settings.get("_profile_shared_workspace_subpath") or None
+    runtime_type = os.environ.get("CONTAINER_RUNTIME", "docker").strip().lower()
+
+    if runtime_type == "kubernetes":
+        claim = os.environ.get("WORKSPACE_PVC_CLAIM", "").strip()
+        if not claim:
+            return None, True
+        return [WorkspaceMount(
+            container_path=container_path, pvc_claim_name=claim, subpath=subpath,
+        )], False
+
+    # Docker (incl. compose gateway) and Apple use a host-path / named-volume source.
+    host_base = os.environ.get("WORKSPACE_HOST_PATH", "").strip()
+    named_volume = os.environ.get("WORKSPACE_VOLUME", "").strip()
+    if host_base:
+        host_path = os.path.join(host_base, subpath) if subpath else host_base
+        return [WorkspaceMount(container_path=container_path, host_path=host_path)], False
+    if named_volume:
+        # Named volumes cannot carry a subpath; the volume is expected to already
+        # point at the intended workspace (sub)folder.
+        return [WorkspaceMount(container_path=container_path, host_path=named_volume)], False
+    return None, True
 
 
 async def _dequeue_task(session: AsyncSession) -> Task | None:
@@ -1726,6 +1782,7 @@ class TaskManager:
             "google_workspace_enabled": google_workspace_enabled,
             "cloud_storage_injected": cloud_storage_injected,
             "hindsight_url": hindsight_url,
+            "shared_workspace_enabled": bool(settings.get("_profile_shared_workspace_enabled")),
         }
         system_skills = load_system_skills_from_registry(system_skill_context)
 
@@ -1929,6 +1986,24 @@ class TaskManager:
             except Exception:
                 logger.warning("Task %s: failed to decrypt per-task env vars", task.id, exc_info=True)
 
+        # Resolve shared-workspace mounts from the profile + deployment config.
+        workspace_mounts, workspace_unconfigured = _resolve_workspace_mounts(settings)
+        if workspace_unconfigured:
+            logger.warning(
+                "Task %s requested a shared workspace but this deployment has none configured",
+                task.id,
+            )
+            try:
+                await publish_event(
+                    "workspace_unavailable",
+                    {
+                        "task_id": str(task.id),
+                        "detail": "profile requested a shared workspace but no workspace gateway is configured on this deployment",
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to publish workspace_unavailable event")
+
         # Prepare container via runtime
         git_ssh_hosts = settings.get("git_ssh_hosts", []) if ssh_private_key else []
         handle = await runtime.async_prepare(
@@ -1940,6 +2015,7 @@ class TaskManager:
             ssh_private_key=ssh_private_key or None,
             ssh_config=ssh_config,
             ssh_hosts=git_ssh_hosts or None,
+            mounts=workspace_mounts,
         )
         logger.info("Prepared container for task %s via %s runtime", task.id, os.environ.get("CONTAINER_RUNTIME", "docker"))
 

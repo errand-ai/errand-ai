@@ -122,3 +122,42 @@ describe('useApi — 401 retry with refresh', () => {
     expect(window.location.href).toBe('/auth/login')
   })
 })
+
+describe('useApi — fetchWorkspaceStatus', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+  })
+
+  it('returns the workspace status payload', async () => {
+    const { fetchWorkspaceStatus } = await import('../useApi')
+    const auth = useAuthStore()
+    auth.setToken(fakeJwt({ sub: 'u1', exp: Math.floor(Date.now() / 1000) + 600 }))
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        enabled: true,
+        provider: 'google_drive',
+        folder: 'Errand',
+        health: { auth_state: 'ok', pending_uploads: 0 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    )
+
+    const status = await fetchWorkspaceStatus()
+    expect(status.enabled).toBe(true)
+    expect(status.provider).toBe('google_drive')
+    expect(status.health?.auth_state).toBe('ok')
+  })
+
+  it('falls back to a disabled status on error', async () => {
+    const { fetchWorkspaceStatus } = await import('../useApi')
+    const auth = useAuthStore()
+    auth.setToken(fakeJwt({ sub: 'u1', exp: Math.floor(Date.now() / 1000) + 600 }))
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 500 }))
+
+    const status = await fetchWorkspaceStatus()
+    expect(status.enabled).toBe(false)
+    expect(status.health).toBeNull()
+  })
+})

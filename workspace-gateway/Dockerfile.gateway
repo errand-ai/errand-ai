@@ -1,0 +1,8 @@
+# Shared-workspace gateway: rclone serve nfs against a Drive/OneDrive folder.
+FROM rclone/rclone:1.68
+
+COPY entrypoint.sh /usr/local/bin/workspace-entrypoint.sh
+RUN chmod +x /usr/local/bin/workspace-entrypoint.sh
+
+# rclone's image entrypoint is `rclone`; override with our serve wrapper.
+ENTRYPOINT ["/usr/local/bin/workspace-entrypoint.sh"]

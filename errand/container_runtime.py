@@ -28,6 +28,33 @@ class RuntimeHandle:
     runtime_data: dict = field(default_factory=dict)
 
 
+@dataclass
+class WorkspaceMount:
+    """A shared-workspace mount to attach inside the task container.
+
+    ``container_path`` is where the workspace appears in the task container
+    (always ``/shared`` in v1). Exactly one source shape is populated by the
+    task manager, depending on the runtime:
+
+      * ``host_path`` — a host directory (Docker bind mount for local testing,
+        a compose *named volume* name for the compose gateway, or the desktop
+        sync-folder path for the Apple runtime). Any profile subpath is folded
+        into this path by the task manager.
+      * ``pvc_claim_name`` (+ ``subpath``) — a Kubernetes PersistentVolumeClaim
+        whose statically-provisioned NFS PersistentVolume targets the gateway
+        ClusterIP and carries the NFSv3 mount options (``vers=3,nolock,soft,…``).
+        Inline pod ``nfs:`` volumes cannot carry mount options (spike finding
+        F7), so the PV — created by the Helm chart — is the option carrier, and
+        ``subpath`` is applied as the volumeMount ``subPath`` to scope the
+        profile to a subdirectory.
+    """
+    container_path: str = "/shared"
+    read_only: bool = False
+    host_path: str | None = None
+    pvc_claim_name: str | None = None
+    subpath: str | None = None
+
+
 class ContainerRuntime(ABC):
     """Abstract base class for container runtime implementations."""
 
@@ -42,6 +69,7 @@ class ContainerRuntime(ABC):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         """Create a container/Job and inject input files without starting execution.
 
@@ -54,6 +82,9 @@ class ContainerRuntime(ABC):
             ssh_private_key: Optional SSH private key to inject.
             ssh_config: Optional SSH config to inject.
             ssh_hosts: Optional list of SSH hosts to pre-populate known_hosts.
+            mounts: Optional shared-workspace mounts. When None or empty, the
+                container has no workspace volumes and behavior is identical to
+                the pre-workspace implementation.
 
         Returns:
             A RuntimeHandle to pass to run(), result(), and cleanup().
@@ -91,6 +122,7 @@ class ContainerRuntime(ABC):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         """Async version of prepare(). Default wraps sync via executor."""
         loop = asyncio.get_event_loop()
@@ -98,7 +130,7 @@ class ContainerRuntime(ABC):
             None,
             lambda: self.prepare(
                 image, env, files, output_dir, skills_tar,
-                ssh_private_key, ssh_config, ssh_hosts,
+                ssh_private_key, ssh_config, ssh_hosts, mounts,
             ),
         )
 
@@ -200,6 +232,7 @@ class DockerRuntime(ContainerRuntime):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         from docker.errors import ImageNotFound
 
@@ -219,6 +252,22 @@ class DockerRuntime(ContainerRuntime):
             net_kwargs["network"] = task_runner_network
         else:
             net_kwargs["network_mode"] = "host"
+
+        # Shared-workspace mounts → Docker volumes. The source is either an
+        # absolute host path (bind mount, local testing) or a named volume
+        # (the compose gateway defines an NFS-backed named volume); Docker
+        # treats a non-absolute source as a named volume automatically.
+        if mounts:
+            volume_map: dict[str, dict[str, str]] = {}
+            for m in mounts:
+                if not m.host_path:
+                    continue
+                volume_map[m.host_path] = {
+                    "bind": m.container_path,
+                    "mode": "ro" if m.read_only else "rw",
+                }
+            if volume_map:
+                net_kwargs["volumes"] = volume_map
 
         container = self.client.containers.create(
             image=image,
@@ -322,6 +371,7 @@ class KubernetesRuntime(ContainerRuntime):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         from kubernetes import client
 
@@ -399,6 +449,35 @@ class KubernetesRuntime(ContainerRuntime):
                 empty_dir=client.V1EmptyDirVolumeSource(),
             ),
         ]
+
+        # Shared-workspace mounts. The gateway is exposed as a statically
+        # provisioned NFS PersistentVolume (created by Helm; it carries the
+        # gateway ClusterIP and the NFSv3 mount options, since inline pod nfs:
+        # volumes cannot carry mount options — spike finding F7). Each mount
+        # references the workspace PVC and is scoped to the profile's subpath
+        # via the volumeMount subPath.
+        if mounts:
+            for idx, m in enumerate(mounts):
+                if not m.pvc_claim_name:
+                    continue
+                vol_name = "shared-workspace" if idx == 0 else f"shared-workspace-{idx}"
+                volumes.append(
+                    client.V1Volume(
+                        name=vol_name,
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            claim_name=m.pvc_claim_name,
+                            read_only=m.read_only,
+                        ),
+                    )
+                )
+                volume_mounts.append(
+                    client.V1VolumeMount(
+                        name=vol_name,
+                        mount_path=m.container_path,
+                        sub_path=m.subpath or None,
+                        read_only=m.read_only,
+                    )
+                )
 
         # Init container: copy workspace files from ConfigMap and extract
         # skills tar (if present) into the writable emptyDir workspace.
@@ -665,13 +744,14 @@ class KubernetesRuntime(ContainerRuntime):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
             lambda: self.prepare(
                 image, env, files, output_dir, skills_tar,
-                ssh_private_key, ssh_config, ssh_hosts,
+                ssh_private_key, ssh_config, ssh_hosts, mounts,
             ),
         )
 
@@ -919,6 +999,7 @@ class AppleContainerRuntime(ContainerRuntime):
         ssh_private_key: str | None = None,
         ssh_config: str | None = None,
         ssh_hosts: list[str] | None = None,
+        mounts: list[WorkspaceMount] | None = None,
     ) -> RuntimeHandle:
         payload: dict[str, Any] = {
             "image": image,
@@ -933,6 +1014,17 @@ class AppleContainerRuntime(ContainerRuntime):
             payload["ssh_config"] = ssh_config
         if ssh_hosts:
             payload["ssh_hosts"] = ssh_hosts
+        # Shared-workspace mounts → virtiofs directory shares in the desktop
+        # app. Each entry is {host_path, container_path}; the desktop bridge
+        # validates host_path against the user-approved workspace directory.
+        if mounts:
+            mount_payload = [
+                {"host_path": m.host_path, "container_path": m.container_path}
+                for m in mounts
+                if m.host_path
+            ]
+            if mount_payload:
+                payload["mounts"] = mount_payload
 
         resp = self._session.post(f"{self.bridge_url}/containers", json=payload)
         resp.raise_for_status()

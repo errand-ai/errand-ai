@@ -2500,6 +2500,7 @@ class TestSystemSkillRegistry:
             "hindsight": "hindsight-memory",
             "repo-context": "repo-context",
             "binary-files": "binary-files",
+            "shared-workspace": "shared-workspace",
         }
         for skill_set, skill_name in layout.items():
             d = base / skill_set / skill_name
@@ -2603,6 +2604,31 @@ class TestSystemSkillRegistry:
         # All other system skills are baseline guidance — exempt from the filter
         for name in ("cloud-storage", "hindsight-memory", "repo-context", "binary-files"):
             assert by_name[name].get("_exempt_from_profile_filter") is True
+
+    def test_shared_workspace_loaded_when_enabled(self, tmp_path):
+        """`shared-workspace` is injected when the profile enables the workspace."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {"shared_workspace_enabled": True}, base_dir=str(tmp_path),
+        )
+        names = {s["name"] for s in result}
+        assert names == {"repo-context", "binary-files", "shared-workspace"}
+
+    def test_shared_workspace_absent_by_default(self, tmp_path):
+        """No workspace flag → `shared-workspace` skill is not injected."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry({}, base_dir=str(tmp_path))
+        names = {s["name"] for s in result}
+        assert "shared-workspace" not in names
+
+    def test_shared_workspace_exempt_from_profile_filter(self, tmp_path):
+        """The workspace skill mirrors platform state — exempt from the external filter."""
+        self._populate(tmp_path)
+        result = load_system_skills_from_registry(
+            {"shared_workspace_enabled": True}, base_dir=str(tmp_path),
+        )
+        by_name = {s["name"]: s for s in result}
+        assert by_name["shared-workspace"].get("_exempt_from_profile_filter") is True
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,11 @@ const router = createRouter({
           component: () => import('../pages/settings/CloudServicePage.vue'),
         },
         {
+          path: 'workspace',
+          name: 'settings-workspace',
+          component: () => import('../pages/settings/SharedWorkspacePage.vue'),
+        },
+        {
           path: 'users',
           name: 'settings-users',
           component: () => import('../pages/settings/UserManagementPage.vue'),

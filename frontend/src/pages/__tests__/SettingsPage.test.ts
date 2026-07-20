@@ -152,7 +152,7 @@ describe('SettingsPage', () => {
   // --- Shell layout ---
 
   describe('Shell layout', () => {
-    it('mounts SettingsShell with all eight section labels', async () => {
+    it('mounts SettingsShell with all nine section labels', async () => {
       const { wrapper } = await mountSettings()
 
       expect(wrapper.find('[data-testid="settings-shell"]').exists()).toBe(true)
@@ -165,6 +165,7 @@ describe('SettingsPage', () => {
         'Integrations',
         'Task Generators',
         'Cloud Service',
+        'Shared Workspace',
         'User Management',
       ])
     })

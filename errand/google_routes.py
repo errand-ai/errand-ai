@@ -18,51 +18,27 @@ to read the user's Google access token.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_storage import force_refresh_token
 from database import get_session
-from events import get_valkey
 from platforms.credentials import load_credentials
+from workspace_refresh_auth import GOOGLE_TASK_BEARER_PREFIX, require_refresh_bearer
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/google", tags=["google"])
 
-_bearer_scheme = HTTPBearer(auto_error=False)
-
-
-async def _require_task_scoped_refresh_token(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> str:
-    """Reject the request unless the bearer token is a live task-scoped
-    Google refresh bearer in Valkey. Returns the task_id stored under the
-    bearer's Valkey key (used downstream for logging).
-    """
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(status_code=401, detail="missing bearer token")
-
-    valkey = get_valkey()
-    if valkey is None:
-        raise HTTPException(status_code=503, detail="Valkey unavailable")
-
-    bearer = credentials.credentials
-    try:
-        stored_task_id = await valkey.get(f"google_refresh_token:{bearer}")
-    except Exception:
-        raise HTTPException(status_code=503, detail="Valkey unavailable")
-
-    if stored_task_id is None:
-        raise HTTPException(status_code=401, detail="invalid or expired bearer token")
-
-    return stored_task_id
+# The endpoint accepts either the per-task Google refresh bearer (issued by
+# task_manager) or the workspace-scoped gateway bearer (issued when the shared
+# workspace is enabled) — both are consulted by this shared dependency.
+_require_refresh_bearer = require_refresh_bearer(GOOGLE_TASK_BEARER_PREFIX)
 
 
 @router.post("/refresh-token")
 async def refresh_google_token(
     request: Request,
-    task_id: str = Depends(_require_task_scoped_refresh_token),
+    task_id: str = Depends(_require_refresh_bearer),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Force-refresh the stored google_drive OAuth credential.

@@ -98,6 +98,14 @@ services:
       MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
       MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
       MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
+      # Shared workspace (opt-in). Empty by default → feature disabled, so a
+      # plain `docker compose up` is unchanged. Set these in .env and start with
+      # `--profile workspace` to enable the gateway locally.
+      WORKSPACE_ENABLED: ${WORKSPACE_ENABLED:-}
+      WORKSPACE_PROVIDER: ${WORKSPACE_PROVIDER:-google_drive}
+      WORKSPACE_FOLDER: ${WORKSPACE_FOLDER:-Errand}
+      WORKSPACE_VOLUME: ${WORKSPACE_VOLUME:-}
+      WORKSPACE_BEARER: ${WORKSPACE_BEARER:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 10s
@@ -168,6 +176,48 @@ services:
     networks:
       - errand-net
 
+  # --- Shared workspace gateway (opt-in; `docker compose --profile workspace up`) ---
+  # Requires: an authorized rclone.conf at ${WORKSPACE_RCLONE_CONF:-./rclone.conf}
+  # with a remote named ${WORKSPACE_REMOTE:-gdrive}, and a workspace bearer in
+  # .env (WORKSPACE_BEARER) that the errand server registers on startup. Also set
+  # WORKSPACE_ENABLED=true and WORKSPACE_VOLUME=workspace-shared in .env so the
+  # errand server mounts the NFS volume into task containers.
+  workspace-gateway:
+    profiles: ["workspace"]
+    build:
+      context: ../workspace-gateway
+      dockerfile: Dockerfile.gateway
+    environment:
+      WORKSPACE_REMOTE: ${WORKSPACE_REMOTE:-gdrive}
+      WORKSPACE_FOLDER: ${WORKSPACE_FOLDER:-Errand}
+      WORKSPACE_POLL_INTERVAL: ${WORKSPACE_POLL_INTERVAL:-15s}
+      WORKSPACE_ADDR: ":2049"
+      WORKSPACE_RC_ADDR: "127.0.0.1:5572"
+      WORKSPACE_CACHE_DIR: /cache
+    volumes:
+      - ${WORKSPACE_RCLONE_CONF:-./rclone.conf}:/config-ro/rclone.conf:ro
+      - workspace-cache:/cache
+    networks:
+      - errand-net
+
+  workspace-refresher:
+    profiles: ["workspace"]
+    build:
+      context: ../workspace-gateway
+      dockerfile: Dockerfile.refresher
+    # Share the gateway's network namespace so the private rc endpoint
+    # (127.0.0.1:5572) is reachable and errand-net services still resolve.
+    network_mode: "service:workspace-gateway"
+    environment:
+      ERRAND_API_URL: http://errand:8000
+      ERRAND_WORKSPACE_BEARER: ${WORKSPACE_BEARER:-}
+      WORKSPACE_PROVIDER: ${WORKSPACE_PROVIDER:-google_drive}
+      WORKSPACE_REMOTE: ${WORKSPACE_REMOTE:-gdrive}
+      RCLONE_RC_URL: http://127.0.0.1:5572
+      REFRESH_INTERVAL_SECONDS: ${WORKSPACE_REFRESH_INTERVAL:-3000}
+    depends_on:
+      - workspace-gateway
+
 secrets:
   npm_token:
     environment: NPM_TOKEN
@@ -176,6 +226,15 @@ volumes:
   postgres-data:
   hindsight-data:
   hindsight-models:
+  # NFS-backed volume task containers mount at /shared (set WORKSPACE_VOLUME to
+  # this name). The Docker host needs an NFS client (mount.nfs) available.
+  workspace-cache:
+  workspace-shared:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=workspace-gateway,nolock,soft,vers=3,port=2049,mountport=2049"
+      device: ":/"
 
 networks:
   errand-net:
