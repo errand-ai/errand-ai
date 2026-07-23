@@ -112,6 +112,21 @@ spec:
             - name: ONEDRIVE_MCP_URL
               value: "http://{{ include "errand.fullname" . }}-onedrive-mcp:{{ .Values.onedrive.port }}/mcp"
             {{- end }}
+            {{- if .Values.workspace.enabled }}
+            - name: WORKSPACE_ENABLED
+              value: "true"
+            - name: WORKSPACE_PROVIDER
+              value: {{ .Values.workspace.provider | quote }}
+            - name: WORKSPACE_FOLDER
+              value: {{ .Values.workspace.folder | quote }}
+            - name: WORKSPACE_PVC_CLAIM
+              value: {{ .Values.workspace.taskPvcName | quote }}
+            - name: WORKSPACE_BEARER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" .Values.workspace.bearerSecret | quote }}
+                  key: {{ .Values.workspace.bearerKey | quote }}
+            {{- end }}
             {{- if .Values.gdrive.existingSecret }}
             - name: GOOGLE_CLIENT_ID
               valueFrom:

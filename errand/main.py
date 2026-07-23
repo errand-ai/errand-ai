@@ -34,6 +34,8 @@ import auth as auth_module
 from auth import OIDCConfig
 from auth_routes import router as auth_router
 from google_routes import router as google_router
+from onedrive_routes import router as onedrive_router
+from workspace_refresh_auth import require_workspace_bearer
 from database import async_session, engine, get_session
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
@@ -121,6 +123,38 @@ async def lifespan(app: FastAPI):
         auth_module.oidc = None
         logger.info("OIDC not configured — using local auth")
     await init_valkey()
+
+    # Shared-workspace bearer lifecycle: when the workspace is enabled, register
+    # the operator-provided bearer so the gateway's token-refresher can call the
+    # cloud refresh endpoints; when disabled, revoke any previously-registered
+    # workspace bearers (spec: disabling the workspace invalidates the bearer).
+    try:
+        from workspace_refresh_auth import (
+            register_workspace_bearer,
+            invalidate_all_workspace_bearers,
+        )
+        _ws_valkey = get_valkey()
+        if _ws_valkey is not None:
+            if os.environ.get("WORKSPACE_ENABLED", "").strip().lower() in ("1", "true", "yes"):
+                _ws_bearer = os.environ.get("WORKSPACE_BEARER", "").strip()
+                if _ws_bearer:
+                    await register_workspace_bearer(_ws_valkey, _ws_bearer)
+                    logger.info("Shared workspace enabled — registered workspace refresh bearer")
+                else:
+                    # No valid bearer to register — also revoke any previously
+                    # registered (possibly rotated/stale) bearers so they don't
+                    # linger valid on the refresh endpoints until TTL expiry.
+                    await invalidate_all_workspace_bearers(_ws_valkey)
+                    logger.warning(
+                        "WORKSPACE_ENABLED is set but WORKSPACE_BEARER is empty; "
+                        "the gateway token-refresher cannot authenticate "
+                        "(revoked any previously-registered workspace bearers)"
+                    )
+            else:
+                await invalidate_all_workspace_bearers(_ws_valkey)
+    except Exception:
+        logger.exception("Failed to configure shared-workspace bearer at startup")
+
     # Scan LLM_PROVIDER_{N}_* env vars and upsert providers
     async with async_session() as provider_session:
         await scan_env_providers(provider_session)
@@ -409,6 +443,7 @@ app.include_router(webhook_trigger_router)
 app.include_router(jira_credential_router)
 app.include_router(webhook_receiver_router)
 app.include_router(google_router)
+app.include_router(onedrive_router)
 
 from plugin_routes import marketplaces_router, plugins_router  # noqa: E402
 app.include_router(marketplaces_router)
@@ -2250,6 +2285,8 @@ def _profile_to_dict(p: TaskProfile) -> dict:
         "skill_ids": p.skill_ids,
         "include_git_skills": p.include_git_skills,
         "enabled_plugins": p.enabled_plugins,
+        "shared_workspace_enabled": p.shared_workspace_enabled,
+        "shared_workspace_subpath": p.shared_workspace_subpath,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -2293,6 +2330,63 @@ def _validate_llm_timeout(value):
     return value
 
 
+def _validate_workspace_subpath(value):
+    """Validate shared_workspace_subpath: None or a safe relative path.
+
+    The subpath confines a profile's ``/shared`` mount to a subdirectory of
+    the workspace folder. It MUST be a relative path (no leading ``/``), with
+    no ``..`` traversal segments and no null bytes. Empty/whitespace-only
+    normalizes to ``None`` (mount the workspace root). Returns the normalized
+    value with redundant ``.``/empty segments collapsed.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=422,
+            detail="shared_workspace_subpath must be a relative path string or null",
+        )
+    stripped = value.strip()
+    if stripped == "":
+        return None
+    if "\x00" in stripped:
+        raise HTTPException(
+            status_code=422,
+            detail="shared_workspace_subpath must not contain null bytes",
+        )
+    # Normalize Windows-style separators before segment analysis so a
+    # backslash cannot smuggle a '..' segment past the check.
+    normalized = stripped.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise HTTPException(
+            status_code=422,
+            detail="shared_workspace_subpath must be a relative path (no leading '/')",
+        )
+    segments = [s for s in normalized.split("/") if s not in ("", ".")]
+    if any(s == ".." for s in segments):
+        raise HTTPException(
+            status_code=422,
+            detail="shared_workspace_subpath must not contain '..' traversal",
+        )
+    return "/".join(segments)
+
+
+def _validate_workspace_enabled(value):
+    """Validate shared_workspace_enabled: coerce to bool, default false.
+
+    Accepts None/absent (→ False) or a bool. Rejects any other type so a
+    truthy non-bool (e.g. a string) cannot silently enable the workspace.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="shared_workspace_enabled must be a boolean",
+        )
+    return value
+
+
 @app.get("/api/task-profiles")
 async def list_task_profiles(
     session: AsyncSession = Depends(get_session),
@@ -2321,6 +2415,8 @@ async def create_task_profile(
         )
 
     llm_timeout = _validate_llm_timeout(body.get("llm_timeout"))
+    workspace_enabled = _validate_workspace_enabled(body.get("shared_workspace_enabled"))
+    workspace_subpath = _validate_workspace_subpath(body.get("shared_workspace_subpath"))
 
     # Check name uniqueness
     result = await session.execute(select(TaskProfile).where(TaskProfile.name == name))
@@ -2341,6 +2437,8 @@ async def create_task_profile(
         skill_ids=body.get("skill_ids"),
         include_git_skills=body.get("include_git_skills") is not False,
         enabled_plugins=_validate_enabled_plugins(body.get("enabled_plugins")),
+        shared_workspace_enabled=workspace_enabled,
+        shared_workspace_subpath=workspace_subpath,
     )
     session.add(profile)
     await session.commit()
@@ -2405,6 +2503,12 @@ async def update_task_profile(
     if "llm_timeout" in body:
         profile.llm_timeout = _validate_llm_timeout(body["llm_timeout"])
 
+    if "shared_workspace_enabled" in body:
+        profile.shared_workspace_enabled = _validate_workspace_enabled(body["shared_workspace_enabled"])
+
+    if "shared_workspace_subpath" in body:
+        profile.shared_workspace_subpath = _validate_workspace_subpath(body["shared_workspace_subpath"])
+
     for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
         if field in body:
             setattr(profile, field, body[field])
@@ -2426,6 +2530,72 @@ async def delete_task_profile(
         raise HTTPException(status_code=404, detail="Task profile not found")
     await session.delete(profile)
     await session.commit()
+
+
+# --- Shared workspace status/health ---
+
+# Valkey key holding the latest gateway health blob (refreshed by the gateway's
+# token-refresher sidecar). Short TTL so a dead gateway shows as stale/absent.
+_WORKSPACE_HEALTH_KEY = "workspace_gateway_health"
+_WORKSPACE_HEALTH_TTL_SECONDS = 120
+
+
+def _workspace_deployment_config() -> dict:
+    """Read-only workspace deployment config from env (set by Helm/compose)."""
+    enabled = os.environ.get("WORKSPACE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    # Only surface provider/folder when the feature is actually enabled — compose
+    # gives WORKSPACE_PROVIDER/FOLDER non-empty defaults even when disabled, and
+    # reporting them for a disabled workspace is a confusing/contradictory status.
+    return {
+        "enabled": enabled,
+        "provider": (os.environ.get("WORKSPACE_PROVIDER", "") or None) if enabled else None,
+        "folder": (os.environ.get("WORKSPACE_FOLDER", "") or None) if enabled else None,
+    }
+
+
+@app.post("/api/workspace/health")
+async def ingest_workspace_health(
+    body: dict,
+    _caller: str = Depends(require_workspace_bearer),
+):
+    """Ingest a gateway health report from the token-refresher sidecar.
+
+    Authenticated with the workspace-scoped bearer (gateway-only). The health
+    blob is stored in Valkey with a short TTL and surfaced read-only by
+    GET /api/workspace/status.
+    """
+    valkey = get_valkey()
+    if valkey is None:
+        raise HTTPException(status_code=503, detail="Valkey unavailable")
+    payload = dict(body or {})
+    payload["reported_at"] = int(datetime.now(timezone.utc).timestamp())
+    await valkey.set(_WORKSPACE_HEALTH_KEY, json.dumps(payload), ex=_WORKSPACE_HEALTH_TTL_SECONDS)
+    return {"ok": True}
+
+
+@app.get("/api/workspace/status")
+async def get_workspace_status(
+    _user: dict = Depends(require_admin),
+):
+    """Admin read-only view of the shared-workspace deployment config + health.
+
+    `health` is None when the workspace is disabled, or when the gateway has not
+    reported within the TTL (treated as degraded/unknown by the UI). Health is
+    suppressed entirely while disabled so the response can't be contradictory
+    (e.g. a gateway left running under compose `--profile workspace` without
+    `WORKSPACE_ENABLED=true` would otherwise report health for a disabled config).
+    """
+    config = _workspace_deployment_config()
+    health = None
+    valkey = get_valkey()
+    if config["enabled"] and valkey is not None:
+        try:
+            raw = await valkey.get(_WORKSPACE_HEALTH_KEY)
+            if raw:
+                health = json.loads(raw)
+        except Exception:
+            logger.warning("Failed to read workspace health from Valkey", exc_info=True)
+    return {**config, "health": health}
 
 
 # --- OIDC hot-reload ---

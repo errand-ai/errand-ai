@@ -111,6 +111,80 @@ class TestDockerRuntime:
         # put_archive called for workspace files + SSH
         assert container.put_archive.call_count == 2
 
+    def test_prepare_with_workspace_mount_adds_volume(self):
+        """A workspace mount becomes a read-write Docker volume at the container path."""
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        runtime.prepare(
+            image="img:latest",
+            env={},
+            files={"f.txt": "c"},
+            mounts=[WorkspaceMount(container_path="/shared", host_path="/host/ws")],
+        )
+
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["volumes"] == {"/host/ws": {"bind": "/shared", "mode": "rw"}}
+
+    def test_prepare_without_mounts_has_no_volumes(self):
+        """No mounts → no volumes kwarg (behavior identical to pre-workspace)."""
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        runtime.prepare(image="img:latest", env={}, files={"f.txt": "c"})
+
+        assert "volumes" not in client.containers.create.call_args.kwargs
+
+    def test_prepare_read_only_workspace_mount(self):
+        """A read-only mount maps with mode 'ro'."""
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        runtime.prepare(
+            image="img:latest",
+            env={},
+            files={"f.txt": "c"},
+            mounts=[WorkspaceMount(container_path="/shared", host_path="/host/ws", read_only=True)],
+        )
+
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["volumes"]["/host/ws"]["mode"] == "ro"
+
+    def test_prepare_named_volume_source_must_exist(self):
+        """A non-absolute source is a named volume; if it doesn't exist, fail fast."""
+        from docker.errors import NotFound
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+        client.volumes.get.side_effect = NotFound("no such volume")
+
+        with pytest.raises(RuntimeError, match="no Docker volume by that name exists"):
+            runtime.prepare(
+                image="img:latest", env={}, files={"f.txt": "c"},
+                mounts=[WorkspaceMount(container_path="/shared", host_path="workspace-nfs")],
+            )
+        client.containers.create.assert_not_called()
+
+    def test_prepare_existing_named_volume_mounts(self):
+        """A non-absolute source that exists as a Docker volume is mounted."""
+        from container_runtime import WorkspaceMount
+
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+        client.volumes.get.return_value = MagicMock()  # volume exists
+
+        runtime.prepare(
+            image="img:latest", env={}, files={"f.txt": "c"},
+            mounts=[WorkspaceMount(container_path="/shared", host_path="workspace-nfs")],
+        )
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["volumes"] == {"workspace-nfs": {"bind": "/shared", "mode": "rw"}}
+
     def test_run_yields_log_lines(self):
         """run() streams container logs and yields individual lines."""
         runtime, client = self._make_runtime()
@@ -250,6 +324,46 @@ class TestKubernetesRuntime:
         assert handle.runtime_data["task_id"] == "42"
         assert "job_name" in handle.runtime_data
         assert "configmap_name" in handle.runtime_data
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_with_workspace_mount_adds_pvc_volume(self, mock_uuid):
+        """A workspace mount adds a PVC-backed volume + subPath volumeMount at /shared."""
+        from container_runtime import WorkspaceMount
+
+        runtime = self._make_runtime()
+        runtime.prepare(
+            image="img:v1",
+            env={"_TASK_ID": "9"},
+            files={"prompt.txt": "x"},
+            mounts=[WorkspaceMount(
+                container_path="/shared", pvc_claim_name="ws-pvc", subpath="reports/nginx",
+            )],
+        )
+
+        job = runtime.batch_v1.create_namespaced_job.call_args[0][1]
+        pod = job.spec.template.spec
+        vol = next(v for v in pod.volumes if v.name == "shared-workspace")
+        assert vol.persistent_volume_claim.claim_name == "ws-pvc"
+        vm = next(m for m in pod.containers[0].volume_mounts if m.name == "shared-workspace")
+        assert vm.mount_path == "/shared"
+        assert vm.sub_path == "reports/nginx"
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {}, clear=False)
+    def test_prepare_without_mounts_has_no_workspace_volume(self, mock_uuid):
+        """No mounts → no shared-workspace volume (identical to pre-workspace Job)."""
+        runtime = self._make_runtime()
+        runtime.prepare(image="img:v1", env={"_TASK_ID": "9"}, files={"prompt.txt": "x"})
+
+        job = runtime.batch_v1.create_namespaced_job.call_args[0][1]
+        pod = job.spec.template.spec
+        assert all(v.name != "shared-workspace" for v in pod.volumes)
+        assert all(m.name != "shared-workspace" for m in pod.containers[0].volume_mounts)
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")
@@ -978,6 +1092,36 @@ class TestAppleContainerRuntime:
         )
         assert isinstance(handle, RuntimeHandle)
         assert handle.runtime_data["container_id"] == "ctr-123"
+
+    def test_prepare_forwards_workspace_mounts(self):
+        """prepare() forwards workspace mounts as a {host_path, container_path} array."""
+        from container_runtime import WorkspaceMount
+
+        runtime, session = self._make_runtime()
+        session.post.return_value.json.return_value = {"id": "ctr-m"}
+        session.post.return_value.raise_for_status = MagicMock()
+
+        runtime.prepare(
+            image="img:latest",
+            env={},
+            files={"f.txt": "content"},
+            mounts=[WorkspaceMount(container_path="/shared", host_path="/Users/x/Drive/Errand")],
+        )
+
+        payload = session.post.call_args[1]["json"]
+        assert payload["mounts"] == [
+            {"host_path": "/Users/x/Drive/Errand", "container_path": "/shared"}
+        ]
+
+    def test_prepare_without_mounts_omits_mounts_key(self):
+        """No mounts → payload has no 'mounts' key (identical to pre-workspace)."""
+        runtime, session = self._make_runtime()
+        session.post.return_value.json.return_value = {"id": "ctr-n"}
+        session.post.return_value.raise_for_status = MagicMock()
+
+        runtime.prepare(image="img:latest", env={}, files={"f.txt": "content"})
+
+        assert "mounts" not in session.post.call_args[1]["json"]
 
     def test_prepare_includes_skills_tar(self):
         """prepare() base64-encodes skills_tar and includes it in the payload."""

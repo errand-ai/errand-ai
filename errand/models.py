@@ -202,6 +202,10 @@ class TaskProfile(Base):
         Boolean, nullable=False, server_default=text("true")
     )
     enabled_plugins: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    shared_workspace_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    shared_workspace_subpath: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

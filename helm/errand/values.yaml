@@ -25,6 +25,85 @@ playwright:
   port: 8931
   startupTimeout: 30
 
+# Shared cloud workspace gateway (opt-in). When enabled, an errand-workspace
+# component runs `rclone serve nfs` against a designated Google Drive or OneDrive
+# folder and task Jobs whose profile opts in mount it at /shared.
+#
+# SECURITY / OPS TRADE-OFFS (read before enabling):
+#   * Participating tasks share visibility of the mounted folder and their
+#     writes persist across runs — the ephemeral-isolation guarantee is
+#     deliberately relaxed for opted-in profiles. Use a dedicated workspace
+#     folder (not the Drive/OneDrive root) so exposure is intentional.
+#   * NFSv3 has no authentication; the NetworkPolicy below is what confines the
+#     gateway to task-runner Jobs and the server. Keep it enabled.
+#   * The cloud folder is the source of truth and is NOT backed up by errand —
+#     rely on the provider's version history for recovery.
+#   * `service.clusterIP` MUST be a free static IP from the cluster's service
+#     CIDR: kubelet mounts NFS from the node network where cluster DNS is
+#     unavailable, so the PV targets the IP, not a DNS name. If unset, the
+#     gateway Service gets a dynamic IP but the task PV cannot be templated.
+#   * Every node that can schedule task Jobs MUST have an NFS client installed
+#     (`nfs-utils` / `mount.nfs`); the kernel module alone is insufficient
+#     (spike finding F2).
+#   * Desktop (Apple) runtime parity requires the Drive/OneDrive client to be in
+#     "mirrored" mode for the shared subfolder (File Provider dataless files do
+#     not materialize reliably through virtiofs).
+workspace:
+  enabled: false
+  provider: google_drive          # google_drive | onedrive (only differs in the rclone remote)
+  folder: Errand                  # folder within the remote to serve (empty = remote root)
+  remote: gdrive                  # rclone remote name defined inside configSecret
+  configSecret: ""                # existing Secret with key `rclone.conf` (the authorized remote)
+  # Operator-supplied opaque bearer the gateway refresher uses against the cloud
+  # refresh endpoints. Registered server-side on startup; injected into the
+  # refresher. Store it in a Secret (do NOT reuse mcp_api_key).
+  bearerSecret: ""                # existing Secret name
+  bearerKey: bearer               # key within bearerSecret
+  pollInterval: "15s"
+  service:
+    clusterIP: ""                 # REQUIRED static ClusterIP (see notes above)
+    port: 2049
+  cache:
+    size: 5Gi
+    storageClass: ""              # empty = cluster default
+    maxSize: 5G                   # rclone --vfs-cache-max-size
+  # NFS PV/PVC that task Jobs mount (RWX). mountOptions carry the NFSv3 options,
+  # which inline pod nfs: volumes cannot (spike finding F7).
+  taskPvcName: errand-workspace
+  nfsMountOptions:
+    - nfsvers=3
+    - nolock
+    - soft
+    - timeo=150
+    - retrans=2
+    # rclone serve nfs is TCP-only, but some NFS clients (e.g. the CentOS 7
+    # kubelet) default NFSv3 to UDP and the mount then times out. Force TCP for
+    # both the NFS and MOUNT protocols. (port=/mountport= are appended from
+    # workspace.service.port by the PV template.)
+    - proto=tcp
+    - mountproto=tcp
+  gateway:
+    image:
+      repository: ghcr.io/errand-ai/errand-workspace-gateway
+      tag: ""
+      pullPolicy: IfNotPresent
+  refresher:
+    image:
+      repository: ghcr.io/errand-ai/errand-workspace-refresher
+      tag: ""
+      pullPolicy: IfNotPresent
+    intervalSeconds: 3000         # ~50 min (tokens live ~60 min)
+  networkPolicy:
+    enabled: true
+    # IMPORTANT: Kubernetes performs the NFS mount for the task Job's PVC from
+    # the kubelet in the NODE network namespace, so the mount traffic originates
+    # from the node IP — NOT the task-runner pod IP. A podSelector-only ingress
+    # rule therefore blocks the mount when NetworkPolicy is enforced. List the
+    # cluster's node (and/or pod) CIDRs here so the gateway accepts that traffic;
+    # leave empty only if your CNI exempts node-originated traffic from policy.
+    allowedCIDRs: []
+    # - "10.0.0.0/8"      # example: node/pod CIDR
+
 database:
   existingSecret: content-manager-db
   secretKey: DATABASE_URL

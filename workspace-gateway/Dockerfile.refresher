@@ -1,0 +1,13 @@
+# Shared-workspace token-refresher sidecar.
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir requests==2.32.3
+
+COPY refresher.py /app/refresher.py
+WORKDIR /app
+
+# Run as non-root.
+RUN useradd --create-home --uid 65532 refresher
+USER 65532
+
+ENTRYPOINT ["python", "/app/refresher.py"]

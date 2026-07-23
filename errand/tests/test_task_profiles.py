@@ -113,6 +113,114 @@ async def test_update_profile_clears_llm_timeout(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_create_profile_shared_workspace_defaults(admin_client):
+    """Without workspace fields, enabled defaults to false and subpath to null."""
+    resp = await admin_client.post("/api/task-profiles", json={"name": "ws-default"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["shared_workspace_enabled"] is False
+    assert data["shared_workspace_subpath"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_profile_with_shared_workspace(admin_client):
+    """CRUD round-trip: enabled + subpath returned on read."""
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={
+            "name": "ws-nginx",
+            "shared_workspace_enabled": True,
+            "shared_workspace_subpath": "reports/nginx",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["shared_workspace_enabled"] is True
+    assert data["shared_workspace_subpath"] == "reports/nginx"
+    # Confirm it persists on a subsequent GET
+    get = await admin_client.get(f"/api/task-profiles/{data['id']}")
+    assert get.json()["shared_workspace_subpath"] == "reports/nginx"
+
+
+@pytest.mark.asyncio
+async def test_create_profile_subpath_traversal_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "ws-bad", "shared_workspace_subpath": "reports/../../etc"},
+    )
+    assert resp.status_code == 422
+    assert "shared_workspace_subpath" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_profile_subpath_absolute_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "ws-abs", "shared_workspace_subpath": "/etc/passwd"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_profile_subpath_backslash_traversal_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "ws-bslash", "shared_workspace_subpath": "reports\\..\\secret"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_profile_subpath_empty_normalizes_to_null(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "ws-empty", "shared_workspace_subpath": "   "},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["shared_workspace_subpath"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_profile_workspace_enabled_non_bool_rejected(admin_client):
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "ws-str", "shared_workspace_enabled": "yes"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_profile_toggles_shared_workspace(admin_client):
+    create = await admin_client.post("/api/task-profiles", json={"name": "ws-toggle"})
+    pid = create.json()["id"]
+    resp = await admin_client.put(
+        f"/api/task-profiles/{pid}",
+        json={"shared_workspace_enabled": True, "shared_workspace_subpath": "blogs"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["shared_workspace_enabled"] is True
+    assert resp.json()["shared_workspace_subpath"] == "blogs"
+    # Disable again and clear subpath
+    resp2 = await admin_client.put(
+        f"/api/task-profiles/{pid}",
+        json={"shared_workspace_enabled": False, "shared_workspace_subpath": None},
+    )
+    assert resp2.json()["shared_workspace_enabled"] is False
+    assert resp2.json()["shared_workspace_subpath"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_profile_subpath_traversal_rejected(admin_client):
+    create = await admin_client.post("/api/task-profiles", json={"name": "ws-upd-bad"})
+    pid = create.json()["id"]
+    resp = await admin_client.put(
+        f"/api/task-profiles/{pid}",
+        json={"shared_workspace_subpath": "../escape"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_list_profiles_ordered_by_name(admin_client):
     await admin_client.post("/api/task-profiles", json={"name": "zebra"})
     await admin_client.post("/api/task-profiles", json={"name": "alpha"})
@@ -381,6 +489,8 @@ async def mcp_db_session(fake_valkey):
             skill_ids TEXT,
             include_git_skills BOOLEAN NOT NULL DEFAULT 1,
         enabled_plugins TEXT,
+            shared_workspace_enabled BOOLEAN NOT NULL DEFAULT 0,
+            shared_workspace_subpath TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
         )""",
@@ -535,6 +645,8 @@ async def worker_db_session():
                 skill_ids TEXT,
                 include_git_skills BOOLEAN NOT NULL DEFAULT 1,
         enabled_plugins TEXT,
+                shared_workspace_enabled BOOLEAN NOT NULL DEFAULT 0,
+                shared_workspace_subpath TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )

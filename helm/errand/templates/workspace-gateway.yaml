@@ -1,0 +1,240 @@
+{{- if .Values.workspace.enabled }}
+{{- $ws := .Values.workspace }}
+{{- $fullname := include "errand.fullname" . }}
+{{- /* A static ClusterIP is mandatory: kubelet mounts the task PV's NFS by IP
+       (node network has no cluster DNS), and the task PV/PVC below only render
+       when it is set. Fail the render early rather than produce a partially
+       enabled, non-functional workspace. */ -}}
+{{- $_ := required "workspace.service.clusterIP is required when workspace.enabled=true" $ws.service.clusterIP }}
+# --- VFS cache PVC (write-back queue survives gateway restarts; finding 1.3) ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-workspace-cache
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if $ws.cache.storageClass }}
+  storageClassName: {{ $ws.cache.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $ws.cache.size }}
+---
+# --- Gateway Deployment: rclone serve nfs + token-refresher sidecar ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-workspace-gateway
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  replicas: 1
+  # Recreate: the cache PVC is RWO, so never run two gateways at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: workspace-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/component: workspace-gateway
+    spec:
+      initContainers:
+        # Seed the writable config with a FRESH token before rclone starts, so a
+        # rolled/restarted pod is authenticated at startup (the Secret's token may
+        # be long expired; the refresher only keeps the *running* rclone fresh).
+        - name: init-token
+          image: "{{ $ws.refresher.image.repository }}:{{ $ws.refresher.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $ws.refresher.image.pullPolicy | default "IfNotPresent" }}
+          args: ["init"]
+          env:
+            - name: ERRAND_API_URL
+              value: "http://{{ $fullname }}:{{ .Values.server.service.port }}"
+            - name: WORKSPACE_PROVIDER
+              value: {{ $ws.provider | quote }}
+            - name: WORKSPACE_REMOTE
+              value: {{ $ws.remote | quote }}
+            - name: ERRAND_WORKSPACE_BEARER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" $ws.bearerSecret | quote }}
+                  key: {{ $ws.bearerKey | quote }}
+          volumeMounts:
+            - name: config-ro
+              mountPath: /config-ro
+              readOnly: true
+            - name: config-rw
+              mountPath: /config-rw
+      containers:
+        - name: rclone
+          image: "{{ $ws.gateway.image.repository }}:{{ $ws.gateway.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $ws.gateway.image.pullPolicy | default "IfNotPresent" }}
+          env:
+            - name: WORKSPACE_REMOTE
+              value: {{ $ws.remote | quote }}
+            - name: WORKSPACE_FOLDER
+              value: {{ $ws.folder | quote }}
+            - name: WORKSPACE_POLL_INTERVAL
+              value: {{ $ws.pollInterval | quote }}
+            - name: WORKSPACE_CACHE_DIR
+              value: "/cache"
+            - name: WORKSPACE_CACHE_MAX_SIZE
+              value: {{ $ws.cache.maxSize | quote }}
+            - name: WORKSPACE_ADDR
+              value: ":{{ $ws.service.port }}"
+            - name: WORKSPACE_RC_ADDR
+              value: "127.0.0.1:5572"
+          ports:
+            - containerPort: {{ $ws.service.port }}
+              name: nfs
+          volumeMounts:
+            - name: config-ro
+              mountPath: /config-ro
+              readOnly: true
+            - name: config-rw
+              mountPath: /config-rw
+            - name: cache
+              mountPath: /cache
+        - name: refresher
+          image: "{{ $ws.refresher.image.repository }}:{{ $ws.refresher.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $ws.refresher.image.pullPolicy | default "IfNotPresent" }}
+          env:
+            - name: ERRAND_API_URL
+              value: "http://{{ $fullname }}:{{ .Values.server.service.port }}"
+            - name: WORKSPACE_PROVIDER
+              value: {{ $ws.provider | quote }}
+            - name: WORKSPACE_REMOTE
+              value: {{ $ws.remote | quote }}
+            - name: RCLONE_RC_URL
+              value: "http://127.0.0.1:5572"
+            - name: REFRESH_INTERVAL_SECONDS
+              value: {{ $ws.refresher.intervalSeconds | quote }}
+            - name: ERRAND_WORKSPACE_BEARER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" $ws.bearerSecret | quote }}
+                  key: {{ $ws.bearerKey | quote }}
+      volumes:
+        - name: config-ro
+          secret:
+            secretName: {{ required "workspace.configSecret is required when workspace.enabled=true" $ws.configSecret | quote }}
+            items:
+              - key: rclone.conf
+                path: rclone.conf
+        - name: config-rw
+          emptyDir: {}
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-workspace-cache
+---
+# --- Gateway Service: static ClusterIP (kubelet mounts by IP, not DNS) ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-workspace-gateway
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  {{- if $ws.service.clusterIP }}
+  clusterIP: {{ $ws.service.clusterIP | quote }}
+  {{- end }}
+  ports:
+    - port: {{ $ws.service.port }}
+      targetPort: {{ $ws.service.port }}
+      protocol: TCP
+      name: nfs
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/component: workspace-gateway
+{{- if $ws.service.clusterIP }}
+---
+# --- NFS PV for task Jobs (carries the NFSv3 mount options; finding F7) ---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ $fullname }}-workspace-nfs
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  capacity:
+    storage: {{ $ws.cache.size }}
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    {{- toYaml $ws.nfsMountOptions | nindent 4 }}
+    # rclone serve nfs exposes everything on a single port and does NOT register
+    # with rpcbind/portmapper, so the client must be told the port explicitly —
+    # otherwise the mount attempts portmapper (111) discovery and fails. Pinned
+    # to the Service port so they always stay in sync.
+    - port={{ $ws.service.port }}
+    - mountport={{ $ws.service.port }}
+  nfs:
+    server: {{ $ws.service.clusterIP | quote }}
+    path: "/"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $ws.taskPvcName }}
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: {{ $fullname }}-workspace-nfs
+  resources:
+    requests:
+      storage: {{ $ws.cache.size }}
+{{- end }}
+{{- if $ws.networkPolicy.enabled }}
+---
+# --- NetworkPolicy: only task-runner Jobs and the server may reach the NFS port ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-workspace-gateway
+  labels:
+    {{- include "errand.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/component: workspace-gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        # Task-runner Job pods (labelled by the KubernetesRuntime).
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: content-manager-worker
+              app.kubernetes.io/component: task-runner
+        # The errand server.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/component: server
+        # Node/pod CIDRs: kubelet performs the task Job's NFS mount from the
+        # node network, so mount traffic arrives from the node IP (not the
+        # task-runner pod IP). Without these, an enforced NetworkPolicy blocks
+        # the mount and breaks /shared. Configure via workspace.networkPolicy.allowedCIDRs.
+        {{- range $ws.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $ws.service.port }}
+{{- end }}
+{{- end }}

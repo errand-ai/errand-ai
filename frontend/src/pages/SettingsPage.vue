@@ -21,6 +21,7 @@ const sections: SettingsSection[] = [
   { id: 'integrations', label: 'Integrations' },
   { id: 'task-generators', label: 'Task Generators' },
   { id: 'cloud', label: 'Cloud Service' },
+  { id: 'workspace', label: 'Shared Workspace' },
   { id: 'users', label: 'User Management' },
 ]
 
