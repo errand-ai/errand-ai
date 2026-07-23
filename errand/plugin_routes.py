@@ -166,6 +166,37 @@ def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
     }
 
 
+def _degraded_plugin_entry(plugin: Plugin, scope: str) -> dict:
+    """Minimal, safe plugin entry built from DB columns only (no on-disk parsing).
+
+    Used as a last-resort backstop in `list_plugins` when `_serialize_plugin`
+    itself raises unexpectedly: rather than dropping the plugin from the listing
+    (which contradicts the "return all installed plugins" contract and hides the
+    failure), return a degraded entry with empty contributions and a sanitized
+    `load_error` so the UI can still display it. Every attribute access is
+    defensive since we are already in an error path.
+    """
+    marketplace_id = getattr(plugin, "marketplace_id", None)
+    return {
+        "id": str(getattr(plugin, "id", "") or ""),
+        "plugin_name": getattr(plugin, "plugin_name", None),
+        "marketplace_id": str(marketplace_id) if marketplace_id else None,
+        "marketplace_name": scope if marketplace_id else None,
+        "installed_version": getattr(plugin, "installed_version", None),
+        "latest_available_version": getattr(plugin, "latest_available_version", None),
+        "enabled": bool(getattr(plugin, "enabled", False)),
+        "update_available": False,
+        "skills": [],
+        "mcp_servers": [],
+        "ignored_artifacts": getattr(plugin, "ignored_artifacts", None) or [],
+        "skill_conflicts": getattr(plugin, "skill_conflicts", None) or [],
+        "manifest": getattr(plugin, "manifest", None),
+        "installed_at": None,
+        "last_checked_at": None,
+        "load_error": "serialization error (see server logs)",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Marketplaces                                                                #
 # --------------------------------------------------------------------------- #
@@ -395,16 +426,18 @@ async def list_plugins(
     scopes = await resolve_plugin_scopes(session, plugins)
     # Backstop: never let one unreadable plugin 500 the whole listing. Per-plugin
     # on-disk read failures are already degraded inside `_serialize_plugin`; this
-    # guards against any other per-plugin error so the rest still return.
+    # guards against any other per-plugin error. Return a degraded entry (not a
+    # skip) so the plugin still appears in the listing with a `load_error`.
     out: list[dict] = []
     for s in scopes:
         try:
             out.append(_serialize_plugin(s.plugin, s.scope))
         except Exception:  # noqa: BLE001 — backstop: one bad plugin must not 500 the listing
             logger.warning(
-                "Skipping plugin %s in listing due to serialization error",
+                "Serialization error for plugin %s; returning a degraded entry",
                 getattr(s.plugin, "plugin_name", "<unknown>"), exc_info=True,
             )
+            out.append(_degraded_plugin_entry(s.plugin, s.scope))
     return out
 
 

@@ -146,3 +146,20 @@ def test_serialize_plugin_degrades_on_missing_ondisk(monkeypatch):
     # exception string / internal filesystem path.
     assert "FileNotFoundError" in out["load_error"]
     assert "/var/cache/errand" not in out["load_error"]
+
+
+def test_degraded_plugin_entry_from_db_columns_only():
+    """The list_plugins backstop returns a degraded entry (not a skip) built from
+    DB columns only — empty contributions + sanitized load_error, no disk access."""
+    import plugin_routes as pr
+    from models import Plugin
+
+    plugin = Plugin(plugin_name="broken", installed_version="2.0.0", enabled=True)
+    entry = pr._degraded_plugin_entry(plugin, "anthropics")
+
+    assert entry["plugin_name"] == "broken"
+    assert entry["installed_version"] == "2.0.0"
+    assert entry["skills"] == []
+    assert entry["mcp_servers"] == []
+    assert entry["load_error"]
+    assert "see server logs" in entry["load_error"]
