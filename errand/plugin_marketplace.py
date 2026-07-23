@@ -394,7 +394,7 @@ async def sync_marketplace(
         marketplace.last_sync_status = "error"
         # Store only the short error class+message; full traceback goes to logs.
         marketplace.last_sync_error = type(exc).__name__ + ": fetch failed"
-        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc)
+        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc, exc_info=True)
     except RuntimeError as exc:
         # Fetch-layer failures raise RuntimeError — notably `git clone failed`
         # (network/auth/ref issues) and disallowed-URL-scheme rejections. Report a
@@ -409,7 +409,7 @@ async def sync_marketplace(
             marketplace.last_sync_error = "source URL rejected: disallowed scheme"
         else:
             marketplace.last_sync_error = "fetch failed (see server logs)"
-        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc)
+        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc, exc_info=True)
     except Exception:  # noqa: BLE001
         marketplace.last_sync_status = "error"
         marketplace.last_sync_error = "unexpected error (see server logs)"

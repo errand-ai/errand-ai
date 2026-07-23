@@ -583,7 +583,7 @@ async def cloud_storage_authorize(
     return {"authorize_url": res["redirect_url"]}
 
 
-@cloud_storage_router.delete("")
+@cloud_storage_router.delete("", status_code=204)
 async def cloud_storage_disconnect(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_user),
@@ -618,7 +618,7 @@ async def google_workspace_authorize(
     return await _authorize_provider(GOOGLE_WORKSPACE_PROVIDER, request, session)
 
 
-@google_workspace_router.delete("")
+@google_workspace_router.delete("", status_code=204)
 async def google_workspace_disconnect(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_user),
