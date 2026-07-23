@@ -200,8 +200,10 @@ services:
     # Publish the NFS port to the host: the `workspace-shared` volume below is
     # mounted by the Docker daemon on the HOST, which cannot resolve the
     # `workspace-gateway` service name nor reach an unpublished container port.
+    # Bind to loopback only — NFSv3 has no authentication, so exposing it on all
+    # host interfaces would let anything that can reach the host mount the share.
     ports:
-      - "12049:2049"
+      - "127.0.0.1:12049:2049"
     volumes:
       - ${WORKSPACE_RCLONE_CONF:-./rclone.conf}:/config-ro/rclone.conf:ro
       - workspace-cache:/cache

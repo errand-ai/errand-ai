@@ -26,6 +26,15 @@ Environment:
   REFRESH_INTERVAL_SECONDS  seconds between refreshes (default 3000 = 50 min)
   HEALTH_INTERVAL_SECONDS   seconds between health reports (default 30)
   RC_TIMEOUT_SECONDS        per rc call timeout (default 20)
+
+Init mode (`python refresher.py init`, run as a Kubernetes init container before
+rclone starts) uses ERRAND_API_URL / ERRAND_WORKSPACE_BEARER / WORKSPACE_PROVIDER
+/ WORKSPACE_REMOTE as above, plus these two file-path vars (note they are
+distinct from the gateway container's WORKSPACE_RCLONE_CONF):
+  WORKSPACE_RCLONE_CONF_RO  read-only source rclone.conf to seed from
+                            (default /config-ro/rclone.conf)
+  WORKSPACE_CONFIG_RW       writable rclone.conf to write the fresh token into
+                            (default /config-rw/rclone.conf)
 """
 
 import json

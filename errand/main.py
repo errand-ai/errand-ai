@@ -2579,13 +2579,16 @@ async def get_workspace_status(
 ):
     """Admin read-only view of the shared-workspace deployment config + health.
 
-    `health` is None when the gateway has not reported within the TTL (treated
-    as degraded/unknown by the UI).
+    `health` is None when the workspace is disabled, or when the gateway has not
+    reported within the TTL (treated as degraded/unknown by the UI). Health is
+    suppressed entirely while disabled so the response can't be contradictory
+    (e.g. a gateway left running under compose `--profile workspace` without
+    `WORKSPACE_ENABLED=true` would otherwise report health for a disabled config).
     """
     config = _workspace_deployment_config()
     health = None
     valkey = get_valkey()
-    if valkey is not None:
+    if config["enabled"] and valkey is not None:
         try:
             raw = await valkey.get(_WORKSPACE_HEALTH_KEY)
             if raw:

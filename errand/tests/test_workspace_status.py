@@ -71,6 +71,10 @@ async def test_status_disabled_when_not_configured(admin_client_with_session, fa
     # workspace must not report them — that would be a contradictory status.
     monkeypatch.setenv("WORKSPACE_PROVIDER", "google_drive")
     monkeypatch.setenv("WORKSPACE_FOLDER", "Errand")
+    # A gateway left running (e.g. compose `--profile workspace` without
+    # WORKSPACE_ENABLED=true) may have reported health into Valkey. A disabled
+    # workspace MUST still suppress it so the status is internally consistent.
+    await fake_valkey.set("workspace_gateway_health", '{"auth_state": "ok"}')
     resp = await client.get("/api/workspace/status")
     assert resp.status_code == 200
     body = resp.json()
