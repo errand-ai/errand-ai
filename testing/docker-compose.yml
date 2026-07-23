@@ -246,7 +246,7 @@ volumes:
       # Mounted by the host Docker daemon → target the published host port on
       # localhost (see the workspace-gateway `ports` mapping), not the
       # container-network service name.
-      o: "addr=127.0.0.1,nolock,soft,vers=3,port=12049,mountport=12049"
+      o: "addr=127.0.0.1,nolock,soft,vers=3,port=12049,mountport=12049,proto=tcp,mountproto=tcp"
       device: ":/"
 
 networks:

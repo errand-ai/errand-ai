@@ -76,6 +76,12 @@ workspace:
     - soft
     - timeo=150
     - retrans=2
+    # rclone serve nfs is TCP-only, but some NFS clients (e.g. the CentOS 7
+    # kubelet) default NFSv3 to UDP and the mount then times out. Force TCP for
+    # both the NFS and MOUNT protocols. (port=/mountport= are appended from
+    # workspace.service.port by the PV template.)
+    - proto=tcp
+    - mountproto=tcp
   gateway:
     image:
       repository: ghcr.io/errand-ai/errand-workspace-gateway
