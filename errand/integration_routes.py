@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -185,13 +185,18 @@ async def _get_cloud_service_url(session: AsyncSession) -> str:
     return setting.value if setting and setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
 
-@router.get("/{provider}/authorize")
-async def authorize(
+async def _authorize_provider(
     provider: str,
     request: Request,
-    session: AsyncSession = Depends(get_session),
-    _user: dict = Depends(_require_user),
-):
+    session: AsyncSession,
+) -> dict:
+    """Build the OAuth authorize redirect for a provider.
+
+    Returns ``{"redirect_url": ...}`` for either the direct (local client
+    credentials) or cloud-proxy flow. Raises HTTPException when the provider is
+    unknown or unavailable. Shared by the `/api/integrations` route and the
+    library-facing `/api/cloud-storage` and `/api/google-workspace` adapters.
+    """
     config = _get_provider(provider)
 
     if _has_local_credentials(config):
@@ -251,6 +256,16 @@ async def authorize(
 
     cloud_service_url = await _get_cloud_service_url(session)
     return {"redirect_url": f"{cloud_service_url}/oauth/{wire_provider}/authorize?state={state}"}
+
+
+@router.get("/{provider}/authorize")
+async def authorize(
+    provider: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    return await _authorize_provider(provider, request, session)
 
 
 def _popup_close_response(message: str = "Connected", error: bool = False) -> HTMLResponse:
@@ -385,6 +400,16 @@ async def callback(
     return _popup_close_response("Connected successfully")
 
 
+async def _disconnect_provider(provider: str, session: AsyncSession) -> None:
+    """Remove a provider's stored credentials. Idempotent. Shared by the
+    `/api/integrations` route and the library-facing adapters."""
+    _get_provider(provider)  # validate provider name
+    await session.execute(
+        delete(PlatformCredential).where(PlatformCredential.platform_id == provider)
+    )
+    await session.commit()
+
+
 @router.delete("/{provider}")
 async def disconnect(
     provider: str,
@@ -392,11 +417,7 @@ async def disconnect(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(_require_user),
 ):
-    _get_provider(provider)  # validate provider name
-    await session.execute(
-        delete(PlatformCredential).where(PlatformCredential.platform_id == provider)
-    )
-    await session.commit()
+    await _disconnect_provider(provider, session)
     return {"status": "ok"}
 
 
@@ -468,6 +489,38 @@ async def refresh_token(
     }
 
 
+async def _build_provider_status(provider: str, session: AsyncSession) -> dict:
+    """Build the availability/connection status for a single provider.
+
+    Shared by the `/api/integrations/status` route and the library-facing
+    `/api/cloud-storage` and `/api/google-workspace` status adapters.
+    """
+    available, mode = await _provider_available(provider, session)
+    creds = await load_credentials(provider, session)
+    connected = creds is not None
+    entry: dict = {
+        "available": available,
+        "connected": connected,
+        "mode": mode,
+    }
+    # `mcp_configured` is only meaningful for providers that gate on an MCP
+    # URL. Google Workspace uses the bundled `gws` CLI and does not require
+    # one, so the field is omitted to avoid misleading API consumers.
+    if provider != "google_drive":
+        entry["mcp_configured"] = _has_mcp_url(provider)
+    if connected and creds:
+        entry["user_email"] = creds.get("user_email", "")
+        entry["user_name"] = creds.get("user_name", "")
+        required = _required_scopes(provider)
+        if required:
+            granted = list(creds.get("granted_scopes") or [])
+            # Surface the granted scopes so the frontend can derive
+            # per-service badge state without re-implementing scope logic.
+            entry["granted_scopes"] = granted
+            entry["reauth_required"] = not required.issubset(set(granted))
+    return entry
+
+
 @router.get("/status")
 async def integration_status(
     request: Request,
@@ -476,28 +529,100 @@ async def integration_status(
 ):
     result = {}
     for provider in ("google_drive", "onedrive"):
-        available, mode = await _provider_available(provider, session)
-        creds = await load_credentials(provider, session)
-        connected = creds is not None
-        entry: dict = {
-            "available": available,
-            "connected": connected,
-            "mode": mode,
-        }
-        # `mcp_configured` is only meaningful for providers that gate on an MCP
-        # URL. Google Workspace uses the bundled `gws` CLI and does not require
-        # one, so the field is omitted to avoid misleading API consumers.
-        if provider != "google_drive":
-            entry["mcp_configured"] = _has_mcp_url(provider)
-        if connected and creds:
-            entry["user_email"] = creds.get("user_email", "")
-            entry["user_name"] = creds.get("user_name", "")
-            required = _required_scopes(provider)
-            if required:
-                granted = list(creds.get("granted_scopes") or [])
-                # Surface the granted scopes so the frontend can derive
-                # per-service badge state without re-implementing scope logic.
-                entry["granted_scopes"] = granted
-                entry["reauth_required"] = not required.issubset(set(granted))
-        result[provider] = entry
+        result[provider] = await _build_provider_status(provider, session)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Library-facing adapters
+#
+# The shared `@errand-ai/ui-components` settings cards call a different REST
+# surface than `/api/integrations`: `CloudStorageCard` → `/api/cloud-storage/*`
+# (OneDrive) and `GoogleWorkspaceCard` → `/api/google-workspace/*`
+# (Google Drive / Workspace). These thin routers reuse the machinery above and
+# translate to the shapes the cards consume (`CloudStorageStatus`,
+# `GoogleWorkspaceStatus`, and their authorize responses). Both consumers
+# (errand `createDirectApi`, errand-cloud `createCloudApi`) target these paths.
+# ---------------------------------------------------------------------------
+
+CLOUD_STORAGE_PROVIDER = "onedrive"
+GOOGLE_WORKSPACE_PROVIDER = "google_drive"
+
+cloud_storage_router = APIRouter(prefix="/api/cloud-storage", tags=["cloud-storage"])
+google_workspace_router = APIRouter(prefix="/api/google-workspace", tags=["google-workspace"])
+
+
+@cloud_storage_router.get("/status")
+async def cloud_storage_status(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Cloud storage (OneDrive) status in the library's `CloudStorageStatus` shape."""
+    status = await _build_provider_status(CLOUD_STORAGE_PROVIDER, session)
+    connected = status["connected"]
+    return {
+        "connected": connected,
+        "provider": CLOUD_STORAGE_PROVIDER if connected else None,
+        "account": (status.get("user_email") or status.get("user_name") or None) if connected else None,
+        "authorize_url": None,
+    }
+
+
+@cloud_storage_router.post("/authorize")
+async def cloud_storage_authorize(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Begin the cloud storage (OneDrive) OAuth flow.
+
+    Returns `CloudStorageAuthorizeResponse` `{authorize_url}`; the underlying
+    machinery yields `{redirect_url}`, which is re-keyed here.
+    """
+    res = await _authorize_provider(CLOUD_STORAGE_PROVIDER, request, session)
+    return {"authorize_url": res["redirect_url"]}
+
+
+@cloud_storage_router.delete("")
+async def cloud_storage_disconnect(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Disconnect cloud storage (OneDrive). Idempotent; returns 204."""
+    await _disconnect_provider(CLOUD_STORAGE_PROVIDER, session)
+    return Response(status_code=204)
+
+
+@google_workspace_router.get("/status")
+async def google_workspace_status(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Google Workspace status in the library's `GoogleWorkspaceStatus` shape."""
+    status = await _build_provider_status(GOOGLE_WORKSPACE_PROVIDER, session)
+    connected = status["connected"]
+    return {
+        "connected": connected,
+        "email": (status.get("user_email") or None) if connected else None,
+        "scopes": (status.get("granted_scopes") or None) if connected else None,
+    }
+
+
+@google_workspace_router.post("/authorize")
+async def google_workspace_authorize(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Begin the Google Workspace OAuth flow. Returns `{redirect_url}`."""
+    return await _authorize_provider(GOOGLE_WORKSPACE_PROVIDER, request, session)
+
+
+@google_workspace_router.delete("")
+async def google_workspace_disconnect(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(_require_user),
+):
+    """Disconnect Google Workspace. Idempotent; returns 204."""
+    await _disconnect_provider(GOOGLE_WORKSPACE_PROVIDER, session)
+    return Response(status_code=204)

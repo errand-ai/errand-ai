@@ -117,14 +117,28 @@ def _serialize_marketplace(mp: Marketplace) -> dict:
 
 def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
     # Always parse — the API surfaces what a plugin would contribute even when
-    # disabled so admins can review before enabling.
-    skills = parse_plugin_skills(plugin, scope)
-    skill_names = [s["name"] for s in skills]
-    raw_mcps = parse_plugin_mcp_servers(plugin, scope)
-    mcp_pairs = [
-        {"raw": name, "namespaced": f"{plugin.plugin_name}__{name}"}
-        for name in raw_mcps.keys()
-    ]
+    # disabled so admins can review before enabling. Reading the on-disk tree can
+    # fail if the installed directory/manifest is missing or unreadable (e.g. a
+    # partially-synced or corrupt install); degrade gracefully rather than 500ing
+    # the whole listing — surface empty contributions plus a `load_error` flag and
+    # log a warning so the admin can see which plugin is broken.
+    load_error: Optional[str] = None
+    try:
+        skills = parse_plugin_skills(plugin, scope)
+        skill_names = [s["name"] for s in skills]
+        raw_mcps = parse_plugin_mcp_servers(plugin, scope)
+        mcp_pairs = [
+            {"raw": name, "namespaced": f"{plugin.plugin_name}__{name}"}
+            for name in raw_mcps.keys()
+        ]
+    except Exception as exc:
+        logger.warning(
+            "Failed to read on-disk content for plugin %s (scope=%s): %s",
+            plugin.plugin_name, scope, exc, exc_info=True,
+        )
+        skill_names = []
+        mcp_pairs = []
+        load_error = str(exc)
     update_available = (
         plugin.latest_available_version is not None
         and plugin.latest_available_version != plugin.installed_version
@@ -145,6 +159,7 @@ def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
         "manifest": plugin.manifest,
         "installed_at": plugin.installed_at.isoformat() if plugin.installed_at else None,
         "last_checked_at": plugin.last_checked_at.isoformat() if plugin.last_checked_at else None,
+        "load_error": load_error,
     }
 
 
@@ -375,7 +390,19 @@ async def list_plugins(
     result = await session.execute(select(Plugin).order_by(Plugin.plugin_name))
     plugins = list(result.scalars())
     scopes = await resolve_plugin_scopes(session, plugins)
-    return [_serialize_plugin(s.plugin, s.scope) for s in scopes]
+    # Backstop: never let one unreadable plugin 500 the whole listing. Per-plugin
+    # on-disk read failures are already degraded inside `_serialize_plugin`; this
+    # guards against any other per-plugin error so the rest still return.
+    out: list[dict] = []
+    for s in scopes:
+        try:
+            out.append(_serialize_plugin(s.plugin, s.scope))
+        except Exception:
+            logger.warning(
+                "Skipping plugin %s in listing due to serialization error",
+                getattr(s.plugin, "plugin_name", "<unknown>"), exc_info=True,
+            )
+    return out
 
 
 @plugins_router.post("")

@@ -96,15 +96,15 @@ async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
     """
     capabilities = list(ALWAYS_ON_CAPABILITIES)
 
-    # Env/registry checks need no DB session.
+    # cloud_storage / google_workspace: advertised when the deployment is set up
+    # for that provider (OneDrive MCP URL configured; Google OAuth client
+    # credentials configured). The library-facing status endpoints
+    # (`/api/cloud-storage/status`, `/api/google-workspace/status`) exist
+    # unconditionally and always return JSON, so whenever a card is advertised its
+    # status call resolves to a real endpoint (never the SPA catch-all).
     if os.environ.get("ONEDRIVE_MCP_URL"):
         capabilities.append("cloud_storage")
 
-    # google_workspace: the server build has Google OAuth client credentials
-    # configured — the same gate that makes the Google Workspace authorize/
-    # callback routes available (see integration_routes._has_local_credentials
-    # for the `google_drive` provider). Without both, the GoogleWorkspaceCard
-    # has nothing to connect to and stays hidden.
     if os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"):
         capabilities.append("google_workspace")
 

@@ -277,3 +277,30 @@ async def test_update_latest_versions_from_manifest(session):
     assert changed == [p_a]
     assert p_a.latest_available_version == "2.0.0"
     assert p_b.latest_available_version == "0.5.0"
+
+
+@pytest.mark.asyncio
+async def test_sync_marketplace_git_clone_failure_categorized(session, monkeypatch):
+    """A git clone failure is captured as a clean, actionable sync error rather
+    than the generic 'unexpected error (see server logs)'."""
+    import plugin_marketplace as pm
+
+    async def _boom(**kwargs):
+        raise RuntimeError("git clone failed: fatal: repository not found")
+
+    monkeypatch.setattr(pm, "fetch_marketplace", _boom)
+    mp = Marketplace(
+        name="clone-fail",
+        source_type="git",
+        source_url="https://example.com/x.git",
+        enabled=True,
+        predefined=False,
+    )
+    session.add(mp)
+    await session.flush()
+
+    await pm.sync_marketplace(mp, session)
+
+    assert mp.last_sync_status == "error"
+    assert mp.last_sync_error == "git clone failed (see server logs)"
+    assert "unexpected error" not in (mp.last_sync_error or "")

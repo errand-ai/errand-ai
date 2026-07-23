@@ -57,6 +57,7 @@ from external_status_updater import run_external_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from cloud_auth import exchange_code
 from integration_routes import router as integration_router
+from integration_routes import cloud_storage_router, google_workspace_router
 from task_generator_routes import router as task_generator_router
 from webhook_trigger_routes import router as webhook_trigger_router
 from jira_credential_routes import router as jira_credential_router
@@ -438,6 +439,8 @@ app.include_router(auth_router)
 app.include_router(local_auth_router)
 app.include_router(slack_router)
 app.include_router(integration_router)
+app.include_router(cloud_storage_router)
+app.include_router(google_workspace_router)
 app.include_router(task_generator_router)
 app.include_router(webhook_trigger_router)
 app.include_router(jira_credential_router)

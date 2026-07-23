@@ -118,3 +118,28 @@ async def test_settings_put_accepts_non_negative_poll_interval(admin_client):
         "plugin_poll_interval_seconds": 3600,
     })
     assert resp.status_code == 200
+
+
+def test_serialize_plugin_degrades_on_missing_ondisk(monkeypatch):
+    """`_serialize_plugin` must not raise when a plugin's on-disk tree is missing
+    (the FileNotFoundError that used to 500 `GET /api/plugins`). It returns the
+    plugin with empty contributions and a `load_error` flag instead."""
+    import plugin_routes as pr
+    from models import Plugin
+
+    def _boom(*_a, **_k):
+        raise FileNotFoundError(
+            "/var/cache/errand/plugins/installed/anthropics/code-review/latest"
+        )
+
+    monkeypatch.setattr(pr, "parse_plugin_skills", _boom)
+    monkeypatch.setattr(pr, "parse_plugin_mcp_servers", _boom)
+
+    plugin = Plugin(plugin_name="code-review", installed_version="1.0.0", enabled=True)
+    out = pr._serialize_plugin(plugin, "anthropics")
+
+    assert out["plugin_name"] == "code-review"
+    assert out["skills"] == []
+    assert out["mcp_servers"] == []
+    assert out["load_error"]
+    assert "code-review" in out["load_error"]
