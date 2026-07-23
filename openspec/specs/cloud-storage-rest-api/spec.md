@@ -1,7 +1,7 @@
 # cloud-storage-rest-api Specification
 
 ## Purpose
-TBD - created by archiving change fix-shared-settings-cards-rendering. Update Purpose after archive.
+The errand-server REST surface the shared `@errand-ai/ui-components` `CloudStorageCard` consumes: `GET /api/cloud-storage/status`, `POST /api/cloud-storage/authorize`, and `DELETE /api/cloud-storage`. These are thin adapters over the existing `/api/integrations` OneDrive machinery, returning the library's typed shapes and always resolving to JSON (never the SPA catch-all) so the card renders a real connection state instead of a parse error.
 ## Requirements
 ### Requirement: Cloud storage status endpoint
 The errand-server SHALL expose `GET /api/cloud-storage/status` requiring an authenticated user (consistent with the existing `/api/integrations` cloud-storage surface these adapters wrap; the settings UI is admin-gated in the frontend), returning JSON matching the library's `CloudStorageStatus` shape: `{ "connected": boolean, "provider": string|null, "account": string|null, "authorize_url": string|null }`. The endpoint SHALL derive its values from errand's existing cloud-storage (OneDrive) machinery. It SHALL always return `application/json` (never fall through to the SPA catch-all).

@@ -1,7 +1,7 @@
 # google-workspace-rest-api Specification
 
 ## Purpose
-TBD - created by archiving change fix-shared-settings-cards-rendering. Update Purpose after archive.
+The errand-server REST surface the shared `@errand-ai/ui-components` `GoogleWorkspaceCard` consumes: `GET /api/google-workspace/status`, `POST /api/google-workspace/authorize`, and `DELETE /api/google-workspace`. These are thin adapters over the existing `/api/integrations` Google (google_drive) machinery, returning the library's typed shapes and always resolving to JSON (never the SPA catch-all) so the card renders a real connection state instead of a parse error.
 ## Requirements
 ### Requirement: Google Workspace status endpoint
 The errand-server SHALL expose `GET /api/google-workspace/status` requiring an authenticated user (consistent with the existing `/api/integrations` cloud-storage surface these adapters wrap; the settings UI is admin-gated in the frontend), returning JSON matching the library's `GoogleWorkspaceStatus` shape (connection state plus any granted-services/scope detail the card renders). Values SHALL derive from errand's existing Google Workspace machinery. The endpoint SHALL always return `application/json`.
