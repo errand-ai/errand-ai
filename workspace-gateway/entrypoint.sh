@@ -54,8 +54,15 @@ CACHE_MAX="${WORKSPACE_CACHE_MAX_SIZE:-5G}"
 RC_ADDR="${WORKSPACE_RC_ADDR:-127.0.0.1:5572}"
 
 # Copy the config to a writable location so `rclone rc config/update` can persist.
+# If an init container already seeded the writable config with a FRESH token
+# (Kubernetes), do NOT overwrite it with the (possibly long-expired) Secret copy
+# — serving the remote root authenticates at startup, so a stale token here makes
+# rclone crash-loop after a pod restart. On compose (no init container) this
+# copies from the read-only mount as before.
 mkdir -p "$(dirname "$CONF_RW")" "$CACHE_DIR"
-cp "$CONF_RO" "$CONF_RW"
+if [ ! -f "$CONF_RW" ]; then
+  cp "$CONF_RO" "$CONF_RW"
+fi
 export RCLONE_CONFIG="$CONF_RW"
 
 # Build the serve target: REMOTE:FOLDER (or REMOTE: for the whole remote root).

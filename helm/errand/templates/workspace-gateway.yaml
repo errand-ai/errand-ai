@@ -46,6 +46,32 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: workspace-gateway
     spec:
+      initContainers:
+        # Seed the writable config with a FRESH token before rclone starts, so a
+        # rolled/restarted pod is authenticated at startup (the Secret's token may
+        # be long expired; the refresher only keeps the *running* rclone fresh).
+        - name: init-token
+          image: "{{ $ws.refresher.image.repository }}:{{ $ws.refresher.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $ws.refresher.image.pullPolicy | default "IfNotPresent" }}
+          args: ["init"]
+          env:
+            - name: ERRAND_API_URL
+              value: "http://{{ $fullname }}:{{ .Values.server.service.port }}"
+            - name: WORKSPACE_PROVIDER
+              value: {{ $ws.provider | quote }}
+            - name: WORKSPACE_REMOTE
+              value: {{ $ws.remote | quote }}
+            - name: ERRAND_WORKSPACE_BEARER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" $ws.bearerSecret | quote }}
+                  key: {{ $ws.bearerKey | quote }}
+          volumeMounts:
+            - name: config-ro
+              mountPath: /config-ro
+              readOnly: true
+            - name: config-rw
+              mountPath: /config-rw
       containers:
         - name: rclone
           image: "{{ $ws.gateway.image.repository }}:{{ $ws.gateway.image.tag | default .Chart.AppVersion }}"

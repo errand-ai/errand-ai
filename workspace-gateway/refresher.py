@@ -31,6 +31,8 @@ Environment:
 import json
 import logging
 import os
+import re
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -168,6 +170,73 @@ def do_refresh(cfg: Config, health: dict) -> bool:
         return False
 
 
+def _write_token_into_config(config_path: str, remote: str, access_token: str, expires_at: int) -> None:
+    """Replace the `token` of the `[remote]` section in an rclone config file.
+
+    Updates `access_token` (and `expiry`) in the token JSON in place, preserving
+    the rest (refresh_token, token_type, etc.). Line-based to avoid mangling the
+    JSON value that a naive INI parser would split on ':' / '='.
+    """
+    expiry = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat() if expires_at else ""
+    with open(config_path) as f:
+        lines = f.read().splitlines()
+
+    out: list[str] = []
+    in_section = False
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped[1:-1] == remote
+        if in_section and re.match(r"\s*token\s*=", line):
+            try:
+                blob = json.loads(line.split("=", 1)[1].strip())
+            except Exception:
+                blob = {}
+            blob["access_token"] = access_token
+            blob.setdefault("token_type", "Bearer")
+            if expiry:
+                blob["expiry"] = expiry
+            line = f"token = {json.dumps(blob)}"
+            replaced = True
+        out.append(line)
+
+    if not replaced:
+        raise SystemExit(f"could not find a token line for remote [{remote}] in {config_path}")
+    with open(config_path, "w") as f:
+        f.write("\n".join(out) + "\n")
+
+
+def init_config() -> None:
+    """One-shot init: seed the writable rclone config with a FRESH token.
+
+    Run as an init container before rclone starts. Copies the read-only config
+    Secret to the writable path and replaces its access token with one freshly
+    fetched from errand, so `rclone serve` starts authenticated even after a pod
+    restart (the Secret's token may be long expired; the sidecar only refreshes
+    the *running* rclone). Retries the fetch so a brief errand blip doesn't wedge
+    startup — the init container is retried by Kubernetes if this ultimately fails.
+    """
+    cfg = Config()
+    ro = os.environ.get("WORKSPACE_RCLONE_CONF_RO", "/config-ro/rclone.conf")
+    rw = os.environ.get("WORKSPACE_CONFIG_RW", "/config-rw/rclone.conf")
+    os.makedirs(os.path.dirname(rw), exist_ok=True)
+    shutil.copyfile(ro, rw)
+
+    last_exc: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            token = fetch_access_token(cfg)
+            _write_token_into_config(rw, cfg.remote, token["access_token"], int(token.get("expires_at", 0)))
+            _log("init_config_ok", provider=cfg.provider, remote=cfg.remote, expires_at=token.get("expires_at"))
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            _log("init_config_retry", attempt=attempt, error=str(exc))
+            time.sleep(5)
+    raise SystemExit(f"init_config failed after retries: {last_exc}")
+
+
 def main() -> None:
     cfg = Config()
     health: dict = {"auth_state": "starting", "provider": cfg.provider}
@@ -189,4 +258,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # `init` mode seeds a fresh token into the config once, before rclone starts
+    # (used as a Kubernetes init container); default mode is the long-running loop.
+    if len(sys.argv) > 1 and sys.argv[1] == "init":
+        init_config()
+    else:
+        main()
