@@ -131,7 +131,7 @@ def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
             {"raw": name, "namespaced": f"{plugin.plugin_name}__{name}"}
             for name in raw_mcps.keys()
         ]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully for any on-disk/parse failure
         logger.warning(
             "Failed to read on-disk content for plugin %s (scope=%s): %s",
             plugin.plugin_name, scope, exc, exc_info=True,
@@ -400,7 +400,7 @@ async def list_plugins(
     for s in scopes:
         try:
             out.append(_serialize_plugin(s.plugin, s.scope))
-        except Exception:
+        except Exception:  # noqa: BLE001 — backstop: one bad plugin must not 500 the listing
             logger.warning(
                 "Skipping plugin %s in listing due to serialization error",
                 getattr(s.plugin, "plugin_name", "<unknown>"), exc_info=True,

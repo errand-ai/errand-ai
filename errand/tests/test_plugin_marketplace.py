@@ -304,3 +304,34 @@ async def test_sync_marketplace_git_clone_failure_categorized(session, monkeypat
     assert mp.last_sync_status == "error"
     assert mp.last_sync_error == "git clone failed (see server logs)"
     assert "unexpected error" not in (mp.last_sync_error or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_marketplace_auth_failure_preserves_status_code(session, monkeypatch):
+    """An auth (401) fetch failure records a sanitized last_sync_error that keeps
+    the HTTP status code but does not leak the source URL."""
+    import plugin_marketplace as pm
+    from plugin_marketplace import MarketplaceFetchError
+
+    async def _boom(**kwargs):
+        raise MarketplaceFetchError(
+            "http fetch failed: Client error '401 Unauthorized' for url "
+            "'https://secret.example.com/marketplace.json'"
+        )
+
+    monkeypatch.setattr(pm, "fetch_marketplace", _boom)
+    mp = Marketplace(
+        name="auth-fail",
+        source_type="http",
+        source_url="https://secret.example.com/marketplace.json",
+        enabled=True,
+        predefined=False,
+    )
+    session.add(mp)
+    await session.flush()
+
+    await pm.sync_marketplace(mp, session)
+
+    assert mp.last_sync_status == "error"
+    assert "401" in mp.last_sync_error
+    assert "secret.example.com" not in mp.last_sync_error
