@@ -171,6 +171,8 @@ async def test_cloud_storage_capability_implies_working_status(client, monkeypat
     (never the SPA catch-all)."""
     ac, _ = client
     monkeypatch.setenv("ONEDRIVE_MCP_URL", "https://onedrive.example/mcp")
+    monkeypatch.setenv("MICROSOFT_CLIENT_ID", "ms-client-id")
+    monkeypatch.setenv("MICROSOFT_CLIENT_SECRET", "ms-secret")
     caps = (await ac.get("/api/capabilities")).json()["capabilities"]
     assert "cloud_storage" in caps
     resp = await ac.get("/api/cloud-storage/status")

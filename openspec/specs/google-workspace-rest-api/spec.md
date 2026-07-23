@@ -37,7 +37,7 @@ The errand-server SHALL expose `DELETE /api/google-workspace` requiring an authe
 - **THEN** the endpoint returns HTTP 204 (idempotent)
 
 ### Requirement: Google Workspace capability implies a working status endpoint
-The Google Workspace status endpoint SHALL be registered unconditionally, so that whenever the `google_workspace` capability is advertised by `GET /api/capabilities`, `GET /api/google-workspace/status` resolves to a real JSON endpoint (never the SPA catch-all). The `google_workspace` capability SHALL be advertised based on the deployment being configured for Google OAuth.
+The Google Workspace status endpoint SHALL be registered unconditionally, so that whenever the `google_workspace` capability is advertised by `GET /api/capabilities`, `GET /api/google-workspace/status` resolves to a real JSON endpoint (never the SPA catch-all). The `google_workspace` capability SHALL be advertised only when Google Drive is actually connectable in this deployment — via local Google OAuth client credentials OR a connected errand-cloud OAuth proxy — or is already connected. This is why the card appears on cloud-connected deployments (which use the proxy, not local client credentials).
 
 #### Scenario: Capability present implies working endpoint
 - **WHEN** `GET /api/capabilities` includes `google_workspace`

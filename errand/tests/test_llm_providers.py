@@ -434,3 +434,40 @@ async def test_resolve_model_setting_missing_provider():
         assert model is None
 
     await engine.dispose()
+
+
+async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
+    """The settings card's role-based mode names (`title`, `task_processing`,
+    `transcription`) are mapped to LiteLLM's `model_info.mode` vocabulary
+    (`chat`, `chat`, `audio_transcription`) when filtering a LiteLLM provider."""
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
+        resp = await admin_client.post("/api/llm/providers", json={
+            "name": "lite", "base_url": "https://litellm.example.com", "api_key": "sk-key",
+        })
+    provider = resp.json()
+
+    model_info = {"data": [
+        {"model_name": "claude-x", "model_info": {"mode": "chat"}},
+        {"model_name": "gpt-y", "model_info": {"mode": "chat"}},
+        {"model_name": "whisper-z", "model_info": {"mode": "audio_transcription"}},
+    ]}
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = model_info
+
+    def make_client(*_a, **_k):
+        instance = AsyncMock()
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        instance.get = AsyncMock(return_value=mock_resp)
+        return instance
+
+    with patch("main.httpx.AsyncClient", side_effect=make_client):
+        r_title = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=title")
+        r_task = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=task_processing")
+        r_trans = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=transcription")
+
+    assert r_title.status_code == 200
+    assert {m["id"] for m in r_title.json()} == {"claude-x", "gpt-y"}  # title -> chat
+    assert {m["id"] for m in r_task.json()} == {"claude-x", "gpt-y"}   # task_processing -> chat
+    assert {m["id"] for m in r_trans.json()} == {"whisper-z"}          # transcription -> audio_transcription

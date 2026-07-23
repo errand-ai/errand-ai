@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 import database
-from models import LlmProvider, Setting
+from models import LlmProvider, PlatformCredential, Setting
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,6 +80,29 @@ async def _detect_conditional_capabilities(
     if result.scalar_one_or_none() is not None or os.environ.get("OPENAI_BASE_URL"):
         capabilities.append("litellm_mcp")
 
+    # cloud_storage (OneDrive) / google_workspace (Google Drive): advertise the
+    # settings card when the provider can actually be connected in this
+    # deployment — via local OAuth client credentials OR a connected errand-cloud
+    # OAuth proxy (plus any required MCP URL) — or is already connected. Gating on
+    # local credentials alone hid these cards on cloud-connected deployments,
+    # which use the proxy rather than local client id/secret.
+    from integration_routes import _provider_available
+
+    for provider, capability in (
+        ("onedrive", "cloud_storage"),
+        ("google_drive", "google_workspace"),
+    ):
+        available, _mode = await _provider_available(provider, session)
+        if not available:
+            row = await session.execute(
+                select(PlatformCredential.platform_id).where(
+                    PlatformCredential.platform_id == provider
+                )
+            )
+            available = row.scalar_one_or_none() is not None
+        if available:
+            capabilities.append(capability)
+
 
 async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
     """Derive the capability list advertised to errand-cloud and the local SPA.
@@ -87,26 +110,14 @@ async def get_capabilities(session: AsyncSession | None = None) -> list[str]:
     Always-on keys are unconditional. Conditional keys reflect runtime config:
     - ``voice-input`` — a transcription model is configured
     - ``litellm_mcp`` — a LiteLLM proxy is detected
-    - ``cloud_storage`` — the OneDrive MCP URL is configured in this server build
-    - ``google_workspace`` — Google OAuth client credentials are configured
+    - ``cloud_storage`` — OneDrive is connectable (local creds or cloud proxy) or connected
+    - ``google_workspace`` — Google Drive is connectable (local creds or cloud proxy) or connected
     - ``jira`` — the Jira platform integration is registered
 
     Pass ``session`` to reuse a request-scoped session (e.g. the HTTP route);
     omit it and a session is opened internally (e.g. cloud registration).
     """
     capabilities = list(ALWAYS_ON_CAPABILITIES)
-
-    # cloud_storage / google_workspace: advertised when the deployment is set up
-    # for that provider (OneDrive MCP URL configured; Google OAuth client
-    # credentials configured). The library-facing status endpoints
-    # (`/api/cloud-storage/status`, `/api/google-workspace/status`) exist
-    # unconditionally and always return JSON, so whenever a card is advertised its
-    # status call resolves to a real endpoint (never the SPA catch-all).
-    if os.environ.get("ONEDRIVE_MCP_URL"):
-        capabilities.append("cloud_storage")
-
-    if os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"):
-        capabilities.append("google_workspace")
 
     try:
         from platforms import get_registry

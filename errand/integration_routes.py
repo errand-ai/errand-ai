@@ -196,11 +196,19 @@ async def _authorize_provider(
     credentials) or cloud-proxy flow. Raises HTTPException when the provider is
     unknown or unavailable. Shared by the `/api/integrations` route and the
     library-facing `/api/cloud-storage` and `/api/google-workspace` adapters.
+
+    When the deployment is connected to the errand-cloud service, the cloud OAuth
+    proxy is preferred over any local client credentials: a cloud-connected
+    deployment relies on the proxy's registered OAuth apps/redirect URIs, not a
+    local client id/secret. Local credentials are only used for standalone
+    deployments (no cloud connection).
     """
     config = _get_provider(provider)
 
-    if _has_local_credentials(config):
-        # Direct flow — use local client credentials
+    cloud_available = await _cloud_available(session)
+
+    if not cloud_available and _has_local_credentials(config):
+        # Direct flow — standalone deployment using local client credentials
         client_id, _ = _get_client_credentials(config)
         base_url = str(request.base_url).rstrip("/")
         redirect_uri = f"{base_url}/api/integrations/{provider}/callback"
@@ -220,8 +228,8 @@ async def _authorize_provider(
         }
         return {"redirect_url": f"{config.authorize_url}?{urlencode(params)}"}
 
-    # Cloud-proxy flow — delegate to errand-cloud
-    if not await _cloud_available(session):
+    # Cloud-proxy flow — delegate to errand-cloud (preferred when connected)
+    if not cloud_available:
         raise HTTPException(
             status_code=404,
             detail="Provider not configured — configure client credentials or connect to errand cloud",

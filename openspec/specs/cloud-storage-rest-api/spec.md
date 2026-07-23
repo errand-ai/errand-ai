@@ -38,7 +38,7 @@ The errand-server SHALL expose `DELETE /api/cloud-storage` requiring an authenti
 - **THEN** the endpoint returns HTTP 204 (idempotent)
 
 ### Requirement: Cloud storage capability implies a working status endpoint
-The cloud-storage status endpoint SHALL be registered unconditionally, so that whenever the `cloud_storage` capability is advertised by `GET /api/capabilities`, `GET /api/cloud-storage/status` resolves to a real JSON endpoint (never the SPA catch-all). The `cloud_storage` capability SHALL be advertised based on the deployment being configured for OneDrive.
+The cloud-storage status endpoint SHALL be registered unconditionally, so that whenever the `cloud_storage` capability is advertised by `GET /api/capabilities`, `GET /api/cloud-storage/status` resolves to a real JSON endpoint (never the SPA catch-all). The `cloud_storage` capability SHALL be advertised only when OneDrive is actually connectable in this deployment — via local Microsoft OAuth client credentials OR a connected errand-cloud OAuth proxy (plus the OneDrive MCP URL) — or is already connected. This keeps the card from rendering a "Connect" button with no working authorization path.
 
 #### Scenario: Capability present implies working endpoint
 - **WHEN** `GET /api/capabilities` includes `cloud_storage`

@@ -1165,8 +1165,18 @@ async def list_provider_models(
 
     client = get_client_for_provider_sync(provider)
 
-    # If mode filter requested and provider is litellm, use /model/info
+    # If mode filter requested and provider is litellm, use /model/info.
+    # The shared settings card (`LlmModelCard`) sends role-based mode names
+    # (`title`, `task_processing`, `transcription`); translate these to the
+    # LiteLLM `model_info.mode` vocabulary. Unrecognised values (e.g. a raw
+    # LiteLLM mode like `chat`) pass through unchanged for backward compatibility.
     if mode and provider.provider_type == "litellm":
+        role_mode_to_litellm = {
+            "title": "chat",
+            "task_processing": "chat",
+            "transcription": "audio_transcription",
+        }
+        effective_mode = role_mode_to_litellm.get(mode, mode)
         from llm_providers import decrypt_api_key
         api_key = decrypt_api_key(provider.api_key_encrypted)
         stripped_url = provider.base_url.rstrip("/")
@@ -1184,7 +1194,7 @@ async def list_provider_models(
             model_names = sorted([
                 entry["model_name"]
                 for entry in data.get("data", [])
-                if entry.get("model_info", {}).get("mode") == mode
+                if entry.get("model_info", {}).get("mode") == effective_mode
             ])
         except Exception:
             raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")

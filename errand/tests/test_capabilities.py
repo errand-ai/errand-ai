@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 )
 """
 
+# cloud_storage / google_workspace detection queries platform_credentials
+# (via integration_routes._provider_available + a connection existence check).
+_PLATFORM_CREDENTIALS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS platform_credentials (
+    platform_id TEXT NOT NULL PRIMARY KEY,
+    encrypted_data TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'disconnected',
+    last_verified_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
 
 @pytest.fixture()
 async def cap_db():
@@ -45,6 +57,7 @@ async def cap_db():
     async with engine.begin() as conn:
         await conn.execute(text(_SETTINGS_TABLE_SQL))
         await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
+        await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
 
     test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -137,6 +150,44 @@ async def test_google_workspace_absent_when_credentials_partial(cap_db, monkeypa
 
     capabilities = await cap_module.get_capabilities()
     assert "google_workspace" not in capabilities
+
+
+@pytest.mark.asyncio
+async def test_cloud_storage_and_google_workspace_via_cloud_proxy(cap_db, monkeypatch):
+    """When connected to errand-cloud, cloud_storage and google_workspace are
+    advertised via the OAuth proxy even without local OAuth client credentials."""
+    monkeypatch.delenv("MICROSOFT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MICROSOFT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("ONEDRIVE_MCP_URL", "https://onedrive.example/mcp")
+
+    # A connected `cloud` platform credential means the errand-cloud OAuth proxy
+    # is available.
+    async with cap_db() as session:
+        await session.execute(
+            text(
+                "INSERT INTO platform_credentials (platform_id, encrypted_data, status) "
+                "VALUES ('cloud', 'x', 'connected')"
+            )
+        )
+        await session.commit()
+
+    capabilities = await cap_module.get_capabilities()
+    assert "cloud_storage" in capabilities
+    assert "google_workspace" in capabilities
+
+
+@pytest.mark.asyncio
+async def test_cloud_storage_absent_without_creds_or_cloud(cap_db, monkeypatch):
+    """cloud_storage is NOT advertised when OneDrive has an MCP URL but there is
+    no local Microsoft credential and no connected cloud proxy."""
+    monkeypatch.delenv("MICROSOFT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MICROSOFT_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("ONEDRIVE_MCP_URL", "https://onedrive.example/mcp")
+
+    capabilities = await cap_module.get_capabilities()
+    assert "cloud_storage" not in capabilities
 
 
 @pytest.mark.asyncio
