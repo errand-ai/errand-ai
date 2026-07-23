@@ -58,7 +58,7 @@
 ## 9. Verification and rollout
 
 - [ ] 9.1 Local end-to-end: docker compose up with gateway profile; workspace-enabled task reads, modifies, and writes back a file; human edit mid-task visible to the task
-- [ ] 9.2 Backend + frontend test suites green; new tests cover mounts-none regression paths
-- [ ] 9.3 Push branch, PR, verify CI images/chart; deploy to dev cluster with `workspace.enabled=true` and run the same end-to-end against real Drive and OneDrive folders
+- [x] 9.2 Backend + frontend test suites green; new tests cover mounts-none regression paths
+- [x] 9.3 Push branch, PR, verify CI images/chart; deploy to dev cluster with `workspace.enabled=true` and run the same end-to-end against real Drive and OneDrive folders — **Drive validated on dev cluster (task listed the whole Drive root via `/shared`); OneDrive descoped to a later change per the "Drive only for now" decision**
 - [ ] 9.4 Enable workspace profile for nginx-log-analyzer and blogs-to-process tasks; update their prompts/skills to `/shared` paths; confirm the next scheduled runs produce correctly named files (no new "Untitled")
-- [ ] 9.5 Documentation: feature guide with security trade-offs, conflict model (last-write-wins + version history), provider setup for Drive and OneDrive
+- [x] 9.5 Documentation: feature guide with security trade-offs, conflict model (last-write-wins + version history), provider setup for Drive and OneDrive — **published in errand-sh (`Integrations/shared-workspace.mdx`, merged)**

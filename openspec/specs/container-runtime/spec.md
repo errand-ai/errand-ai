@@ -1,9 +1,7 @@
 ## Purpose
 
 Pluggable container runtime abstraction (Docker, Kubernetes, Apple) with runtime selection via environment variable.
-
 ## Requirements
-
 ### Requirement: ContainerRuntime abstract interface
 
 The ContainerRuntime SHALL define both synchronous and asynchronous lifecycle methods. The synchronous methods (`prepare`, `run`, `result`, `cleanup`) SHALL remain for backward compatibility with `DockerRuntime`. The asynchronous methods (`async_prepare`, `async_run`, `async_result`, `async_cleanup`) SHALL be added with default implementations that call the synchronous versions via `asyncio.get_event_loop().run_in_executor()`. Runtimes that support native async (e.g. `KubernetesRuntime`) SHALL override the async methods directly.
@@ -162,3 +160,23 @@ The `_recover_orphaned_task` function SHALL be an async function that performs D
 - **THEN** the task is moved to "review" with an explanatory output message
 
 <!-- Removed: Worker process health reporting — Worker merged into server; server has its own health endpoint. -->
+
+### Requirement: Workspace mount parameter on prepare
+
+`ContainerRuntime.prepare()` and `async_prepare()` SHALL accept an optional `mounts` parameter (list of workspace mount specifications, default `None`). A mount specification SHALL carry the container path (`/shared` in v1) and per-runtime source information: a host directory path for Docker and Apple runtimes, or NFS server address, export path, and subpath for the Kubernetes runtime. When `mounts` is `None` or empty, every runtime SHALL behave exactly as before this change.
+
+#### Scenario: No mounts requested
+
+- **WHEN** `prepare()` is called without mounts
+- **THEN** the created container has no workspace volumes and behavior is unchanged from the pre-workspace implementation
+
+#### Scenario: DockerRuntime attaches volume
+
+- **WHEN** `prepare()` is called on `DockerRuntime` with a mount specifying a source and container path `/shared`
+- **THEN** the container is created with a read-write volume mapping the source to `/shared`
+
+#### Scenario: AppleContainerRuntime forwards mounts
+
+- **WHEN** `prepare()` is called on `AppleContainerRuntime` with mounts
+- **THEN** the bridge container-create payload includes a `mounts` array describing each host path and container path
+

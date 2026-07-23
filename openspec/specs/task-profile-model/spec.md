@@ -2,7 +2,6 @@
 
 TaskProfile database model and Alembic migration for custom agent configuration profiles.
 ## Requirements
-
 ### Requirement: TaskProfile enabled_plugins column
 The `task_profiles` table SHALL include an `enabled_plugins` column (JSON, nullable). The column SHALL store a JSON array of plugin UUID strings. A null value SHALL be treated identically to an empty array (no plugins enabled). The CRUD API for task profiles SHALL accept and return this field. Pre-existing profile rows SHALL have `enabled_plugins=null` after the migration.
 
@@ -182,4 +181,23 @@ An Alembic migration SHALL add a nullable `llm_timeout` integer column to the `t
 #### Scenario: Migration is reversible
 - **WHEN** the migration is downgraded
 - **THEN** the `llm_timeout` column is dropped from `task_profiles`
+
+### Requirement: Shared workspace fields on TaskProfile
+
+The `task_profiles` table SHALL gain `shared_workspace_enabled` (boolean, NOT NULL, default false) and `shared_workspace_subpath` (nullable string). `shared_workspace_subpath`, when set, confines the profile's mount to that subdirectory of the workspace folder; when NULL, the workspace root is mounted. Both fields SHALL be exposed through the existing task profile CRUD API and follow existing profile-field validation patterns (subpath MUST be a relative path without `..` traversal).
+
+#### Scenario: Migration adds columns
+
+- **WHEN** the Alembic migration for this change runs against an existing database
+- **THEN** both columns exist, existing profiles have `shared_workspace_enabled=false`, and no data is modified
+
+#### Scenario: Subpath validation
+
+- **WHEN** a profile is saved with `shared_workspace_subpath` containing `..`
+- **THEN** the API rejects the request with a validation error
+
+#### Scenario: CRUD round-trip
+
+- **WHEN** a profile is created with `shared_workspace_enabled=true` and subpath `reports/nginx`
+- **THEN** the profile API returns both values on read
 

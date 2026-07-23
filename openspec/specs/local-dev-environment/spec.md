@@ -1,9 +1,7 @@
 ## Purpose
 
 Docker Compose configuration for running the full application stack locally with PostgreSQL and all services.
-
 ## Requirements
-
 ### Requirement: Docker Compose runs the full application stack
 
 A `docker-compose.yml` at `testing/docker-compose.yml` SHALL define services for PostgreSQL 18, database migration, errand (main application with integrated task processing), Playwright, and Hindsight. The cache service SHALL use Valkey 9. Running `docker compose up` SHALL start the entire application locally. The errand service SHALL serve both API routes and frontend static files on port 8000, and SHALL run the TaskManager for task processing. There SHALL NOT be a separate worker service.
@@ -54,3 +52,18 @@ The errand server service in both testing and deploy docker-compose files SHALL 
 #### Scenario: Errand server healthcheck defined
 - **WHEN** docker-compose services are inspected
 - **THEN** the errand service SHALL have a healthcheck that queries `http://localhost:8000/api/health`
+
+### Requirement: Optional workspace gateway in docker-compose
+
+The compose stack SHALL support an optional workspace gateway service (same rclone image and configuration shape as the Kubernetes gateway, including the token-refresher behavior) attached to the errand network. Task containers with workspace-enabled profiles SHALL reach it via an NFS volume (`driver_opts: type=nfs`) or a bind-mount fallback for local testing. The service SHALL be disabled by default (compose profile or commented block) so `docker compose up` behavior is unchanged for existing users.
+
+#### Scenario: Default compose unchanged
+
+- **WHEN** the stack is started without the workspace profile
+- **THEN** no gateway container runs and existing services behave as before
+
+#### Scenario: Gateway service started
+
+- **WHEN** the stack is started with the workspace profile enabled and provider credentials configured
+- **THEN** the gateway serves the configured cloud folder and a workspace-enabled task container can read and write files through its mount
+
