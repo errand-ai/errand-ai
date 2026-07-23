@@ -138,7 +138,10 @@ def _serialize_plugin(plugin: Plugin, scope: str) -> dict:
         )
         skill_names = []
         mcp_pairs = []
-        load_error = str(exc)
+        # Sanitized, stable message only — never the raw exception string, which
+        # can carry internal filesystem paths. Full detail (incl. traceback) is in
+        # the log line above. The error class is safe and useful for triage.
+        load_error = f"{type(exc).__name__}: could not read plugin content (see server logs)"
     update_available = (
         plugin.latest_available_version is not None
         and plugin.latest_available_version != plugin.installed_version

@@ -142,4 +142,7 @@ def test_serialize_plugin_degrades_on_missing_ondisk(monkeypatch):
     assert out["skills"] == []
     assert out["mcp_servers"] == []
     assert out["load_error"]
-    assert "code-review" in out["load_error"]
+    # load_error is sanitized: it names the error class but does NOT leak the raw
+    # exception string / internal filesystem path.
+    assert "FileNotFoundError" in out["load_error"]
+    assert "/var/cache/errand" not in out["load_error"]

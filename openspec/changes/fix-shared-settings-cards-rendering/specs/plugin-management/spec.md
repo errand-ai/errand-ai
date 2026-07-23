@@ -3,7 +3,7 @@
 ### Requirement: Plugin list API
 The backend SHALL expose `GET /api/plugins` returning all installed plugins with their `id`, `plugin_name`, `marketplace_id` (or `null`), `installed_version`, `latest_available_version`, `enabled`, skill name list (from manifest), MCP server name list with both raw and namespaced names, `ignored_artifacts` summary, and any `skill_conflicts` from the last worker resolution.
 
-The endpoint SHALL degrade gracefully when a plugin's on-disk state is missing or unreadable: a missing installed-plugin directory, manifest, or referenced path MUST NOT cause the request to fail. The endpoint MUST NOT return HTTP 500 due to such state; it SHALL still return HTTP 200 with the plugins it can read, and SHALL log a warning (and MAY flag the affected plugin) for each skipped/degraded plugin.
+The endpoint SHALL degrade gracefully when a plugin's on-disk state is missing or unreadable: a missing installed-plugin directory, manifest, or referenced path MUST NOT cause the request to fail. The endpoint MUST NOT return HTTP 500 due to such state; it SHALL still return HTTP 200 with the plugins it can read, and SHALL log a warning for each skipped/degraded plugin. A degraded plugin MAY be flagged via a `load_error` field, which MUST be a sanitized, stable message (e.g. the error class name) and MUST NOT expose the raw exception string or internal filesystem paths — full detail belongs only in the server logs.
 
 #### Scenario: List installed plugins
 - **WHEN** an admin calls `GET /api/plugins` with two installed plugins
@@ -18,3 +18,4 @@ The endpoint SHALL degrade gracefully when a plugin's on-disk state is missing o
 - **THEN** the endpoint returns HTTP 200 (not 500)
 - **AND** the readable plugins are returned
 - **AND** a warning is logged for the missing/degraded plugin
+- **AND** the degraded plugin's `load_error` field is a sanitized message (error class only) that does not contain the raw filesystem path

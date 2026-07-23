@@ -5,7 +5,8 @@ The errand-server SHALL expose `GET /api/cloud-storage/status` requiring an auth
 
 #### Scenario: Not connected
 - **WHEN** an admin calls `GET /api/cloud-storage/status` and no cloud-storage provider is connected
-- **THEN** the response is HTTP 200 `application/json` with `connected: false` and a non-null `authorize_url` (or `null` if authorization is unavailable in this deployment)
+- **THEN** the response is HTTP 200 `application/json` with `connected: false`
+- **AND** `authorize_url` is `null` (the status endpoint does not build an authorize URL; the SPA obtains it from `POST /api/cloud-storage/authorize`)
 
 #### Scenario: Connected
 - **WHEN** an admin calls `GET /api/cloud-storage/status` and a provider is connected
