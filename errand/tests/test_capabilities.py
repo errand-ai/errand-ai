@@ -191,6 +191,28 @@ async def test_cloud_storage_absent_without_creds_or_cloud(cap_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cloud_storage_not_advertised_for_orphaned_credential_without_mcp_url(cap_db, monkeypatch):
+    """A lingering OneDrive credential does NOT advertise cloud_storage when the
+    provider's baseline requirement (ONEDRIVE_MCP_URL) is absent — the provider
+    can no longer actually serve, so the card must not appear."""
+    monkeypatch.delenv("MICROSOFT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MICROSOFT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("ONEDRIVE_MCP_URL", raising=False)
+
+    async with cap_db() as session:
+        await session.execute(
+            text(
+                "INSERT INTO platform_credentials (platform_id, encrypted_data, status) "
+                "VALUES ('onedrive', 'x', 'connected')"
+            )
+        )
+        await session.commit()
+
+    capabilities = await cap_module.get_capabilities()
+    assert "cloud_storage" not in capabilities
+
+
+@pytest.mark.asyncio
 async def test_capabilities_with_voice_input(cap_db):
     """voice-input capability present when transcription_model is set."""
     async with cap_db() as session:

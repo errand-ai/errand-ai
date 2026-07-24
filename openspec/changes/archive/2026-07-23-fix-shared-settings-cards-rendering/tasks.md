@@ -14,7 +14,7 @@
 
 ## 3. Capability reconciliation
 
-- [x] 3.1 Consistency achieved by registering the `/api/cloud-storage/*` and `/api/google-workspace/*` status endpoints **unconditionally** — whenever `cloud_storage`/`google_workspace` is advertised (existing `ONEDRIVE_MCP_URL` / `GOOGLE_CLIENT_ID`+`SECRET` gates in `capabilities.py`), the status call now resolves to a real JSON endpoint instead of the SPA catch-all. (Kept existing env gates; an availability-aware gate was prototyped and reverted as it broke the established capability contract for no functional gain.)
+- [x] 3.1 Two parts. (a) The `/api/cloud-storage/*` and `/api/google-workspace/*` status endpoints are registered **unconditionally**, so whenever the capability is advertised the status call resolves to real JSON (never the SPA catch-all). (b) Capability gating is **availability-aware**: `cloud_storage`/`google_workspace` are advertised when the provider is connectable via local OAuth client credentials **or a connected errand-cloud OAuth proxy** (plus any required MCP URL), or is already connected — this makes the cards appear on cloud-connected deployments (which use the proxy, not local client id/secret). An earlier iteration kept the plain `ONEDRIVE_MCP_URL` / `GOOGLE_CLIENT_ID`+`SECRET` env gates; that was superseded by the availability-aware gate in `capabilities.py`.
 - [x] 3.2 Tests: capability present ⇒ `status` endpoint returns 200 JSON (`test_cloud_storage_google_routes.py::test_*_capability_implies_working_status`).
 
 ## 4. Plugin listing robustness (`GET /api/plugins`)
@@ -32,7 +32,7 @@
 
 - [x] 6.1 Bumped `@errand-ai/ui-components` `^0.10.0` → `^0.11.0` in `frontend/package.json`; `npm install` updated the lockfile. Companion library change was already published as v0.11.0; installed dist verified to contain `extractSettingValue`, `/credentials/jira`, and the `settings-content` spacing slot.
 - [x] 6.2 Frontend test suite green with 0.11.0 (261 passed) — no tests asserted the old behavior (envelope handling lives in the library), so no fixes were needed.
-- [x] 6.3 Bump `VERSION` (minor) → `0.133.0`.
+- [x] 6.3 Bump `VERSION` (minor) → `0.133.0`. (Subsequently advanced within the same PR as follow-up config-tab fixes were added and deployed via CI/ArgoCD — see the `VERSION` file for the current release number.)
 
 ## 7. Verification (local docker-compose + Playwright)
 

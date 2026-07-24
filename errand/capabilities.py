@@ -86,14 +86,18 @@ async def _detect_conditional_capabilities(
     # OAuth proxy (plus any required MCP URL) — or is already connected. Gating on
     # local credentials alone hid these cards on cloud-connected deployments,
     # which use the proxy rather than local client id/secret.
-    from integration_routes import _provider_available
+    from integration_routes import _has_mcp_url, _provider_available
 
     for provider, capability in (
         ("onedrive", "cloud_storage"),
         ("google_drive", "google_workspace"),
     ):
         available, _mode = await _provider_available(provider, session)
-        if not available:
+        # Fall back to "already connected" only when the provider's baseline
+        # requirement is still met (e.g. OneDrive's MCP URL). Without this guard a
+        # lingering/orphaned credential would advertise a capability the provider
+        # can no longer actually serve.
+        if not available and _has_mcp_url(provider):
             row = await session.execute(
                 select(PlatformCredential.platform_id).where(
                     PlatformCredential.platform_id == provider
