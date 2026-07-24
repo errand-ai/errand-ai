@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the **content-manager** project. It is in early development — the repository uses OpenSpec (spec-driven workflow) for structured change management.
+This is the **errand** project. It is in early development — the repository uses OpenSpec (spec-driven workflow) for structured change management.
 
 ## OpenSpec Workflow
 
@@ -64,7 +64,7 @@ frontend/
   src/                 # Vue 3 app source
   src/stores/auth.ts   # Pinia auth store (token, idToken, roles)
 helm/
-  content-manager/     # Helm chart for K8s deployment
+  errand/              # Helm chart for K8s deployment
 .github/
   workflows/build.yml  # CI: build images + Helm chart, push to GHCR
 ```
@@ -181,7 +181,7 @@ This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for p
 
 - OIDC Authorization Code flow: backend is the confidential client, handles code exchange
 - JWT audience validation disabled — Keycloak sets `aud: "account"`, not the client_id
-- Roles claim: `resource_access.content-manager.roles` (client-specific, not `realm_access.roles`)
+- Roles claim: `resource_access.errand.roles` (client-specific, not `realm_access.roles`)
 - Logout requires `id_token_hint` parameter to Keycloak end-session endpoint
 - Token + id_token delivered to frontend via URL fragment from `/auth/callback`
 
@@ -224,23 +224,23 @@ Per-profile override: `task_profiles.llm_timeout` (nullable integer). When non-n
 ## Kubernetes Deployment
 
 - **ArgoCD version**: v3.3.0 (image tag `latest`) — RBAC model follows v3 conventions
-- **ArgoCD app name**: `content-manager` (not `content-manager-rancher` — the `-rancher` suffix is only on the values file)
+- **ArgoCD app name**: `errand` (not `errand-rancher` — the `-rancher` suffix is only on the values file)
 - **ArgoCD gotcha**: Non-existent app names return `PermissionDenied` (not `NotFound`) — always verify the app name with `list_applications` before debugging RBAC
 - **ArgoCD RBAC testing**: `kubectl -n argocd exec deploy/argocd-server -- argocd admin settings rbac can <user> <action> <resource> '<project>/<app>' --namespace argocd`
 - **ArgoCD MCP account**: `mcpserver` local account (apiKey auth), role `readonly-user` (get, sync, restart deployments)
 - **Cluster context**: `devops-consultants` / namespace: `errand`
 - **Ingress**: nginx ingress controller (class `nginx`) — routes all paths to server (single service)
 - **TLS**: cert-manager with `letsencrypt-prod-dns` ClusterIssuer (DNS-01 challenge; `letsencrypt-prod` uses HTTP-01 with haproxy class which doesn't work)
-- **Database**: CloudNativePG — secret `content-manager-postgres-app`, key `uri`
+- **Database**: CloudNativePG — secret `errand-postgres-app`, key `uri`
 - **Proxy headers**: uvicorn runs with `--proxy-headers --forwarded-allow-ips *` so `request.base_url` returns `https://` behind TLS-terminating ingress
-- **ArgoCD values**: Override values at `~/github/argocd/apps/content-manager-rancher-values.yaml`
+- **ArgoCD values**: Override values at `~/github/argocd/errand-rancher-values.yaml`
 - **KEDA**: Disabled for now (CRDs not installed on cluster)
 
 ## Helm Chart
 
 - Image tags in templates default to `.Chart.AppVersion` when `values.image.tag` is empty
 - CI sets `appVersion` via `helm package --app-version` from the VERSION file
-- PR builds get tags like `0.4.0-pr2`; main builds get `0.4.0`
+- PR builds get tags like `0.4.0-pr2.<run_number>` (the `github.run_number` suffix makes every push to the PR branch a unique, increasing SemVer pre-release so ArgoCD redeploys each commit — no need to bump `VERSION` per PR commit); main builds get `0.4.0`
 - Server serves frontend static files in production (Vite build output in `static/` directory)
 - No separate frontend container — single combined Docker image
 
@@ -296,8 +296,8 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 
 ## Current State
 
-- Version: `0.69.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
+- Version: `0.123.0` (in `VERSION` file) — bump per semver before committing (CI enforces immutable tags)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
-- Deployed at: https://content-manager.devops-consultants.net
-- Tests: 839 errand (pytest, includes task-runner) + 440 frontend (vitest) — CI `test` job gates both build jobs
+- Deployed at: https://errand.devops-consultants.net
+- Tests: 1656 errand + 65 task-runner (pytest) + 440 frontend (vitest) — CI `test` job gates both build jobs
 - 52 component specs in `openspec/specs/`

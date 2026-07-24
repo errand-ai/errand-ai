@@ -33,10 +33,22 @@ jobs:
 
       - name: Read version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # `github.run_number` increments monotonically for every run of this
+          # workflow in the repo. We append it to PR tags as a SemVer build
+          # identifier — e.g. `0.134.2-pr213.42` — so every push to a PR branch
+          # produces a unique, increasing pre-release version. That lets ArgoCD
+          # detect a new image/chart version on each commit and redeploy, without
+          # bumping the VERSION file on every push. The tag stays valid SemVer
+          # 2.0.0 (dot-separated pre-release identifiers `pr<num>` and `<build>`),
+          # which ArgoCD's Helm version comparator orders correctly.
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TAG="${VERSION}-pr${{ github.event.pull_request.number }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            TAG="${VERSION}-pr${PR_NUMBER}.${RUN_NUMBER}"
           else
             TAG="${VERSION}"
           fi
