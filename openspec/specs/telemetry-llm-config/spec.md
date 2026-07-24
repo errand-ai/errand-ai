@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Telemetry reporting of the instance's LLM configuration (providers and models), with secrets redacted.
+
+## Requirements
 
 ### Requirement: LLM provider category classification
 The telemetry module SHALL classify each configured LLM provider's base URL into a category by inspecting the URL's authority (host and port), not by substring-matching the full URL. A URL SHALL be classified as a well-known provider only when its parsed host exactly matches (or, for Ollama, matches a localhost form of) that provider's canonical endpoint host. URLs whose host does not match any well-known endpoint SHALL fall through to the generic categories (`litellm-other`, `openai-compatible-other`, or `other`).

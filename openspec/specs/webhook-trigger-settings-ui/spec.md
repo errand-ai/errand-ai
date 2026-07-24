@@ -2,7 +2,7 @@
 
 Frontend settings interface for managing webhook triggers, located on the Task Generators settings page alongside existing trigger sections.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Webhook triggers list
 The settings page SHALL display a list of all configured webhook triggers showing each trigger's name, source type, enabled state (toggle), and associated profile name. The list SHALL include an "Add Trigger" button that opens the trigger creation form. Each trigger row SHALL be clickable to open the edit form for that trigger.

@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Dispatch of inbound webhooks received by the cloud relay to the local errand instance over the trusted tunnel.
+
+## Requirements
 
 ### Requirement: Webhook payload routing by integration and endpoint type
 The cloud webhook dispatcher SHALL route incoming webhook payloads to the appropriate handler based on the `integration` and `endpoint_type` fields from the WebSocket message.

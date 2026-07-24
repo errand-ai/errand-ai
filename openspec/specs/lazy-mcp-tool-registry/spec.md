@@ -2,7 +2,7 @@
 
 Lazy MCP tool loading system — manages a compact tool catalog, hot list, tool visibility state, and the `discover_tools` native tool for on-demand tool activation.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Compact tool catalog generation
 
@@ -181,7 +181,7 @@ The task-runner retry loop SHALL catch `ModelBehaviorError` exceptions and parse
 
 ### Requirement: execute_command alias tools for common name hallucinations
 
-The task-runner SHALL register a fixed set of always-on `@function_tool` shims that act as name aliases for `execute_command`. The alias set SHALL include at least `run_command`, `bash`, `shell`, `sh`, and `executescript`. Each alias SHALL accept the same `(command: str, working_directory: str = "/workspace")` signature as `execute_command` and SHALL invoke the same underlying implementation, returning the same output for the same input. Aliases SHALL be added to `ToolVisibilityContext.always_on_tools` at agent construction so they are visible to the tool filter on every turn. Aliases SHALL NOT be advertised in the system prompt, the `<available_mcp_tools>` catalog, or any user-facing tool listing — they exist solely as a compatibility surface for models that hallucinate the wrong shell-tool name.
+The task-runner SHALL register a fixed set of always-on `@function_tool` shims that act as name aliases for `execute_command`. The alias set SHALL include at least `run_command`, `bash`, `shell`, and `sh`. Each alias SHALL accept the same `(command: str, working_directory: str = "/workspace")` signature as `execute_command` and SHALL invoke the same underlying implementation, returning the same output for the same input. Aliases SHALL be added to `ToolVisibilityContext.always_on_tools` at agent construction so they are visible to the tool filter on every turn. Aliases SHALL NOT be advertised in the system prompt, the `<available_mcp_tools>` catalog, or any user-facing tool listing — they exist solely as a compatibility surface for models that hallucinate the wrong shell-tool name.
 
 Aliases SHALL emit `tool_call` and `tool_result` structured events under the alias name actually called (e.g. `{"tool": "run_command", ...}`), not under the canonical `execute_command` name, so production telemetry preserves the signal about which aliases fire.
 

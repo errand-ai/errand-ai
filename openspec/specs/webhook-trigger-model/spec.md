@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+The data model for webhook triggers that map inbound external events to errand task creation, shared across GitHub Projects and other sources.
+
+## Requirements
 
 ### Requirement: WebhookTrigger data model
 
@@ -68,12 +72,12 @@ When `source` is `"github"`, the create and update endpoints SHALL validate filt
 #### Scenario: Create a GitHub trigger with missing required filter
 
 - **WHEN** a POST request is made with `{"name": "Bad Trigger", "source": "github", "filters": {"trigger_column": "Ready"}}` (missing project_node_id)
-- **THEN** the response status is 422 with a validation error
+- **THEN** the response status is 400 with a validation error
 
 #### Scenario: Create a GitHub trigger with invalid action key
 
 - **WHEN** a POST request is made with `{"source": "github", "actions": {"invalid_key": true}}`
-- **THEN** the response status is 422 with a validation error
+- **THEN** the response status is 400 with a validation error
 
 #### Scenario: Update a GitHub trigger actions
 
@@ -84,31 +88,6 @@ When `source` is `"github"`, the create and update endpoints SHALL validate filt
 
 - **WHEN** a GET request is made to `/api/webhook-triggers` by an admin user
 - **THEN** the response status is 200 and the body contains an array of all WebhookTrigger objects including both Jira and GitHub triggers
-
-#### Scenario: Get a single trigger
-
-- **WHEN** a GET request is made to `/api/webhook-triggers/{id}` with a valid UUID
-- **THEN** the response status is 200 and the body contains the trigger object with all fields
-
-#### Scenario: Get a non-existent trigger
-
-- **WHEN** a GET request is made to `/api/webhook-triggers/{id}` with a UUID that does not exist
-- **THEN** the response status is 404
-
-#### Scenario: Update a trigger
-
-- **WHEN** a PUT request is made to `/api/webhook-triggers/{id}` with body `{"enabled": false}`
-- **THEN** the response status is 200 and the trigger's enabled field is updated to false
-
-#### Scenario: Delete a trigger
-
-- **WHEN** a DELETE request is made to `/api/webhook-triggers/{id}` with a valid UUID
-- **THEN** the response status is 204 and the trigger is removed from the database
-
-#### Scenario: Non-admin access denied
-
-- **WHEN** a non-admin user makes any request to the webhook-triggers endpoints
-- **THEN** the response status is 403
 
 ### Requirement: Filter schema validation
 
