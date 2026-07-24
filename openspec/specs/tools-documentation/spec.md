@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+User-facing documentation covering the task-runner's tools, example workflows, prerequisites, and configuration.
+
+## Requirements
 ### Requirement: Documentation source file
 The project SHALL include a markdown file at `docs/rss-and-twitter-tools.md` that serves as the canonical source for all documentation about the new tools. This file SHALL be used as source material for updating the errand-sh docs site and creating blog/social content. The file SHALL NOT be served by the application — it is a project reference document only.
 

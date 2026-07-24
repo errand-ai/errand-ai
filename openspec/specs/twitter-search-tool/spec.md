@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A `search_tweets` MCP tool backed by a TwitterPlatform search method override.
+
+## Requirements
 ### Requirement: search_tweets MCP tool
 The MCP server SHALL expose a `search_tweets` tool that accepts `query` (str, required) and `max_results` (int, optional, default 10, max 100). The tool SHALL search recent tweets using `TwitterPlatform.search()` when Twitter/X credentials are configured. The tool SHALL return a JSON string containing an array of tweet objects, each with `tweet_id`, `text`, `created_at`, `author_id`, `author_username`, and `public_metrics`. The Twitter/X credential path SHALL require X API Basic tier or higher. If the API returns a 403 Forbidden error and no Xquik-compatible backend is configured, the tool SHALL return a clear error message indicating that search requires Basic tier access.
 

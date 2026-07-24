@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A header indicator showing the live cloud-service connection state to the user.
+
+## Requirements
 ### Requirement: Cloud connection indicator in header
 The app header SHALL display a cloud connection status indicator when the user has configured errand-cloud.
 

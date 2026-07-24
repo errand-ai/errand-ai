@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+MCP tools for creating tasks with a profile or explicit title and for listing available task profiles.
+
+## Requirements
 ### Requirement: Create task with profile via MCP
 The `new_task` MCP tool SHALL accept an optional `profile` parameter to assign a task profile by name.
 

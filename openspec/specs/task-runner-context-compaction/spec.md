@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+LLM-based context-window compaction for the task-runner: iterative summarization, file-operation tracking across compactions, and a configurable compaction model.
+
+## Requirements
 ### Requirement: Context compaction via LLM summarization
 The task runner SHALL replace dropped messages with an LLM-generated structured summary when the conversation exceeds the context token budget.
 

@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A `submit_result` function tool and output-extraction priority governing how the task-runner agent returns its final structured result.
+
+## Requirements
 ### Requirement: submit_result function tool
 
 The task-runner SHALL provide a native `@function_tool` named `submit_result` that the LLM calls to deliver its task output. The tool SHALL accept the following arguments: `result` (string, required) containing the full task output with markdown formatting, `status` (string, optional, default `"completed"`) set to either `"completed"` or `"needs_input"`, and `questions` (list of strings, optional, default `[]`) for follow-up questions when status is `"needs_input"`. The tool SHALL store the submitted values in the agent's run context (accessible after the run completes). The tool SHALL return a confirmation message: `"Result submitted successfully. You may now stop."`. If called multiple times, the last call SHALL win — only the most recent submission is used.

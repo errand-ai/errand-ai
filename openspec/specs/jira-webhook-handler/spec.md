@@ -2,8 +2,7 @@
 
 Jira-specific webhook payload processing: parses Jira webhook JSON, evaluates trigger filters, and creates errand tasks with external references on match.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Parse Jira webhook payload
 The system SHALL accept Jira webhook JSON payloads and extract the following fields for filter evaluation: `webhookEvent` (top-level string), `issue.fields.issuetype.name`, `issue.fields.labels` (array of strings), `issue.fields.project.key`, `issue.key`, `issue.fields.summary`, `issue.fields.description`, `issue.fields.reporter.displayName`, `issue.fields.priority.name`, `issue.self`, `issue.fields.parent.key` (nullable), and `changelog` (present on update events). The system SHALL reject payloads missing required fields (`webhookEvent`, `issue.key`, `issue.fields`) with a logged warning and no task creation.
 

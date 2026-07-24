@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Resilient reconnection for the cloud WebSocket client: supersession handling, a liveness watchdog, and immediate status cleanup on disconnect.
+
+## Requirements
 ### Requirement: Reconnect on supersession close code
 
 The `CloudWebSocketClient` SHALL reconnect with exponential backoff when the WebSocket is closed with code 4001 (superseded), instead of permanently stopping.

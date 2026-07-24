@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A Server-Sent Events endpoint streaming task-board updates to the frontend, with authentication.
+
+## Requirements
 ### Requirement: SSE endpoint for task board events
 
 The backend SHALL expose an SSE endpoint at `GET /api/events?token={jwt}` that streams real-time task events to connected frontend clients. This replaces the WebSocket endpoint `WS /api/ws/tasks`.

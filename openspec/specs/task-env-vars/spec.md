@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Per-task encrypted environment variables, injected via MCP and stored in an encrypted Task column.
+
+## Requirements
 ### Requirement: Per-task encrypted environment variables via MCP
 The `new_task` and `schedule_task` MCP tools SHALL accept an optional `env` parameter (typed as `dict | None` for correct MCP JSON schema generation) containing key/value pairs to be injected as environment variables into the task-runner container.
 

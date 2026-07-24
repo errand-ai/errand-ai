@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+MCP tools for listing, upserting, and deleting agent skills.
+
+## Requirements
 ### Requirement: List skills via MCP
 The MCP server SHALL provide a `list_skills` tool that returns available skills.
 

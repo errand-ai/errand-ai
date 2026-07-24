@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A system skill that injects repository-context discovery instructions into the task-runner.
+
+## Requirements
 ### Requirement: Repo context discovery system skill
 A system skill SHALL exist at `/app/system-skills/repo-context/repo-context/SKILL.md` containing instructions for discovering and following project-specific context in cloned repositories. The skill SHALL cover: finding and reading CLAUDE.md files, discovering commands in `.claude/commands/`, and discovering repo-level skills in `.claude/skills/`.
 

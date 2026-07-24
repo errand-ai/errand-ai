@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+The registry and base-directory mechanism for loading system skill sets into the task-runner on demand, with extensibility for new sets.
+
+## Requirements
 ### Requirement: System skills registry
 The task manager SHALL maintain a registry that maps runtime conditions to system skill sets. Each registry entry SHALL specify a skill set name, a filesystem path relative to the system skills base directory, and a condition function that receives a task context dictionary and returns a boolean.
 
