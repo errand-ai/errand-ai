@@ -471,7 +471,9 @@ async def test_resolve_model_setting_missing_provider():
 async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
     """The settings card's role-based mode names (`title`, `task_processing`,
     `transcription`) are mapped to LiteLLM's `model_info.mode` vocabulary
-    (`chat`, `chat`, `audio_transcription`) when filtering a LiteLLM provider."""
+    (`chat`, `chat`, `audio_transcription`). The chat filter is lenient — it also
+    includes models LiteLLM leaves with an unset/null `mode` (many valid chat
+    models) — while non-chat roles stay strict."""
     with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
         resp = await admin_client.post("/api/llm/providers", json={
             "name": "lite", "base_url": "https://litellm.example.com", "api_key": "sk-key",
@@ -480,7 +482,9 @@ async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
 
     model_info = {"data": [
         {"model_name": "claude-x", "model_info": {"mode": "chat"}},
-        {"model_name": "gpt-y", "model_info": {"mode": "chat"}},
+        {"model_name": "untagged-chat", "model_info": {"mode": None}},        # null mode -> treated as chat
+        {"model_name": "no-mode-field", "model_info": {}},                    # missing mode -> treated as chat
+        {"model_name": "embed-1", "model_info": {"mode": "embedding"}},       # explicit non-chat -> excluded
         {"model_name": "whisper-z", "model_info": {"mode": "audio_transcription"}},
     ]}
     mock_resp = MagicMock()
@@ -500,9 +504,11 @@ async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
         r_trans = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=transcription")
 
     assert r_title.status_code == 200
-    assert {m["id"] for m in r_title.json()} == {"claude-x", "gpt-y"}  # title -> chat
-    assert {m["id"] for m in r_task.json()} == {"claude-x", "gpt-y"}   # task_processing -> chat
-    assert {m["id"] for m in r_trans.json()} == {"whisper-z"}          # transcription -> audio_transcription
+    # title/task -> chat, lenient: chat-mode + unset-mode; excludes embedding + audio_transcription
+    assert {m["id"] for m in r_title.json()} == {"claude-x", "untagged-chat", "no-mode-field"}
+    assert {m["id"] for m in r_task.json()} == {"claude-x", "untagged-chat", "no-mode-field"}
+    # transcription -> audio_transcription, strict: only the whisper model
+    assert {m["id"] for m in r_trans.json()} == {"whisper-z"}
 
 
 def test_normalize_model_setting_value_mirrors_model_and_model_id():

@@ -1197,10 +1197,24 @@ async def list_provider_models(
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            def _mode_matches(model_mode: str | None) -> bool:
+                if model_mode == effective_mode:
+                    return True
+                # LiteLLM leaves `model_info.mode` unset/null for many chat
+                # models, so a strict equality check drops valid chat selections
+                # (e.g. the user's saved title/task model). Treat unknown-mode
+                # models as chat-capable. Non-chat roles (audio_transcription)
+                # stay strict so an embedding/whisper model can't leak into the
+                # chat dropdowns.
+                if effective_mode == "chat" and not model_mode:
+                    return True
+                return False
+
             model_names = sorted([
                 entry["model_name"]
                 for entry in data.get("data", [])
-                if entry.get("model_info", {}).get("mode") == effective_mode
+                if _mode_matches(entry.get("model_info", {}).get("mode"))
             ])
         except Exception:
             raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
