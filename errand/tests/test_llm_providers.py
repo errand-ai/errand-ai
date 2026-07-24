@@ -391,6 +391,38 @@ async def test_resolve_model_setting_valid():
 
 
 @pytest.mark.asyncio
+async def test_resolve_model_setting_accepts_model_id_field():
+    """A setting saved by the shared LlmModelCard (using `model_id` instead of the
+    backend's canonical `model`) still resolves."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    async with engine.begin() as conn:
+        from tests.conftest import _LLM_PROVIDERS_TABLE_SQL, _SETTINGS_TABLE_SQL
+        await conn.execute(text(_LLM_PROVIDERS_TABLE_SQL))
+        await conn.execute(text(_SETTINGS_TABLE_SQL))
+
+    session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    provider_id = uuid.uuid4()
+    async with session_maker() as session:
+        session.add(LlmProvider(
+            id=provider_id, name="p", base_url="https://test.example.com/v1",
+            api_key_encrypted=encrypt_api_key("sk-test"), provider_type="openai_compatible",
+            is_default=True, source="database",
+        ))
+        # Note: `model_id` only, no `model` — the raw card-saved shape.
+        session.add(Setting(key="llm_model", value={"provider_id": str(provider_id), "model_id": "gpt-4"}))
+        await session.commit()
+
+    _clients.clear()
+    async with session_maker() as session:
+        client, model = await resolve_model_setting(session, "llm_model")
+        assert client is not None
+        assert model == "gpt-4"
+
+    _clients.clear()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_resolve_model_setting_empty():
     """Test resolving an empty model setting returns None."""
     engine = create_async_engine("sqlite+aiosqlite://", echo=False)
@@ -471,3 +503,35 @@ async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
     assert {m["id"] for m in r_title.json()} == {"claude-x", "gpt-y"}  # title -> chat
     assert {m["id"] for m in r_task.json()} == {"claude-x", "gpt-y"}   # task_processing -> chat
     assert {m["id"] for m in r_trans.json()} == {"whisper-z"}          # transcription -> audio_transcription
+
+
+def test_normalize_model_setting_value_mirrors_model_and_model_id():
+    """normalize_model_setting_value keeps `model` and `model_id` in sync."""
+    from settings_registry import normalize_model_setting_value
+
+    # Card-saved shape (model_id only) -> gains `model`.
+    out = normalize_model_setting_value({"provider_id": "p", "model_id": "claude-x"})
+    assert out["model"] == "claude-x"
+    assert out["model_id"] == "claude-x"
+
+    # Backend-saved shape (model only) -> gains `model_id`.
+    out = normalize_model_setting_value({"provider_id": "p", "model": "claude-y"})
+    assert out["model"] == "claude-y"
+    assert out["model_id"] == "claude-y"
+
+    # Empty / non-dict pass through unchanged.
+    assert normalize_model_setting_value({"provider_id": "p"}) == {"provider_id": "p"}
+    assert normalize_model_setting_value(None) is None
+
+
+async def test_settings_model_setting_round_trip_syncs_fields(admin_client: AsyncClient):
+    """PUT a model setting in the card's shape (`model_id`); GET returns both
+    `model_id` (for the card to display) and `model` (for backend resolution)."""
+    await admin_client.put("/api/settings", json={
+        "llm_model": {"provider_id": "prov-1", "model_id": "claude-opus-4-6"},
+    })
+    resp = await admin_client.get("/api/settings")
+    value = resp.json()["llm_model"]["value"]
+    assert value["provider_id"] == "prov-1"
+    assert value["model_id"] == "claude-opus-4-6"
+    assert value["model"] == "claude-opus-4-6"

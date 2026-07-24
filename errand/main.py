@@ -47,7 +47,13 @@ from llm_providers import (
 from local_auth import router as local_auth_router
 from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
 from utils import _next_position
-from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
+from settings_registry import (
+    EXCLUDED_KEYS,
+    MODEL_SETTING_KEYS,
+    SETTINGS_REGISTRY,
+    normalize_model_setting_value,
+    resolve_settings,
+)
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
@@ -1303,6 +1309,11 @@ async def update_settings(
             env_val = os.environ.get(meta["env_var"])
             if env_val is not None and env_val != "":
                 continue  # Skip readonly env-sourced keys
+        # The shared LlmModelCard saves `{provider_id, model_id}`; keep `model`
+        # (the field the backend resolves against) in sync so task/model
+        # resolution finds the selection.
+        if key in MODEL_SETTING_KEYS:
+            value = normalize_model_setting_value(value)
         result = await session.execute(select(Setting).where(Setting.key == key))
         existing = result.scalar_one_or_none()
         if existing:
