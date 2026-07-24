@@ -1,3 +1,7 @@
+## Purpose
+
+A cache and normalization layer for LLM model metadata (reasoning support, max output tokens), keyed by a canonical normalized model name and persisted in the `model_metadata_cache` table.
+
 ## Requirements
 
 ### Requirement: Model metadata cache database table

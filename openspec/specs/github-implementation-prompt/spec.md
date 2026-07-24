@@ -1,3 +1,7 @@
+## Purpose
+
+The default system prompt template used when creating task-runner tasks from GitHub Projects webhooks, parameterized with issue and repository context plus phased implementation instructions.
+
 ## Requirements
 
 ### Requirement: System prompt template for GitHub Projects tasks

@@ -1,3 +1,7 @@
+## Purpose
+
+Surface the user's cloud-service subscription status (active flag and expiry) in the `GET /api/cloud/status` response, degrading gracefully when the cloud subscription endpoint is unavailable.
+
 ## Requirements
 
 ### Requirement: Subscription status fetched from cloud service

@@ -1,3 +1,7 @@
+## Purpose
+
+Admin-facing configuration for GitHub Projects webhook triggers, including a project-introspection endpoint that resolves project and Status-field IDs via the GitHub GraphQL API.
+
 ## Requirements
 
 ### Requirement: Project introspection API endpoint
