@@ -47,7 +47,13 @@ from llm_providers import (
 from local_auth import router as local_auth_router
 from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
 from utils import _next_position
-from settings_registry import EXCLUDED_KEYS, SETTINGS_REGISTRY, resolve_settings
+from settings_registry import (
+    EXCLUDED_KEYS,
+    MODEL_SETTING_KEYS,
+    SETTINGS_REGISTRY,
+    normalize_model_setting_value,
+    resolve_settings,
+)
 from platforms import get_registry
 from platforms.credentials import encrypt as encrypt_credentials, decrypt as decrypt_credentials
 from mcp_server import create_mcp_app, mcp as mcp_server
@@ -57,6 +63,7 @@ from external_status_updater import run_external_status_updater
 from platforms.credentials import load_credentials as _load_creds
 from cloud_auth import exchange_code
 from integration_routes import router as integration_router
+from integration_routes import cloud_storage_router, google_workspace_router
 from task_generator_routes import router as task_generator_router
 from webhook_trigger_routes import router as webhook_trigger_router
 from jira_credential_routes import router as jira_credential_router
@@ -438,6 +445,8 @@ app.include_router(auth_router)
 app.include_router(local_auth_router)
 app.include_router(slack_router)
 app.include_router(integration_router)
+app.include_router(cloud_storage_router)
+app.include_router(google_workspace_router)
 app.include_router(task_generator_router)
 app.include_router(webhook_trigger_router)
 app.include_router(jira_credential_router)
@@ -1162,8 +1171,18 @@ async def list_provider_models(
 
     client = get_client_for_provider_sync(provider)
 
-    # If mode filter requested and provider is litellm, use /model/info
+    # If mode filter requested and provider is litellm, use /model/info.
+    # The shared settings card (`LlmModelCard`) sends role-based mode names
+    # (`title`, `task_processing`, `transcription`); translate these to the
+    # LiteLLM `model_info.mode` vocabulary. Unrecognised values (e.g. a raw
+    # LiteLLM mode like `chat`) pass through unchanged for backward compatibility.
     if mode and provider.provider_type == "litellm":
+        role_mode_to_litellm = {
+            "title": "chat",
+            "task_processing": "chat",
+            "transcription": "audio_transcription",
+        }
+        effective_mode = role_mode_to_litellm.get(mode, mode)
         from llm_providers import decrypt_api_key
         api_key = decrypt_api_key(provider.api_key_encrypted)
         stripped_url = provider.base_url.rstrip("/")
@@ -1178,10 +1197,24 @@ async def list_provider_models(
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            def _mode_matches(model_mode: str | None) -> bool:
+                if model_mode == effective_mode:
+                    return True
+                # LiteLLM leaves `model_info.mode` unset/null for many chat
+                # models, so a strict equality check drops valid chat selections
+                # (e.g. the user's saved title/task model). Treat unknown-mode
+                # models as chat-capable. Non-chat roles (audio_transcription)
+                # stay strict so an embedding/whisper model can't leak into the
+                # chat dropdowns.
+                if effective_mode == "chat" and not model_mode:
+                    return True
+                return False
+
             model_names = sorted([
                 entry["model_name"]
                 for entry in data.get("data", [])
-                if entry.get("model_info", {}).get("mode") == mode
+                if _mode_matches(entry.get("model_info", {}).get("mode"))
             ])
         except Exception:
             raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
@@ -1290,6 +1323,11 @@ async def update_settings(
             env_val = os.environ.get(meta["env_var"])
             if env_val is not None and env_val != "":
                 continue  # Skip readonly env-sourced keys
+        # The shared LlmModelCard saves `{provider_id, model_id}`; keep `model`
+        # (the field the backend resolves against) in sync so task/model
+        # resolution finds the selection.
+        if key in MODEL_SETTING_KEYS:
+            value = normalize_model_setting_value(value)
         result = await session.execute(select(Setting).where(Setting.key == key))
         existing = result.scalar_one_or_none()
         if existing:

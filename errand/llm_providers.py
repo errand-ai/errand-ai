@@ -242,7 +242,10 @@ async def resolve_model_setting(session: AsyncSession, key: str) -> tuple[AsyncO
         return None, None
 
     provider_id_str = setting.value.get("provider_id")
-    model = setting.value.get("model")
+    # Canonical field is `model`; also accept `model_id` (the field the shared
+    # LlmModelCard writes) so a card-saved setting resolves even if it wasn't
+    # normalized on write.
+    model = setting.value.get("model") or setting.value.get("model_id")
     if not provider_id_str or not model:
         return None, None
 

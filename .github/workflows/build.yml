@@ -33,10 +33,22 @@ jobs:
 
       - name: Read version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # `github.run_number` increments monotonically for every run of this
+          # workflow in the repo. We append it as an extra dot-separated SemVer
+          # *pre-release* identifier — e.g. `0.134.2-pr213.42`, where the whole
+          # `pr213.42` after the `-` is the pre-release segment. Pre-release
+          # identifiers (unlike build metadata after a `+`, which is ignored)
+          # participate in SemVer precedence, so a higher run number sorts higher
+          # and ArgoCD's Helm comparator treats each PR push as a newer version to
+          # redeploy — without bumping the VERSION file on every push.
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TAG="${VERSION}-pr${{ github.event.pull_request.number }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            TAG="${VERSION}-pr${PR_NUMBER}.${RUN_NUMBER}"
           else
             TAG="${VERSION}"
           fi

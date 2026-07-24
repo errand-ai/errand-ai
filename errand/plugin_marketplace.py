@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -392,9 +393,31 @@ async def sync_marketplace(
         marketplace.last_sync_error = None
     except MarketplaceFetchError as exc:
         marketplace.last_sync_status = "error"
-        # Store only the short error class+message; full traceback goes to logs.
-        marketplace.last_sync_error = type(exc).__name__ + ": fetch failed"
-        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc)
+        # Preserve a sanitized, actionable detail — an HTTP status code when the
+        # underlying failure carried one (e.g. 401/403/404) — WITHOUT leaking the
+        # source URL or the full message. Full detail (incl. traceback) goes to the
+        # log line below only.
+        status_match = re.search(r"\b([45]\d\d)\b", str(exc))
+        if status_match:
+            marketplace.last_sync_error = f"fetch failed: HTTP {status_match.group(1)}"
+        else:
+            marketplace.last_sync_error = "fetch failed (see server logs)"
+        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc, exc_info=True)
+    except RuntimeError as exc:
+        # Fetch-layer failures raise RuntimeError — notably `git clone failed`
+        # (network/auth/ref issues) and disallowed-URL-scheme rejections. Report a
+        # clean, actionable category on the marketplace card instead of the generic
+        # "unexpected error". The full detail (which may contain the source URL or
+        # git stderr) stays in the logs only.
+        marketplace.last_sync_status = "error"
+        msg = str(exc)
+        if "git clone failed" in msg:
+            marketplace.last_sync_error = "git clone failed (see server logs)"
+        elif "disallowed scheme" in msg:
+            marketplace.last_sync_error = "source URL rejected: disallowed scheme"
+        else:
+            marketplace.last_sync_error = "fetch failed (see server logs)"
+        logger.warning("Sync failed for marketplace %s: %s", marketplace.name, exc, exc_info=True)
     except Exception:  # noqa: BLE001
         marketplace.last_sync_status = "error"
         marketplace.last_sync_error = "unexpected error (see server logs)"

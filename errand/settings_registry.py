@@ -155,6 +155,30 @@ async def resolve_setting_value(
     return default, "default"
 
 
+# The per-role LLM model settings whose value is a `{provider_id, model}` dict.
+MODEL_SETTING_KEYS = {"llm_model", "task_processing_model", "transcription_model"}
+
+
+def normalize_model_setting_value(value):
+    """Keep the ``model`` and ``model_id`` fields in sync for LLM model settings.
+
+    The errand backend's canonical field is ``model`` (read by
+    ``resolve_model_setting`` and the task runner), while the shared settings card
+    (``LlmModelCard``) reads and writes ``model_id``. Mirroring the two — on both
+    write (PUT /api/settings) and read (GET /api/settings) — lets each side find
+    the value regardless of which one wrote it, without a library release.
+    """
+    if not isinstance(value, dict):
+        return value
+    model = value.get("model") or value.get("model_id")
+    if model is None:
+        return value
+    normalized = dict(value)
+    normalized["model"] = model
+    normalized["model_id"] = model
+    return normalized
+
+
 async def resolve_settings(session: AsyncSession) -> dict:
     """Resolve all settings with metadata: {key: {value, source, sensitive, readonly}}"""
     # Load all DB settings once and pass through the per-key resolver.
@@ -171,6 +195,9 @@ async def resolve_settings(session: AsyncSession) -> dict:
 
         if sensitive and source == "env":
             value = mask_sensitive_value(value)
+
+        if key in MODEL_SETTING_KEYS:
+            value = normalize_model_setting_value(value)
 
         resolved[key] = {
             "value": value,

@@ -73,8 +73,11 @@ async def test_conditional_capabilities_omitted_when_disabled(unauth_client, mon
 
 @pytest.mark.asyncio
 async def test_cloud_storage_advertised_when_onedrive_configured(unauth_client, monkeypatch):
-    """cloud_storage is advertised when the OneDrive MCP URL is configured."""
+    """cloud_storage is advertised when OneDrive is connectable — an MCP URL plus a
+    local Microsoft OAuth credential (the direct-connect path)."""
     monkeypatch.setenv("ONEDRIVE_MCP_URL", "https://onedrive.example/mcp")
+    monkeypatch.setenv("MICROSOFT_CLIENT_ID", "ms-client-id")
+    monkeypatch.setenv("MICROSOFT_CLIENT_SECRET", "ms-secret")
 
     resp = await unauth_client.get("/api/capabilities")
     caps = resp.json()["capabilities"]

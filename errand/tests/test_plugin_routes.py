@@ -118,3 +118,48 @@ async def test_settings_put_accepts_non_negative_poll_interval(admin_client):
         "plugin_poll_interval_seconds": 3600,
     })
     assert resp.status_code == 200
+
+
+def test_serialize_plugin_degrades_on_missing_ondisk(monkeypatch):
+    """`_serialize_plugin` must not raise when a plugin's on-disk tree is missing
+    (the FileNotFoundError that used to 500 `GET /api/plugins`). It returns the
+    plugin with empty contributions and a `load_error` flag instead."""
+    import plugin_routes as pr
+    from models import Plugin
+
+    def _boom(*_a, **_k):
+        raise FileNotFoundError(
+            "/var/cache/errand/plugins/installed/anthropics/code-review/latest"
+        )
+
+    monkeypatch.setattr(pr, "parse_plugin_skills", _boom)
+    monkeypatch.setattr(pr, "parse_plugin_mcp_servers", _boom)
+
+    plugin = Plugin(plugin_name="code-review", installed_version="1.0.0", enabled=True)
+    out = pr._serialize_plugin(plugin, "anthropics")
+
+    assert out["plugin_name"] == "code-review"
+    assert out["skills"] == []
+    assert out["mcp_servers"] == []
+    assert out["load_error"]
+    # load_error is sanitized: it names the error class but does NOT leak the raw
+    # exception string / internal filesystem path.
+    assert "FileNotFoundError" in out["load_error"]
+    assert "/var/cache/errand" not in out["load_error"]
+
+
+def test_degraded_plugin_entry_from_db_columns_only():
+    """The list_plugins backstop returns a degraded entry (not a skip) built from
+    DB columns only — empty contributions + sanitized load_error, no disk access."""
+    import plugin_routes as pr
+    from models import Plugin
+
+    plugin = Plugin(plugin_name="broken", installed_version="2.0.0", enabled=True)
+    entry = pr._degraded_plugin_entry(plugin, "anthropics")
+
+    assert entry["plugin_name"] == "broken"
+    assert entry["installed_version"] == "2.0.0"
+    assert entry["skills"] == []
+    assert entry["mcp_servers"] == []
+    assert entry["load_error"]
+    assert "see server logs" in entry["load_error"]

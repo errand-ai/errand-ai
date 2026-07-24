@@ -155,6 +155,41 @@ async def test_authorize_cloud_proxy_flow(integration_client, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_authorize_prefers_cloud_proxy_over_local_credentials(integration_client, monkeypatch):
+    """When connected to errand-cloud, the cloud OAuth proxy is used even if local
+    OAuth client credentials are also configured — the cloud-connected deployment
+    relies on the proxy's registered OAuth app, not a local client id/secret."""
+    client, session_factory, _ = integration_client
+    # Local Google client credentials ARE set…
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "local-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "local-secret")
+
+    # …and the deployment is also connected to errand-cloud.
+    async with session_factory() as session:
+        from models import Setting
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "cloud-token"}),
+            status="connected",
+        ))
+        session.add(Setting(key="cloud_service_url", value="https://cloud.example.com"))
+        await session.commit()
+
+    mock_ws = AsyncMock()
+    with patch("cloud_client.is_connected", return_value=True), \
+         patch("cloud_client.get_ws", return_value=mock_ws):
+        resp = await client.get("/api/integrations/google_drive/authorize")
+
+    assert resp.status_code == 200
+    url = resp.json()["redirect_url"]
+    # Cloud proxy URL, NOT a direct accounts.google.com URL built from local creds.
+    assert "cloud.example.com/oauth/google_workspace/authorize" in url
+    assert "accounts.google.com" not in url
+    assert "local-client-id" not in url
+    mock_ws.send.assert_called_once()
+
+
+@pytest.mark.anyio
 async def test_authorize_cloud_proxy_ws_disconnected(integration_client, monkeypatch):
     """Cloud credential exists but WS not connected — returns 503."""
     client, session_factory, _ = integration_client
