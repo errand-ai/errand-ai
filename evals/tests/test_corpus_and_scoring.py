@@ -9,7 +9,6 @@ import corpus as corpus_mod
 import digest as digest_mod
 import judge as judge_mod
 import scoring as scoring_mod
-import transcript
 
 
 # --- corpus -----------------------------------------------------------------

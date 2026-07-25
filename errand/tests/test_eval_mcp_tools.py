@@ -5,13 +5,13 @@ and eval-results-recording specs.
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
 
 import version_checker
-from models import EvalResult, Task, TaskProfile
+from models import Task, TaskProfile
 
 pytestmark = pytest.mark.anyio
 
@@ -124,6 +124,9 @@ async def test_search_full_history_and_date_range(db_session):
     from mcp_server import search_tasks
     rows = json.loads(await search_tasks(created_after="2026-03-01T00:00:00Z", created_before="2026-04-01T00:00:00Z"))
     assert [r["title"] for r in rows] == ["march"]
+    # Offset-less (naive) bounds are treated as UTC, not rejected or mis-compared.
+    naive = json.loads(await search_tasks(created_after="2026-03-01T00:00:00", created_before="2026-04-01T00:00:00"))
+    assert [r["title"] for r in naive] == ["march"]
 
 
 async def test_search_limit_applied_and_capped(db_session):

@@ -17,7 +17,6 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
 from starlette.applications import Starlette
 
 from database import async_session
@@ -1876,13 +1875,19 @@ def _profile_summary(p: TaskProfile) -> dict:
 
 
 def _parse_iso(value: str | None):
-    """Parse an ISO-8601 string (tolerating a trailing 'Z') to a datetime, or None."""
+    """Parse an ISO-8601 string (tolerating a trailing 'Z') to a datetime, or None.
+
+    A value without an explicit offset is assumed UTC, so the returned datetime is
+    always timezone-aware — comparing a naive value against the timestamptz
+    ``Task.created_at`` filter would otherwise be wrong or error on some drivers.
+    """
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 @mcp.tool()
@@ -2095,9 +2100,15 @@ async def record_eval_result(
         session.add(result)
         try:
             await session.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             await session.rollback()
-            return json.dumps({"error": "duplicate result for (run, workload, model, rep)"})
+            # Distinguish the expected duplicate-cell case (unique constraint)
+            # from other integrity failures (e.g. an FK violation) so the driver
+            # isn't misled into thinking a real error was just a duplicate.
+            detail = str(getattr(exc, "orig", exc))
+            if "uq_eval_results_cell" in detail or "unique" in detail.lower():
+                return json.dumps({"error": "duplicate result for (run, workload, model, rep)"})
+            return json.dumps({"error": f"integrity error recording result: {detail[:200]}"})
         await session.refresh(result)
         return json.dumps({"ok": True, "result_id": str(result.id)})
 
