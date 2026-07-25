@@ -12,7 +12,16 @@ the running rclone authenticated without restarting the NFS server:
     OAuth; the rc call is timeout-guarded because it can block under throttling);
   * periodically it reads rclone's vfs/core stats and reports gateway health
     (last refresh, auth state, pending uploads) back to the errand server, so
-    sync breakage is never silent.
+    sync breakage is never silent;
+  * on the same cadence it monitors write-back health: it reads `vfs/stats`
+    (uploadsQueued/uploadsInProgress/erroredFiles) and scans the persistent VFS
+    cache for dirty entries. A dirty entry that stays dirty past a grace period
+    without making progress (nothing queued/uploading, no errored retry) — the
+    silent "dirty but idle" data-loss state seen in production — or a non-zero
+    erroredFiles count moves write-back health to `degraded` and emits a
+    structured, alertable error naming the path. It also warns when a dirty
+    entry's remote fingerprint changes underneath it (the symptom of a second,
+    external sync client writing the same path).
 
 All failures are logged as single-line structured JSON and reflected in the
 health report; rclone keeps retrying queued operations regardless.
@@ -26,6 +35,10 @@ Environment:
   REFRESH_INTERVAL_SECONDS  seconds between refreshes (default 3000 = 50 min)
   HEALTH_INTERVAL_SECONDS   seconds between health reports (default 30)
   RC_TIMEOUT_SECONDS        per rc call timeout (default 20)
+  WORKSPACE_CACHE_DIR       persistent VFS cache dir to scan for dirty entries
+                            (default /cache); mounted read-only into the sidecar
+  VFS_WRITE_BACK            gateway write-back delay, used only to derive the
+                            stuck-entry grace period (default 1s)
 
 Init mode (`python refresher.py init`, run as a Kubernetes init container before
 rclone starts) uses ERRAND_API_URL / ERRAND_WORKSPACE_BEARER / WORKSPACE_PROVIDER
@@ -48,6 +61,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from cache_reconcile import DirtyEntry, iter_dirty_entries
+
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("workspace-refresher")
 
@@ -64,6 +79,28 @@ def _log(event: str, **fields) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_DURATION_UNITS = (("ms", 0.001), ("s", 1.0), ("m", 60.0), ("h", 3600.0))
+
+
+def _parse_duration(text: str, default_seconds: float = 1.0) -> float:
+    """Parse an rclone-style duration ('1s', '500ms', '2m', '1h') to seconds.
+
+    Falls back to ``default_seconds`` on anything unrecognised — this only feeds
+    the derived grace period, so a bad value must not crash the sidecar.
+    """
+    text = (text or "").strip().lower()
+    for suffix, scale in _DURATION_UNITS:  # 'ms' before 's' so it wins
+        if text.endswith(suffix):
+            try:
+                return float(text[: -len(suffix)]) * scale
+            except ValueError:
+                return default_seconds
+    try:
+        return float(text)  # bare number = seconds
+    except ValueError:
+        return default_seconds
 
 
 def _require_env(name: str) -> str:
@@ -89,6 +126,13 @@ class Config:
         self.refresh_interval = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "3000"))
         self.health_interval = int(os.environ.get("HEALTH_INTERVAL_SECONDS", "30"))
         self.rc_timeout = int(os.environ.get("RC_TIMEOUT_SECONDS", "20"))
+        # Persistent VFS cache dir, scanned (read-only) for stuck dirty entries.
+        self.cache_dir = os.environ.get("WORKSPACE_CACHE_DIR", "/cache")
+        # Grace period before a still-dirty entry is treated as stuck: derived
+        # from the gateway's write-back delay and floored at 30s so normal upload
+        # latency can't flap health. Mirrors the gateway's VFS_WRITE_BACK default.
+        self.write_back_seconds = _parse_duration(os.environ.get("VFS_WRITE_BACK", "1s"), 1.0)
+        self.stuck_grace_seconds = max(3.0 * self.write_back_seconds, 30.0)
         if self.provider not in _PROVIDER_REFRESH_PATH:
             raise SystemExit(f"unsupported WORKSPACE_PROVIDER: {self.provider}")
 
@@ -123,20 +167,150 @@ def push_token_to_rclone(cfg: Config, access_token: str, expires_at: int) -> Non
     resp.raise_for_status()
 
 
-def read_rclone_stats(cfg: Config) -> dict:
-    """Read pending-upload / poll stats from rclone rc. Best-effort."""
-    stats = {"pending_uploads": None}
+def read_vfs_stats(cfg: Config) -> dict:
+    """Read the rclone rc `vfs/stats` diskCache counters. Best-effort.
+
+    Returns a dict with `pending_uploads` (queued + in progress) and the raw
+    `uploads_queued` / `uploads_in_progress` / `errored_files` counters, or all
+    None when the rc call fails (so callers can tell "no data" from "zero").
+    """
+    stats = {
+        "pending_uploads": None,
+        "uploads_queued": None,
+        "uploads_in_progress": None,
+        "errored_files": None,
+    }
     try:
         resp = requests.post(cfg.rc_url + "/vfs/stats", timeout=cfg.rc_timeout)
         resp.raise_for_status()
-        data = resp.json()
-        disk = data.get("diskCache") or {}
-        # 'uploadsQueued' + 'uploadsInProgress' when present.
-        queued = disk.get("uploadsQueued", 0) or 0
-        in_progress = disk.get("uploadsInProgress", 0) or 0
-        stats["pending_uploads"] = int(queued) + int(in_progress)
+        disk = resp.json().get("diskCache") or {}
+        queued = int(disk.get("uploadsQueued", 0) or 0)
+        in_progress = int(disk.get("uploadsInProgress", 0) or 0)
+        errored = int(disk.get("erroredFiles", 0) or 0)
+        stats.update(
+            pending_uploads=queued + in_progress,
+            uploads_queued=queued,
+            uploads_in_progress=in_progress,
+            errored_files=errored,
+        )
     except Exception as exc:  # noqa: BLE001 — health is best-effort
         _log("rc_stats_failed", error=str(exc))
+    return stats
+
+
+def _scan_dirty_entries(cache_dir: str) -> list[DirtyEntry]:
+    """List dirty cache entries, swallowing scan errors (health is best-effort)."""
+    try:
+        return list(iter_dirty_entries(cache_dir))
+    except Exception as exc:  # noqa: BLE001
+        _log("cache_scan_failed", cache_dir=cache_dir, error=str(exc))
+        return []
+
+
+class WriteBackMonitor:
+    """Tracks write-back health across health cycles.
+
+    Combines the aggregate `vfs/stats` upload counters with a per-path scan of
+    the persistent VFS cache, because the production data-loss state — a dirty
+    entry that is never queued (`uploadsQueued:0, erroredFiles:0`) — is invisible
+    to `vfs/stats` alone and only observable by inspecting the cache metadata.
+
+    A dirty entry is a fault when it stays dirty past the grace period without
+    progressing (nothing queued/uploading for it). An orphaned dirty entry (no
+    data to upload) is stuck the moment it ages out — nothing can ever upload it.
+    A non-zero `erroredFiles` count is degraded regardless of age. Both surface a
+    structured, alertable error naming the path(s). The monitor also warns when a
+    dirty entry's remote fingerprint changes underneath it — the symptom of a
+    second, external sync client writing the same path.
+    """
+
+    def __init__(self, cfg: Config, clock=time.monotonic) -> None:
+        self._grace = cfg.stuck_grace_seconds
+        self._clock = clock
+        # Per-path state carried across cycles.
+        self._first_seen_dirty: dict[str, float] = {}
+        self._fingerprints: dict[str, object] = {}
+
+    def evaluate(self, vfs_stats: dict, dirty_entries: list[DirtyEntry]) -> dict:
+        """Return a write-back health block; update per-path state in place.
+
+        Pure w.r.t. its arguments (rc stats + scanned entries + injected clock),
+        so it can be exercised deterministically in tests.
+        """
+        now = self._clock()
+        current = {e.path: e for e in dirty_entries}
+
+        # Forget paths that are no longer dirty (uploaded or reconciled away).
+        for path in list(self._first_seen_dirty):
+            if path not in current:
+                self._first_seen_dirty.pop(path, None)
+                self._fingerprints.pop(path, None)
+
+        queued = vfs_stats.get("uploads_queued") or 0
+        in_progress = vfs_stats.get("uploads_in_progress") or 0
+        errored = vfs_stats.get("errored_files") or 0
+        queue_active = (queued + in_progress) > 0
+
+        errors: list[dict] = []
+        stuck_paths: list[str] = []
+        oldest_age = 0.0
+
+        for path, entry in current.items():
+            first_seen = self._first_seen_dirty.setdefault(path, now)
+            age = now - first_seen
+            oldest_age = max(oldest_age, age)
+
+            # Concurrent-writer signal: fingerprint changed while locally dirty.
+            prev_fp = self._fingerprints.get(path, entry.fingerprint)
+            if path in self._fingerprints and entry.fingerprint != prev_fp:
+                _log(
+                    "concurrent_writer_detected",
+                    path=path,
+                    previous_fingerprint=prev_fp,
+                    remote_fingerprint=entry.fingerprint,
+                    detail="remote fingerprint changed under a locally-dirty entry — a second sync client may be writing this path",
+                )
+            self._fingerprints[path] = entry.fingerprint
+
+            if age < self._grace:
+                continue
+            # Past grace. An orphan (no data) can never upload; a dirty-with-data
+            # entry is stuck only if nothing is queued/uploading for the queue.
+            if entry.is_orphaned or not queue_active:
+                stuck_paths.append(path)
+                errors.append({
+                    "path": path,
+                    "reason": "orphaned_dirty_entry" if entry.is_orphaned else "dirty_entry_not_progressing",
+                    "dirty_age_seconds": round(age, 1),
+                })
+
+        if errored > 0:
+            errors.append({"reason": "errored_uploads", "errored_files": errored})
+
+        degraded = bool(stuck_paths) or errored > 0
+        for err in errors:
+            _log("write_back_degraded", **err)
+
+        return {
+            "write_back_state": "degraded" if degraded else "ok",
+            "write_back": {
+                "uploads_queued": vfs_stats.get("uploads_queued"),
+                "uploads_in_progress": vfs_stats.get("uploads_in_progress"),
+                "errored_files": vfs_stats.get("errored_files"),
+                "dirty_entries": len(current),
+                "stuck_entries": stuck_paths,
+                "oldest_dirty_age_seconds": round(oldest_age, 1),
+                "grace_seconds": round(self._grace, 1),
+            },
+            "write_back_errors": errors,
+        }
+
+
+def collect_health_stats(cfg: Config, monitor: WriteBackMonitor) -> dict:
+    """One health-cycle read: rc upload stats + write-back health from the cache."""
+    stats = read_vfs_stats(cfg)
+    dirty = _scan_dirty_entries(cfg.cache_dir)
+    stats.update(monitor.evaluate(stats, dirty))
     return stats
 
 
@@ -249,7 +423,15 @@ def init_config() -> None:
 def main() -> None:
     cfg = Config()
     health: dict = {"auth_state": "starting", "provider": cfg.provider}
-    _log("startup", provider=cfg.provider, remote=cfg.remote, refresh_interval=cfg.refresh_interval)
+    monitor = WriteBackMonitor(cfg)
+    _log(
+        "startup",
+        provider=cfg.provider,
+        remote=cfg.remote,
+        refresh_interval=cfg.refresh_interval,
+        cache_dir=cfg.cache_dir,
+        stuck_grace_seconds=cfg.stuck_grace_seconds,
+    )
 
     # `last_refresh` advances ONLY on a successful refresh — a failed attempt
     # (including the initial one) must be retried on the fast health-loop cadence,
@@ -261,7 +443,7 @@ def main() -> None:
         if last_refresh == 0.0 or now - last_refresh >= cfg.refresh_interval:
             if do_refresh(cfg, health):
                 last_refresh = now
-        health.update(read_rclone_stats(cfg))
+        health.update(collect_health_stats(cfg, monitor))
         report_health(cfg, health)
         time.sleep(cfg.health_interval)
 

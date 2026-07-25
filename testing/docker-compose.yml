@@ -227,6 +227,12 @@ services:
       WORKSPACE_REMOTE: ${WORKSPACE_REMOTE:-gdrive}
       RCLONE_RC_URL: http://127.0.0.1:5572
       REFRESH_INTERVAL_SECONDS: ${WORKSPACE_REFRESH_INTERVAL:-3000}
+      # Write-back health: scan the same VFS cache (read-only) for stuck dirty
+      # entries; grace period is derived from the gateway's write-back delay.
+      WORKSPACE_CACHE_DIR: /cache
+      VFS_WRITE_BACK: ${VFS_WRITE_BACK:-1s}
+    volumes:
+      - workspace-cache:/cache:ro
     depends_on:
       - workspace-gateway
 

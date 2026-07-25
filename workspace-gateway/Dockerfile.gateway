@@ -1,8 +1,13 @@
 # Shared-workspace gateway: rclone serve nfs against a Drive/OneDrive folder.
 FROM rclone/rclone:1.68
 
+# python3 backs the startup orphaned-dirty-entry reconcile (cache_reconcile.py),
+# run by the entrypoint before serving. The rclone image is Alpine-based.
+RUN apk add --no-cache python3
+
 COPY entrypoint.sh /usr/local/bin/workspace-entrypoint.sh
-RUN chmod +x /usr/local/bin/workspace-entrypoint.sh
+COPY cache_reconcile.py /usr/local/bin/cache_reconcile.py
+RUN chmod +x /usr/local/bin/workspace-entrypoint.sh /usr/local/bin/cache_reconcile.py
 
 # rclone's image entrypoint is `rclone`; override with our serve wrapper.
 ENTRYPOINT ["/usr/local/bin/workspace-entrypoint.sh"]

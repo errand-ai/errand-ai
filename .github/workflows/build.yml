@@ -87,6 +87,12 @@ jobs:
           pip install -r requirements.txt -r requirements-test.txt -q
           pytest tests/ -v
 
+      - name: Run workspace-gateway tests
+        working-directory: workspace-gateway
+        run: |
+          pip install -r requirements-test.txt -q
+          pytest tests/ -v
+
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
