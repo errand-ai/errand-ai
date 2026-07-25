@@ -246,10 +246,14 @@ class WriteBackMonitor:
                 self._first_seen_dirty.pop(path, None)
                 self._fingerprints.pop(path, None)
 
-        queued = vfs_stats.get("uploads_queued") or 0
-        in_progress = vfs_stats.get("uploads_in_progress") or 0
+        queued = vfs_stats.get("uploads_queued")
+        in_progress = vfs_stats.get("uploads_in_progress")
         errored = vfs_stats.get("errored_files") or 0
-        queue_active = (queued + in_progress) > 0
+        # Distinguish "queue is known idle" from "queue state unknown" (an rc
+        # outage returns None): coercing unknown to idle would falsely flag a
+        # dirty-with-data entry as stuck during a transient rc failure.
+        queue_state_known = queued is not None and in_progress is not None
+        queue_idle = queue_state_known and (queued + in_progress) == 0
 
         errors: list[dict] = []
         stuck_paths: list[str] = []
@@ -274,9 +278,11 @@ class WriteBackMonitor:
 
             if age < self._grace:
                 continue
-            # Past grace. An orphan (no data) can never upload; a dirty-with-data
-            # entry is stuck only if nothing is queued/uploading for the queue.
-            if entry.is_orphaned or not queue_active:
+            # Past grace. An orphan (no data) can never upload → stuck regardless
+            # of queue state. A dirty-with-data entry is stuck only when the queue
+            # is *known* idle — never when the queue state is merely unknown
+            # (rc outage), which would otherwise be a false positive.
+            if entry.is_orphaned or queue_idle:
                 stuck_paths.append(path)
                 errors.append({
                     "path": path,

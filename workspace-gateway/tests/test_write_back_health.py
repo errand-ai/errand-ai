@@ -96,6 +96,34 @@ def test_dirty_with_data_and_active_queue_stays_healthy():
     assert health["write_back"]["stuck_entries"] == []
 
 
+def test_unknown_queue_state_does_not_falsely_degrade_dirty_with_data():
+    # rc outage: read_vfs_stats returns None counters. A dirty-with-data entry
+    # past grace must NOT be flagged stuck — we don't know the queue is idle.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)
+    unknown = {"uploads_queued": None, "uploads_in_progress": None, "errored_files": None}
+    entries = [_entry("gd/b.md", has_data=True)]
+    mon.evaluate(unknown, entries)
+    clock.t = 31.0
+    health = mon.evaluate(unknown, entries)
+    assert health["write_back_state"] == "ok"
+    assert health["write_back"]["stuck_entries"] == []
+
+
+def test_unknown_queue_state_still_flags_orphan():
+    # An orphan can never upload, so it is stuck independent of queue state —
+    # even when rc stats are unavailable.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)
+    unknown = {"uploads_queued": None, "uploads_in_progress": None, "errored_files": None}
+    entries = [_entry("gd/orphan.md", has_data=False)]
+    mon.evaluate(unknown, entries)
+    clock.t = 31.0
+    health = mon.evaluate(unknown, entries)
+    assert health["write_back_state"] == "degraded"
+    assert health["write_back_errors"][0]["reason"] == "orphaned_dirty_entry"
+
+
 def test_errored_files_is_degraded_regardless_of_age():
     mon = WriteBackMonitor(_Cfg(grace=30.0), clock=_Clock())
     health = mon.evaluate(_stats(errored=2), [])

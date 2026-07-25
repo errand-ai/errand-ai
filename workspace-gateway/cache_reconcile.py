@@ -146,8 +146,15 @@ def reconcile_cache(cache_dir: str) -> list[dict]:
             try:
                 os.remove(target)
                 removed.append(f"{label}/{entry.path}")
-            except OSError:
+            except FileNotFoundError:
+                # Already absent (e.g. an orphan with no data file) — nothing to
+                # remove for this side; not an error, so stay quiet.
                 pass
+            except OSError as exc:
+                # A real removal failure (permissions, busy). Don't fail the
+                # reconcile — the entry is still logged below — but record why
+                # this side wasn't cleared so a lingering orphan is explainable.
+                _log("orphaned_dirty_entry_remove_failed", path=f"{label}/{entry.path}", error=str(exc))
         record = {
             "path": entry.path,
             "action": "cleared_orphaned_dirty_meta",

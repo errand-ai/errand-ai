@@ -197,6 +197,13 @@ services:
       WORKSPACE_ADDR: ":2049"
       WORKSPACE_RC_ADDR: "127.0.0.1:5572"
       WORKSPACE_CACHE_DIR: /cache
+      # Write-back reliability (defaults match entrypoint.sh). VFS_WRITE_BACK is
+      # shared with the refresher, which derives its stuck-entry grace period
+      # from it — keep them in sync by setting the one env var.
+      VFS_WRITE_BACK: ${VFS_WRITE_BACK:-1s}
+      VFS_TRANSFERS: ${VFS_TRANSFERS:-4}
+      LOW_LEVEL_RETRIES: ${LOW_LEVEL_RETRIES:-10}
+      RETRIES: ${RETRIES:-3}
     # Publish the NFS port to the host: the `workspace-shared` volume below is
     # mounted by the Docker daemon on the HOST, which cannot resolve the
     # `workspace-gateway` service name nor reach an unpublished container port.
