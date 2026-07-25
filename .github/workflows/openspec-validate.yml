@@ -1,0 +1,53 @@
+name: OpenSpec Validate
+
+# Guards the OpenSpec main specs (openspec/specs/) against the corruption class
+# fixed in PR #214: change-delta content (## ADDED/MODIFIED/REMOVED/RENAMED
+# Requirements) leaking into the flattened main specs. That happens when a
+# "sync delta specs to main" step copies openspec/changes/*/specs/*/spec.md
+# verbatim instead of running `openspec archive` (which merges deltas correctly).
+#
+# Deliberately a standalone workflow with NO path filter: build.yml ignores
+# openspec/** for its expensive image builds, so an openspec-only change would
+# otherwise skip CI entirely. This job is cheap (~30s) and runs on every PR and
+# every push to main so the guard can never be bypassed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-specs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Direct, version-independent guard for the exact failure mode. Delta
+      # headings belong only in openspec/changes/ deltas, never in the
+      # flattened main specs under openspec/specs/.
+      - name: Guard against change-delta headings in main specs
+        run: |
+          matches=$(grep -rlE '^##[[:space:]]+(ADDED|MODIFIED|REMOVED|RENAMED)[[:space:]]+Requirements' openspec/specs/ || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Main specs under openspec/specs/ contain change-delta headings (ADDED/MODIFIED/REMOVED/RENAMED Requirements). These belong only in openspec/changes/ deltas. Flatten by running 'openspec archive' — do not copy delta files into openspec/specs/ by hand. Offending files:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "OK: no change-delta headings in openspec/specs/"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # Pinned for reproducibility — bump deliberately, not implicitly.
+      - name: Install OpenSpec CLI
+        run: npm install -g @fission-ai/openspec@1.6.0
+
+      # Full spec validation: catches missing Purpose/Requirements sections,
+      # malformed requirements, and zero-requirement specs.
+      - name: Validate specs
+        run: openspec validate --specs --no-interactive
