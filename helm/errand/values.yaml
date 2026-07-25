@@ -38,6 +38,12 @@ playwright:
 #     gateway to task-runner Jobs and the server. Keep it enabled.
 #   * The cloud folder is the source of truth and is NOT backed up by errand —
 #     rely on the provider's version history for recovery.
+#   * SOLE WRITER: for any path tasks write, the cloud folder is gateway-owned. A
+#     second sync client writing those paths concurrently (e.g. a human's native
+#     Drive/OneDrive desktop client on the same folder) is UNSUPPORTED — it can
+#     overwrite a gateway write-back or make the change-poll discard a local dirty
+#     write. Scope the folder to gateway-owned content or exclude task-written
+#     subpaths from other sync clients. See workspace-gateway/README.md.
 #   * `service.clusterIP` MUST be a free static IP from the cluster's service
 #     CIDR: kubelet mounts NFS from the node network where cluster DNS is
 #     unavailable, so the PV targets the IP, not a DNS name. If unset, the
@@ -67,6 +73,26 @@ workspace:
     size: 5Gi
     storageClass: ""              # empty = cluster default
     maxSize: 5G                   # rclone --vfs-cache-max-size
+    # --- Write-back reliability (see the workspace-gateway-write-reliability change) ---
+    # writeBack is rclone's --vfs-write-back: the delay after a file is last
+    # modified before its data is uploaded. Set explicitly and SHORT (default 1s)
+    # rather than relying on rclone's implicit 5s default — this bounds the window
+    # in which a completed write can be lost before it reaches the cloud. Not 0s:
+    # an immediate write-back per change is wasteful for large/streaming writes,
+    # whereas 1s uploads promptly after the write-then-close pattern tasks use.
+    #
+    # NOTE (provider cadence): Google Drive and OneDrive have different change /
+    # upload latencies, so writeBack (and workspace.pollInterval — see the F6
+    # poll-interval cadence note) may warrant different values per provider.
+    # Validate per provider; these defaults are tuned for Google Drive.
+    writeBack: "1s"
+    # Upload resilience. transfers = concurrent write-back uploads (--transfers).
+    # lowLevelRetries / retries keep a transient provider error in a *retrying*
+    # state (with backoff) instead of dropping the write — a dirty entry must
+    # always be progressing toward upload, never silently stuck.
+    transfers: 4
+    lowLevelRetries: 10
+    retries: 3
   # NFS PV/PVC that task Jobs mount (RWX). mountOptions carry the NFSv3 options,
   # which inline pod nfs: volumes cannot (spike finding F7).
   taskPvcName: errand-workspace

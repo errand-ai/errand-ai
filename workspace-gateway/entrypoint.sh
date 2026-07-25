@@ -34,6 +34,16 @@
 #   WORKSPACE_CACHE_DIR       VFS cache dir (default: /cache)
 #   WORKSPACE_CACHE_MAX_SIZE  VFS cache max size (default: 5G)
 #   WORKSPACE_RC_ADDR         rc bind address (default: 127.0.0.1:5572)
+#   VFS_WRITE_BACK            delay after last modification before a completed
+#                             write uploads (default: 1s). Set explicitly and
+#                             short rather than relying on rclone's implicit 5s
+#                             default, to bound the window in which a completed
+#                             write can be lost before it reaches the cloud.
+#   VFS_TRANSFERS             concurrent write-back uploads (--transfers, default: 4)
+#   LOW_LEVEL_RETRIES         per-chunk low-level retries (--low-level-retries,
+#                             default: 10) — keeps a transient provider error in a
+#                             retrying state instead of dropping the write.
+#   RETRIES                   whole-operation retries (--retries, default: 3)
 #   WORKSPACE_EXTRA_FLAGS     optional extra rclone flags
 set -eu
 
@@ -52,6 +62,14 @@ DIR_CACHE_TIME="${WORKSPACE_DIR_CACHE_TIME:-5m}"
 CACHE_DIR="${WORKSPACE_CACHE_DIR:-/cache}"
 CACHE_MAX="${WORKSPACE_CACHE_MAX_SIZE:-5G}"
 RC_ADDR="${WORKSPACE_RC_ADDR:-127.0.0.1:5572}"
+# Write-back / upload-resilience tuning. Explicit short write-back uploads a
+# completed write promptly after close(); the retry flags keep a transient
+# provider error progressing (retrying) instead of silently dropping the write
+# (see the "Write-back upload with persistent cache" capability).
+VFS_WRITE_BACK="${VFS_WRITE_BACK:-1s}"
+VFS_TRANSFERS="${VFS_TRANSFERS:-4}"
+LOW_LEVEL_RETRIES="${LOW_LEVEL_RETRIES:-10}"
+RETRIES="${RETRIES:-3}"
 
 # Copy the config to a writable location so `rclone rc config/update` can persist.
 # If an init container already seeded the writable config with a FRESH token
@@ -72,7 +90,20 @@ else
   TARGET="${REMOTE}:"
 fi
 
-echo "workspace-gateway: serving ${TARGET} over NFS at ${ADDR} (poll ${POLL})" >&2
+# Reconcile orphaned dirty cache entries BEFORE serving. An orphaned entry
+# (dirty meta with no data to upload) is not a resumable upload — rclone would
+# either leave it blocking change-polling or upload an empty file. We clear the
+# stale meta so that on the first serve+poll rclone re-fetches the current cloud
+# object instead (see "Orphaned dirty entry recovered on restart").
+#
+# The script is best-effort and self-contained: it handles its own logic errors
+# (returning 0 and logging a structured `cache_reconcile_failed` line), so this
+# `||` fires only if the reconcile can't be invoked at all (e.g. python3 or the
+# script is missing) — in which case we warn and serve anyway.
+python3 /usr/local/bin/cache_reconcile.py "$CACHE_DIR" || \
+  echo "workspace-gateway: could not run cache reconcile (python3/script missing?); continuing to serve" >&2
+
+echo "workspace-gateway: serving ${TARGET} over NFS at ${ADDR} (poll ${POLL}, write-back ${VFS_WRITE_BACK}, transfers ${VFS_TRANSFERS}, low-level-retries ${LOW_LEVEL_RETRIES}, retries ${RETRIES})" >&2
 
 # shellcheck disable=SC2086
 exec rclone serve nfs "$TARGET" \
@@ -80,6 +111,10 @@ exec rclone serve nfs "$TARGET" \
   --vfs-cache-mode=full \
   --cache-dir="$CACHE_DIR" \
   --vfs-cache-max-size="$CACHE_MAX" \
+  --vfs-write-back="$VFS_WRITE_BACK" \
+  --transfers="$VFS_TRANSFERS" \
+  --low-level-retries="$LOW_LEVEL_RETRIES" \
+  --retries="$RETRIES" \
   --dir-cache-time="$DIR_CACHE_TIME" \
   --poll-interval="$POLL" \
   --drive-skip-gdocs \

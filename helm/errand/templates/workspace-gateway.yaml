@@ -87,6 +87,17 @@ spec:
               value: "/cache"
             - name: WORKSPACE_CACHE_MAX_SIZE
               value: {{ $ws.cache.maxSize | quote }}
+            # Write-back reliability: prompt, tunable upload + retry/backoff so a
+            # completed write reaches the cloud and a transient error retries
+            # rather than dropping the write (workspace-gateway-write-reliability).
+            - name: VFS_WRITE_BACK
+              value: {{ $ws.cache.writeBack | quote }}
+            - name: VFS_TRANSFERS
+              value: {{ $ws.cache.transfers | quote }}
+            - name: LOW_LEVEL_RETRIES
+              value: {{ $ws.cache.lowLevelRetries | quote }}
+            - name: RETRIES
+              value: {{ $ws.cache.retries | quote }}
             - name: WORKSPACE_ADDR
               value: ":{{ $ws.service.port }}"
             - name: WORKSPACE_RC_ADDR
@@ -116,11 +127,24 @@ spec:
               value: "http://127.0.0.1:5572"
             - name: REFRESH_INTERVAL_SECONDS
               value: {{ $ws.refresher.intervalSeconds | quote }}
+            # Write-back health: the refresher scans the same VFS cache (read-only)
+            # for stuck dirty entries, and derives the stuck-entry grace period
+            # from the gateway's write-back delay.
+            - name: WORKSPACE_CACHE_DIR
+              value: "/cache"
+            - name: VFS_WRITE_BACK
+              value: {{ $ws.cache.writeBack | quote }}
             - name: ERRAND_WORKSPACE_BEARER
               valueFrom:
                 secretKeyRef:
                   name: {{ required "workspace.bearerSecret is required when workspace.enabled=true" $ws.bearerSecret | quote }}
                   key: {{ $ws.bearerKey | quote }}
+          volumeMounts:
+            # Read-only view of the gateway's VFS cache for write-back health
+            # scanning. RWO PVC is mountable by multiple containers in the same pod.
+            - name: cache
+              mountPath: /cache
+              readOnly: true
       volumes:
         - name: config-ro
           secret:

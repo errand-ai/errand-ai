@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Reconcile orphaned dirty entries in the rclone VFS cache before serving.
+
+Run once by the gateway entrypoint, *before* `rclone serve` starts, over the
+persistent `--vfs-cache-mode full` cache directory.
+
+Background (the incident this closes)
+-------------------------------------
+A completed write goes: task `close()` → rclone marks the VFS item dirty and
+writes its data into the cache → write-back uploads it. In production a dirty
+item was observed with **no data to upload**::
+
+    vfsMeta/<remote>/.../BlogsToProcess.md : {"Dirty": true, "Size": 0, "Rs": null}
+    vfs/<remote>/.../BlogsToProcess.md      : (missing)
+    vfs/stats                               : uploadsQueued: 0, erroredFiles: 0
+
+rclone recorded a dirty change, lost the data backing it, and never queued an
+upload — a terminal "dirty but idle" state. Such an entry is *not* a resumable
+upload: there is nothing to send. Left in place it can block change-polling or
+cause an empty file to be uploaded over the good cloud copy.
+
+What this does
+--------------
+Scan `<cache_dir>/vfsMeta/**` for entries whose metadata marks them dirty
+(`"Dirty": true`) but which have no data to upload — the sibling data file under
+`<cache_dir>/vfs/**` is missing or zero-length. For each such orphan, remove the
+stale meta (and any zero-length data file) so that on the first serve + poll
+rclone re-fetches the current cloud object instead of acting on a phantom write.
+A genuinely resumable pending upload (dirty meta *with* a non-empty data file) is
+left untouched so `rclone serve` resumes it on start.
+
+Every reconciled entry is logged as one structured JSON line. The scan is
+best-effort: it never raises out of `main()` (a reconcile failure must not stop
+the gateway from serving), and it only ever removes files it has positively
+identified as orphaned dirty entries.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from typing import Iterator, NamedTuple
+
+# rclone lays the VFS cache out as two parallel trees under the cache dir:
+#   <cache_dir>/vfs/<remote>/<path>      — the cached file data
+#   <cache_dir>/vfsMeta/<remote>/<path>  — per-item JSON metadata (Dirty, Size, …)
+_DATA_SUBDIR = "vfs"
+_META_SUBDIR = "vfsMeta"
+
+
+class DirtyEntry(NamedTuple):
+    """A cache entry marked dirty (not-yet-uploaded) in its VFS metadata."""
+
+    path: str          # cache-relative path, e.g. "<remote>/dir/file"
+    meta: dict         # parsed item metadata (Dirty, Size, Fingerprint, …)
+    data_path: str     # absolute path to the sibling data file (may not exist)
+    has_data: bool     # True if a non-empty data file backs the entry
+
+    @property
+    def fingerprint(self):
+        return self.meta.get("Fingerprint")
+
+    @property
+    def is_orphaned(self) -> bool:
+        """Dirty but with no data file backing it — the terminal, silent
+        data-loss state (the incident: dirty meta, ``Size: 0``, no ``vfs/`` file).
+
+        Orphaned means the data file is *absent*. A data file that exists is
+        preserved even when zero-length: that is a legitimate empty-file write
+        (a task creating/truncating a file to empty), not a lost upload, and must
+        not be discarded. rclone uploads it like any other cached write.
+        """
+        return not self.has_data
+
+
+def _log(event: str, **fields) -> None:
+    """Emit one structured JSON log line (matches the refresher's format)."""
+    print(json.dumps({"component": "workspace-gateway", "event": event, **fields}), file=sys.stderr)
+
+
+def _is_dirty(meta: dict) -> bool:
+    """True if the item metadata marks the entry dirty (not-yet-uploaded)."""
+    return bool(meta.get("Dirty"))
+
+
+def _data_file_present(data_path: str) -> bool:
+    """True if a cache data file backs this entry (something to upload).
+
+    Presence — not size — is what matters. A zero-length data file that EXISTS is
+    a legitimate empty-file write and must be preserved; only a genuinely ABSENT
+    data file counts as "no data" (an orphan). If the path can't be stat'd for
+    any reason other than 'missing' (permissions, transient I/O), we assume it is
+    present: misclassifying a still-backed entry as orphaned would delete a real
+    write, which is exactly the data loss this whole change exists to prevent.
+    """
+    try:
+        os.stat(data_path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def iter_dirty_entries(cache_dir: str) -> Iterator[DirtyEntry]:
+    """Yield every dirty entry in the VFS cache under ``cache_dir``.
+
+    Shared by the startup reconcile (which removes orphaned ones) and the
+    refresher's write-back health scan (which tracks dirty age and fingerprints).
+    Non-dirty entries are ordinary read cache and are skipped. Meta files that
+    are unreadable or not JSON are skipped rather than guessed at.
+    """
+    meta_root = os.path.join(cache_dir, _META_SUBDIR)
+    data_root = os.path.join(cache_dir, _DATA_SUBDIR)
+    if not os.path.isdir(meta_root):
+        return
+    for dirpath, _dirs, files in os.walk(meta_root):
+        for name in files:
+            meta_path = os.path.join(dirpath, name)
+            rel = os.path.relpath(meta_path, meta_root)
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or not _is_dirty(meta):
+                continue
+            data_path = os.path.join(data_root, rel)
+            yield DirtyEntry(
+                path=rel,
+                meta=meta,
+                data_path=data_path,
+                has_data=_data_file_present(data_path),
+            )
+
+
+def reconcile_cache(cache_dir: str) -> list[dict]:
+    """Remove orphaned dirty entries from the VFS cache under ``cache_dir``.
+
+    Returns a list of reconciliation records, one per orphaned entry acted on::
+
+        {"path": "<remote>/…/file", "action": "cleared_orphaned_dirty_meta",
+         "removed": ["vfsMeta/…", "vfs/…"]}
+
+    A dirty entry that still has data to upload is preserved (so ``rclone serve``
+    resumes it). Non-dirty entries are ordinary read cache and are left alone.
+    """
+    reconciled: list[dict] = []
+    # Sort by cache-relative path so the reconciled list and per-entry logs are
+    # deterministic regardless of the os.walk order the scan produced.
+    for entry in sorted(iter_dirty_entries(cache_dir), key=lambda e: e.path):
+        if not entry.is_orphaned:
+            # Dirty with data present → a resumable upload; leave it.
+            continue
+
+        meta_path = os.path.join(cache_dir, _META_SUBDIR, entry.path)
+        removed: list[str] = []
+        # Clearing the meta is what actually reconciles the orphan (it stops
+        # rclone acting on the phantom dirty entry). Remove the zero-length data
+        # file first (if any), then the meta, so a crash mid-reconcile never
+        # leaves data without its meta. Track whether the meta was really cleared.
+        meta_cleared = True
+        for target, label, is_meta in (
+            (entry.data_path, _DATA_SUBDIR, False),
+            (meta_path, _META_SUBDIR, True),
+        ):
+            try:
+                os.remove(target)
+                removed.append(f"{label}/{entry.path}")
+            except FileNotFoundError:
+                # Already absent (e.g. an orphan with no data file) — nothing to
+                # remove for this side; not an error, so stay quiet.
+                pass
+            except OSError as exc:
+                # A real removal failure (permissions, busy). Log why, and if it
+                # was the META that failed, the orphan is NOT actually cleared —
+                # don't report it as reconciled below.
+                _log("orphaned_dirty_entry_remove_failed", path=f"{label}/{entry.path}", error=str(exc))
+                if is_meta:
+                    meta_cleared = False
+        if not meta_cleared:
+            # Left in place (still dirty): surfaced via the remove_failed log
+            # above; excluded from the reconciled set so the count stays truthful.
+            continue
+        record = {
+            "path": entry.path,
+            "action": "cleared_orphaned_dirty_meta",
+            "meta_size": entry.meta.get("Size"),
+            "removed": removed,
+        }
+        reconciled.append(record)
+        _log("orphaned_dirty_entry_reconciled", **record)
+    return reconciled
+
+
+def main(argv: list[str]) -> int:
+    cache_dir = argv[1] if len(argv) > 1 else os.environ.get("WORKSPACE_CACHE_DIR", "/cache")
+    try:
+        reconciled = reconcile_cache(cache_dir)
+    except Exception as exc:  # noqa: BLE001 — never block serving on reconcile
+        _log("cache_reconcile_failed", cache_dir=cache_dir, error=str(exc))
+        return 0
+    _log("cache_reconcile_complete", cache_dir=cache_dir, reconciled=len(reconciled))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

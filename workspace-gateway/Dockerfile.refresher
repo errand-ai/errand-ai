@@ -3,7 +3,10 @@ FROM python:3.12-slim
 
 RUN pip install --no-cache-dir requests==2.32.3
 
+# cache_reconcile provides the shared VFS-cache dirty-entry scanner the refresher
+# imports for write-back health (it reads the same cache the gateway writes).
 COPY refresher.py /app/refresher.py
+COPY cache_reconcile.py /app/cache_reconcile.py
 WORKDIR /app
 
 # Run as non-root.
