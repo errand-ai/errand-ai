@@ -11,7 +11,6 @@ preserved so the rep can be re-judged later from retained evidence.
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 
 _JUDGE_TIMEOUT_SECONDS = 300
@@ -61,7 +60,12 @@ def _default_run_claude(prompt: str, model: str) -> str:
 
 
 def _extract_json(text: str) -> dict | None:
-    """Parse the first JSON object from the model's text, tolerating a code fence."""
+    """Parse the first JSON object from the model's text, tolerating a code fence.
+
+    Uses a balanced-brace scan (string- and escape-aware) rather than a greedy
+    ``{.*}`` regex, so extra brace-delimited spans elsewhere in the response
+    don't cause the first valid object to be over-captured and fail to parse.
+    """
     if not text:
         return None
     candidate = text.strip()
@@ -70,14 +74,40 @@ def _extract_json(text: str) -> dict | None:
         return obj if isinstance(obj, dict) else None
     except ValueError:
         pass
-    # Fall back to the first {...} span.
-    match = re.search(r"\{.*\}", candidate, re.DOTALL)
-    if match:
-        try:
-            obj = json.loads(match.group(0))
-            return obj if isinstance(obj, dict) else None
-        except ValueError:
-            return None
+    return _first_json_object(candidate)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """Return the first balanced-brace ``{...}`` span that parses as a dict."""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : i + 1])
+                    except ValueError:
+                        break  # this span isn't valid JSON — try the next '{'
+                    if isinstance(obj, dict):
+                        return obj
+                    break
+        start = text.find("{", start + 1)
     return None
 
 

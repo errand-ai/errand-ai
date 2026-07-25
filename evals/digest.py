@@ -45,15 +45,15 @@ def build_digest(events: list[dict], max_chars: int = 12000) -> str:
             names = data.get("function_names", [])
             lines.append(f"  ~ recovered tool call(s) from reasoning: {', '.join(names)}")
 
+    # Keep a chronological *prefix* — stop at the first line that would overflow
+    # so the marker's "N further lines omitted" is accurate and the digest reads
+    # coherently from the start of the transcript.
     kept: list[str] = []
     used = 0
-    dropped = 0
-    for line in lines:
+    for i, line in enumerate(lines):
         if used + len(line) + 1 > max_chars:
-            dropped += 1
-            continue
+            kept.append(f"[digest truncated: {len(lines) - i} further event line(s) omitted to fit {max_chars} chars]")
+            break
         kept.append(line)
         used += len(line) + 1
-    if dropped:
-        kept.append(f"[digest truncated: {dropped} further event line(s) omitted to fit {max_chars} chars]")
     return "\n".join(kept)

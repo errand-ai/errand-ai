@@ -152,6 +152,34 @@ def test_judge_extracts_json_from_fenced_response():
     assert v["parsed"] and v["score"] == 9.0
 
 
+def test_judge_extracts_first_object_amid_extra_braces():
+    # A greedy {.*} would span from the first '{' to the last '}' and fail to
+    # parse; the balanced-brace scan finds the first valid object.
+    def fake(prompt, model):
+        return 'note: use {curly} braces. Verdict: {"pass": true, "score": 6, "reasons": []}. Also {x}.'
+    v = judge_mod.judge_rep("m", "d", "r", "o", "dg", run_claude=fake)
+    assert v["parsed"] and v["pass"] is True and v["score"] == 6.0
+
+
+def test_judge_handles_braces_inside_strings():
+    def fake(prompt, model):
+        return '{"pass": false, "score": 3, "reasons": ["output had a stray } brace"]}'
+    v = judge_mod.judge_rep("m", "d", "r", "o", "dg", run_claude=fake)
+    assert v["parsed"] and v["score"] == 3.0
+    assert v["reasons"] == ["output had a stray } brace"]
+
+
+def test_digest_truncation_is_a_prefix():
+    events = [{"type": "tool_call", "data": {"tool": f"tool_{i}", "args": {}}} for i in range(50)]
+    d = digest_mod.build_digest(events, max_chars=120)
+    lines = d.splitlines()
+    assert lines[-1].startswith("[digest truncated")
+    kept_tools = [ln for ln in lines[:-1]]
+    # Kept lines are a contiguous prefix: tool_0.. with no gaps, no late tools.
+    assert kept_tools and kept_tools[0].strip().startswith("→ tool_0(")
+    assert not any("tool_49(" in ln for ln in kept_tools)
+
+
 # --- scoring combine + orchestration ---------------------------------------
 
 def test_combine_failed_assertion_forces_fail():
