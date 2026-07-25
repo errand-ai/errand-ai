@@ -85,6 +85,17 @@ def test_clean_entry_is_left_alone(tmp_path):
     assert os.path.exists(_meta_path(cache, "gd/clean.md"))
 
 
+def test_reconciled_entries_are_returned_in_sorted_order(tmp_path):
+    # Order must be deterministic (sorted by path), not os.walk order.
+    cache = str(tmp_path)
+    for rel in ("gd/z.md", "gd/a.md", "gd/m.md"):
+        _write_meta(cache, rel, dirty=True, size=0)
+
+    reconciled = cr.reconcile_cache(cache)
+
+    assert [r["path"] for r in reconciled] == ["gd/a.md", "gd/m.md", "gd/z.md"]
+
+
 def test_missing_cache_dir_is_noop(tmp_path):
     assert cr.reconcile_cache(str(tmp_path / "does-not-exist")) == []
 

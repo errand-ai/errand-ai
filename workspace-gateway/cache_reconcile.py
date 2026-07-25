@@ -141,7 +141,9 @@ def reconcile_cache(cache_dir: str) -> list[dict]:
     resumes it). Non-dirty entries are ordinary read cache and are left alone.
     """
     reconciled: list[dict] = []
-    for entry in iter_dirty_entries(cache_dir):
+    # Sort by cache-relative path so the reconciled list and per-entry logs are
+    # deterministic regardless of the os.walk order the scan produced.
+    for entry in sorted(iter_dirty_entries(cache_dir), key=lambda e: e.path):
         if not entry.is_orphaned:
             # Dirty with data present → a resumable upload; leave it.
             continue

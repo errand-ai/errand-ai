@@ -275,7 +275,7 @@ class WriteBackMonitor:
         stuck_paths: list[str] = []
         oldest_age = 0.0
 
-        for path, entry in current.items():
+        for path, entry in sorted(current.items()):  # deterministic log/error order
             first_seen = self._first_seen_dirty.setdefault(path, now)
             age = now - first_seen
             oldest_age = max(oldest_age, age)
