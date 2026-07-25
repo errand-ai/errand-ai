@@ -198,13 +198,18 @@ def read_vfs_stats(cfg: Config) -> dict:
     return stats
 
 
-def _scan_dirty_entries(cache_dir: str) -> list[DirtyEntry]:
-    """List dirty cache entries, swallowing scan errors (health is best-effort)."""
+def _scan_dirty_entries(cache_dir: str) -> list[DirtyEntry] | None:
+    """List dirty cache entries. Returns None (not []) if the scan itself failed.
+
+    The distinction matters: an empty list means "scanned, nothing dirty", while
+    None means "couldn't scan" — the caller must not treat the latter as "all
+    clear", which would reset per-path age tracking and mask a stuck entry.
+    """
     try:
         return list(iter_dirty_entries(cache_dir))
     except Exception as exc:  # noqa: BLE001
         _log("cache_scan_failed", cache_dir=cache_dir, error=str(exc))
-        return []
+        return None
 
 
 class WriteBackMonitor:
@@ -316,16 +321,7 @@ class WriteBackMonitor:
             errors.append(err)
 
         degraded = bool(stuck_paths) or errored > 0
-
-        # Log each degraded condition only on transition — when it first appears
-        # — not every health cycle: a persistent stuck entry (re-evaluated every
-        # ~30s) must not spam the logs. A condition that clears drops out of the
-        # set, so a later recurrence logs again.
-        current_keys = {(e.get("path"), e["reason"]) for e in errors}
-        for err in errors:
-            if (err.get("path"), err["reason"]) not in self._logged_degraded:
-                _log("write_back_degraded", **err)
-        self._logged_degraded = current_keys
+        self._emit_degraded(errors)
 
         return {
             "write_back_state": "degraded" if degraded else "ok",
@@ -334,19 +330,62 @@ class WriteBackMonitor:
                 "uploads_in_progress": vfs_stats.get("uploads_in_progress"),
                 "errored_files": vfs_stats.get("errored_files"),
                 "dirty_entries": len(current),
-                "stuck_entries": stuck_paths,
+                # Sorted so the payload/alerting is stable regardless of the
+                # os.walk order the cache scan produced.
+                "stuck_entries": sorted(stuck_paths),
                 "oldest_dirty_age_seconds": round(oldest_age, 1),
                 "grace_seconds": round(self._grace, 1),
             },
             "write_back_errors": errors,
         }
 
+    def scan_unavailable(self, vfs_stats: dict) -> dict:
+        """Health block for a cycle where the cache scan failed.
+
+        A failed scan is "unknown", not "all clear": crucially it must NOT reset
+        per-path age/fingerprint state (doing so would restart a stuck entry's
+        clock and mask it). We preserve state, mark write-back degraded, and emit
+        a structured error so the failure is reflected in health, not swallowed.
+        """
+        errors = [{"reason": "cache_scan_unavailable"}]
+        self._emit_degraded(errors)
+        return {
+            "write_back_state": "degraded",
+            "write_back": {
+                "uploads_queued": vfs_stats.get("uploads_queued"),
+                "uploads_in_progress": vfs_stats.get("uploads_in_progress"),
+                "errored_files": vfs_stats.get("errored_files"),
+                "dirty_entries": None,   # unknown — scan failed
+                "stuck_entries": [],
+                "grace_seconds": round(self._grace, 1),
+            },
+            "write_back_errors": errors,
+        }
+
+    def _emit_degraded(self, errors: list[dict]) -> None:
+        """Log each degraded condition only on transition (when it first appears).
+
+        A persistent fault re-evaluated every ~30s must not spam the logs; a
+        condition that clears drops out of the tracked set, so a later recurrence
+        logs again.
+        """
+        current_keys = {(e.get("path"), e["reason"]) for e in errors}
+        for err in errors:
+            if (err.get("path"), err["reason"]) not in self._logged_degraded:
+                _log("write_back_degraded", **err)
+        self._logged_degraded = current_keys
+
 
 def collect_health_stats(cfg: Config, monitor: WriteBackMonitor) -> dict:
     """One health-cycle read: rc upload stats + write-back health from the cache."""
     stats = read_vfs_stats(cfg)
     dirty = _scan_dirty_entries(cfg.cache_dir)
-    stats.update(monitor.evaluate(stats, dirty))
+    # None == scan failed (distinct from an empty list): don't feed it to
+    # evaluate(), which would treat "no entries" as "all clean" and reset state.
+    if dirty is None:
+        stats.update(monitor.scan_unavailable(stats))
+    else:
+        stats.update(monitor.evaluate(stats, dirty))
     return stats
 
 

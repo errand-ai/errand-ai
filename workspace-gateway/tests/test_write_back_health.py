@@ -201,6 +201,58 @@ def test_concurrent_writer_fingerprint_change_warns(caplog):
     assert warn[0]["remote_fingerprint"] == "v2"
 
 
+def test_stuck_entries_are_sorted():
+    # os.walk order is not stable; the payload must be deterministic.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)
+    entries = [_entry("gd/z.md", has_data=False), _entry("gd/a.md", has_data=False), _entry("gd/m.md", has_data=False)]
+    mon.evaluate(_stats(), entries)
+    clock.t = 31.0
+    health = mon.evaluate(_stats(), entries)
+    assert health["write_back"]["stuck_entries"] == ["gd/a.md", "gd/m.md", "gd/z.md"]
+
+
+def test_scan_unavailable_preserves_state_and_degrades():
+    # A failed cache scan must NOT reset per-path age tracking (which would mask a
+    # stuck entry), and must surface as degraded, not silently "0 dirty / ok".
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)
+    entries = [_entry("gd/stuck.md", has_data=False)]
+    mon.evaluate(_stats(), entries)          # t=0: entry seen, age clock started
+
+    clock.t = 20.0
+    unavail = mon.scan_unavailable(_stats())  # scan fails mid-way (still < grace)
+    assert unavail["write_back_state"] == "degraded"
+    assert unavail["write_back_errors"][0]["reason"] == "cache_scan_unavailable"
+    assert unavail["write_back"]["dirty_entries"] is None  # unknown, not 0
+
+    # State preserved: when the scan recovers past grace, the entry is correctly
+    # flagged stuck — its age was NOT reset by the failed cycle.
+    clock.t = 31.0
+    health = mon.evaluate(_stats(), entries)
+    assert health["write_back_state"] == "degraded"
+    assert health["write_back"]["stuck_entries"] == ["gd/stuck.md"]
+
+
+def test_collect_health_stats_scan_failure_does_not_reset(monkeypatch):
+    # End-to-end wiring: _scan_dirty_entries returning None routes to
+    # scan_unavailable rather than evaluate([]).
+    import refresher
+
+    class Cfg2:
+        stuck_grace_seconds = 30.0
+        cache_dir = "/nonexistent"
+        rc_url = "http://127.0.0.1:5572"
+        rc_timeout = 1
+
+    monkeypatch.setattr(refresher, "read_vfs_stats", lambda cfg: _stats())
+    monkeypatch.setattr(refresher, "_scan_dirty_entries", lambda cache_dir: None)
+    mon = WriteBackMonitor(Cfg2(), clock=_Clock())
+    out = refresher.collect_health_stats(Cfg2(), mon)
+    assert out["write_back_state"] == "degraded"
+    assert out["write_back_errors"][0]["reason"] == "cache_scan_unavailable"
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [("1s", 1.0), ("500ms", 0.5), ("2m", 120.0), ("1h", 3600.0), ("5", 5.0), ("", 1.0), ("garbage", 1.0)],
