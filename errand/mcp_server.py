@@ -1934,7 +1934,18 @@ async def clone_task_profile(
         if max_turns is not None:
             clone.max_turns = max_turns
         session.add(clone)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # A concurrent caller created new_name between our existence check and
+            # commit — stay idempotent: return the now-existing profile.
+            await session.rollback()
+            existing = (
+                await session.execute(select(TaskProfile).where(TaskProfile.name == new_name))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return json.dumps({"ok": True, "reused": True, "profile": _profile_summary(existing)})
+            raise
         await session.refresh(clone)
         return json.dumps({"ok": True, "reused": False, "profile": _profile_summary(clone)})
 
@@ -1987,10 +1998,16 @@ async def search_tasks(
         query = query.where(TaskProfile.name == profile)
     if status is not None:
         query = query.where(Task.status == status)
+    # A provided-but-unparseable date must error rather than be silently dropped
+    # (which would widen the query and return unrelated history).
     after = _parse_iso(created_after)
+    if created_after and after is None:
+        return json.dumps({"error": f"invalid created_after '{created_after}' (use ISO-8601)"})
     if after is not None:
         query = query.where(Task.created_at >= after)
     before = _parse_iso(created_before)
+    if created_before and before is None:
+        return json.dumps({"error": f"invalid created_before '{created_before}' (use ISO-8601)"})
     if before is not None:
         query = query.where(Task.created_at <= before)
     if title_contains:

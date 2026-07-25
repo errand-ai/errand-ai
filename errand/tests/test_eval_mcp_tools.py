@@ -127,6 +127,9 @@ async def test_search_full_history_and_date_range(db_session):
     # Offset-less (naive) bounds are treated as UTC, not rejected or mis-compared.
     naive = json.loads(await search_tasks(created_after="2026-03-01T00:00:00", created_before="2026-04-01T00:00:00"))
     assert [r["title"] for r in naive] == ["march"]
+    # A provided-but-unparseable date errors rather than silently widening.
+    bad = json.loads(await search_tasks(created_after="not-a-date"))
+    assert "error" in bad and "created_after" in bad["error"]
 
 
 async def test_search_limit_applied_and_capped(db_session):

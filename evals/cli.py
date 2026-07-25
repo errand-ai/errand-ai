@@ -73,6 +73,9 @@ async def cmd_run(cfg, args) -> int:
     run_id = args.run_id
     if not run_id:
         resp = await client.start_eval_run("live", version, cfg.judge_model, driver_host=socket.gethostname())
+        if not isinstance(resp, dict) or "run_id" not in resp:
+            print(f"failed to start run: {resp}", file=sys.stderr)
+            return 1
         run_id = resp["run_id"]
         print(f"started run {run_id} (corpus_version={version})")
     await runner_mod.run_matrix(client, cfg, corpus, run_id, no_yield=args.no_yield)
@@ -98,6 +101,9 @@ async def cmd_retro(cfg, args) -> int:
     run_id = args.run_id
     if not run_id:
         resp = await client.start_eval_run("retro", version, cfg.judge_model, driver_host=socket.gethostname())
+        if not isinstance(resp, dict) or "run_id" not in resp:
+            print(f"failed to start retro run: {resp}", file=sys.stderr)
+            return 1
         run_id = resp["run_id"]
         print(f"started retro run {run_id}")
     summary = await retro_mod.run_retro(client, cfg, args.workload, args.sample, run_id, rubric)

@@ -58,6 +58,11 @@ async def run_retro(
 
         output = await client.task_output(task_id)
         output_text = output if isinstance(output, str) else (output.get("output") if isinstance(output, dict) else None)
+        if not output_text:
+            # No output to judge — don't record an empty-output task as a model
+            # failure in the baseline; skip and report it.
+            skipped.append({"task_id": task_id, "reason": "no_output"})
+            continue
         digest = build_digest(events, max_chars=cfg.digest_max_chars)
         judge_kwargs = {} if run_claude is None else {"run_claude": run_claude}
         verdict_obj = judge_rep(

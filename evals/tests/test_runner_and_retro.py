@@ -185,5 +185,25 @@ async def test_retro_attributes_model_and_skips_unusable():
     assert len(summary["skipped"]) == 1 and summary["skipped"][0]["reason"] == "no_model_in_transcript"
 
 
+async def test_retro_skips_no_output_tasks():
+    class RetroClient(FakeClient):
+        async def search_tasks(self, **filters):
+            return [{"id": "t1", "title": "A"}, {"id": "t2", "title": "B"}]
+
+        async def task_logs(self, task_id):
+            return _judgeable_logs(model="gemma-3-27b")
+
+        async def task_output(self, task_id):
+            return "" if task_id == "t2" else "a real answer"
+
+    client = RetroClient()
+    summary = await retro_mod.run_retro(client, Cfg(models=[]), "job-research", sample=5,
+                                        run_id="retro1", rubric="be good", run_claude=_fake_judge)
+    # t2 has no output → skipped, not recorded as a failure.
+    assert summary["recorded"] == 1
+    assert [s["reason"] for s in summary["skipped"]] == ["no_output"]
+    assert len(client.recorded) == 1
+
+
 async def _nosleep(_seconds):
     return None
