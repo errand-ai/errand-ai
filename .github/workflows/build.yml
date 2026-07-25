@@ -102,7 +102,7 @@ jobs:
       - name: Run task-runner tool-registry tests
         working-directory: task-runner
         run: |
-          pip install -r requirements.txt "pytest==9.1.1" -q
+          pip install -r requirements.txt "pytest==9.1.1" "pytest-asyncio==1.4.0" -q
           pytest test_tool_registry.py test_excluded_catalog_tools.py -v
 
       - name: Set up Node.js

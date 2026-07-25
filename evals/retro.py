@@ -31,12 +31,20 @@ async def run_retro(
     cannot use (no transcript model, infra failure, no output), until ``sample``
     are recorded or candidates are exhausted.
     """
-    # Over-fetch so skips still leave enough usable candidates.
-    candidates = await client.search_tasks(
-        profile=workload, is_eval=False, status="archived", limit=min(sample * 4, 200)
-    )
-    if not isinstance(candidates, list):
-        candidates = []
+    # Terminal historical tasks live in both `completed` (not yet archived) and
+    # `archived`; search both so the baseline isn't biased toward archived-only.
+    # Over-fetch so skips still leave enough usable candidates, newest-first.
+    candidates: list[dict] = []
+    seen: set = set()
+    for status in ("completed", "archived"):
+        rows = await client.search_tasks(
+            profile=workload, is_eval=False, status=status, limit=min(sample * 4, 200)
+        )
+        for row in rows if isinstance(rows, list) else []:
+            tid = row.get("id")
+            if tid not in seen:
+                seen.add(tid)
+                candidates.append(row)
 
     recorded = 0
     skipped: list[dict] = []
