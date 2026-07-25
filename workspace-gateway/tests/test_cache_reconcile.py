@@ -103,6 +103,28 @@ def test_unreadable_meta_is_skipped_not_deleted(tmp_path):
     assert os.path.exists(p)
 
 
+def test_meta_removal_failure_is_not_reported_as_reconciled(tmp_path, monkeypatch, capsys):
+    # If the meta file can't be removed (permissions/busy), the orphan is NOT
+    # cleared — it must be surfaced as a remove failure, not a reconciled entry.
+    cache = str(tmp_path)
+    _write_meta(cache, "gd/stuck.md", dirty=True, size=0)
+
+    real_remove = os.remove
+
+    def flaky_remove(path):
+        if path.endswith(os.path.join("vfsMeta", "gd/stuck.md")) or path.endswith("vfsMeta/gd/stuck.md"):
+            raise PermissionError("read-only cache")
+        return real_remove(path)
+
+    monkeypatch.setattr(os, "remove", flaky_remove)
+    reconciled = cr.reconcile_cache(cache)
+
+    assert reconciled == []  # not counted as reconciled
+    events = [json.loads(line)["event"] for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert "orphaned_dirty_entry_remove_failed" in events
+    assert "orphaned_dirty_entry_reconciled" not in events
+
+
 def test_iter_dirty_entries_reports_orphan_and_resumable(tmp_path):
     cache = str(tmp_path)
     _write_meta(cache, "gd/orphan.md", dirty=True, size=0)

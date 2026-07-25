@@ -230,6 +230,9 @@ class WriteBackMonitor:
         # Per-path state carried across cycles.
         self._first_seen_dirty: dict[str, float] = {}
         self._fingerprints: dict[str, object] = {}
+        # (path, reason) degraded conditions already logged, so a persistent
+        # fault is logged once per episode rather than every health cycle.
+        self._logged_degraded: set = set()
 
     def evaluate(self, vfs_stats: dict, dirty_entries: list[DirtyEntry]) -> dict:
         """Return a write-back health block; update per-path state in place.
@@ -291,11 +294,25 @@ class WriteBackMonitor:
                 })
 
         if errored > 0:
-            errors.append({"reason": "errored_uploads", "errored_files": errored})
+            err = {"reason": "errored_uploads", "errored_files": errored}
+            # vfs/stats reports only a count, not the errored paths. Surface the
+            # currently-dirty entries as candidates so the alert has something to
+            # point at (the errored file is almost certainly among them).
+            if current:
+                err["candidate_paths"] = sorted(current)
+            errors.append(err)
 
         degraded = bool(stuck_paths) or errored > 0
+
+        # Log each degraded condition only on transition — when it first appears
+        # — not every health cycle: a persistent stuck entry (re-evaluated every
+        # ~30s) must not spam the logs. A condition that clears drops out of the
+        # set, so a later recurrence logs again.
+        current_keys = {(e.get("path"), e["reason"]) for e in errors}
         for err in errors:
-            _log("write_back_degraded", **err)
+            if (err.get("path"), err["reason"]) not in self._logged_degraded:
+                _log("write_back_degraded", **err)
+        self._logged_degraded = current_keys
 
         return {
             "write_back_state": "degraded" if degraded else "ok",

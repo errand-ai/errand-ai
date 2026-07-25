@@ -140,9 +140,15 @@ def reconcile_cache(cache_dir: str) -> list[dict]:
 
         meta_path = os.path.join(cache_dir, _META_SUBDIR, entry.path)
         removed: list[str] = []
-        # Remove a zero-length data file first (if present), then the meta, so a
-        # crash mid-reconcile never leaves data without its meta.
-        for target, label in ((entry.data_path, _DATA_SUBDIR), (meta_path, _META_SUBDIR)):
+        # Clearing the meta is what actually reconciles the orphan (it stops
+        # rclone acting on the phantom dirty entry). Remove the zero-length data
+        # file first (if any), then the meta, so a crash mid-reconcile never
+        # leaves data without its meta. Track whether the meta was really cleared.
+        meta_cleared = True
+        for target, label, is_meta in (
+            (entry.data_path, _DATA_SUBDIR, False),
+            (meta_path, _META_SUBDIR, True),
+        ):
             try:
                 os.remove(target)
                 removed.append(f"{label}/{entry.path}")
@@ -151,10 +157,16 @@ def reconcile_cache(cache_dir: str) -> list[dict]:
                 # remove for this side; not an error, so stay quiet.
                 pass
             except OSError as exc:
-                # A real removal failure (permissions, busy). Don't fail the
-                # reconcile — the entry is still logged below — but record why
-                # this side wasn't cleared so a lingering orphan is explainable.
+                # A real removal failure (permissions, busy). Log why, and if it
+                # was the META that failed, the orphan is NOT actually cleared —
+                # don't report it as reconciled below.
                 _log("orphaned_dirty_entry_remove_failed", path=f"{label}/{entry.path}", error=str(exc))
+                if is_meta:
+                    meta_cleared = False
+        if not meta_cleared:
+            # Left in place (still dirty): surfaced via the remove_failed log
+            # above; excluded from the reconciled set so the count stays truthful.
+            continue
         record = {
             "path": entry.path,
             "action": "cleared_orphaned_dirty_meta",

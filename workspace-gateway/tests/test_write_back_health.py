@@ -132,6 +132,34 @@ def test_errored_files_is_degraded_regardless_of_age():
     assert health["write_back_errors"][0]["errored_files"] == 2
 
 
+def test_errored_uploads_surfaces_candidate_paths():
+    # vfs/stats gives only a count; the error should name the current dirty
+    # entries as candidates so the alert has something to point at.
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=_Clock())
+    entries = [_entry("gd/a.md", has_data=True), _entry("gd/b.md", has_data=True)]
+    health = mon.evaluate(_stats(errored=1), entries)
+    err = [e for e in health["write_back_errors"] if e["reason"] == "errored_uploads"][0]
+    assert err["candidate_paths"] == ["gd/a.md", "gd/b.md"]
+
+
+def test_degraded_logs_once_per_episode_not_every_cycle(caplog):
+    # A persistent stuck entry must log on transition, then stay quiet on
+    # subsequent identical cycles (no 30s log spam).
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)
+    entries = [_entry("gd/orphan.md", has_data=False)]
+    mon.evaluate(_stats(), entries)       # t=0: establishes first-seen, not yet stuck
+    clock.t = 31.0
+    with caplog.at_level("INFO"):
+        mon.evaluate(_stats(), entries)   # first degraded cycle → logs
+        first = [r for r in caplog.records if '"write_back_degraded"' in r.message]
+        clock.t = 61.0
+        mon.evaluate(_stats(), entries)   # still degraded, same fault → no new log
+        second = [r for r in caplog.records if '"write_back_degraded"' in r.message]
+    assert len(first) == 1
+    assert len(second) == 1  # unchanged — not re-logged
+
+
 def test_entry_cleared_after_upload_forgets_state():
     # Once an entry uploads (no longer dirty), a later re-dirty starts a fresh
     # age clock — stale per-path state must not linger and instantly re-degrade.
