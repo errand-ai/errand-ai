@@ -37,6 +37,7 @@ from google_routes import router as google_router
 from onedrive_routes import router as onedrive_router
 from workspace_refresh_auth import require_workspace_bearer
 from database import async_session, engine, get_session
+from eval_marking import resolve_is_eval
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from llm_providers import (
@@ -669,6 +670,7 @@ class TaskResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
+    is_eval: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -696,6 +698,7 @@ class TaskResponse(BaseModel):
             updated_at=task.updated_at,
             created_by=task.created_by,
             updated_by=task.updated_by,
+            is_eval=task.is_eval,
         )
 
 
@@ -746,21 +749,25 @@ async def _sync_tags(session: AsyncSession, task: Task, tag_names: list[str]) ->
 
 @app.get("/api/tasks", response_model=list[TaskResponse])
 async def list_tasks(
+    include_evals: bool = False,
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
+    # Eval tasks (run under eval-- profiles) are excluded by default so the board
+    # never shows them during an eval run; include_evals=true opts back in.
+    eval_filter = [] if include_evals else [Task.is_eval.is_(False)]
     # Completed tasks: most recently completed first (updated_at DESC)
     # All other columns: position ASC, created_at ASC
     active = await session.execute(
         select(Task)
         .options(selectinload(Task.tags), selectinload(Task.profile))
-        .where(Task.status.not_in(["new", "deleted", "archived", "completed"]))
+        .where(Task.status.not_in(["new", "deleted", "archived", "completed"]), *eval_filter)
         .order_by(Task.position.asc(), Task.created_at.asc())
     )
     completed = await session.execute(
         select(Task)
         .options(selectinload(Task.tags), selectinload(Task.profile))
-        .where(Task.status == "completed")
+        .where(Task.status == "completed", *eval_filter)
         .order_by(Task.updated_at.desc())
     )
     tasks = list(active.scalars().all()) + list(completed.scalars().all())
@@ -839,6 +846,7 @@ async def create_task(
         repeat_interval=repeat_interval,
         repeat_until=repeat_until,
         profile_id=resolved_profile_id,
+        is_eval=await resolve_is_eval(session, resolved_profile_id),
         created_by=_user.get("email"),
     )
     session.add(task)
@@ -867,6 +875,7 @@ async def create_task(
 
 @app.get("/api/tasks/archived", response_model=list[TaskResponse])
 async def list_archived_tasks(
+    include_evals: bool = False,
     session: AsyncSession = Depends(get_session),
     claims: dict = Depends(get_current_user),
 ):
@@ -875,8 +884,11 @@ async def list_archived_tasks(
         status_filter = Task.status.in_(["deleted", "archived"])
     else:
         status_filter = Task.status == "archived"
+    # Exclude eval tasks unless explicitly requested (same policy as the board).
+    eval_filter = [] if include_evals else [Task.is_eval.is_(False)]
     result = await session.execute(
-        select(Task).options(selectinload(Task.tags), selectinload(Task.profile)).where(status_filter).order_by(Task.updated_at.desc())
+        select(Task).options(selectinload(Task.tags), selectinload(Task.profile))
+        .where(status_filter, *eval_filter).order_by(Task.updated_at.desc())
     )
     tasks = result.scalars().all()
     return [TaskResponse.from_task(t, profile_name=t.profile.name if t.profile else None) for t in tasks]

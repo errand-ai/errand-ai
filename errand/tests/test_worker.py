@@ -361,6 +361,7 @@ async def db_session():
                 created_by TEXT,
                 updated_by TEXT,
         encrypted_env TEXT,
+                is_eval BOOLEAN DEFAULT 0 NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -454,6 +455,7 @@ async def retry_session_factory(db_session):
                 created_by TEXT,
                 updated_by TEXT,
         encrypted_env TEXT,
+                is_eval BOOLEAN DEFAULT 0 NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
             )
@@ -2728,6 +2730,7 @@ class TestGitFailureRetry:
                     questions TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     profile_id VARCHAR(36),
+                    is_eval BOOLEAN DEFAULT 0 NOT NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
                 )

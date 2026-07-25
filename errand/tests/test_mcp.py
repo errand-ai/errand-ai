@@ -64,8 +64,37 @@ _TABLES_SQL = [
         created_by TEXT,
         updated_by TEXT,
         encrypted_env TEXT,
+        is_eval BOOLEAN DEFAULT 0 NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS eval_runs (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        mode TEXT NOT NULL,
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        finished_at DATETIME,
+        corpus_version TEXT NOT NULL,
+        errand_version TEXT NOT NULL,
+        judge_model TEXT NOT NULL,
+        driver_host TEXT,
+        notes TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS eval_results (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        run_id VARCHAR(36) NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+        workload TEXT NOT NULL,
+        model TEXT NOT NULL,
+        task_id VARCHAR(36) REFERENCES tasks(id) ON DELETE SET NULL,
+        rep INTEGER NOT NULL,
+        verdict TEXT NOT NULL,
+        score NUMERIC,
+        turns INTEGER,
+        recoveries INTEGER,
+        error_events INTEGER,
+        wall_seconds NUMERIC,
+        judge_output TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        UNIQUE (run_id, workload, model, rep)
     )""",
     """CREATE TABLE IF NOT EXISTS skills (
         id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -317,6 +346,9 @@ async def test_mcp_server_tool_count():
         "list_emails", "read_email", "list_email_folders", "move_email", "send_email", "forward_email",
         "web_search", "read_url",
         "slack_message", "slack_reply",
+        # Eval framework (catalog-excluded on the task-runner side).
+        "clone_task_profile", "delete_task_profile", "search_tasks",
+        "start_eval_run", "record_eval_result", "finish_eval_run", "get_eval_run",
     }
 
 

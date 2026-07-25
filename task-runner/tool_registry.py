@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOT_TOOLS = {"web_search", "fetch_url", "retain", "recall"}
 
+# Administrative MCP tools the Errand server exposes for the eval framework
+# (profile clone/delete, full-history search, eval run recording). They are never
+# for task LLMs: they are omitted from the generated catalog, discover_tools
+# refuses to enable them (responding as if they do not exist), and the
+# auto-enable-on-error recovery skips them. See the llm-eval-framework change.
+EXCLUDED_CATALOG_TOOLS = {
+    "clone_task_profile",
+    "delete_task_profile",
+    "search_tasks",
+    "start_eval_run",
+    "record_eval_result",
+    "finish_eval_run",
+    "get_eval_run",
+}
+
 
 @dataclass
 class ToolVisibilityContext:
@@ -107,10 +122,14 @@ async def build_tool_catalog(servers: list, hot_list: set[str]) -> tuple[str, se
             logger.warning("Failed to list tools from server '%s': %s", server.name, e)
             continue
 
-        all_known_tools.update(t.name for t in tools)
+        # Excluded admin/eval tools are treated as if the server never exposed
+        # them: they don't enter all_known_tools (so discover_tools and the
+        # error-recovery path can't enable them) and never appear in the catalog.
+        visible = [t for t in tools if t.name not in EXCLUDED_CATALOG_TOOLS]
+        all_known_tools.update(t.name for t in visible)
 
         # Collect deferred (non-hot) tools for catalog display
-        for t in tools:
+        for t in visible:
             if t.name not in hot_list:
                 desc = xml_escape(_truncate_description(t.description or ""))
                 name = xml_escape(t.name)
@@ -169,6 +188,11 @@ def discover_tools(ctx: RunContextWrapper[ToolVisibilityContext], tool_names: li
     not_found: list[str] = []
 
     for name in tool_names:
+        # Excluded admin/eval tools are never enableable — respond as if they
+        # don't exist, regardless of what the server exposes.
+        if name in EXCLUDED_CATALOG_TOOLS:
+            not_found.append(name)
+            continue
         # Precedence: always_on > catalog > installed skill > not found.
         if name in visibility.always_on_tools:
             already_on.append(name)
