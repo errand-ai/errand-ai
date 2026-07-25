@@ -94,10 +94,14 @@ fi
 # (dirty meta with no data to upload) is not a resumable upload — rclone would
 # either leave it blocking change-polling or upload an empty file. We clear the
 # stale meta so that on the first serve+poll rclone re-fetches the current cloud
-# object instead (see "Orphaned dirty entry recovered on restart"). Best-effort:
-# a reconcile failure must not stop the gateway from serving.
+# object instead (see "Orphaned dirty entry recovered on restart").
+#
+# The script is best-effort and self-contained: it handles its own logic errors
+# (returning 0 and logging a structured `cache_reconcile_failed` line), so this
+# `||` fires only if the reconcile can't be invoked at all (e.g. python3 or the
+# script is missing) — in which case we warn and serve anyway.
 python3 /usr/local/bin/cache_reconcile.py "$CACHE_DIR" || \
-  echo "workspace-gateway: cache reconcile step failed (continuing to serve)" >&2
+  echo "workspace-gateway: could not run cache reconcile (python3/script missing?); continuing to serve" >&2
 
 echo "workspace-gateway: serving ${TARGET} over NFS at ${ADDR} (poll ${POLL}, write-back ${VFS_WRITE_BACK}, transfers ${VFS_TRANSFERS}, low-level-retries ${LOW_LEVEL_RETRIES}, retries ${RETRIES})" >&2
 
