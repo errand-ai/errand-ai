@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A cloud-trusted JWT authentication mode that accepts identities asserted by the cloud relay, permitted only over the trusted tunnel.
+
+## Requirements
 ### Requirement: Cloud-trusted JWT authentication mode
 
 The backend SHALL support a "cloud-trusted" authentication mode where requests arriving through the cloud tunnel include an `X-Cloud-JWT` header containing the user's Keycloak JWT from errand-cloud.

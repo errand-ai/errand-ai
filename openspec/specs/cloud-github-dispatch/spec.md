@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Dispatch of GitHub webhooks relayed through the cloud service to the local errand instance, with HMAC re-verification for defense in depth.
+
+## Requirements
 ### Requirement: Cloud-relayed GitHub webhook dispatch
 The cloud dispatch module SHALL route GitHub webhook payloads received via the errand-cloud WebSocket relay to the GitHub webhook handler.
 

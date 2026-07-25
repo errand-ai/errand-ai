@@ -1,3 +1,7 @@
+## Purpose
+
+The platform abstraction layer: a capability enum and common interface that let Twitter, email, and other integrations declare and expose their supported capabilities uniformly.
+
 ## Requirements
 
 ### Requirement: PlatformCapability enum

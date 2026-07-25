@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A system skill that injects cloud-storage usage instructions into the task-runner when cloud storage is connected.
+
+## Requirements
 ### Requirement: Cloud storage system skill
 A system skill SHALL exist at `/app/system-skills/cloud-storage/cloud-storage/SKILL.md` containing instructions for using cloud storage tools. The skill SHALL cover: available operations (list, read, write, delete, file info, create folder, move), path-based file access syntax, ETag-based optimistic concurrency pattern, and error handling guidance (permission, not found, auth errors).
 

@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+MCP tools and TwitterPlatform methods for reading tweet metrics and the authenticated user's recent tweets.
+
+## Requirements
 ### Requirement: get_tweet_metrics MCP tool
 The MCP server SHALL expose a `get_tweet_metrics` tool that accepts `tweet_id` (str, required). The tool SHALL retrieve the tweet's text, creation date, and all available metrics using `TwitterPlatform.get_metrics()`. The tool SHALL return a JSON string containing `tweet_id`, `text`, `created_at`, and metric objects: `public_metrics` (always present), `non_public_metrics` (present for own tweets within 30 days), and `organic_metrics` (present for own tweets within 30 days). Fields that are unavailable SHALL be omitted from the response rather than set to null.
 

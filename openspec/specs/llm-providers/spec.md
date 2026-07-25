@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Management of multiple configurable LLM providers: database model, CRUD API, type probing, model listing, a client pool, and default-provider selection.
+
+## Requirements
 ### Requirement: LLM provider database model
 The backend SHALL define an `LlmProvider` SQLAlchemy model mapped to the `llm_providers` table with columns: `id` (UUID primary key, server-default), `name` (String, unique, not null), `base_url` (String, not null), `api_key_encrypted` (String, not null — Fernet-encrypted using `CREDENTIAL_ENCRYPTION_KEY`), `provider_type` (String, not null — one of `litellm`, `openai_compatible`, `unknown`), `is_default` (Boolean, not null, default False), `source` (String, not null — one of `env`, `database`), `created_at` (DateTime, server-default utcnow), `updated_at` (DateTime, server-default utcnow, onupdate utcnow). An Alembic migration SHALL create this table.
 

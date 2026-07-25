@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A system skill that injects Hindsight memory instructions into the task-runner when a Hindsight URL is configured, replacing the server-side prefetch.
+
+## Requirements
 ### Requirement: Hindsight memory system skill
 A system skill SHALL exist at `/app/system-skills/hindsight/hindsight-memory/SKILL.md` containing instructions for using the Hindsight persistent memory system. The skill SHALL instruct the agent to: (1) recall relevant context at the start of the task using Hindsight MCP tools, (2) use its own judgment about what queries to make, and (3) retain important learnings, decisions, and patterns at the end of the task.
 

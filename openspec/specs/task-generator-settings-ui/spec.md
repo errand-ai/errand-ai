@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Settings page for managing task generator trigger configurations. Displays per-trigger-type cards starting with email, with controls for enabling/disabling triggers and configuring their behavior.
+
+## Requirements
 
 ### Requirement: Task Generators settings page
 The application SHALL provide a "Task Generators" settings page at route `/settings/task-generators`. This page SHALL display trigger configurations that automatically create tasks. Each trigger type SHALL be displayed as a distinct card or section.

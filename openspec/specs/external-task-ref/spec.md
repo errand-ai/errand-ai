@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+The ExternalTaskRef data model linking errand tasks to their external source (webhook origin), enabling completion callbacks and deduplication.
+
+## Requirements
 ### Requirement: ExternalTaskRef data model
 
 The system SHALL provide an `ExternalTaskRef` SQLAlchemy model with the following fields: `id` (UUID, primary key, server-generated), `task_id` (UUID, foreign key to `Task.id`, unique, not null), `trigger_id` (UUID, foreign key to `WebhookTrigger.id`, nullable — nullable because the trigger can be deleted after task creation), `source` (string, not null — e.g. "jira", "github"), `external_id` (string, not null — human-readable key such as "PROJ-123" or "owner/repo#42"), `external_url` (string, not null — full URL to the external item), `parent_id` (string, nullable — parent item key, e.g. epic key for a sub-task), `metadata` (JSON dict, default empty dict — source-specific IDs and data such as Jira numeric issue ID, GitHub node ID), `created_at` (datetime, server default UTC now), `updated_at` (datetime, server default UTC now, updated on modification). The model SHALL have a unique constraint on `(external_id, source)` to prevent duplicate tasks for the same external item.

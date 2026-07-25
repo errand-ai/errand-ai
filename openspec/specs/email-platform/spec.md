@@ -2,8 +2,7 @@
 
 Email platform integration providing IMAP/SMTP connectivity, credential verification, and platform registration for errand's dedicated mailbox.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Email platform class
 
 The system SHALL provide an `EmailPlatform` class in `errand/platforms/email.py` that extends the `Platform` base class. The class SHALL implement `info()` and `verify_credentials()`. The platform SHALL declare `PlatformCapability.EMAIL` in its capabilities.

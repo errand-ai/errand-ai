@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Infrastructure telemetry: PostgreSQL version and Valkey version / connectivity collection.
+
+## Requirements
 ### Requirement: PostgreSQL version collection
 The telemetry module SHALL collect the PostgreSQL server version at report time.
 

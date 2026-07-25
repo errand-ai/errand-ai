@@ -1,3 +1,7 @@
+## Purpose
+
+Parsing and filtering of GitHub `projects_v2_item` webhook payloads to decide when a project card movement should create an errand task.
+
 ## Requirements
 
 ### Requirement: Parse GitHub projects_v2_item webhook payload

@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+A `read_rss_feed` MCP tool (no platform dependency) for fetching and parsing RSS/Atom feeds via feedparser.
+
+## Requirements
 ### Requirement: read_rss_feed MCP tool
 The MCP server SHALL expose a `read_rss_feed` tool that accepts `url` (str, required), `max_items` (int, optional, default 20), and `since` (str, optional, ISO 8601 datetime). The tool SHALL fetch the feed URL using `httpx`, parse it using `feedparser`, and return a JSON string containing a `feed` object (with `title`, `link`, `description`) and an `items` array. Each item SHALL include `title`, `link`, `published` (ISO 8601 or empty string if absent), and `summary` (first 500 characters of the entry description/summary, or empty string). Items SHALL be sorted by published date descending (newest first). If `since` is provided, only items published after that datetime SHALL be included. If `max_items` is provided, the result SHALL be limited to that many items.
 

@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+OAuth initiation, token reception, and refresh performed via the cloud proxy so the local instance never handles provider client secrets directly.
+
+## Requirements
 ### Requirement: Cloud-proxy OAuth initiation
 
 When a user initiates an OAuth authorize flow for a provider that has no local client credentials but errand-cloud is connected, the server SHALL send an `oauth_initiate` WebSocket message to errand-cloud containing a random state token and the provider name, then redirect the user to errand-cloud's OAuth authorize URL with that state.

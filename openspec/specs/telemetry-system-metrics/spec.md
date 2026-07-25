@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+System-resource telemetry: CPU, host and container memory, container CPU/limit detection, disk space, and static system-info caching.
+
+## Requirements
 ### Requirement: CPU count collection
 The telemetry module SHALL collect the logical CPU count using psutil.
 

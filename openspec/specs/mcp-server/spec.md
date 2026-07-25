@@ -1,5 +1,8 @@
-## MODIFIED Requirements
+## Purpose
 
+Behaviours of the MCP server surface: structured task-status output, client-id attribution capture, and API-key-authenticated log streaming.
+
+## Requirements
 ### Requirement: Structured task status output
 The `task_status` MCP tool SHALL support returning structured JSON in addition to plaintext.
 
@@ -10,8 +13,6 @@ The `task_status` MCP tool SHALL support returning structured JSON in addition t
 #### Scenario: Default text format
 - **WHEN** `task_status` is called without a `format` parameter or with `format="text"`
 - **THEN** the tool SHALL return the existing plaintext format (backward compatible)
-
-## ADDED Requirements
 
 ### Requirement: Capture X-Client-Id header for task attribution
 MCP tool handlers that create tasks SHALL read the `X-Client-Id` HTTP header from the request and use its value as the task's `created_by` field.

@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+HTTP health endpoints and Kubernetes / Docker Compose liveness and readiness probes for the server and worker.
+
+## Requirements
 ### Requirement: Worker health HTTP endpoint
 The worker process SHALL expose an HTTP health endpoint on a configurable port (default 8080, controlled by `HEALTH_PORT` environment variable). The endpoint SHALL be served by a background daemon thread started before the main poll loop.
 

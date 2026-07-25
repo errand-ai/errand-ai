@@ -2,8 +2,7 @@
 
 Server-side Jira REST API calls for completion callbacks, using httpx with Bearer token auth against the Atlassian Cloud gateway.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Jira API client configuration
 The system SHALL make Jira REST API calls using httpx with Bearer token authentication against the Atlassian Cloud gateway at `https://api.atlassian.com/ex/jira/{cloud_id}/`. The `cloud_id` and `api_token` SHALL be loaded from `PlatformCredential` with `platform_id="jira"`. All requests SHALL include the header `Authorization: Bearer {api_token}` and `Content-Type: application/json`.
 

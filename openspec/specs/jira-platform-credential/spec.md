@@ -2,8 +2,7 @@
 
 Jira Cloud credential storage, management, and verification using the PlatformCredential model, with a dedicated API for connecting and disconnecting Jira.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Jira credential data structure
 The system SHALL store Jira credentials in a `PlatformCredential` record with `platform_id="jira"`. The encrypted data SHALL contain: `cloud_id` (string, the Atlassian Cloud instance ID), `api_token` (string, a scoped Bearer token for the Jira REST API), `site_url` (string, e.g. "https://company.atlassian.net"), and `service_account_email` (string, the email address of the service account used for API calls).
 

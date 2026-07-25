@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+MCP tools and TwitterPlatform methods for tweet engagement: reply, like, and retweet.
+
+## Requirements
 ### Requirement: reply_to_tweet MCP tool
 The MCP server SHALL expose a `reply_to_tweet` tool that accepts `tweet_id` (str, required) and `message` (str, required, 1-280 characters). The tool SHALL post a reply to the specified tweet using `TwitterPlatform.reply()`. The tool SHALL return the reply tweet's URL on success or an error message on failure. Character counting SHALL use the same `twitter_character_count()` function as `post_tweet` to account for t.co URL shortening.
 

@@ -1,3 +1,7 @@
+## Purpose
+
+The Settings sidebar navigation structure — the set and ordering of links to each settings sub-page.
+
 ## Requirements
 
 ### Requirement: Cloud Service navigation link

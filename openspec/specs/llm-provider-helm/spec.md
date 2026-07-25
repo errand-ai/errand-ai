@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Helm chart values and deployment templating for configuring multiple LLM providers via indexed environment variables.
+
+## Requirements
 ### Requirement: Helm values for LLM providers array
 The Helm chart `values.yaml` SHALL replace the `openai` values block with an `llmProviders` array. Each entry SHALL support `name` (string), `baseUrl` (string), `apiKey` (string, for inline values), `existingSecret` (string, K8s secret name), and `secretKeyApiKey` (string, key within the secret). The default `llmProviders` SHALL be an empty array.
 

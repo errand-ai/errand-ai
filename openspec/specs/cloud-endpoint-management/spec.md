@@ -1,4 +1,8 @@
-## MODIFIED Requirements
+## Purpose
+
+Registration and management of the errand instance's cloud-relay endpoint configuration, including subscription-error handling and webhook-endpoint registration with the cloud service.
+
+## Requirements
 
 ### Requirement: Automatic endpoint registration with errand-cloud
 The backend SHALL automatically register webhook endpoints with errand-cloud when both cloud credentials and Slack credentials are active.
@@ -29,6 +33,29 @@ The backend SHALL automatically register webhook endpoints with errand-cloud whe
 #### Scenario: Registration succeeds after previous failure
 - **WHEN** endpoint registration completes successfully
 - **THEN** the backend SHALL delete the `cloud_endpoint_error` Setting if it exists
+
+### Requirement: Endpoint cleanup on disconnect
+When the user disconnects from errand-cloud, the backend SHALL revoke all cloud endpoints including webhook trigger endpoints for both Jira and GitHub.
+
+#### Scenario: Disconnect revokes Slack endpoints
+- **WHEN** the user disconnects from errand-cloud via the settings page
+- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=slack` on the cloud service
+- **THEN** the backend SHALL delete the `cloud_endpoints` setting
+- **THEN** the backend SHALL delete the `cloud_endpoint_error` setting
+
+#### Scenario: Disconnect revokes Jira webhook trigger endpoints
+- **WHEN** the user disconnects from errand-cloud via the settings page
+- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=jira` on the cloud service
+- **THEN** the backend SHALL clear `cloud_webhook_url` and `cloud_endpoint_token` on all Jira webhook trigger records
+
+#### Scenario: Disconnect revokes GitHub webhook trigger endpoints
+- **WHEN** the user disconnects from errand-cloud via the settings page
+- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=github` on the cloud service
+- **THEN** the backend SHALL clear `cloud_webhook_url` and `cloud_endpoint_token` on all GitHub webhook trigger records
+
+#### Scenario: Endpoint cleanup failure
+- **WHEN** the cloud endpoint revocation API call fails
+- **THEN** the backend SHALL log the error but proceed with local cleanup (delete credentials and settings)
 
 ### Requirement: Webhook trigger endpoint registration with errand-cloud
 The backend SHALL automatically register per-trigger webhook endpoints with errand-cloud when a webhook trigger is created or updated and the cloud connection is active. Registration SHALL be supported for both Jira (`integration="jira"`) and GitHub (`integration="github"`) triggers using the same wire shape. The returned per-trigger URL SHALL be stored on the trigger record so the UI can display it. Registration failures SHALL NOT block local trigger create/update/delete.
@@ -84,26 +111,3 @@ The backend SHALL automatically register per-trigger webhook endpoints with erra
 - **THEN** the backend SHALL log the condition at WARNING level
 - **THEN** the trigger SHALL be created locally without cloud registration
 - **THEN** the user SHALL be informed via the same `cloud_endpoint_error` Setting mechanism used for Slack registration failures
-
-### Requirement: Endpoint cleanup on disconnect
-When the user disconnects from errand-cloud, the backend SHALL revoke all cloud endpoints including webhook trigger endpoints for both Jira and GitHub.
-
-#### Scenario: Disconnect revokes Slack endpoints
-- **WHEN** the user disconnects from errand-cloud via the settings page
-- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=slack` on the cloud service
-- **THEN** the backend SHALL delete the `cloud_endpoints` setting
-- **THEN** the backend SHALL delete the `cloud_endpoint_error` setting
-
-#### Scenario: Disconnect revokes Jira webhook trigger endpoints
-- **WHEN** the user disconnects from errand-cloud via the settings page
-- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=jira` on the cloud service
-- **THEN** the backend SHALL clear `cloud_webhook_url` and `cloud_endpoint_token` on all Jira webhook trigger records
-
-#### Scenario: Disconnect revokes GitHub webhook trigger endpoints
-- **WHEN** the user disconnects from errand-cloud via the settings page
-- **THEN** the backend SHALL call `DELETE /api/endpoints?integration=github` on the cloud service
-- **THEN** the backend SHALL clear `cloud_webhook_url` and `cloud_endpoint_token` on all GitHub webhook trigger records
-
-#### Scenario: Endpoint cleanup failure
-- **WHEN** the cloud endpoint revocation API call fails
-- **THEN** the backend SHALL log the error but proceed with local cleanup (delete credentials and settings)

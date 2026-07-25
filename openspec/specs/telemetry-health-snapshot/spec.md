@@ -1,5 +1,8 @@
-## ADDED Requirements
+## Purpose
 
+Health telemetry: process uptime tracking and cumulative task failure count.
+
+## Requirements
 ### Requirement: Process uptime tracking
 The telemetry module SHALL track process uptime.
 

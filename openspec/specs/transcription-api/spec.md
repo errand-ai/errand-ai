@@ -1,4 +1,16 @@
-## MODIFIED Requirements
+## Purpose
+
+Backend endpoint for audio transcription via the OpenAI-compatible speech-to-text API.
+
+## Requirements
+
+### Requirement: Transcription models endpoint
+
+The backend SHALL remove the `GET /api/llm/transcription-models` endpoint. Transcription model listing is now handled by `GET /api/llm/providers/{id}/models?mode=audio_transcription` (defined in the `llm-providers` spec).
+
+#### Scenario: Legacy endpoint removed
+- **WHEN** a client sends `GET /api/llm/transcription-models`
+- **THEN** the backend returns HTTP 404 (endpoint does not exist)
 
 ### Requirement: Transcription endpoint
 
@@ -32,14 +44,6 @@ The backend SHALL expose `GET /api/transcribe/status` requiring any authenticate
 - **WHEN** `transcription_model` is empty or references a deleted provider
 - **THEN** `GET /api/transcribe/status` returns `{"enabled": false}`
 
-### Requirement: Transcription models endpoint
-
-The backend SHALL remove the `GET /api/llm/transcription-models` endpoint. Transcription model listing is now handled by `GET /api/llm/providers/{id}/models?mode=audio_transcription` (defined in the `llm-providers` spec).
-
-#### Scenario: Legacy endpoint removed
-- **WHEN** a client sends `GET /api/llm/transcription-models`
-- **THEN** the backend returns HTTP 404 (endpoint does not exist)
-
 ### Requirement: Transcription function in llm.py
 
 The `llm.py` module SHALL expose an async `transcribe_audio(file, session)` function that reads the `transcription_model` setting, resolves the provider_id to an `AsyncOpenAI` client via the client pool, and calls `client.audio.transcriptions.create()` with the configured model. If the setting is empty or the provider does not exist, the function SHALL raise a `ValueError`.
@@ -51,9 +55,3 @@ The `llm.py` module SHALL expose an async `transcribe_audio(file, session)` func
 #### Scenario: transcribe_audio with no model configured
 - **WHEN** `transcribe_audio()` is called and `transcription_model` is empty
 - **THEN** it raises a `ValueError`
-
-## REMOVED Requirements
-
-### Requirement: Transcription error handling
-**Reason**: The "LLM client not configured" scenario (checking `OPENAI_BASE_URL`) is replaced by provider-based resolution. The 503 response for unconfigured transcription is now covered by the modified transcription endpoint requirement above.
-**Migration**: Error handling for missing providers is now part of the provider-scoped client resolution.

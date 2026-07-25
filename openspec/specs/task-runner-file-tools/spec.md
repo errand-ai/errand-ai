@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+File-manipulation tools available to the task-runner agent, with safeguards against binary-file context overflow.
+
+## Requirements
 
 ### Requirement: Write file tool
 The task runner SHALL provide a `write_file` tool that creates or overwrites a file with given content, protected by a per-file mutation lock.

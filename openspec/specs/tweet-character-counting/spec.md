@@ -1,4 +1,4 @@
-# Tweet Character Counting
+## Purpose
 
 Validate tweet length using Twitter's actual counting rules (t.co URL shortening: all URLs count as 23 characters regardless of their actual length).
 

@@ -1,3 +1,7 @@
+## Purpose
+
+The MCP Streamable HTTP server mounted at `/mcp`, exposing the task-runner tool catalog to MCP clients via the official MCP Python SDK.
+
 ## Requirements
 
 ### Requirement: MCP server mounted at /mcp

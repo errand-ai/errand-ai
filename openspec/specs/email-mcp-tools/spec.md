@@ -2,8 +2,7 @@
 
 MCP tools for the task-runner agent to read, send, forward, and organise email in errand's dedicated mailbox, with security constraints on outbound messages and folder operations.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: list_emails MCP tool
 
 The MCP server SHALL expose a `list_emails` tool that accepts `folder` (str, optional, default "INBOX"), `limit` (int, optional, default 20), and `search` (str, optional, IMAP search criteria). The tool SHALL connect to the configured IMAP server, fetch message summaries (UID, from, to, subject, date, flags), and return a JSON string with a `messages` array. If no email platform is configured, the tool SHALL return an error.

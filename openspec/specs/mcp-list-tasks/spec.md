@@ -1,7 +1,10 @@
-## ADDED Requirements
+## Purpose
 
+An MCP tool that lists tasks for the task-runner agent and MCP clients.
+
+## Requirements
 ### Requirement: list_tasks MCP tool
-The MCP server must expose a `list_tasks` tool that returns tasks visible on the board.
+The MCP server SHALL expose a `list_tasks` tool that returns tasks visible on the board.
 
 #### Scenario: List all board-visible tasks (no filter)
 - **WHEN** `list_tasks` is called with no parameters

@@ -1,3 +1,7 @@
+## Purpose
+
+An authenticated `GitHubClient` for the GitHub GraphQL and REST APIs, supporting both PAT and GitHub App (installation token) credentials, used by the GitHub Projects integration.
+
 ## Requirements
 
 ### Requirement: GitHub GraphQL client with authentication

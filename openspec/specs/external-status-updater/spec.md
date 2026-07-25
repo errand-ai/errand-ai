@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Propagation of errand task status back to the external system that originated the task (e.g. GitHub Projects, Jira), keeping the external item in sync.
+
+## Requirements
 
 ### Requirement: ExternalStatusUpdater background service
 
