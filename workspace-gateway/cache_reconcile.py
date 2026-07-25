@@ -63,10 +63,13 @@ class DirtyEntry(NamedTuple):
 
     @property
     def is_orphaned(self) -> bool:
-        """Dirty but nothing to upload — the terminal, silent data-loss state.
+        """Dirty but with no data file backing it — the terminal, silent
+        data-loss state (the incident: dirty meta, ``Size: 0``, no ``vfs/`` file).
 
-        A resumable pending upload has a non-empty data file; an orphan has no
-        data file at all, or a zero-length one (the incident's ``Size: 0`` case).
+        Orphaned means the data file is *absent*. A data file that exists is
+        preserved even when zero-length: that is a legitimate empty-file write
+        (a task creating/truncating a file to empty), not a lost upload, and must
+        not be discarded. rclone uploads it like any other cached write.
         """
         return not self.has_data
 
@@ -81,16 +84,19 @@ def _is_dirty(meta: dict) -> bool:
     return bool(meta.get("Dirty"))
 
 
-def _has_upload_data(data_path: str) -> bool:
-    """True if there is real data to upload for this entry.
+def _data_file_present(data_path: str) -> bool:
+    """True if a cache data file backs this entry (something to upload).
 
-    Only a genuinely absent file counts as "no data". If the file exists but
-    can't be stat'd (permissions, transient I/O), we assume data IS present:
-    misclassifying a still-backed entry as orphaned would delete a real pending
-    upload, which is exactly the data loss this whole change exists to prevent.
+    Presence — not size — is what matters. A zero-length data file that EXISTS is
+    a legitimate empty-file write and must be preserved; only a genuinely ABSENT
+    data file counts as "no data" (an orphan). If the path can't be stat'd for
+    any reason other than 'missing' (permissions, transient I/O), we assume it is
+    present: misclassifying a still-backed entry as orphaned would delete a real
+    write, which is exactly the data loss this whole change exists to prevent.
     """
     try:
-        return os.path.getsize(data_path) > 0
+        os.stat(data_path)
+        return True
     except FileNotFoundError:
         return False
     except OSError:
@@ -125,7 +131,7 @@ def iter_dirty_entries(cache_dir: str) -> Iterator[DirtyEntry]:
                 path=rel,
                 meta=meta,
                 data_path=data_path,
-                has_data=_has_upload_data(data_path),
+                has_data=_data_file_present(data_path),
             )
 
 

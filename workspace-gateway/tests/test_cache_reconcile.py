@@ -47,18 +47,20 @@ def test_orphaned_dirty_entry_is_removed(tmp_path):
     assert not os.path.exists(_meta_path(cache, "gd/orphan.md"))
 
 
-def test_zero_length_data_file_orphan_is_removed(tmp_path):
-    # The incident's exact shape: Size:0 meta AND a zero-length data file.
+def test_zero_length_data_file_is_preserved_as_empty_write(tmp_path):
+    # A dirty entry whose data file EXISTS but is zero-length is a legitimate
+    # empty-file write (a task truncating/creating a file to empty), NOT an
+    # orphan — it must be preserved so rclone uploads the empty file. Only a
+    # *missing* data file is an orphan.
     cache = str(tmp_path)
     _write_meta(cache, "gd/empty.md", dirty=True, size=0)
-    _write_data(cache, "gd/empty.md", "")  # empty data file — nothing to upload
+    _write_data(cache, "gd/empty.md", "")  # empty data file EXISTS
 
     reconciled = cr.reconcile_cache(cache)
 
-    assert [r["path"] for r in reconciled] == ["gd/empty.md"]
-    # Both the stale meta and the empty data file are cleared.
-    assert not os.path.exists(_meta_path(cache, "gd/empty.md"))
-    assert not os.path.exists(_data_path(cache, "gd/empty.md"))
+    assert reconciled == []
+    assert os.path.exists(_meta_path(cache, "gd/empty.md"))
+    assert os.path.exists(_data_path(cache, "gd/empty.md"))
 
 
 def test_resumable_pending_upload_is_preserved(tmp_path):
@@ -144,15 +146,16 @@ def test_unstattable_data_file_is_treated_as_having_data(tmp_path, monkeypatch):
     _write_meta(cache, "gd/locked.md", dirty=True, size=5)
     _write_data(cache, "gd/locked.md", "hello")
 
-    real_getsize = os.path.getsize
+    real_stat = os.stat
 
-    def flaky_getsize(path):
-        if path.endswith("locked.md"):
+    def flaky_stat(path, *args, **kwargs):
+        if isinstance(path, str) and path.endswith("locked.md"):
             raise PermissionError("cannot stat")
-        return real_getsize(path)
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(os.path, "getsize", flaky_getsize)
+    monkeypatch.setattr(os, "stat", flaky_stat)
     reconciled = cr.reconcile_cache(cache)
+    monkeypatch.undo()  # restore os.stat before the filesystem assertions below
 
     assert reconciled == []  # preserved, not deleted
     assert os.path.exists(_meta_path(cache, "gd/locked.md"))
