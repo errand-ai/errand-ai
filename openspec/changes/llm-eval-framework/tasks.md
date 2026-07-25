@@ -20,29 +20,29 @@
 
 ## 4. Eval driver skeleton (`evals/`)
 
-- [ ] 4.1 Scaffold `evals/`: `README.md`, `requirements.txt` (MCP client, PyYAML), `config.yaml` template, CLI entrypoint with `run` and `retro` subcommands
-- [ ] 4.2 MCP client wrapper for the errand endpoint (auth, retry, the tool calls the driver needs)
-- [ ] 4.3 Corpus loader with validation (required fields, assertion types) and corpus-version detection (git SHA + dirty-tree warning)
-- [ ] 4.4 Transcript parser: extract JSONL events from `runner_logs`, compute metrics (turns, recoveries, error events), classify infra vs judgeable per spec
+- [x] 4.1 Scaffold `evals/`: `README.md`, `requirements.txt` (MCP client, PyYAML), `config.yaml` template, CLI entrypoint with `run` and `retro` subcommands
+- [x] 4.2 MCP client wrapper for the errand endpoint (auth, retry, the tool calls the driver needs)
+- [x] 4.3 Corpus loader with validation (required fields, assertion types) and corpus-version detection (git SHA + dirty-tree warning)
+- [x] 4.4 Transcript parser: extract JSONL events from `runner_logs`, compute metrics (turns, recoveries, error events), classify infra vs judgeable per spec
 
 ## 5. Scoring
 
-- [ ] 5.1 Assertion evaluator (`output_contains`, `output_regex`, `tool_called`)
-- [ ] 5.2 Transcript digest builder (bounded, event-only, truncated tool results)
-- [ ] 5.3 Judge invocation via `claude` CLI headless: prompt assembly, strict-JSON verdict parse with one retry, null-score fallback preserving raw response
-- [ ] 5.4 Verdict combination (failed assertion ⇒ `fail`) and `record_eval_result` submission; unit tests with fixture transcripts from real history
+- [x] 5.1 Assertion evaluator (`output_contains`, `output_regex`, `tool_called`)
+- [x] 5.2 Transcript digest builder (bounded, event-only, truncated tool results)
+- [x] 5.3 Judge invocation via `claude` CLI headless: prompt assembly, strict-JSON verdict parse with one retry, null-score fallback preserving raw response
+- [x] 5.4 Verdict combination (failed assertion ⇒ `fail`) and `record_eval_result` submission; unit tests with fixture transcripts from real history
 
 ## 6. Live run loop
 
-- [ ] 6.1 Matrix executor: sequential per model, one in-flight task, per-cell profile clone/reuse, end-of-run profile cleanup
-- [ ] 6.2 Submit/poll/collect cycle with corpus timeouts and infra-failure single retry
-- [ ] 6.3 Yield-to-production gate (`list_tasks` check, poll interval, `--no-yield`)
-- [ ] 6.4 Resumability: `get_eval_run` cell skip on re-invocation with existing run id
+- [x] 6.1 Matrix executor: sequential per model, one in-flight task, per-cell profile clone/reuse, end-of-run profile cleanup
+- [x] 6.2 Submit/poll/collect cycle with corpus timeouts and infra-failure single retry
+- [x] 6.3 Yield-to-production gate (`list_tasks` check, poll interval, `--no-yield`)
+- [x] 6.4 Resumability: `get_eval_run` cell skip on re-invocation with existing run id
 
 ## 7. Retro mode & corpus
 
-- [ ] 7.1 Retro subcommand: `search_tasks` sampling, model attribution from `llm_turn_start`, skip-and-report unparseable transcripts, `mode='retro'` recording
-- [ ] 7.2 Author initial read-only corpus from history (job-research, tech-trends research, nginx log analysis, research summary, translation) with rubrics and assertions
+- [x] 7.1 Retro subcommand: `search_tasks` sampling, model attribution from `llm_turn_start`, skip-and-report unparseable transcripts, `mode='retro'` recording
+- [x] 7.2 Author initial read-only corpus from history (job-research, tech-trends research, nginx log analysis, research summary, translation) with rubrics and assertions
 - [ ] 7.3 Run retro-judging over history samples per workload; calibrate rubrics from disagreements; record baseline run
 
 ## 8. Verification & rollout

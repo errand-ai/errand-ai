@@ -60,6 +60,10 @@ errand/
   llm.py               # OpenAI SDK client, LLM title generation
   container_runtime.py # Pluggable container runtime (Docker, K8s, Apple) with async interface
   alembic/             # Database migrations
+evals/
+  cli.py               # LLM eval driver (run/retro) — pure MCP client
+  corpus/              # Per-workload frozen task specs (YAML)
+  tests/               # Eval driver unit tests (fake MCP client + judge)
 frontend/
   src/                 # Vue 3 app source
   src/stores/auth.ts   # Pinia auth store (token, idToken, roles)
@@ -265,6 +269,15 @@ The bot token is loaded server-side from encrypted credentials and is never sent
 
 Both tools are catalog-only (not in `DEFAULT_HOT_TOOLS`); the task-runner discovers them via `discover_tools`.
 
+## LLM Eval Framework
+
+A standing suite for measuring which model best serves each workload (especially which *local* model). It runs eval tasks through the **real** task pipeline and scores them with an LLM judge. See `openspec/specs/eval-*` and `evals/README.md`.
+
+- **`evals/`** — a standalone driver CLI (`python -m evals.cli run|retro`), a **pure MCP client** (no DB/K8s/SSH). Corpus tasks live in `evals/corpus/<workload>/<nnn>-<slug>.yaml` (read-only workloads only for now). Scoring: programmatic assertions (`output_contains`/`output_regex`/`tool_called`) run first (any fail ⇒ `fail`), then the `claude` CLI judges against the rubric using a bounded transcript digest. Infra failures (skill install / MCP connect / zombie recovery / no `agent_start`) are classified from the transcript and excluded from model scores. Has its own `requirements.txt` + tests (`evals/tests/`, fake MCP client + fake judge — no live infra needed).
+- **`is_eval` semantics** — `tasks.is_eval` (migration 030) is set **server-side at creation** for any task whose resolved profile name starts with `eval--` (see `errand/eval_marking.py`; wired into every creation path). `GET /api/tasks` and `/api/tasks/archived` exclude eval tasks unless `include_evals=true`, so the board never shows them (no frontend change). The flag is persisted (survives profile deletion) and included in `TaskResponse` / `_task_to_dict` event payloads.
+- **New MCP tools** (`errand/mcp_server.py`) — `clone_task_profile` / `delete_task_profile` (restricted to the `eval--` name prefix, idempotent), `search_tasks` (full history incl. archived/deleted, AND filters, `is_eval` default-exclusion, limit cap 200), and `start_eval_run` / `record_eval_result` / `finish_eval_run` / `get_eval_run` (validation, server-stamped `errand_version`, unique `(run_id, workload, model, rep)` cell, finished-run guard). Results live in the `eval_runs` / `eval_results` tables.
+- **Catalog exclusion** — all seven eval/admin tools are in `EXCLUDED_CATALOG_TOOLS` (`task-runner/tool_registry.py`): omitted from the tool catalog, refused by `discover_tools`, and skipped by the auto-enable-on-error recovery — a task LLM can never see or invoke them. (They're reachable with the shared `mcp_api_key`; the `eval--` name restriction bounds the blast radius. A separate admin key is the multi-user upgrade path.)
+
 ## Frontend Layout
 
 - App.vue `<main>` has no max-width — content fills viewport width
@@ -299,5 +312,5 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Version: tracked in the `VERSION` file (single source of truth — do not hard-code it here) — bump per semver for main/release commits (CI enforces immutable tags on `main`; PR builds auto-version via the `github.run_number` suffix, so no per-commit bump is needed on a PR branch)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
-- Tests: 1656 errand + 65 task-runner (pytest) + 440 frontend (vitest) — CI `test` job gates both build jobs
+- Tests: 1808 errand + 294 task-runner + 32 evals (pytest) + 440 frontend (vitest) — CI `test` job gates both build jobs
 - 52 component specs in `openspec/specs/`

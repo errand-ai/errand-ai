@@ -1,0 +1,25 @@
+id: translation/001-en-to-french
+base_profile: translation
+description: |
+  Translate the following English text into natural, fluent French, preserving
+  meaning, tone, and any technical terms. Do not add commentary — output only the
+  translation.
+
+  Text:
+  "Our platform team is rolling out a new deployment pipeline next week. It reduces
+  release time from two hours to under fifteen minutes and adds automatic rollback
+  if health checks fail. Please review the migration guide and raise any concerns
+  before Thursday."
+rubric: |
+  Grade on:
+  - Accuracy: the French conveys the same meaning as the English, including the
+    two-hours→fifteen-minutes figures and the automatic-rollback / health-check
+    condition and the Thursday deadline.
+  - Fluency: reads as natural French, not word-for-word calque.
+  - Discipline: output is the translation only, with no added commentary.
+  Score 0-10. Missing or wrong numbers/deadline cap the score at 5.
+assertions:
+  - output_regex: "(quinze|15)"
+  - output_contains: "jeudi"
+reps: 5
+timeout_minutes: 10

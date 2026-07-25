@@ -1,0 +1,23 @@
+id: log-analysis/001-nginx-errors
+base_profile: log-analysis
+description: |
+  Analyse the nginx access and error logs provided in the task workspace. Report:
+  the total request count and the breakdown by HTTP status class (2xx/3xx/4xx/5xx);
+  the top 10 URLs by request volume; the top sources of 4xx and 5xx errors (by URL
+  and client where visible); and any spikes or anomalies in the time distribution.
+  Conclude with the two or three most likely operational issues and a concrete next
+  step for each.
+rubric: |
+  Grade on:
+  - Correctness: counts and breakdowns are internally consistent and derived from
+    the actual log data, not invented.
+  - Completeness: status-class breakdown, top URLs, error sources, and a time-based
+    observation are all present.
+  - Diagnosis: the concluding issues follow from the data and each has an
+    actionable next step.
+  Score 0-10. Numbers that don't reconcile with each other cap the score at 4.
+assertions:
+  - output_regex: "[0-9]"
+  - output_contains: "5xx"
+reps: 3
+timeout_minutes: 20

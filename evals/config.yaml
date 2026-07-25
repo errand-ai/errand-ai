@@ -1,0 +1,34 @@
+# Eval driver configuration. Command-line flags override these values.
+#
+# The driver talks to Errand ONLY through the MCP endpoint (no DB/K8s/SSH), so
+# this file plus an API key is all it needs — run it from wherever LM Studio and
+# the `claude` CLI live.
+
+errand:
+  # Errand MCP endpoint (streamable HTTP). Include the /mcp path.
+  mcp_url: "https://errand.devops-consultants.net/mcp"
+  # Name of the environment variable holding the MCP API key. The key itself is
+  # NEVER stored in this file — export it in the shell (e.g. ERRAND_MCP_API_KEY).
+  api_key_env: "ERRAND_MCP_API_KEY"
+
+# Models under test, given as LiteLLM model slugs. Each becomes one sequential
+# batch (LM Studio serves one local model at a time). A short slug is derived for
+# the eval profile name (eval--<workload>--<slug>).
+models:
+  - "gemma-3-27b"
+  - "qwen3-30b"
+
+# Judge model, passed to the `claude` CLI (--model). Independent of the models
+# under test and of the LiteLLM gateway, billed under the Max subscription.
+judge_model: "claude-opus-4-8"
+
+# How the driver yields to production: before each submission it waits while any
+# non-eval task is pending/running, re-checking every poll_interval_seconds.
+yield_poll_interval_seconds: 30
+
+# Terminal-status poll cadence for a submitted eval task.
+task_poll_interval_seconds: 15
+
+# Judge transcript digest cap (characters). Long transcripts (job-research p90 =
+# 66 turns) are digested to tool-call names + truncated results within this cap.
+digest_max_chars: 12000
