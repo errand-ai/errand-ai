@@ -96,6 +96,22 @@ def test_dirty_with_data_and_active_queue_stays_healthy():
     assert health["write_back"]["stuck_entries"] == []
 
 
+def test_overdue_entry_flagged_even_with_busy_queue():
+    # A busy queue (uploading unrelated files) must not mask a single entry
+    # forever: past the absolute overdue backstop (max(10x grace, 300s)) it is
+    # flagged regardless of queue state.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0), clock=clock)  # overdue = 300s
+    entries = [_entry("gd/b.md", has_data=True)]
+    mon.evaluate(_stats(queued=1), entries)
+    clock.t = 120.0  # past grace but under overdue, queue busy → still ok (masked)
+    assert mon.evaluate(_stats(queued=1), entries)["write_back_state"] == "ok"
+    clock.t = 301.0  # past the overdue backstop → flagged despite busy queue
+    health = mon.evaluate(_stats(queued=1), entries)
+    assert health["write_back_state"] == "degraded"
+    assert health["write_back_errors"][0]["reason"] == "dirty_entry_overdue"
+
+
 def test_unknown_queue_state_does_not_falsely_degrade_dirty_with_data():
     # rc outage: read_vfs_stats returns None counters. A dirty-with-data entry
     # past grace must NOT be flagged stuck — we don't know the queue is idle.

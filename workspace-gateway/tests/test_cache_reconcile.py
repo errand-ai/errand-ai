@@ -125,6 +125,29 @@ def test_meta_removal_failure_is_not_reported_as_reconciled(tmp_path, monkeypatc
     assert "orphaned_dirty_entry_reconciled" not in events
 
 
+def test_unstattable_data_file_is_treated_as_having_data(tmp_path, monkeypatch):
+    # A data file that exists but can't be stat'd (permissions / transient I/O)
+    # must NOT be classified as orphaned — deleting it would discard a real
+    # pending upload. Only a genuinely-absent file counts as "no data".
+    cache = str(tmp_path)
+    _write_meta(cache, "gd/locked.md", dirty=True, size=5)
+    _write_data(cache, "gd/locked.md", "hello")
+
+    real_getsize = os.path.getsize
+
+    def flaky_getsize(path):
+        if path.endswith("locked.md"):
+            raise PermissionError("cannot stat")
+        return real_getsize(path)
+
+    monkeypatch.setattr(os.path, "getsize", flaky_getsize)
+    reconciled = cr.reconcile_cache(cache)
+
+    assert reconciled == []  # preserved, not deleted
+    assert os.path.exists(_meta_path(cache, "gd/locked.md"))
+    assert os.path.exists(_data_path(cache, "gd/locked.md"))
+
+
 def test_iter_dirty_entries_reports_orphan_and_resumable(tmp_path):
     cache = str(tmp_path)
     _write_meta(cache, "gd/orphan.md", dirty=True, size=0)

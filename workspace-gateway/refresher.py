@@ -216,9 +216,14 @@ class WriteBackMonitor:
     to `vfs/stats` alone and only observable by inspecting the cache metadata.
 
     A dirty entry is a fault when it stays dirty past the grace period without
-    progressing (nothing queued/uploading for it). An orphaned dirty entry (no
-    data to upload) is stuck the moment it ages out — nothing can ever upload it.
-    A non-zero `erroredFiles` count is degraded regardless of age. Both surface a
+    progressing. An orphaned dirty entry (no data to upload) is stuck the moment
+    it ages out — nothing can ever upload it. A dirty-with-data entry is judged
+    against the *global* upload queue: `vfs/stats` exposes no per-path progress,
+    so an entry is flagged once it ages past the grace period while the queue is
+    known idle. Because a busy queue (uploading unrelated files) could otherwise
+    mask a single non-progressing entry indefinitely, an absolute overdue backstop
+    flags any entry dirty past `max(10 × grace, 300s)` regardless of queue state.
+    A non-zero `erroredFiles` count is degraded regardless of age. All surface a
     structured, alertable error naming the path(s). The monitor also warns when a
     dirty entry's remote fingerprint changes underneath it — the symptom of a
     second, external sync client writing the same path.
@@ -226,6 +231,9 @@ class WriteBackMonitor:
 
     def __init__(self, cfg: Config, clock=time.monotonic) -> None:
         self._grace = cfg.stuck_grace_seconds
+        # Absolute backstop: past this age a dirty entry is flagged even if the
+        # global upload queue is busy, so unrelated uploads can't mask it forever.
+        self._overdue = max(10.0 * cfg.stuck_grace_seconds, 300.0)
         self._clock = clock
         # Per-path state carried across cycles.
         self._first_seen_dirty: dict[str, float] = {}
@@ -281,17 +289,22 @@ class WriteBackMonitor:
 
             if age < self._grace:
                 continue
-            # Past grace. An orphan (no data) can never upload → stuck regardless
-            # of queue state. A dirty-with-data entry is stuck only when the queue
-            # is *known* idle — never when the queue state is merely unknown
-            # (rc outage), which would otherwise be a false positive.
-            if entry.is_orphaned or queue_idle:
-                stuck_paths.append(path)
-                errors.append({
-                    "path": path,
-                    "reason": "orphaned_dirty_entry" if entry.is_orphaned else "dirty_entry_not_progressing",
-                    "dirty_age_seconds": round(age, 1),
-                })
+            # Past grace. Classify why it's stuck, most-specific first:
+            #   * orphan (no data) can never upload → stuck regardless of queue;
+            #   * queue *known* idle → nothing is progressing (never flag on an
+            #     unknown queue during an rc outage — that's a false positive);
+            #   * overdue → aged past the absolute backstop, so a busy queue
+            #     uploading unrelated files can't mask it indefinitely.
+            if entry.is_orphaned:
+                reason = "orphaned_dirty_entry"
+            elif queue_idle:
+                reason = "dirty_entry_not_progressing"
+            elif age >= self._overdue:
+                reason = "dirty_entry_overdue"
+            else:
+                continue
+            stuck_paths.append(path)
+            errors.append({"path": path, "reason": reason, "dirty_age_seconds": round(age, 1)})
 
         if errored > 0:
             err = {"reason": "errored_uploads", "errored_files": errored}

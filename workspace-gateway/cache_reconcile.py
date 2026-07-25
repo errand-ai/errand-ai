@@ -82,11 +82,19 @@ def _is_dirty(meta: dict) -> bool:
 
 
 def _has_upload_data(data_path: str) -> bool:
-    """True if there is real data to upload for this entry."""
+    """True if there is real data to upload for this entry.
+
+    Only a genuinely absent file counts as "no data". If the file exists but
+    can't be stat'd (permissions, transient I/O), we assume data IS present:
+    misclassifying a still-backed entry as orphaned would delete a real pending
+    upload, which is exactly the data loss this whole change exists to prevent.
+    """
     try:
         return os.path.getsize(data_path) > 0
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
 
 
 def iter_dirty_entries(cache_dir: str) -> Iterator[DirtyEntry]:
