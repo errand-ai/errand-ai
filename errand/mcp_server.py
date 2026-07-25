@@ -228,6 +228,7 @@ async def new_task(
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
+            "is_eval": task.is_eval,
         }
         await publish_event("task_created", task_data)
 
@@ -573,6 +574,7 @@ async def schedule_task(
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
+            "is_eval": task.is_eval,
         }
         await publish_event("task_created", task_data)
 

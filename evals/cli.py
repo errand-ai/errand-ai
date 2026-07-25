@@ -15,12 +15,19 @@ import os
 import socket
 import sys
 
-from config import load_config
-from corpus import CorpusError, corpus_version, load_corpus
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_DIR = os.path.dirname(_HERE)
 _CORPUS_DIR = os.path.join(_HERE, "corpus")
+
+# The eval modules use flat imports (matching errand/ and task-runner/), so the
+# package dir must be on sys.path. Add it here so `python -m evals.cli` (which
+# would otherwise treat these as evals.* submodules) works as documented, as well
+# as `python cli.py` and `python -m cli` from within evals/.
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from config import load_config  # noqa: E402
+from corpus import CorpusError, corpus_version, load_corpus  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
