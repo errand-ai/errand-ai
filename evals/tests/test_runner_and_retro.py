@@ -147,17 +147,63 @@ async def test_persistent_infra_failure_recorded():
 
 
 async def test_yield_waits_for_production():
-    # First list_tasks shows a running production task, second is clear.
-    calls = {"n": 0}
+    # search_tasks(is_eval=False, status=pending) returns a task on the first
+    # check (busy), then nothing (clear). The driver waits, then submits.
+    calls = {"sleep": 0}
 
     async def sleep(_):
-        calls["n"] += 1
+        calls["sleep"] += 1
 
-    client = FakeClient(list_tasks_script=[[{"status": "running"}], []])
-    cfg = Cfg(models=["gemma4"])
-    await runner_mod.run_matrix(client, cfg, [_task(reps=1)], "run1", no_yield=False, sleep=sleep, run_claude=_fake_judge)
-    assert calls["n"] >= 1  # yielded at least once
+    class YieldClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self._busy_checks = 1  # report busy once, then clear
+
+        async def search_tasks(self, **filters):
+            if filters.get("status") == "pending" and self._busy_checks > 0:
+                self._busy_checks -= 1
+                return [{"id": "prod1", "status": "pending"}]
+            return []
+
+    client = YieldClient()
+    await runner_mod.run_matrix(client, Cfg(models=["gemma4"]), [_task(reps=1)],
+                                "run1", no_yield=False, sleep=sleep, run_claude=_fake_judge)
+    assert calls["sleep"] >= 1  # yielded at least once
     assert len(client.recorded) == 1
+
+
+async def test_reused_profiles_are_not_deleted():
+    # A pre-existing (reused) eval profile must not be deleted at run end — only
+    # profiles the driver created are cleaned up.
+    class ReuseClient(FakeClient):
+        async def clone_task_profile(self, source_profile, new_name, model=None, **kw):
+            self.created_profiles.append(new_name)
+            return {"ok": True, "reused": True, "profile": {"name": new_name}}
+
+    client = ReuseClient()
+    await runner_mod.run_matrix(client, Cfg(models=["gemma4"]), [_task(reps=1)],
+                                "run1", no_yield=True, sleep=_nosleep, run_claude=_fake_judge)
+    assert client.deleted_profiles == []  # reused profile left in place
+    assert len(client.recorded) == 1
+
+
+async def test_non_dict_status_keeps_polling_then_terminal():
+    # A transient non-dict task_status (e.g. an error string) must NOT be treated
+    # as terminal; the driver keeps polling until a real terminal status.
+    class FlakyStatusClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self._status_calls = 0
+
+        async def task_status(self, task_id, fmt="json"):
+            self._status_calls += 1
+            return "Error: transient" if self._status_calls == 1 else {"status": "completed"}
+
+    client = FlakyStatusClient()
+    await runner_mod.run_matrix(client, Cfg(models=["gemma4"]), [_task(reps=1)],
+                                "run1", no_yield=True, sleep=_nosleep, run_claude=_fake_judge)
+    assert client._status_calls >= 2  # polled past the transient error
+    assert client.recorded[0]["verdict"] == "pass"
 
 
 async def test_retro_attributes_model_and_skips_unusable():

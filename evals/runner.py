@@ -21,10 +21,12 @@ import time
 import scoring as scoring_mod
 import transcript as transcript_mod
 
-# A submitted task is still in flight while in these statuses (BOARD_STATUSES).
-_NONTERMINAL = {"pending", "running", "scheduled"}
+# A submitted eval task is done only when it reaches one of these statuses. An
+# unrecognised/absent status (e.g. a transient error payload from task_status) is
+# treated as "still running" so we keep polling rather than prematurely proceed.
+_TERMINAL_STATUSES = {"completed", "review", "needs_input", "archived", "deleted", "failed"}
 # Production work the driver yields to (in-progress, not future-scheduled).
-_ACTIVE_PRODUCTION = {"pending", "running"}
+_ACTIVE_PRODUCTION = ("pending", "running")
 
 
 def derive_slug(model: str) -> str:
@@ -44,20 +46,8 @@ def recorded_cells(run_response: dict | None) -> set[tuple[str, str, int]]:
     return cells
 
 
-def production_busy(list_tasks_response) -> bool:
-    """True if any active (pending/running) production task is present.
-
-    The driver checks this only between reps, when it has no eval task in flight,
-    so any active task at check time is production work to yield to.
-    """
-    for t in list_tasks_response or []:
-        if isinstance(t, dict) and t.get("status") in _ACTIVE_PRODUCTION:
-            return True
-    return False
-
-
 def is_terminal(status: str | None) -> bool:
-    return status not in _NONTERMINAL
+    return status in _TERMINAL_STATUSES
 
 
 def _task_id_from_new_task(resp) -> str | None:
@@ -69,8 +59,22 @@ def _task_id_from_new_task(resp) -> str | None:
     return None
 
 
+async def production_busy(client) -> bool:
+    """True if any active *non-eval* task is pending/running.
+
+    Uses ``search_tasks(is_eval=False, ...)`` rather than ``list_tasks`` (which
+    doesn't distinguish eval tasks), so the driver yields only to real production
+    work, never to other eval tasks.
+    """
+    for status in _ACTIVE_PRODUCTION:
+        rows = await client.search_tasks(is_eval=False, status=status, limit=1)
+        if isinstance(rows, list) and rows:
+            return True
+    return False
+
+
 async def _yield_to_production(client, interval: float, sleep) -> None:
-    while production_busy(await client.list_tasks()):
+    while await production_busy(client):
         await sleep(interval)
 
 
@@ -161,7 +165,9 @@ async def run_matrix(
             if isinstance(clone_resp, dict) and clone_resp.get("error"):
                 log(f"[skip] {profile}: clone failed: {clone_resp['error']}")
                 continue
-            if profile not in created_profiles:
+            # Only track profiles we actually created (reused=False) for end-of-run
+            # deletion, so we never delete a pre-existing profile we didn't create.
+            if isinstance(clone_resp, dict) and clone_resp.get("reused") is False and profile not in created_profiles:
                 created_profiles.append(profile)
 
             for rep in pending_reps:
