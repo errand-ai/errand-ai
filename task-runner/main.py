@@ -1847,6 +1847,59 @@ def _classify_error(exc: Exception) -> str:
 MAX_AGENT_RETRIES = 3
 AGENT_RETRY_BASE_DELAY = 2  # seconds
 
+# A single agent run that repeats the exact same tool call this many times is
+# treated as a no-progress loop and aborted. MAX_TURNS (~200) is only a hard
+# ceiling: a weak model that gets stuck re-reading one file or re-discovering
+# already-enabled tools burns the entire budget (~13 min of inference) before
+# it trips. This catches the stall within a handful of turns instead. Override
+# with STALL_REPEAT_LIMIT; set it <= 0 to disable the guard entirely.
+DEFAULT_STALL_REPEAT_LIMIT = 6
+
+
+class AgentStallError(Exception):
+    """Raised when the agent repeats an identical tool call enough times that
+    the run is judged to be a no-progress loop. Aborting on this is cheaper and
+    clearer than letting a model spin until MAX_TURNS without ever calling
+    submit_result."""
+
+
+class StallDetector:
+    """Flags a stalled agent run by counting byte-identical tool calls.
+
+    A single run that invokes the same tool with the same arguments ``limit``
+    times is almost always stuck — e.g. re-reading the same file or
+    re-``discover_tools``-ing already-enabled tools, which is exactly how a
+    gemma-class model looped for 15 minutes on the blog-to-tweets queue before
+    it was killed. Healthy runs vary their arguments (different URLs, entry
+    numbers, file paths), so an identical-signature repeat is a high-precision
+    stall signal with few false positives.
+
+    A fresh detector is used per agent attempt so that a legitimate retry starts
+    with a clean budget. ``limit <= 0`` disables the guard.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._counts: dict[str, int] = {}
+
+    def _signature(self, tool_name: str, args) -> str:
+        try:
+            return tool_name + ":" + json.dumps(args, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return tool_name + ":" + repr(args)
+
+    def record(self, tool_name: str, args) -> int:
+        """Record a tool call; return the running count for this exact
+        (tool, args) signature. Returns 0 when the guard is disabled so the
+        caller's ``count and count >= limit`` check never trips."""
+        if self.limit <= 0:
+            return 0
+        sig = self._signature(tool_name, args)
+        n = self._counts.get(sig, 0) + 1
+        self._counts[sig] = n
+        return n
+
+
 # Return type tags for extract_output
 _OUTPUT = "output"        # got a result
 _NUDGE = "nudge"          # should nudge and retry
@@ -1990,6 +2043,14 @@ async def main():
                 "error_class": "ValueError",
             })
             sys.exit(1)
+        try:
+            stall_limit = int(os.environ.get("STALL_REPEAT_LIMIT", str(DEFAULT_STALL_REPEAT_LIMIT)))
+        except ValueError:
+            logger.warning(
+                "Invalid STALL_REPEAT_LIMIT value %r, using default %d",
+                os.environ.get("STALL_REPEAT_LIMIT"), DEFAULT_STALL_REPEAT_LIMIT,
+            )
+            stall_limit = DEFAULT_STALL_REPEAT_LIMIT
         # Use OpenAIProvider directly to bypass MultiProvider's slash-based prefix
         # parsing. This ensures model names containing slashes (e.g. "bedrock/gpt-oss:20b")
         # are passed through to the configured OpenAI client (pointing at LiteLLM) as-is.
@@ -2009,6 +2070,7 @@ async def main():
             attempt += 1
             try:
                 hooks = StreamEventEmitter()
+                stall = StallDetector(stall_limit)  # fresh budget per attempt
                 result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=hooks, run_config=run_config)
 
                 # Iterate streaming events, emitting thinking/reasoning to stderr
@@ -2049,6 +2111,24 @@ async def main():
                             if turn_id:
                                 tc_data["turn_id"] = turn_id
                             emit_event("tool_call", tc_data)
+
+                            # Stall guard: abort a no-progress loop (the same
+                            # tool call repeated identically) before it burns the
+                            # whole MAX_TURNS budget. Emitted after the tool_call
+                            # event so the offending call is visible in the logs.
+                            repeat = stall.record(tool_name, args)
+                            if repeat and repeat >= stall_limit:
+                                emit_event("stall_detected", {
+                                    "tool": tool_name,
+                                    "repeat_count": repeat,
+                                    "limit": stall_limit,
+                                    "turn_id": turn_id,
+                                })
+                                raise AgentStallError(
+                                    f"Tool '{tool_name}' called {repeat} times with identical "
+                                    f"arguments; aborting suspected no-progress loop "
+                                    f"(STALL_REPEAT_LIMIT={stall_limit})"
+                                )
 
                 # Log summary of tool calls from run items
                 tool_call_count = sum(
@@ -2106,6 +2186,28 @@ async def main():
                 write_output_file(output)
 
                 sys.exit(0)
+
+            except AgentStallError as e:
+                # No-progress loop: the model repeated an identical tool call
+                # past the stall limit. The same prompt + same model will only
+                # stall again, so fail fast (not retryable) with a clear reason
+                # rather than burning the rest of MAX_TURNS.
+                emit_event("error", {
+                    "message": str(e),
+                    "error_type": "stalled",
+                    "error_class": "AgentStallError",
+                })
+                logger.error("Agent execution aborted — stalled loop: %s", e)
+                failed_output = json.dumps({
+                    "status": "failed",
+                    "result": "",
+                    "error": str(e),
+                    "questions": [],
+                })
+                print(failed_output)
+                post_result_callback(failed_output)
+                write_output_file(failed_output)
+                sys.exit(1)
 
             except ModelBehaviorError as e:
                 # Auto-enable undiscovered tools: if the model called a known MCP tool

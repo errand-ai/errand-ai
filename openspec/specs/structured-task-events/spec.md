@@ -1,9 +1,7 @@
 ## Purpose
 
 Structured JSON event protocol emitted by the task runner on stderr for agent lifecycle tracking.
-
 ## Requirements
-
 ### Requirement: Structured event protocol on task runner stderr
 
 The task runner SHALL emit structured JSON events to stderr, one JSON object per line. Each event SHALL have a `type` field (string) and a `data` field (object). The following event types SHALL be supported:
@@ -148,3 +146,20 @@ The log viewer SHALL maintain auto-scroll behaviour (scroll to bottom as new eve
 
 - **WHEN** the log viewer receives a `raw` event with line "WARNING: deprecated API usage"
 - **THEN** the viewer displays the line in monospace font without special formatting
+
+### Requirement: Stall detection event
+
+When the task runner aborts an agent run due to a no-progress loop (see the stall
+guard in `task-runner-error-resilience`), it SHALL emit a `stall_detected`
+structured event to stderr before failing. The event's `data` SHALL identify the
+offending tool (`tool`), the number of identical repeats observed
+(`repeat_count`), the configured limit (`limit`), and the turn on which it tripped
+(`turn_id`). A corresponding `error` event with `error_type` `stalled` SHALL also
+be emitted as the run fails.
+
+#### Scenario: stall_detected emitted on abort
+
+- **WHEN** the stall guard trips on a repeated identical tool call
+- **THEN** a `stall_detected` event is emitted naming the tool, repeat count, and
+  limit, followed by an `error` event whose `error_type` is `stalled`
+
