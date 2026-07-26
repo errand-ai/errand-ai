@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Table, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Numeric, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -71,6 +71,12 @@ class Task(Base):
     created_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     encrypted_env: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Set server-side at creation when the resolved profile name starts with
+    # eval--; the board APIs exclude these unless include_evals=true. Persisted
+    # (not derived from the profile) so it survives profile deletion.
+    is_eval: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     tags: Mapped[list["Tag"]] = relationship(secondary=task_tags, back_populates="tasks", lazy="raise")
     profile: Mapped[Optional["TaskProfile"]] = relationship(lazy="raise")
 
@@ -452,4 +458,75 @@ class ModelMetadataCache(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         server_default=text("now()"),
+    )
+
+
+class EvalRun(Base):
+    """One eval session: a live model×workload bake-off or a retro-judging pass.
+
+    Run context (corpus_version, errand_version, judge_model) is pinned so runs
+    stay longitudinally comparable. errand_version is stamped server-side from
+    the deployed VERSION when the run is started.
+    """
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    mode: Mapped[str] = mapped_column(Text, nullable=False)  # 'live' | 'retro'
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    corpus_version: Mapped[str] = mapped_column(Text, nullable=False)
+    errand_version: Mapped[str] = mapped_column(Text, nullable=False)
+    judge_model: Mapped[str] = mapped_column(Text, nullable=False)
+    driver_host: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class EvalResult(Base):
+    """One scored (workload, model, rep) cell of an eval run.
+
+    A unique (run_id, workload, model, rep) constraint makes recording idempotent
+    per cell and gives the driver free resumability. task_id links back to the
+    retained eval task transcript (SET NULL if the task is later deleted).
+    """
+
+    __tablename__ = "eval_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("eval_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    workload: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    rep: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)  # 'pass'|'fail'|'infra_failure'
+    score: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    turns: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    recoveries: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_events: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    wall_seconds: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    judge_output: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "workload", "model", "rep", name="uq_eval_results_cell"),
     )

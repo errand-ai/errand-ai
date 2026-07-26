@@ -1,0 +1,22 @@
+id: tech-trends/001-ai-weekly
+base_profile: tech-trends-research
+description: |
+  Research this week's most significant developments in AI infrastructure and
+  developer tooling. Identify 5-7 notable items (model releases, major library or
+  platform updates, significant funding or acquisitions, or influential technical
+  posts). For each, give a one-sentence summary of why it matters and a source
+  link. Finish with a two-sentence "so what" for a platform-engineering audience.
+rubric: |
+  Grade on:
+  - Recency & relevance: items are genuinely recent and relevant to AI infra /
+    developer tooling (not generic AI news).
+  - Sourcing: every item has a working-looking source URL.
+  - Signal: the "why it matters" lines are specific, not filler.
+  - Synthesis: the closing "so what" ties the items together for the stated
+    audience rather than restating them.
+  Score 0-10.
+assertions:
+  - tool_called: web_search
+  - output_regex: "https?://"
+reps: 3
+timeout_minutes: 25

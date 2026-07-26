@@ -132,6 +132,7 @@ class DequeuedTask:
     tag_ids: list[uuid.UUID]
     created_by: str | None = None
     encrypted_env: str | None = None
+    is_eval: bool = False
 
     @classmethod
     def from_orm(cls, task: Task) -> "DequeuedTask":
@@ -147,6 +148,7 @@ class DequeuedTask:
             tag_ids=[tag.id for tag in task.tags],
             created_by=task.created_by,
             encrypted_env=task.encrypted_env,
+            is_eval=task.is_eval,
         )
 
 
@@ -312,6 +314,7 @@ def _task_to_dict(task: Task, profile_name: str | None = None) -> dict:
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         "created_by": task.created_by,
         "updated_by": task.updated_by,
+        "is_eval": task.is_eval,
     }
 
 
@@ -2340,6 +2343,7 @@ class TaskManager:
                 repeat_interval=task.repeat_interval,
                 repeat_until=task.repeat_until,
                 profile_id=task.profile_id,
+                is_eval=task.is_eval,  # carry the eval flag onto the next occurrence
                 position=position,
                 output=None,
                 runner_logs=None,

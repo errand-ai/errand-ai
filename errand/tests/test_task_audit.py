@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by TEXT,
     updated_by TEXT,
         encrypted_env TEXT,
+    is_eval BOOLEAN DEFAULT 0 NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

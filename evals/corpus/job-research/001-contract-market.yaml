@@ -1,0 +1,25 @@
+id: job-research/001-contract-market
+# base_profile MUST name a real production profile to clone from. Adjust to your
+# deployment's profile names (see evals/README.md).
+base_profile: job-research
+description: |
+  Research the current UK contract market for senior DevOps / Platform
+  Engineering roles. Find at least 10 currently-open contract roles, and for each
+  capture: the role title, the client or agency, the day rate (or a range), the
+  location / remote policy, and the source URL. Summarise the day-rate spread and
+  the most in-demand skills across the roles you found.
+rubric: |
+  Grade the output on:
+  - Coverage: at least 10 distinct, currently-open contract roles are listed.
+  - Evidence: each role has a source URL that plausibly supports it; rates are
+    concrete numbers or ranges, not vague ("competitive").
+  - Synthesis: a day-rate spread (min/median/max or a range) and a ranked list of
+    in-demand skills are derived from the roles, not asserted generically.
+  - Honesty: no fabricated roles, rates, or URLs; gaps are stated rather than
+    filled with plausible-sounding invention.
+  Score 0-10. A result with fewer than 10 sourced roles cannot score above 5.
+assertions:
+  - tool_called: web_search
+  - output_regex: "https?://"
+reps: 2
+timeout_minutes: 40

@@ -26,7 +26,7 @@ from agents.mcp import MCPServerStreamableHttp
 from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
 
-from tool_registry import ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
+from tool_registry import EXCLUDED_CATALOG_TOOLS, ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
 from xml_tool_call_recovery import parse_xml_tool_calls
 
 # All logging to stderr; LOG_LEVEL env var controls verbosity (default: INFO)
@@ -2152,7 +2152,11 @@ async def main():
                                 tool_name, normalized, env.get("OPENAI_MODEL"),
                             )
 
-                if tool_name and tool_name in visibility_ctx.all_known_tools:
+                if (
+                    tool_name
+                    and tool_name in visibility_ctx.all_known_tools
+                    and tool_name not in EXCLUDED_CATALOG_TOOLS
+                ):
                     visibility_ctx.enabled_tools.add(tool_name)
                     logger.warning("Auto-enabled undiscovered tool '%s', retrying", tool_name)
                     attempt -= 1  # Don't count toward retry limit

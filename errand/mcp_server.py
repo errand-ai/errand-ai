@@ -6,7 +6,7 @@ import re
 import secrets
 import uuid as uuid_mod
 from email.message import EmailMessage
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -16,13 +16,16 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from starlette.applications import Starlette
 
 from database import async_session
+from eval_marking import resolve_is_eval
 from events import publish_event
 from llm import generate_title, ProfileInfo
-from models import Setting, Skill, SkillFile, Task, TaskProfile
+from models import EvalResult, EvalRun, Setting, Skill, SkillFile, Task, TaskProfile
 from task_manager import normalize_interval
+from version_checker import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +202,7 @@ async def new_task(
             status=status,
             position=position,
             profile_id=resolved_profile_id,
+            is_eval=await resolve_is_eval(session, resolved_profile_id),
             encrypted_env=encrypted_env,
             created_by=_get_client_id(ctx),
         )
@@ -224,6 +228,7 @@ async def new_task(
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
+            "is_eval": task.is_eval,
         }
         await publish_event("task_created", task_data)
 
@@ -544,6 +549,7 @@ async def schedule_task(
             repeat_until=parsed_repeat_until,
             encrypted_env=encrypted_env,
             profile_id=resolved_profile_id,
+            is_eval=await resolve_is_eval(session, resolved_profile_id),
             created_by=_get_client_id(ctx),
         )
         session.add(task)
@@ -568,6 +574,7 @@ async def schedule_task(
             "tags": [],
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
+            "is_eval": task.is_eval,
         }
         await publish_event("task_created", task_data)
 
@@ -1833,6 +1840,360 @@ async def forward_email(message_uid: str, to: str, folder: str = "INBOX") -> str
         return json.dumps({"success": True, "message": "Email forwarded"})
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# LLM eval framework tools.
+#
+# These are administrative: they clone/delete profiles, search full task
+# history, and record eval runs. They are NOT in DEFAULT_HOT_TOOLS and are listed
+# in the task-runner's EXCLUDED_CATALOG_TOOLS, so a task LLM can never see or
+# enable them. Profile mutation is restricted to the `eval--` name prefix so the
+# shared API key can't harm production profiles. See the llm-eval-framework
+# change (design D3/D4).
+# ---------------------------------------------------------------------------
+
+_EVAL_PROFILE_PREFIX = "eval--"
+
+# Fields copied verbatim when cloning a profile (everything except identity and
+# timestamps). Overrides are applied on top of these.
+_PROFILE_COPY_FIELDS = (
+    "description", "match_rules", "model", "system_prompt", "max_turns",
+    "reasoning_effort", "llm_timeout", "mcp_servers", "litellm_mcp_servers",
+    "skill_ids", "include_git_skills", "enabled_plugins",
+    "shared_workspace_enabled", "shared_workspace_subpath",
+)
+_VALID_VERDICTS = ("pass", "fail", "infra_failure")
+
+
+def _profile_summary(p: TaskProfile) -> dict:
+    return {
+        "id": str(p.id),
+        "name": p.name,
+        "model": p.model,
+        "max_turns": p.max_turns,
+        "llm_timeout": p.llm_timeout,
+    }
+
+
+def _parse_iso(value: str | None):
+    """Parse an ISO-8601 string (tolerating a trailing 'Z') to a datetime, or None.
+
+    A value without an explicit offset is assumed UTC, so the returned datetime is
+    always timezone-aware — comparing a naive value against the timestamptz
+    ``Task.created_at`` filter would otherwise be wrong or error on some drivers.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+@mcp.tool()
+async def clone_task_profile(
+    source_profile: str,
+    new_name: str,
+    model: str | None = None,
+    llm_timeout: int | None = None,
+    max_turns: int | None = None,
+) -> str:
+    """Clone a task profile under an eval-- name, applying limited overrides.
+
+    Copies every field of `source_profile` into a new profile named `new_name`
+    (which MUST start with `eval--`), then applies the `model` / `llm_timeout` /
+    `max_turns` overrides when given. Idempotent: if `new_name` already exists it
+    is returned unmodified. Returns JSON `{ok, reused, profile}` or `{error}`.
+    """
+    if not new_name.startswith(_EVAL_PROFILE_PREFIX):
+        return json.dumps({"error": f"clone names must start with '{_EVAL_PROFILE_PREFIX}'"})
+    async with async_session() as session:
+        existing = (
+            await session.execute(select(TaskProfile).where(TaskProfile.name == new_name))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return json.dumps({"ok": True, "reused": True, "profile": _profile_summary(existing)})
+
+        src = (
+            await session.execute(select(TaskProfile).where(TaskProfile.name == source_profile))
+        ).scalar_one_or_none()
+        if src is None:
+            return json.dumps({"error": f"source profile '{source_profile}' not found"})
+
+        clone = TaskProfile(name=new_name)
+        for field in _PROFILE_COPY_FIELDS:
+            setattr(clone, field, getattr(src, field))
+        if model is not None:
+            # profile.model is a dict ({"provider_id", "model"}); override the
+            # model slug while preserving the rest of the source's model config.
+            clone.model = {**(src.model or {}), "model": model}
+        if llm_timeout is not None:
+            clone.llm_timeout = llm_timeout
+        if max_turns is not None:
+            clone.max_turns = max_turns
+        session.add(clone)
+        try:
+            await session.commit()
+        except IntegrityError:
+            # A concurrent caller created new_name between our existence check and
+            # commit — stay idempotent: return the now-existing profile.
+            await session.rollback()
+            existing = (
+                await session.execute(select(TaskProfile).where(TaskProfile.name == new_name))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return json.dumps({"ok": True, "reused": True, "profile": _profile_summary(existing)})
+            raise
+        await session.refresh(clone)
+        return json.dumps({"ok": True, "reused": False, "profile": _profile_summary(clone)})
+
+
+@mcp.tool()
+async def delete_task_profile(name: str) -> str:
+    """Delete an eval-- task profile. Idempotent; refuses non-eval names.
+
+    Returns JSON `{ok, deleted}` (`deleted` false when the profile was already
+    absent) or `{error}` for a non-`eval--` name.
+    """
+    if not name.startswith(_EVAL_PROFILE_PREFIX):
+        return json.dumps({"error": f"delete is restricted to '{_EVAL_PROFILE_PREFIX}' profiles"})
+    async with async_session() as session:
+        prof = (
+            await session.execute(select(TaskProfile).where(TaskProfile.name == name))
+        ).scalar_one_or_none()
+        if prof is None:
+            return json.dumps({"ok": True, "deleted": False})
+        await session.delete(prof)
+        await session.commit()
+        return json.dumps({"ok": True, "deleted": True})
+
+
+@mcp.tool()
+async def search_tasks(
+    profile: str | None = None,
+    status: str | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    title_contains: str | None = None,
+    is_eval: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> str:
+    """Search the full task history (including archived/deleted) with AND filters.
+
+    Returns a JSON array of {id, title, status, profile_name, created_at,
+    retry_count, has_logs}, newest first. `limit` defaults to 50, capped at 200.
+    Eval tasks are excluded unless `is_eval` is given (`true` = only eval tasks,
+    `false` = only non-eval). Dates are ISO-8601.
+    """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    query = (
+        select(Task, TaskProfile.name)
+        .join(TaskProfile, Task.profile_id == TaskProfile.id, isouter=True)
+    )
+    if profile is not None:
+        query = query.where(TaskProfile.name == profile)
+    if status is not None:
+        query = query.where(Task.status == status)
+    # A provided-but-unparseable date must error rather than be silently dropped
+    # (which would widen the query and return unrelated history).
+    after = _parse_iso(created_after)
+    if created_after and after is None:
+        return json.dumps({"error": f"invalid created_after '{created_after}' (use ISO-8601)"})
+    if after is not None:
+        query = query.where(Task.created_at >= after)
+    before = _parse_iso(created_before)
+    if created_before and before is None:
+        return json.dumps({"error": f"invalid created_before '{created_before}' (use ISO-8601)"})
+    if before is not None:
+        query = query.where(Task.created_at <= before)
+    if title_contains:
+        query = query.where(Task.title.ilike(f"%{title_contains}%"))
+    # Default excludes eval tasks; an explicit is_eval selects one side.
+    query = query.where(Task.is_eval.is_(bool(is_eval)) if is_eval is not None else Task.is_eval.is_(False))
+    query = query.order_by(Task.created_at.desc()).limit(limit).offset(offset)
+
+    async with async_session() as session:
+        rows = (await session.execute(query)).all()
+    return json.dumps([
+        {
+            "id": str(t.id),
+            "title": t.title,
+            "status": t.status,
+            "profile_name": pname,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "retry_count": t.retry_count,
+            "has_logs": bool(t.runner_logs),
+        }
+        for t, pname in rows
+    ])
+
+
+@mcp.tool()
+async def start_eval_run(
+    mode: str,
+    corpus_version: str,
+    judge_model: str,
+    driver_host: str | None = None,
+    notes: str | None = None,
+) -> str:
+    """Start an eval run, stamping errand_version server-side. Returns {run_id}.
+
+    `mode` must be 'live' or 'retro'. The run pins corpus_version, judge_model,
+    and the deployed errand VERSION for longitudinal comparability.
+    """
+    if mode not in ("live", "retro"):
+        return json.dumps({"error": "mode must be 'live' or 'retro'"})
+    async with async_session() as session:
+        run = EvalRun(
+            mode=mode,
+            corpus_version=corpus_version,
+            errand_version=APP_VERSION,
+            judge_model=judge_model,
+            driver_host=driver_host,
+            notes=notes,
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+        return json.dumps({"ok": True, "run_id": str(run.id), "errand_version": APP_VERSION})
+
+
+@mcp.tool()
+async def record_eval_result(
+    run_id: str,
+    workload: str,
+    model: str,
+    rep: int,
+    verdict: str,
+    task_id: str | None = None,
+    score: float | None = None,
+    turns: int | None = None,
+    recoveries: int | None = None,
+    error_events: int | None = None,
+    wall_seconds: float | None = None,
+    judge_output: dict | None = None,
+) -> str:
+    """Record one (workload, model, rep) result for a run. Returns {result_id}.
+
+    Rejects an unknown or already-finished run, an invalid verdict, and a
+    duplicate (run, workload, model, rep) cell (unique constraint).
+    """
+    if verdict not in _VALID_VERDICTS:
+        return json.dumps({"error": f"verdict must be one of {list(_VALID_VERDICTS)}"})
+    try:
+        run_uuid = uuid_mod.UUID(run_id)
+    except (ValueError, TypeError):
+        return json.dumps({"error": f"invalid run_id '{run_id}'"})
+    task_uuid = None
+    if task_id:
+        try:
+            task_uuid = uuid_mod.UUID(task_id)
+        except (ValueError, TypeError):
+            return json.dumps({"error": f"invalid task_id '{task_id}'"})
+
+    async with async_session() as session:
+        run = (await session.execute(select(EvalRun).where(EvalRun.id == run_uuid))).scalar_one_or_none()
+        if run is None:
+            return json.dumps({"error": "unknown run_id"})
+        if run.finished_at is not None:
+            return json.dumps({"error": "run is finished; cannot record more results"})
+
+        result = EvalResult(
+            run_id=run_uuid,
+            workload=workload,
+            model=model,
+            task_id=task_uuid,
+            rep=rep,
+            verdict=verdict,
+            score=score,
+            turns=turns,
+            recoveries=recoveries,
+            error_events=error_events,
+            wall_seconds=wall_seconds,
+            judge_output=judge_output,
+        )
+        session.add(result)
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            # Distinguish the expected duplicate-cell case (unique constraint)
+            # from other integrity failures (e.g. an FK violation) so the driver
+            # isn't misled into thinking a real error was just a duplicate.
+            detail = str(getattr(exc, "orig", exc))
+            if "uq_eval_results_cell" in detail or "unique" in detail.lower():
+                return json.dumps({"error": "duplicate result for (run, workload, model, rep)"})
+            return json.dumps({"error": f"integrity error recording result: {detail[:200]}"})
+        await session.refresh(result)
+        return json.dumps({"ok": True, "result_id": str(result.id)})
+
+
+@mcp.tool()
+async def finish_eval_run(run_id: str, notes: str | None = None) -> str:
+    """Mark a run finished (sets finished_at). Erroring if already finished.
+
+    After finishing, record_eval_result for the run is rejected.
+    """
+    try:
+        run_uuid = uuid_mod.UUID(run_id)
+    except (ValueError, TypeError):
+        return json.dumps({"error": f"invalid run_id '{run_id}'"})
+    async with async_session() as session:
+        run = (await session.execute(select(EvalRun).where(EvalRun.id == run_uuid))).scalar_one_or_none()
+        if run is None:
+            return json.dumps({"error": "unknown run_id"})
+        if run.finished_at is not None:
+            return json.dumps({"error": "run is already finished"})
+        run.finished_at = datetime.now(timezone.utc)
+        if notes:
+            run.notes = f"{run.notes}\n{notes}" if run.notes else notes
+        await session.commit()
+        return json.dumps({"ok": True, "finished_at": run.finished_at.isoformat()})
+
+
+@mcp.tool()
+async def get_eval_run(run_id: str) -> str:
+    """Return a run's metadata and its recorded results (for driver resumability).
+
+    Results list each (workload, model, rep) cell with verdict, score, task_id.
+    """
+    try:
+        run_uuid = uuid_mod.UUID(run_id)
+    except (ValueError, TypeError):
+        return json.dumps({"error": f"invalid run_id '{run_id}'"})
+    async with async_session() as session:
+        run = (await session.execute(select(EvalRun).where(EvalRun.id == run_uuid))).scalar_one_or_none()
+        if run is None:
+            return json.dumps({"error": "unknown run_id"})
+        results = (
+            await session.execute(select(EvalResult).where(EvalResult.run_id == run_uuid))
+        ).scalars().all()
+    return json.dumps({
+        "id": str(run.id),
+        "mode": run.mode,
+        "corpus_version": run.corpus_version,
+        "errand_version": run.errand_version,
+        "judge_model": run.judge_model,
+        "driver_host": run.driver_host,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "notes": run.notes,
+        "results": [
+            {
+                "workload": r.workload,
+                "model": r.model,
+                "rep": r.rep,
+                "verdict": r.verdict,
+                "score": float(r.score) if r.score is not None else None,
+                "task_id": str(r.task_id) if r.task_id else None,
+            }
+            for r in results
+        ],
+    })
 
 
 def create_mcp_app() -> Starlette:

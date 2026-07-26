@@ -72,8 +72,43 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by TEXT,
     updated_by TEXT,
         encrypted_env TEXT,
+    is_eval BOOLEAN DEFAULT 0 NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+_EVAL_RUNS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    mode TEXT NOT NULL,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    finished_at DATETIME,
+    corpus_version TEXT NOT NULL,
+    errand_version TEXT NOT NULL,
+    judge_model TEXT NOT NULL,
+    driver_host TEXT,
+    notes TEXT
+)
+"""
+
+_EVAL_RESULTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS eval_results (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    run_id VARCHAR(36) NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+    workload TEXT NOT NULL,
+    model TEXT NOT NULL,
+    task_id VARCHAR(36) REFERENCES tasks(id) ON DELETE SET NULL,
+    rep INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    score NUMERIC,
+    turns INTEGER,
+    recoveries INTEGER,
+    error_events INTEGER,
+    wall_seconds NUMERIC,
+    judge_output TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE (run_id, workload, model, rep)
 )
 """
 
@@ -295,6 +330,8 @@ async def _create_tables(engine):
         await conn.execute(text(_MODEL_METADATA_CACHE_TABLE_SQL))
         await conn.execute(text(_MARKETPLACES_TABLE_SQL))
         await conn.execute(text(_PLUGINS_TABLE_SQL))
+        await conn.execute(text(_EVAL_RUNS_TABLE_SQL))
+        await conn.execute(text(_EVAL_RESULTS_TABLE_SQL))
 
 
 @pytest.fixture()
@@ -450,3 +487,46 @@ async def viewer_client(fake_valkey) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides.clear()
     await engine.dispose()
+
+
+@pytest.fixture()
+async def db_session(fake_valkey):
+    """Session factory + engine with database.async_session patched.
+
+    Shared home for the fixture MCP/eval tool tests use to drive tools that call
+    the module-level ``async_session`` directly (new_task, eval tools, etc.).
+    Admin claims are injected so admin-guarded endpoints are reachable.
+    """
+    import database as database_module
+    import mcp_server
+
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    await _create_tables(engine)
+    test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    original = database_module.async_session
+    database_module.async_session = test_session
+    mcp_server.async_session = test_session
+
+    async def override_get_session():
+        async with test_session() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: FAKE_ADMIN_CLAIMS
+    app.dependency_overrides[require_editor] = lambda: FAKE_ADMIN_CLAIMS
+    app.dependency_overrides[require_admin] = lambda: FAKE_ADMIN_CLAIMS
+
+    yield engine, test_session
+
+    app.dependency_overrides.clear()
+    database_module.async_session = original
+    mcp_server.async_session = original
+    await engine.dispose()
+
+
+@pytest.fixture()
+async def admin_mcp_client(db_session) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac

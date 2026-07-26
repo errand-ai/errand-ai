@@ -1,0 +1,19 @@
+id: research-summary/001-weekly-digest
+base_profile: research-summary
+description: |
+  Produce a concise weekly research digest from the set of article URLs provided
+  in the task. For each article, give a 2-3 sentence summary capturing its core
+  claim and any concrete numbers. Then write a single "themes" paragraph that
+  identifies the through-lines across the articles. Keep the whole digest under
+  600 words and preserve attribution (which point came from which source).
+rubric: |
+  Grade on:
+  - Faithfulness: summaries reflect the actual articles (no invented claims or
+    numbers); attribution is preserved.
+  - Concision: within the word budget; no padding.
+  - Synthesis: the themes paragraph draws genuine connections rather than listing.
+  Score 0-10.
+assertions:
+  - output_contains: "theme"
+reps: 4
+timeout_minutes: 15
