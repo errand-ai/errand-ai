@@ -1,9 +1,7 @@
 ## Purpose
 
 Lazy MCP tool loading system — manages a compact tool catalog, hot list, tool visibility state, and the `discover_tools` native tool for on-demand tool activation.
-
 ## Requirements
-
 ### Requirement: Compact tool catalog generation
 
 The task-runner SHALL generate a compact tool catalog from all connected MCP servers after connection. For each server, the catalog SHALL include the server name and a list of tool entries containing the tool name and its description (first sentence only, truncated to 100 characters). The catalog SHALL be formatted as an XML block (`<available_mcp_tools>`) suitable for injection into the system prompt. Tools that are on the hot list SHALL be excluded from the catalog (they are already visible to the agent). If all tools from all servers are on the hot list, the catalog block SHALL be omitted entirely.
@@ -240,3 +238,19 @@ The task-runner's `ModelBehaviorError` recovery handler SHALL normalize the fail
 
 - **WHEN** the model calls `run_command<|channel|>json(...)` and the recovery handler has already fired for that `(original, normalized)` pair the maximum permitted times
 - **THEN** the recovery handler logs a cap-reached warning and falls through to normal `MAX_AGENT_RETRIES` accounting, ensuring the run terminates rather than looping indefinitely
+
+### Requirement: Excluded catalog tools
+The task-runner SHALL maintain an excluded-tools set (`EXCLUDED_CATALOG_TOOLS`) of MCP tool names that are administrative and never intended for task LLMs: `clone_task_profile`, `delete_task_profile`, `search_tasks`, `start_eval_run`, `record_eval_result`, `finish_eval_run`, `get_eval_run`. Excluded tools SHALL be omitted from the generated tool catalog, and `discover_tools` SHALL refuse to enable them even when requested by exact name, responding as if the tool does not exist. The auto-enable-on-ModelBehaviorError recovery SHALL likewise never enable an excluded tool.
+
+#### Scenario: Excluded tool absent from catalog
+- **WHEN** the task-runner connects to the Errand MCP server which exposes `record_eval_result`
+- **THEN** `record_eval_result` does not appear in the `<available_mcp_tools>` catalog block
+
+#### Scenario: discover_tools refuses excluded tool
+- **WHEN** the agent calls `discover_tools(tool_names=["search_tasks"])`
+- **THEN** `search_tasks` is not enabled and the response does not reveal it as an available tool
+
+#### Scenario: Auto-enable recovery ignores excluded tools
+- **WHEN** the model emits a tool call for `delete_task_profile` triggering tool-not-found recovery
+- **THEN** the recovery path does not enable the tool and the call fails as unknown
+
