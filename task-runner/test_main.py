@@ -28,6 +28,7 @@ from main import (
     _execute_command_impl, EXECUTE_COMMAND_ALIASES, EXECUTE_COMMAND_ALIAS_TOOLS,
     _normalize_harmony_tool_name, _resolve_recovery_target,
     HARMONY_RECOVERY_CAP_PER_PAIR,
+    StallDetector, AgentStallError, DEFAULT_STALL_REPEAT_LIMIT,
 )
 
 
@@ -2029,3 +2030,64 @@ async def test_concurrent_refresh_dedupes_when_second_caller_arrives_after_env_u
     # is "stale-token", and at lock acquisition env reads "fresh-token",
     # which the dedupe check identifies as already-refreshed.
     assert post_calls["n"] == 1, f"expected dedupe (still 1 POST), got {post_calls['n']}"
+
+
+# --- Stall guard (no-progress loop detection) ---
+
+
+def test_stall_detector_trips_on_identical_repeats():
+    """The same (tool, args) repeated `limit` times reaches the threshold."""
+    d = StallDetector(limit=3)
+    args = {"path": "/tmp/blogs.work.md"}
+    assert d.record("read_file", args) == 1
+    assert d.record("read_file", args) == 2
+    assert d.record("read_file", args) == 3  # caller aborts when count >= limit
+
+
+def test_stall_detector_argument_order_insensitive():
+    """Signature is canonical: key order doesn't create distinct signatures."""
+    d = StallDetector(limit=5)
+    assert d.record("discover_tools", {"a": 1, "b": 2}) == 1
+    assert d.record("discover_tools", {"b": 2, "a": 1}) == 2
+
+
+def test_stall_detector_distinguishes_by_tool_and_args():
+    """Different tools, or same tool with different args, count separately."""
+    d = StallDetector(limit=5)
+    assert d.record("read_file", {"path": "/a"}) == 1
+    assert d.record("read_file", {"path": "/b"}) == 1  # different args -> own counter
+    assert d.record("read_url", {"path": "/a"}) == 1   # different tool -> own counter
+    assert d.record("read_file", {"path": "/a"}) == 2  # back to the first signature
+
+
+def test_stall_detector_disabled_when_limit_non_positive():
+    """limit <= 0 disables the guard: record always returns 0 (never trips)."""
+    for lim in (0, -1):
+        d = StallDetector(limit=lim)
+        for _ in range(50):
+            assert d.record("read_file", {"path": "/tmp/x"}) == 0
+
+
+def test_stall_detector_handles_unserializable_args():
+    """Non-JSON-serializable args fall back to repr instead of raising."""
+    d = StallDetector(limit=2)
+    weird = {"fn": object()}
+    assert d.record("t", weird) == 1
+    assert d.record("t", weird) == 2
+
+
+def test_stall_detector_reproduces_blog_to_tweets_loop():
+    """Regression: the killed run re-read /tmp/blogs.work.md ~13x. With the
+    default limit it would have aborted within the first handful of turns."""
+    d = StallDetector(limit=DEFAULT_STALL_REPEAT_LIMIT)
+    args = {"path": "/tmp/blogs.work.md"}
+    tripped_at = None
+    for i in range(1, 14):
+        if d.record("read_file", args) >= DEFAULT_STALL_REPEAT_LIMIT:
+            tripped_at = i
+            break
+    assert tripped_at == DEFAULT_STALL_REPEAT_LIMIT
+
+
+def test_agent_stall_error_is_exception():
+    assert issubclass(AgentStallError, Exception)
