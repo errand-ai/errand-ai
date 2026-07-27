@@ -1,0 +1,61 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Deliberately NO paths-ignore, unlike build.yml. This repo is spec-driven,
+    # so a PR that only touches openspec/ or CLAUDE.md is still worth reviewing —
+    # arguably more so, since nothing else validates intent against the specs.
+
+# A busy PR fires `synchronize` on every push. Without this, three quick pushes
+# queue three full reviews of which only the last is interesting. Cancel the
+# superseded ones — this is the main cost control in the workflow.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # Drafts are still being written; `ready_for_review` above picks them up the
+    # moment they're marked ready, so nothing is missed by skipping them here.
+    #
+    # The fork check is not a policy choice: on a `pull_request` event from a
+    # fork GitHub withholds secrets, so CLAUDE_CODE_OAUTH_TOKEN would be empty
+    # and the job would fail with a confusing red X rather than skipping. (Using
+    # `pull_request_target` to get around that would run untrusted PR code with
+    # write permissions — don't.)
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the code-review plugin posts its review via `gh pr comment`
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # The plugin command is contradictory for the clean case ("do not proceed" vs. a
+          # "No issues found" template), so a clean PR non-deterministically posts nothing.
+          # Force a visible note every time so a silent run can't be mistaken for a broken one.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} — always post your review as a PR comment, including a brief "No issues found" note when you find nothing worth flagging.'
+          # Agent mode injects no default tool allowlist, so headless Claude denies every
+          # Bash call. The plugin needs `gh` (read PR + post the review comment) and `git`
+          # (blame/history). Without this the review runs but silently posts nothing.
+          claude_args: |
+            --allowedTools "Bash(gh:*),Bash(git:*)"
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
