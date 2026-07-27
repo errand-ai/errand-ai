@@ -1,0 +1,86 @@
+name: Claude Code Review
+
+# A stand-in for Copilot review when its budget is exhausted.
+#
+# IT SKIPS ON PRs THAT CHANGE THIS FILE — INCLUDING THE PR THAT ADDED IT.
+# The action refuses to run unless this file is byte-identical to the copy on
+# the default branch, and exits *cleanly* when it isn't. So the check goes GREEN
+# while reviewing nothing:
+#
+#   Skipping action due to workflow validation: The workflow file must exist and
+#   have identical content to the version on the repository's default branch.
+#
+# That is a security control, not a bug: if a PR could alter the review workflow
+# and have it run, anyone could rewrite it to exfiltrate CLAUDE_CODE_OAUTH_TOKEN.
+# Don't try to "fix" it, and don't read a green tick on a workflow-editing PR as
+# evidence the review works — check for a posted comment instead.
+#
+# Prerequisites, both of which fail in their own distinctive way:
+#   * CLAUDE_CODE_OAUTH_TOKEN repo secret (`claude setup-token` → `gh secret set`).
+#     Missing → the action runs with an empty token and fails.
+#   * The Claude Code GitHub App installed on this repo (github.com/apps/claude).
+#     The OAuth token authenticates to Anthropic; the action then exchanges it for
+#     a GitHub App installation token to read the PR and post the review. Missing →
+#     "App token exchange failed: 401 … Claude Code is not installed on this
+#     repository". (Passing `github_token: ${{ secrets.GITHUB_TOKEN }}` avoids the
+#     app entirely — deliberately not done, to match the getbookable setup.)
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Deliberately NO paths-ignore, unlike build.yml. This repo is spec-driven,
+    # so a PR that only touches openspec/ or CLAUDE.md is still worth reviewing —
+    # arguably more so, since nothing else validates intent against the specs.
+
+# A busy PR fires `synchronize` on every push. Without this, three quick pushes
+# queue three full reviews of which only the last is interesting. Cancel the
+# superseded ones — this is the main cost control in the workflow.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # Drafts are still being written; `ready_for_review` above picks them up the
+    # moment they're marked ready, so nothing is missed by skipping them here.
+    #
+    # The fork check is not a policy choice: on a `pull_request` event from a
+    # fork GitHub withholds secrets, so CLAUDE_CODE_OAUTH_TOKEN would be empty
+    # and the job would fail with a confusing red X rather than skipping. (Using
+    # `pull_request_target` to get around that would run untrusted PR code with
+    # write permissions — don't.)
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the code-review plugin posts its review via `gh pr comment`
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # The plugin command is contradictory for the clean case ("do not proceed" vs. a
+          # "No issues found" template), so a clean PR non-deterministically posts nothing.
+          # Force a visible note every time so a silent run can't be mistaken for a broken one.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} — always post your review as a PR comment, including a brief "No issues found" note when you find nothing worth flagging.'
+          # Agent mode injects no default tool allowlist, so headless Claude denies every
+          # Bash call. The plugin needs `gh` (read PR + post the review comment) and `git`
+          # (blame/history). Without this the review runs but silently posts nothing.
+          claude_args: |
+            --allowedTools "Bash(gh:*),Bash(git:*)"
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
