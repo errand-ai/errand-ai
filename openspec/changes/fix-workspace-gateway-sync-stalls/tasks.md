@@ -53,7 +53,7 @@
 - [x] 5.3 Make the gateway entrypoint verify a usable token is present and fail fast rather than letting rclone fall through to the interactive flow
       — requires **both** `access_token` and `refresh_token`; checking only `access_token` accepts exactly the state that broke production. (Dropped `RCLONE_AUTH_NO_OPEN_BROWSER` — registered only on `rclone authorize`, so `serve` ignores it.)
 - [x] 5.4 Verify no process listens on 53682 after startup, and that a refresher `config/update` succeeds against a running gateway
-      — diagnosed live: 53682 WAS held (`LISTEN 1/rclone`) and every `config/update` returned 500. Root-caused and fixed (D6). Re-verification of a *successful* rotation against the fixed image is still pending a deploy.
+      — **verified end-to-end on the cluster.** Diagnosis: 53682 was held (`LISTEN 1/rclone`) and every `config/update` returned 500; root-caused to two independent defects (D6). After deploying the fix (`0.138.0-pr222.1023`): `token_refreshed` in the refresher log, **53682 free**, zero `config/update` errors in the rclone log, `cache_scan_selftest_ok`. `token_refreshed` had never once appeared since this feature shipped — the gateway has now genuinely rotated a token for the first time.
 - [x] 5.5 Test: a config missing a usable token causes a loud startup failure, not a degraded start that squats the port (missing, empty, wrong-remote, and **access-token-without-refresh-token** — the live production shape)
 
 ## 6. Operational runbook
@@ -84,7 +84,7 @@
 
 ### Follow-up still open
 
-- Re-verify a *successful* token rotation (`config/update` returning 200, nothing listening on 53682) once the merge fix from D6 is deployed. Until then the gateway coasts on rclone's in-memory refresh token, which works but is not rotation.
+None. All 43 tasks are complete; the two partial items (3.2 retry-on-mismatch, 4.3 force-flush) are bounded by rclone's API rather than unfinished, and are documented as such in design.md.
 
 ### Pre-deployment note
 
