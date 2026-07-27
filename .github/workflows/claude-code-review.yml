@@ -1,5 +1,30 @@
 name: Claude Code Review
 
+# A stand-in for Copilot review when its budget is exhausted.
+#
+# IT SKIPS ON PRs THAT CHANGE THIS FILE — INCLUDING THE PR THAT ADDED IT.
+# The action refuses to run unless this file is byte-identical to the copy on
+# the default branch, and exits *cleanly* when it isn't. So the check goes GREEN
+# while reviewing nothing:
+#
+#   Skipping action due to workflow validation: The workflow file must exist and
+#   have identical content to the version on the repository's default branch.
+#
+# That is a security control, not a bug: if a PR could alter the review workflow
+# and have it run, anyone could rewrite it to exfiltrate CLAUDE_CODE_OAUTH_TOKEN.
+# Don't try to "fix" it, and don't read a green tick on a workflow-editing PR as
+# evidence the review works — check for a posted comment instead.
+#
+# Prerequisites, both of which fail in their own distinctive way:
+#   * CLAUDE_CODE_OAUTH_TOKEN repo secret (`claude setup-token` → `gh secret set`).
+#     Missing → the action runs with an empty token and fails.
+#   * The Claude Code GitHub App installed on this repo (github.com/apps/claude).
+#     The OAuth token authenticates to Anthropic; the action then exchanges it for
+#     a GitHub App installation token to read the PR and post the review. Missing →
+#     "App token exchange failed: 401 … Claude Code is not installed on this
+#     repository". (Passing `github_token: ${{ secrets.GITHUB_TOKEN }}` avoids the
+#     app entirely — deliberately not done, to match the getbookable setup.)
+
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
