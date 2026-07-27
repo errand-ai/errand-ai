@@ -1,13 +1,29 @@
 # Shared-workspace gateway: rclone serve nfs against a Drive/OneDrive folder.
 FROM rclone/rclone:1.68
 
-# python3 backs the startup orphaned-dirty-entry reconcile (cache_reconcile.py),
-# run by the entrypoint before serving. The rclone image is Alpine-based.
+# python3 backs the startup reconcile (cache_reconcile.py), run by the entrypoint
+# before serving. The rclone image is Alpine-based.
 RUN apk add --no-cache python3
 
 COPY entrypoint.sh /usr/local/bin/workspace-entrypoint.sh
 COPY cache_reconcile.py /usr/local/bin/cache_reconcile.py
 RUN chmod +x /usr/local/bin/workspace-entrypoint.sh /usr/local/bin/cache_reconcile.py
+
+# Run as uid 65532 — the SAME uid as the refresher sidecar (Dockerfile.refresher).
+#
+# This is load-bearing, not hygiene. rclone creates its VFS cache directories
+# mode 0700, so only the creating uid can read them. Previously rclone ran as
+# root and the refresher as 65532, which left the refresher's dirty-entry scan
+# permanently blind: it walked an unreadable tree, found nothing, and reported
+# "no dirty entries, healthy" while two completed writes sat unuploaded for 24
+# hours (2026-07-26). A shared *group* cannot fix this — mode 0700 grants the
+# group nothing — so the two containers must share a uid. /cache and /config-rw
+# are pre-created with that ownership so a fresh Docker named volume inherits it;
+# Kubernetes uses the pod's fsGroup instead (helm templates/workspace-gateway.yaml).
+RUN adduser -D -u 65532 gateway \
+    && mkdir -p /cache /config-rw \
+    && chown -R 65532:65532 /cache /config-rw
+USER 65532
 
 # rclone's image entrypoint is `rclone`; override with our serve wrapper.
 ENTRYPOINT ["/usr/local/bin/workspace-entrypoint.sh"]

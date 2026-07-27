@@ -93,6 +93,29 @@ workspace:
     transfers: 4
     lowLevelRetries: 10
     retries: 3
+  # uid/gid every gateway container runs as. rclone creates its VFS cache dirs
+  # mode 0700, so the refresher can only scan them for stuck dirty entries when
+  # it shares this uid — a mismatch makes write-back stuck-entry detection
+  # silently inert (the 2026-07-26 stall). Change only alongside the images.
+  runAsUser: 65532
+  # --- Write-back health (see the fix-workspace-gateway-sync-stalls change) ---
+  writeBackHealth:
+    # Upper bound on how long an entry may stay dirty, INDEPENDENT of the
+    # close-triggered writeBack delay. NFSv3 has no CLOSE, so a task container
+    # torn down mid-mount leaves its entry in-use forever and --vfs-write-back
+    # never fires. Past this age an entry that was never queued is reported as
+    # pinned by an open handle. 15 minutes is far above normal upload latency
+    # while still bounding how long a stranded write can go unnoticed.
+    maxDirtyAgeSeconds: 900
+    # Opt-in, default OFF. Reporting is the required behaviour: a client may
+    # still be writing a pinned entry, and publishing a torn file is the failure
+    # this change exists to prevent. A stalled-but-reported write is recoverable
+    # (see docs/workspace-gateway-runbook.md); a torn published write may not be.
+    forceFlushPinned: false
+    # Verify each completed upload's published size against the cached data that
+    # was uploaded. Costs one rc operations/stat per upload; set false if that
+    # proves costly on a high-volume workspace.
+    verifyUploadSize: true
   # NFS PV/PVC that task Jobs mount (RWX). mountOptions carry the NFSv3 options,
   # which inline pod nfs: volumes cannot (spike finding F7).
   taskPvcName: errand-workspace
