@@ -192,7 +192,7 @@
       (allow, allow, reject_content, allow, allow, `AgentStallError` +
       `stall_detected` with `result_repeated: true`) but not in a live model run,
       because the nudge stopped the loop before it got there — the desired outcome.*
-- [ ] 7.3 Push the branch and open a PR.
+- [x] 7.3 Push the branch and open a PR. *PR #224.*
 - [ ] 7.4 Confirm CI builds images and the Helm chart, then validate the built
       artifacts deploy cleanly on Kubernetes before merging.
 - [ ] 7.5 After deploy, re-check Grafana Loki for `stall_detected` events on task
