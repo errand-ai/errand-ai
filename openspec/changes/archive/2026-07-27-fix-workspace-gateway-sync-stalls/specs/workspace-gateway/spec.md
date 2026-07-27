@@ -4,7 +4,11 @@
 
 An upload SHALL publish the complete cached content of an entry or fail. The gateway SHALL NOT publish a partially-written object under any circumstance, including when the entry's own cache metadata is inconsistent with its data file.
 
-After an upload reports success, the gateway SHALL verify the resulting cloud object's size against the size of the cached data that was uploaded. A mismatch SHALL be treated as an upload failure: retried per the existing retry policy and, if it persists, surfaced as degraded write-back health with a structured error naming the path. A size-verification failure SHALL NOT clear the entry's dirty flag, so the local content is retained for a subsequent attempt rather than discarded.
+After an upload reports success, the gateway SHALL verify the resulting cloud object's size against the size of the cached data that was uploaded. A mismatch SHALL be treated as a failed publish: surfaced as degraded write-back health with a structured error naming the path, and held in that state until the path verifies clean, so a single bad publish cannot pass between two health cycles unnoticed. A size-verification failure SHALL NOT discard the cached data, so the local content remains recoverable.
+
+The existing retry policy (`--retries` / `--low-level-retries`) covers uploads that *fail*; an upload that reports success while publishing a wrong-sized object is outside it, and the gateway SHALL NOT attempt to re-drive such an upload by writing to the cloud object outside the VFS — doing so would make the gateway a second writer of a path it is mid-write on. Detection and reporting are the required behaviour; recovery is an operator procedure (see "Gateway operational runbook").
+
+A cached length observed only once while a write is still in progress SHALL NOT be used as the comparison basis, since a partial length would report a mismatch against a correct upload.
 
 Length equality alone SHALL NOT be taken as evidence of a correct upload where the cached entry's metadata is known to be inconsistent (see "Metadata/data desync is detected and repaired"): the production corruption produced an object of exactly the expected byte count whose content was a mix of new and stale bytes.
 
@@ -16,7 +20,12 @@ Length equality alone SHALL NOT be taken as evidence of a correct upload where t
 #### Scenario: Size mismatch after upload is treated as failure
 
 - **WHEN** an upload reports success but the cloud object's size differs from the uploaded cached data's size
-- **THEN** the gateway treats it as an upload failure, retains the dirty entry, retries, and on persistent failure logs a structured error naming the path
+- **THEN** the gateway reports degraded write-back health with a structured error naming the path, retains the cached data, and stays degraded until that path verifies clean
+
+#### Scenario: A write still in progress is not falsely reported
+
+- **WHEN** the cached data's length has been observed only once, while the client is still writing it
+- **THEN** the gateway does not compare it against the published object, and records the upload as unverified rather than mismatched
 
 #### Scenario: Verified upload clears the entry
 
@@ -30,6 +39,8 @@ A dirty cache entry SHALL NOT be exempt from write-back progress expectations or
 The gateway SHALL bound how long an entry may remain dirty irrespective of open-handle state. Past an operator-configurable maximum dirty age, an entry that has never been queued SHALL be reported as degraded write-back health with a structured error identifying the path and the pinned-by-handle condition.
 
 Forcing a flush of a pinned entry SHALL be opt-in and disabled by default, because a client may still be writing it and publishing a torn state is the failure this requirement exists to prevent. Reporting SHALL be the default behaviour: a stalled-but-reported write is recoverable, a torn published write may not be.
+
+No safe mechanism for forcing currently exists: rclone's rc API can reorder items already in the upload queue but cannot flush a dirty item that was never queued. Enabling the option SHALL therefore report that forcing is unavailable and continue to surface the entry, rather than reaching around the VFS to publish a file a client may still hold open. Recovery of a pinned entry is an operator procedure (see "Gateway operational runbook").
 
 #### Scenario: Handle held open past the bound is reported
 
