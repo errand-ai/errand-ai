@@ -29,7 +29,9 @@ from main import (
     _normalize_harmony_tool_name, _resolve_recovery_target,
     HARMONY_RECOVERY_CAP_PER_PAIR,
     StallDetector, AgentStallError, DEFAULT_STALL_REPEAT_LIMIT,
+    DEFAULT_STALL_NUDGE_LIMIT, build_stall_nudge, GuardedAgent,
 )
+import main
 
 
 # --- Environment variable validation ---
@@ -2033,61 +2035,355 @@ async def test_concurrent_refresh_dedupes_when_second_caller_arrives_after_env_u
 
 
 # --- Stall guard (no-progress loop detection) ---
+#
+# The rule is (tool, args) keyed, counting only while the RESULT is unchanged.
+# Identical arguments with a changing result is progress, not a stall — that
+# distinction is the whole point of these tests.
+
+WROTE = "Wrote 354 bytes to /tmp/tweet.md"
 
 
 def test_stall_detector_trips_on_identical_repeats():
-    """The same (tool, args) repeated `limit` times reaches the threshold."""
+    """Same (tool, args) AND same result `limit` times reaches the threshold."""
     d = StallDetector(limit=3)
     args = {"path": "/tmp/blogs.work.md"}
-    assert d.record("read_file", args) == 1
-    assert d.record("read_file", args) == 2
-    assert d.record("read_file", args) == 3  # caller aborts when count >= limit
+    assert d.record("read_file", args, "contents") == 1
+    assert d.record("read_file", args, "contents") == 2
+    assert d.record("read_file", args, "contents") == 3  # caller aborts at >= limit
+
+
+def test_stall_detector_changing_result_resets():
+    """Regression for the production false positive.
+
+    A healthy draft-and-verify loop called count_tweet_chars with byte-identical
+    arguments once per revision, getting 207, then 184, then 174 back. Under the
+    old args-only rule this accrued toward the limit; it must not.
+    """
+    d = StallDetector(limit=3)
+    args = {"command": "python3 count_tweet_chars.py /tmp/tweet.md"}
+    for result in ("weighted_chars: 207", "weighted_chars: 184", "weighted_chars: 174"):
+        assert d.record("execute_command", args, result) == 1
+
+
+def test_stall_detector_real_stall_trips_at_limit():
+    """Regression for the genuine loop: identical args AND identical result."""
+    d = StallDetector(limit=6)
+    args = {"path": "/tmp/tweet.md", "content": "..."}
+    counts = [d.record("write_file", args, WROTE) for _ in range(6)]
+    assert counts == [1, 2, 3, 4, 5, 6]
+
+
+def test_stall_detector_earlier_result_does_not_accumulate():
+    """A -> B -> A leaves the counter at 1: the intervening B reset it, so a
+    coincidental later recurrence cannot creep toward the limit."""
+    d = StallDetector(limit=3)
+    args = {"path": "/tmp/x"}
+    assert d.record("read_file", args, "A") == 1
+    assert d.record("read_file", args, "B") == 1
+    assert d.record("read_file", args, "A") == 1
+
+
+def test_stall_detector_interleaved_keys_accrue_independently():
+    """Calls to other keys must not reset a key, or an alternating loop would
+    never trip."""
+    d = StallDetector(limit=3)
+    a, b = {"path": "/a"}, {"path": "/b"}
+    assert d.record("read_file", a, "ra") == 1
+    assert d.record("read_file", b, "rb") == 1
+    assert d.record("read_file", a, "ra") == 2
+    assert d.record("read_file", b, "rb") == 2
+    assert d.record("read_file", a, "ra") == 3  # trips despite interleaving
+
+
+def test_stall_detector_long_results_differing_after_truncation():
+    """The digest covers the whole result, not the 500-char transcript
+    rendering, so two long outputs sharing a prefix stay distinct."""
+    d = StallDetector(limit=2)
+    args = {"url": "https://example.com"}
+    prefix = "x" * 600
+    assert d.record("read_url", args, prefix + "alpha") == 1
+    assert d.record("read_url", args, prefix + "beta") == 1
 
 
 def test_stall_detector_argument_order_insensitive():
     """Signature is canonical: key order doesn't create distinct signatures."""
     d = StallDetector(limit=5)
-    assert d.record("discover_tools", {"a": 1, "b": 2}) == 1
-    assert d.record("discover_tools", {"b": 2, "a": 1}) == 2
+    assert d.record("discover_tools", {"a": 1, "b": 2}, "same") == 1
+    assert d.record("discover_tools", {"b": 2, "a": 1}, "same") == 2
 
 
 def test_stall_detector_distinguishes_by_tool_and_args():
     """Different tools, or same tool with different args, count separately."""
     d = StallDetector(limit=5)
-    assert d.record("read_file", {"path": "/a"}) == 1
-    assert d.record("read_file", {"path": "/b"}) == 1  # different args -> own counter
-    assert d.record("read_url", {"path": "/a"}) == 1   # different tool -> own counter
-    assert d.record("read_file", {"path": "/a"}) == 2  # back to the first signature
+    assert d.record("read_file", {"path": "/a"}, "r") == 1
+    assert d.record("read_file", {"path": "/b"}, "r") == 1  # different args
+    assert d.record("read_url", {"path": "/a"}, "r") == 1   # different tool
+    assert d.record("read_file", {"path": "/a"}, "r") == 2  # back to the first
 
 
 def test_stall_detector_disabled_when_limit_non_positive():
     """limit <= 0 disables the guard: record always returns 0 (never trips)."""
     for lim in (0, -1):
-        d = StallDetector(limit=lim)
+        d = StallDetector(limit=lim, nudge_limit=3)
         for _ in range(50):
-            assert d.record("read_file", {"path": "/tmp/x"}) == 0
+            assert d.record("read_file", {"path": "/tmp/x"}, "same") == 0
 
 
 def test_stall_detector_handles_unserializable_args():
     """Non-JSON-serializable args fall back to repr instead of raising."""
     d = StallDetector(limit=2)
     weird = {"fn": object()}
-    assert d.record("t", weird) == 1
-    assert d.record("t", weird) == 2
+    assert d.record("t", weird, "r") == 1
+    assert d.record("t", weird, "r") == 2
 
 
 def test_stall_detector_reproduces_blog_to_tweets_loop():
-    """Regression: the killed run re-read /tmp/blogs.work.md ~13x. With the
-    default limit it would have aborted within the first handful of turns."""
+    """Regression: a production run called parse_queue.py identically 192 times,
+    every call returning "(no output)", and died on MaxTurnsExceeded(200). The
+    guard must trip within the limit instead."""
     d = StallDetector(limit=DEFAULT_STALL_REPEAT_LIMIT)
-    args = {"path": "/tmp/blogs.work.md"}
+    args = {"command": "python3 parse_queue.py /shared/BlogsToProcess.md 10"}
     tripped_at = None
-    for i in range(1, 14):
-        if d.record("read_file", args) >= DEFAULT_STALL_REPEAT_LIMIT:
+    for i in range(1, 193):
+        if d.record("execute_command", args, "(no output)") >= DEFAULT_STALL_REPEAT_LIMIT:
             tripped_at = i
             break
     assert tripped_at == DEFAULT_STALL_REPEAT_LIMIT
 
 
-def test_agent_stall_error_is_exception():
-    assert issubclass(AgentStallError, Exception)
+# --- Stall guard: nudge tier ---
+
+
+def test_stall_nudge_fires_at_threshold_once_only():
+    """A key is nudged the first time it reaches the threshold and never again,
+    so an agent that ignores the nudge is not nudged on every later call."""
+    d = StallDetector(limit=6, nudge_limit=3)
+    args = {"path": "/tmp/tweet.md"}
+    fired = []
+    for _ in range(5):
+        n = d.record("write_file", args, WROTE)
+        fired.append(d.should_nudge("write_file", args, n))
+    assert fired == [False, False, True, False, False]
+
+
+def test_stall_nudge_does_not_reset_the_counter():
+    """Nudging must not reset accrual, or a nudged-but-looping agent would never
+    reach the abort."""
+    d = StallDetector(limit=6, nudge_limit=3)
+    args = {"path": "/tmp/tweet.md"}
+    counts = []
+    for _ in range(6):
+        n = d.record("write_file", args, WROTE)
+        d.should_nudge("write_file", args, n)
+        counts.append(n)
+    assert counts == [1, 2, 3, 4, 5, 6]
+
+
+def test_stall_nudge_disabled_independently_of_abort():
+    """nudge_limit <= 0 disables only the nudge; the abort still accrues."""
+    d = StallDetector(limit=6, nudge_limit=0)
+    args = {"path": "/tmp/x"}
+    for _ in range(6):
+        n = d.record("write_file", args, WROTE)
+        assert d.should_nudge("write_file", args, n) is False
+    assert n == 6
+
+
+def test_stall_nudge_at_or_above_abort_is_treated_as_disabled():
+    """A nudge threshold that could never fire is disabled rather than silently
+    reordering the tiers."""
+    for nudge in (6, 8):
+        d = StallDetector(limit=6, nudge_limit=nudge)
+        assert d.nudge_limit == 0
+
+
+def test_stall_nudge_separate_keys_each_get_one_nudge():
+    d = StallDetector(limit=6, nudge_limit=2)
+    a, b = {"path": "/a"}, {"path": "/b"}
+    assert d.should_nudge("write_file", a, d.record("write_file", a, "x")) is False
+    assert d.should_nudge("write_file", a, d.record("write_file", a, "x")) is True
+    assert d.should_nudge("write_file", b, d.record("write_file", b, "y")) is False
+    assert d.should_nudge("write_file", b, d.record("write_file", b, "y")) is True
+
+
+def test_fresh_detector_clears_counts_and_nudge_history():
+    """A retry attempt starts clean — counts, digests and nudge history."""
+    args = {"path": "/tmp/x"}
+    first = StallDetector(limit=6, nudge_limit=3)
+    for _ in range(4):
+        first.should_nudge("write_file", args, first.record("write_file", args, WROTE))
+    second = StallDetector(limit=6, nudge_limit=3)
+    assert second.record("write_file", args, WROTE) == 1
+    assert second.should_nudge("write_file", args, 3) is True
+
+
+def test_build_stall_nudge_points_at_submit_result():
+    """Per design D5: the measured effect is dithering -> completion, so the
+    message must name the escape hatch."""
+    msg = build_stall_nudge("write_file", 3)
+    assert "submit_result" in msg
+    assert "write_file" in msg
+    assert "3" in msg
+
+
+def test_build_stall_nudge_does_not_echo_tool_content():
+    """Fixed template: only tool name and count are interpolated, so tool output
+    can never be reflected back into the model's context."""
+    msg = build_stall_nudge("write_file", 3)
+    for injected in ("IGNORE PREVIOUS", "Wrote 354 bytes", "/tmp/tweet.md"):
+        assert injected not in msg
+
+
+def test_agent_stall_error_is_agents_exception():
+    """Must subclass AgentsException: the SDK wraps any other exception raised
+    inside a tool output guardrail into UserError, which would silently
+    reclassify a stall as a generic tool error."""
+    from agents.exceptions import AgentsException
+    assert issubclass(AgentStallError, AgentsException)
+
+
+# --- Stall guard: guardrail behaviour and attachment ---
+
+
+class _FakeToolContext:
+    def __init__(self, tool_name, arguments):
+        self.tool_name = tool_name
+        self.tool_arguments = arguments
+
+
+def _run_guard(guard, tool_name, arguments, output):
+    """Invoke the guardrail the way the SDK would."""
+    from agents.tool_guardrails import ToolOutputGuardrailData
+    data = ToolOutputGuardrailData(
+        context=_FakeToolContext(tool_name, arguments), agent=None, output=output
+    )
+    return guard.guardrail_function(data)
+
+
+def test_guardrail_allows_below_thresholds(monkeypatch):
+    events = []
+    monkeypatch.setattr(main, "emit_event", lambda t, d: events.append((t, d)))
+    stall = StallDetector(limit=6, nudge_limit=3)
+    guard = main.make_stall_guardrail(stall, lambda: "turn1")
+    out = _run_guard(guard, "write_file", '{"path": "/tmp/t"}', WROTE)
+    assert out.behavior["type"] == "allow"
+    assert events == []
+
+
+def test_guardrail_nudges_at_threshold_and_emits_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(main, "emit_event", lambda t, d: events.append((t, d)))
+    stall = StallDetector(limit=6, nudge_limit=3)
+    guard = main.make_stall_guardrail(stall, lambda: "turn1")
+    args = '{"path": "/tmp/t"}'
+    outs = [_run_guard(guard, "write_file", args, WROTE) for _ in range(3)]
+    assert [o.behavior["type"] for o in outs] == ["allow", "allow", "reject_content"]
+    assert "submit_result" in outs[-1].behavior["message"]
+    names = [t for t, _ in events]
+    assert names == ["stall_nudge"]
+    assert events[0][1]["repeat_count"] == 3
+    assert events[0][1]["limit"] == 3
+
+
+def test_guardrail_aborts_at_limit_with_stall_detected(monkeypatch):
+    events = []
+    monkeypatch.setattr(main, "emit_event", lambda t, d: events.append((t, d)))
+    stall = StallDetector(limit=3, nudge_limit=2)
+    guard = main.make_stall_guardrail(stall, lambda: "turn9")
+    args = '{"path": "/tmp/t"}'
+    _run_guard(guard, "write_file", args, WROTE)
+    _run_guard(guard, "write_file", args, WROTE)
+    with pytest.raises(AgentStallError) as exc:
+        _run_guard(guard, "write_file", args, WROTE)
+    assert "unchanged result" in str(exc.value)
+    kinds = [t for t, _ in events]
+    assert kinds == ["stall_nudge", "stall_detected"]
+    detected = events[-1][1]
+    assert detected["result_repeated"] is True
+    assert detected["turn_id"] == "turn9"
+
+
+def test_guardrail_changing_result_never_fires(monkeypatch):
+    """The production false positive, end to end through the guardrail."""
+    events = []
+    monkeypatch.setattr(main, "emit_event", lambda t, d: events.append((t, d)))
+    stall = StallDetector(limit=3, nudge_limit=2)
+    guard = main.make_stall_guardrail(stall, lambda: "t")
+    args = '{"command": "count_tweet_chars.py /tmp/tweet.md"}'
+    for result in ("207", "184", "174", "160", "155"):
+        out = _run_guard(guard, "execute_command", args, result)
+        assert out.behavior["type"] == "allow"
+    assert events == []
+
+
+def test_guardrail_disabled_when_limit_non_positive(monkeypatch):
+    events = []
+    monkeypatch.setattr(main, "emit_event", lambda t, d: events.append((t, d)))
+    stall = StallDetector(limit=0, nudge_limit=3)
+    guard = main.make_stall_guardrail(stall, lambda: "t")
+    for _ in range(30):
+        assert _run_guard(guard, "write_file", "{}", WROTE).behavior["type"] == "allow"
+    assert events == []
+
+
+def test_guardrail_malformed_arguments_do_not_raise(monkeypatch):
+    monkeypatch.setattr(main, "emit_event", lambda t, d: None)
+    stall = StallDetector(limit=6, nudge_limit=3)
+    guard = main.make_stall_guardrail(stall, lambda: "t")
+    out = _run_guard(guard, "write_file", "not json{", WROTE)
+    assert out.behavior["type"] == "allow"
+
+
+def _make_tool():
+    from agents.tool import FunctionTool
+    return FunctionTool(name="t")
+
+
+async def _collect(agent):
+    return await agent.get_all_tools(run_context=None)
+
+
+def test_guarded_agent_attaches_to_every_function_tool():
+    tools = [_make_tool(), _make_tool()]
+    agent = GuardedAgent(tools=tools)
+    guard = main.make_stall_guardrail(StallDetector(6, 3), lambda: None)
+    agent.stall_guardrail = guard
+    got = asyncio.run(_collect(agent))
+    assert all(t.tool_output_guardrails == [guard] for t in got)
+
+
+def test_guarded_agent_attachment_is_idempotent():
+    """get_all_tools runs every turn and native tools are shared singletons."""
+    tools = [_make_tool()]
+    agent = GuardedAgent(tools=tools)
+    guard = main.make_stall_guardrail(StallDetector(6, 3), lambda: None)
+    agent.stall_guardrail = guard
+    for _ in range(5):
+        asyncio.run(_collect(agent))
+    assert tools[0].tool_output_guardrails == [guard]
+
+
+def test_guarded_agent_replaces_stale_guardrail_across_attempts():
+    """Each retry binds a fresh detector; the previous attempt's guardrail must
+    not stay armed on the shared module-level tool objects."""
+    tools = [_make_tool()]
+    agent = GuardedAgent(tools=tools)
+    first = main.make_stall_guardrail(StallDetector(6, 3), lambda: None)
+    agent.stall_guardrail = first
+    asyncio.run(_collect(agent))
+    second = main.make_stall_guardrail(StallDetector(6, 3), lambda: None)
+    agent.stall_guardrail = second
+    asyncio.run(_collect(agent))
+    assert tools[0].tool_output_guardrails == [second]
+
+
+def test_guarded_agent_preserves_unrelated_guardrails():
+    from agents.tool_guardrails import ToolOutputGuardrail
+    other = ToolOutputGuardrail(guardrail_function=lambda d: None, name="other")
+    tool = _make_tool()
+    tool.tool_output_guardrails = [other]
+    agent = GuardedAgent(tools=[tool])
+    guard = main.make_stall_guardrail(StallDetector(6, 3), lambda: None)
+    agent.stall_guardrail = guard
+    asyncio.run(_collect(agent))
+    assert tool.tool_output_guardrails == [other, guard]

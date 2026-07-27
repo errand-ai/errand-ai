@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -21,10 +22,16 @@ from openai.types.shared import Reasoning
 from pydantic import BaseModel
 
 from agents import Agent, ItemHelpers, ModelSettings, RunConfig, Runner, RunHooks, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
-from agents.exceptions import ModelBehaviorError
+from agents.exceptions import AgentsException, ModelBehaviorError
 from agents.mcp import MCPServerStreamableHttp
 from agents.models.openai_provider import OpenAIProvider
 from agents.run import CallModelData, ModelInputData
+from agents.tool import FunctionTool
+from agents.tool_guardrails import (
+    ToolGuardrailFunctionOutput,
+    ToolOutputGuardrail,
+    ToolOutputGuardrailData,
+)
 
 from tool_registry import EXCLUDED_CATALOG_TOOLS, ToolVisibilityContext, build_tool_catalog, create_tool_filter, discover_tools, get_hot_list, scan_installed_skills, submit_result
 from xml_tool_call_recovery import parse_xml_tool_calls
@@ -1847,57 +1854,222 @@ def _classify_error(exc: Exception) -> str:
 MAX_AGENT_RETRIES = 3
 AGENT_RETRY_BASE_DELAY = 2  # seconds
 
-# A single agent run that repeats the exact same tool call this many times is
-# treated as a no-progress loop and aborted. MAX_TURNS (~200) is only a hard
-# ceiling: a weak model that gets stuck re-reading one file or re-discovering
-# already-enabled tools burns the entire budget (~13 min of inference) before
-# it trips. This catches the stall within a handful of turns instead. Override
-# with STALL_REPEAT_LIMIT; set it <= 0 to disable the guard entirely.
+# A no-progress loop is the same tool called with identical arguments AND
+# returning an unchanged result. MAX_TURNS (~200) is only a hard ceiling: a weak
+# model that gets stuck burns the entire budget before it trips — one production
+# run called parse_queue.py identically 192 times, every call returning
+# "(no output)", and died on MaxTurnsExceeded.
+#
+# Two tiers, because killing the run is a poor first response: a stalled agent
+# has usually finished its work and merely cannot stop, so the abort throws away
+# a completed deliverable. At the nudge limit the tool result is replaced with a
+# message pointing at submit_result (measured: escape rate 47% -> 90%); the abort
+# limit remains the backstop for an agent that ignores it.
+#
+# Override with STALL_NUDGE_LIMIT / STALL_REPEAT_LIMIT. STALL_REPEAT_LIMIT <= 0
+# disables the guard entirely; STALL_NUDGE_LIMIT <= 0 (or >= the abort limit)
+# disables only the nudge tier.
 DEFAULT_STALL_REPEAT_LIMIT = 6
+DEFAULT_STALL_NUDGE_LIMIT = 3
 
 
-class AgentStallError(Exception):
-    """Raised when the agent repeats an identical tool call enough times that
-    the run is judged to be a no-progress loop. Aborting on this is cheaper and
-    clearer than letting a model spin until MAX_TURNS without ever calling
-    submit_result."""
+class AgentStallError(AgentsException):
+    """Raised when the agent repeats an identical tool call, with an unchanged
+    result, enough times that the run is judged to be a no-progress loop.
+
+    Subclasses ``AgentsException`` deliberately. The guard runs inside a tool
+    output guardrail, and the SDK wraps any non-``AgentsException`` raised there
+    into ``UserError(f"Error running tool {name}: ...")``
+    (``run_internal/tool_execution.py``), which would silently reclassify a stall
+    as a generic tool error and bypass the ``stalled`` handler entirely.
+    """
 
 
 class StallDetector:
-    """Flags a stalled agent run by counting byte-identical tool calls.
+    """Flags a stalled agent run by counting identical tool calls whose results
+    do not change.
 
-    A single run that invokes the same tool with the same arguments ``limit``
-    times is almost always stuck — e.g. re-reading the same file or
-    re-``discover_tools``-ing already-enabled tools, which is exactly how a
-    gemma-class model looped for 15 minutes on the blog-to-tweets queue before
-    it was killed. Healthy runs vary their arguments (different URLs, entry
-    numbers, file paths), so an identical-signature repeat is a high-precision
-    stall signal with few false positives.
+    Keyed on ``(tool, canonical_args)``. Each key remembers a digest of the
+    result its previous invocation returned; a repeat only accrues while that
+    digest is unchanged, and a differing result resets the key to 1.
 
-    A fresh detector is used per agent attempt so that a legitimate retry starts
-    with a clean budget. ``limit <= 0`` disables the guard.
+    The result is what separates a stall from healthy iteration. A draft-and-
+    verify loop calls the same character-count command with byte-identical
+    arguments many times — three times per blog entry in production — but gets
+    207, then 184, then 174 back. That is progress. A genuine stall returns the
+    identical value every time ("Wrote 354 bytes to /tmp/tweet.md" x6).
+
+    Accrual is consecutive *within a key's own call sequence*: invocations of
+    other keys do not reset it, so a loop alternating between two repeating
+    calls is still caught, while a later coincidental recurrence of an earlier
+    result cannot creep toward the limit.
+
+    A fresh detector is used per agent attempt so a legitimate retry starts with
+    a clean budget and no record of prior nudges.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, nudge_limit: int = 0) -> None:
         self.limit = limit
-        self._counts: dict[str, int] = {}
+        # A nudge at or above the abort limit could never fire; treat it as
+        # disabled rather than silently reordering the tiers.
+        self.nudge_limit = nudge_limit if 0 < nudge_limit < limit else 0
+        # key -> (result_digest, consecutive_count)
+        self._state: dict[str, tuple[str, int]] = {}
+        self._nudged: set[str] = set()
 
-    def _signature(self, tool_name: str, args) -> str:
+    def signature(self, tool_name: str, args) -> str:
         try:
             return tool_name + ":" + json.dumps(args, sort_keys=True, default=str)
         except (TypeError, ValueError):
             return tool_name + ":" + repr(args)
 
-    def record(self, tool_name: str, args) -> int:
-        """Record a tool call; return the running count for this exact
-        (tool, args) signature. Returns 0 when the guard is disabled so the
-        caller's ``count and count >= limit`` check never trips."""
+    @staticmethod
+    def _digest(result) -> str:
+        # Hash the complete result, never the truncated transcript rendering:
+        # two long outputs sharing a prefix must not collide into a false stall.
+        return hashlib.sha256(str(result).encode("utf-8", "replace")).hexdigest()
+
+    def record(self, tool_name: str, args, result) -> int:
+        """Record a completed tool call and return the consecutive count for this
+        (tool, args) key at its current result.
+
+        Returns 0 when the guard is disabled, so the caller's
+        ``count and count >= limit`` check never trips.
+        """
         if self.limit <= 0:
             return 0
-        sig = self._signature(tool_name, args)
-        n = self._counts.get(sig, 0) + 1
-        self._counts[sig] = n
+        sig = self.signature(tool_name, args)
+        digest = self._digest(result)
+        prev_digest, prev_n = self._state.get(sig, (None, 0))
+        n = prev_n + 1 if digest == prev_digest else 1
+        self._state[sig] = (digest, n)
         return n
+
+    def should_nudge(self, tool_name: str, args, count: int) -> bool:
+        """True when this key has reached the nudge threshold and has not already
+        been nudged in this attempt. Marks it nudged as a side effect, so a key is
+        nudged at most once and an agent that ignores the nudge still accrues
+        toward the abort."""
+        if not self.nudge_limit or count < self.nudge_limit or count >= self.limit:
+            return False
+        sig = self.signature(tool_name, args)
+        if sig in self._nudged:
+            return False
+        self._nudged.add(sig)
+        return True
+
+
+def make_stall_guardrail(stall: "StallDetector", turn_id_source) -> ToolOutputGuardrail:
+    """Build the tool output guardrail that drives both stall tiers.
+
+    Sited here rather than in the streaming loop because this callback receives
+    the *pre-substitution* result. The nudge replaces ``final_result``, which is
+    what ``ToolCallOutputItem.output`` carries — a stream-based detector would
+    hash the nudge, reset its counter, then reset again on the next real result,
+    oscillating forever and never reaching the abort.
+
+    ``turn_id_source`` is called to fetch the current turn id for events.
+    """
+
+    def guardrail(data: ToolOutputGuardrailData) -> ToolGuardrailFunctionOutput:
+        tool_name = data.context.tool_name
+        raw_args = data.context.tool_arguments
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except (json.JSONDecodeError, TypeError):
+            args = {"raw": raw_args}
+
+        count = stall.record(tool_name, args, data.output)
+        if not count:
+            return ToolGuardrailFunctionOutput.allow()
+
+        turn_id = turn_id_source()
+
+        if count >= stall.limit:
+            emit_event("stall_detected", {
+                "tool": tool_name,
+                "repeat_count": count,
+                "limit": stall.limit,
+                "result_repeated": True,
+                "turn_id": turn_id,
+            })
+            raise AgentStallError(
+                f"Tool '{tool_name}' called {count} times with identical arguments "
+                f"and an unchanged result; aborting suspected no-progress loop "
+                f"(STALL_REPEAT_LIMIT={stall.limit})"
+            )
+
+        if stall.should_nudge(tool_name, args, count):
+            emit_event("stall_nudge", {
+                "tool": tool_name,
+                "repeat_count": count,
+                "limit": stall.nudge_limit,
+                "turn_id": turn_id,
+            })
+            logger.info(
+                "Stall nudge: %s repeated %d times with unchanged result", tool_name, count
+            )
+            return ToolGuardrailFunctionOutput.reject_content(
+                build_stall_nudge(tool_name, count)
+            )
+
+        return ToolGuardrailFunctionOutput.allow()
+
+    return ToolOutputGuardrail(guardrail_function=guardrail, name="stall_guard")
+
+
+class GuardedAgent(Agent):
+    """Agent that attaches a tool output guardrail to every tool it exposes.
+
+    ``tool_output_guardrails`` is a per-``FunctionTool`` field and MCP tools are
+    built without it, so there is no single place to register the guard — but
+    ``get_all_tools()`` returns native and MCP tools together, after the lazy
+    visibility filter has run. Decorating that list covers exactly the tools the
+    model can actually call.
+
+    Attachment must be idempotent *and* replacing: this runs every turn, native
+    tools are module-level ``@function_tool`` singletons shared across the
+    process, and each retry attempt binds a fresh detector. Appending would leave
+    the previous attempt's guardrail — and its stale counts — still armed, so any
+    guardrail we previously attached is stripped before the current one goes on.
+    """
+
+    STALL_GUARDRAIL_NAME = "stall_guard"
+
+    stall_guardrail: ToolOutputGuardrail | None = None
+
+    async def get_all_tools(self, run_context):
+        tools = await super().get_all_tools(run_context)
+        guard = self.stall_guardrail
+        for tool in tools:
+            if not isinstance(tool, FunctionTool):
+                continue
+            existing = [
+                g for g in (tool.tool_output_guardrails or [])
+                if getattr(g, "name", None) != self.STALL_GUARDRAIL_NAME
+            ]
+            tool.tool_output_guardrails = [*existing, guard] if guard else existing
+        return tools
+
+
+def build_stall_nudge(tool_name: str, count: int) -> str:
+    """The message substituted for a repeated tool's result.
+
+    Points at submit_result specifically. Measurement showed the nudge does not
+    reduce repetition (13% -> 7%, n.s.) — what it collapses is dithering
+    (count-check calls 24/60 -> 2/60) while submit_result rises 47% -> 90%. It
+    converts an agent that has finished but cannot stop into one that delivers.
+
+    Fixed template: only the tool name and count are interpolated, so no
+    tool-supplied content is echoed back into the model's context.
+    """
+    return (
+        f"You have now called {tool_name} {count} times with identical arguments "
+        f"and received the identical result every time. Its effect is already in "
+        f"place — repeating it changes nothing. If your work is complete, call "
+        f"submit_result now with a summary of what you accomplished. If it is not "
+        f"complete, do something different from repeating this call."
+    )
 
 
 # Return type tags for extract_output
@@ -2022,7 +2194,7 @@ async def main():
         reasoning_effort = get_reasoning_effort()
         max_output_tokens = resolve_max_output_tokens(env["OPENAI_MODEL"])
         logger.info("Max output tokens: %d (model=%s)", max_output_tokens, env["OPENAI_MODEL"])
-        agent = Agent(
+        agent = GuardedAgent(
             name="TaskRunner",
             instructions=full_instructions,
             model=env["OPENAI_MODEL"],
@@ -2051,6 +2223,27 @@ async def main():
                 os.environ.get("STALL_REPEAT_LIMIT"), DEFAULT_STALL_REPEAT_LIMIT,
             )
             stall_limit = DEFAULT_STALL_REPEAT_LIMIT
+        try:
+            stall_nudge_limit = int(
+                os.environ.get("STALL_NUDGE_LIMIT", str(DEFAULT_STALL_NUDGE_LIMIT))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid STALL_NUDGE_LIMIT value %r, using default %d",
+                os.environ.get("STALL_NUDGE_LIMIT"), DEFAULT_STALL_NUDGE_LIMIT,
+            )
+            stall_nudge_limit = DEFAULT_STALL_NUDGE_LIMIT
+        if stall_limit > 0 and 0 < stall_nudge_limit and stall_nudge_limit >= stall_limit:
+            logger.warning(
+                "STALL_NUDGE_LIMIT (%d) >= STALL_REPEAT_LIMIT (%d); the nudge tier can "
+                "never fire and is disabled. Set it below the abort limit to enable it.",
+                stall_nudge_limit, stall_limit,
+            )
+        logger.info(
+            "Stall guard: nudge at %s, abort at %s",
+            stall_nudge_limit if 0 < stall_nudge_limit < stall_limit else "disabled",
+            stall_limit if stall_limit > 0 else "disabled",
+        )
         # Use OpenAIProvider directly to bypass MultiProvider's slash-based prefix
         # parsing. This ensures model names containing slashes (e.g. "bedrock/gpt-oss:20b")
         # are passed through to the configured OpenAI client (pointing at LiteLLM) as-is.
@@ -2070,7 +2263,13 @@ async def main():
             attempt += 1
             try:
                 hooks = StreamEventEmitter()
-                stall = StallDetector(stall_limit)  # fresh budget per attempt
+                # Fresh budget per attempt: counts, result digests and nudge
+                # history must not leak across a legitimate retry. The guardrail
+                # is rebound each attempt so it closes over the current detector.
+                stall = StallDetector(stall_limit, stall_nudge_limit)
+                agent.stall_guardrail = make_stall_guardrail(
+                    stall, lambda: hooks._current_turn_id
+                )
                 result = Runner.run_streamed(agent, user_prompt, context=visibility_ctx, max_turns=max_turns, hooks=hooks, run_config=run_config)
 
                 # Iterate streaming events, emitting thinking/reasoning to stderr
@@ -2111,24 +2310,9 @@ async def main():
                             if turn_id:
                                 tc_data["turn_id"] = turn_id
                             emit_event("tool_call", tc_data)
-
-                            # Stall guard: abort a no-progress loop (the same
-                            # tool call repeated identically) before it burns the
-                            # whole MAX_TURNS budget. Emitted after the tool_call
-                            # event so the offending call is visible in the logs.
-                            repeat = stall.record(tool_name, args)
-                            if repeat and repeat >= stall_limit:
-                                emit_event("stall_detected", {
-                                    "tool": tool_name,
-                                    "repeat_count": repeat,
-                                    "limit": stall_limit,
-                                    "turn_id": turn_id,
-                                })
-                                raise AgentStallError(
-                                    f"Tool '{tool_name}' called {repeat} times with identical "
-                                    f"arguments; aborting suspected no-progress loop "
-                                    f"(STALL_REPEAT_LIMIT={stall_limit})"
-                                )
+                            # The stall guard no longer records here: it needs the
+                            # tool's result, and specifically the result *before*
+                            # any nudge substitution. See make_stall_guardrail.
 
                 # Log summary of tool calls from run items
                 tool_call_count = sum(
