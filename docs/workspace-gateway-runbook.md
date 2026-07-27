@@ -353,12 +353,43 @@ quarantines and treat them as real conflicts requiring a manual merge.
 
 ## 8. Startup token requirement
 
-The gateway refuses to start without a usable access token for its remote in the
-writable rclone config, exiting with `FATAL: no usable access token`. This is
-deliberate: rclone would otherwise fall through to an interactive OAuth flow
-whose redirect listener holds `127.0.0.1:53682` for the life of the process,
-making every refresher `rclone rc config/update` fail with
-`bind: address already in use` — token rotation would silently never happen.
+The gateway refuses to start unless the writable rclone config holds **both** an
+`access_token` and a `refresh_token` for its remote, exiting with
+`FATAL: no usable token`. An access token alone cannot be refreshed without a
+browser, so rclone would fall through to an interactive OAuth flow whose redirect
+listener holds `127.0.0.1:53682` for the life of the process — after which every
+refresher `rclone rc config/update` fails with `bind: address already in use` and
+token rotation silently never happens.
+
+Two things keep that flow from ever starting, and both are needed:
+
+1. the refresher **merges** each fresh access token into the existing token blob
+   (via rc `config/get`) instead of replacing it, so `refresh_token` survives —
+   `config/update` persists exactly what it is given;
+2. the refresher passes `opt: {"nonInteractive": true}`, because `config/update`
+   re-runs the backend's config state machine, which launches the interactive
+   flow *however valid the stored token is*. With the flag rclone returns the
+   question instead of opening a browser.
+
+If you see `500 Server Error … /config/update` in the refresher log, check which
+of the two is missing:
+
+```bash
+# Does the live config still have a refresh token? (key names only, no values)
+kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- python3 -c '
+import json, re
+for line in open("/config-rw/rclone.conf"):
+    if re.match(r"\s*token\s*=", line):
+        b = json.loads(line.split("=", 1)[1].strip())
+        print("keys:", sorted(b.keys()))'
+
+# Is the interactive listener holding the port?
+kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- \
+  sh -c 'netstat -ltn 2>/dev/null | grep 53682 || echo "53682 free (expected)"'
+```
+
+Once the port is held it stays held for the life of the process — the gateway
+must be restarted (runbook §2) to clear it.
 
 The `init-token` init container seeds a fresh token before rclone starts. If the
 gateway is in `CrashLoopBackOff` with that message, check the init container:
@@ -367,9 +398,13 @@ gateway is in `CrashLoopBackOff` with that message, check the init container:
 kubectl -n errand logs deploy/errand-workspace-gateway -c init-token
 ```
 
-Verify nothing is listening on the OAuth port in a healthy gateway:
+A healthy gateway rotates its token roughly every 50 minutes. Confirm it is
+actually happening rather than being masked by rclone's in-memory refresh:
 
 ```bash
-kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- \
-  sh -c 'netstat -ltn 2>/dev/null | grep 53682 || echo "53682 free (expected)"'
+kubectl -n errand logs deploy/errand-workspace-gateway -c refresher \
+  | grep -E 'token_refreshed|token_refresh_failed' | tail -3
 ```
+
+`token_refreshed` is the healthy line. Repeated `token_refresh_failed` with a
+500 means rotation is not working — see the two causes above.

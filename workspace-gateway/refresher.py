@@ -232,6 +232,17 @@ def push_token_to_rclone(cfg: Config, access_token: str, expires_at: int) -> Non
     Pushing without a refresh token is therefore refused outright: leaving the
     running rclone's in-memory token alone is strictly better than replacing a
     working config with one that forces an interactive flow.
+
+    `opt.nonInteractive` is the second half, and the one that actually stops the
+    port being seized. `config/update` re-runs the backend's config state
+    machine, and for an OAuth backend that machine launches the interactive
+    authorisation flow **regardless of how complete and valid the stored token
+    is** — verified against the live gateway on 2026-07-27: the identical call
+    with an intact token returned 500 (`failed to start auth webserver`) without
+    the flag and 200 with it. With the flag rclone returns the question it would
+    have asked instead of trying to answer it via a browser. The parameters are
+    persisted either way (rclone saves them before running the machine), so the
+    token still lands; the flag only removes the interactive step.
     """
     blob = read_remote_token(cfg)
     if not blob.get("refresh_token"):
@@ -246,10 +257,22 @@ def push_token_to_rclone(cfg: Config, access_token: str, expires_at: int) -> Non
         blob["expiry"] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
     resp = requests.post(
         cfg.rc_url + "/config/update",
-        json={"name": cfg.remote, "parameters": {"token": json.dumps(blob)}},
+        json={
+            "name": cfg.remote,
+            "parameters": {"token": json.dumps(blob)},
+            "opt": {"nonInteractive": True},
+        },
         timeout=cfg.rc_timeout,
     )
     resp.raise_for_status()
+    # A 200 can still carry a config-machine error in the body, which would
+    # otherwise pass for a successful rotation.
+    try:
+        error = (resp.json() or {}).get("Error")
+    except ValueError:
+        error = None
+    if error:
+        raise RuntimeError(f"config/update reported an error for '{cfg.remote}': {error}")
 
 
 def read_vfs_stats(cfg: Config) -> dict:

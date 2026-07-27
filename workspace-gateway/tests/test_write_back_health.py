@@ -714,8 +714,9 @@ def test_stat_remote_object_builds_the_fs_and_relative_path(monkeypatch):
 class _RcStub:
     """Stands in for the rclone rc API: records config/update, serves config/get."""
 
-    def __init__(self, token_blob):
+    def __init__(self, token_blob, update_error=""):
         self.token_blob = token_blob
+        self.update_error = update_error
         self.updates = []
 
     def post(self, url, json=None, timeout=None):
@@ -728,7 +729,7 @@ class _RcStub:
             def json(self):
                 if url.endswith("/config/get"):
                     return {"token": __import__("json").dumps(stub.token_blob)} if stub.token_blob else {}
-                return {}
+                return {"Error": stub.update_error}
 
         if url.endswith("/config/update"):
             self.updates.append(json)
@@ -759,6 +760,38 @@ def test_pushed_token_preserves_the_refresh_token(monkeypatch):
     assert pushed["refresh_token"] == "1//keepme"    # survived
     assert pushed["access_token"] == "ya29.fresh"    # updated
     assert pushed["expiry"].startswith("2026-")      # refreshed
+
+
+def test_push_is_non_interactive():
+    # `config/update` re-runs the backend's config state machine, and for an
+    # OAuth backend that machine launches the interactive authorisation flow
+    # REGARDLESS of how complete and valid the stored token is — it binds
+    # 127.0.0.1:53682 and waits for a code that can never arrive, after which
+    # every later config/update fails "address already in use". Verified against
+    # the live gateway 2026-07-27: identical call, intact token, 500 without this
+    # flag and 200 with it.
+    import refresher
+
+    rc = _RcStub({"access_token": "old", "refresh_token": "1//keepme"})
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(refresher.requests, "post", rc.post)
+        refresher.push_token_to_rclone(_token_cfg(), "ya29.fresh", 0)
+
+    assert rc.updates[0]["opt"] == {"nonInteractive": True}
+
+
+def test_a_config_machine_error_in_a_200_is_not_a_successful_rotation(monkeypatch):
+    # nonInteractive returns 200 with the question it would have asked; a real
+    # failure also arrives as 200 with a populated Error. Treating that as
+    # success would report rotation working when it is not.
+    import refresher
+
+    rc = _RcStub({"access_token": "old", "refresh_token": "1//keepme"},
+                 update_error="couldn't fetch token")
+    monkeypatch.setattr(refresher.requests, "post", rc.post)
+
+    with pytest.raises(RuntimeError, match="couldn't fetch token"):
+        refresher.push_token_to_rclone(_token_cfg(), "ya29.fresh", 0)
 
 
 def test_push_is_refused_when_no_refresh_token_is_available(monkeypatch):

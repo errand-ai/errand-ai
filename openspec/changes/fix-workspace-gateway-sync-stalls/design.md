@@ -103,12 +103,24 @@ The initial reading was that rclone starts the OAuth listener because the config
 
 The cause is the refresher itself. `push_token_to_rclone` built a *fresh* token blob (`access_token`, `token_type`, `expiry`) and sent it to `config/update`, which persists what it is given — silently discarding `refresh_token`. rclone then held a token it could not refresh without a browser, fell back to the interactive flow, bound `127.0.0.1:53682`, and waited for a code that can never arrive. Every subsequent `config/update` failed `bind: address already in use`. The refresher was destroying the very credential it existed to maintain, on its first action, every time.
 
-The fix is therefore two-part:
+**Two independent defects, diagnosed in two passes.** Deploying the first fix and finding the 500s unchanged is what exposed the second — the more fundamental one.
 
-- **Merge, never replace.** The new access token is merged into the remote's existing token blob, read back via rc `config/get`, so `refresh_token` survives. A push is *refused* when no refresh token can be obtained: leaving the running rclone's in-memory token alone is strictly better than replacing a working config with one that forces an interactive flow.
-- **"Usable" means refreshable.** The entrypoint's startup check requires **both** `access_token` and `refresh_token`. Checking only `access_token` — as the first implementation did — accepts precisely the broken state.
+**Defect 1 — the push destroyed the refresh token.** `push_token_to_rclone` built a fresh blob and `config/update` persisted it, discarding `refresh_token`. Fixed by *merging* into the remote's existing token blob (read back via rc `config/get`), and by *refusing* to push when no refresh token can be obtained: leaving the running rclone's in-memory token alone beats replacing a working config with one that cannot be refreshed. The entrypoint's startup check correspondingly requires **both** `access_token` and `refresh_token` — checking only `access_token`, as the first implementation did, accepts precisely the broken state.
 
-Why this went unnoticed for so long: rclone's in-memory `TokenSource` keeps the refresh token it loaded at startup and refreshes independently of the config file, so Drive access kept working. Only the config on disk degraded, and `/config-rw` is an emptyDir reseeded from the Secret on every restart — so the fault erased its own evidence on restart while never actually rotating a token.
+**Defect 2 — `config/update` seizes the port regardless of the token.** With defect 1 fixed and the config verifiably retaining its refresh token, the interactive flow *still* started three seconds after serve. `config/update` re-runs the backend's config state machine, and for an OAuth backend that machine launches the interactive authorisation flow **however complete and valid the stored token is**. It binds `127.0.0.1:53682`, waits for a code that can never arrive, and every later `config/update` fails `bind: address already in use`.
+
+The fix is rclone's own `opt.nonInteractive`, which makes the machine *return* the question it would have asked instead of trying to answer it through a browser. Confirmed empirically against the live gateway on 2026-07-27 — identical call, identical intact token, port already held:
+
+| Call | Result |
+|---|---|
+| `config/update` | **500** `config failed to refresh token: failed to start auth webserver: listen tcp 127.0.0.1:53682: bind: address already in use` |
+| `config/update` + `opt: {"nonInteractive": true}` | **200** |
+
+Parameters are persisted either way — rclone saves them before running the machine, which is also *how* defect 1 managed to strip the refresh token despite returning 500 — so the token still lands; the flag removes only the interactive step. A 200 can still carry a non-empty `Error` in the body, so that is checked too rather than taken as a successful rotation.
+
+Why this went unnoticed for so long: rclone's in-memory `TokenSource` keeps the refresh token it loaded at startup and refreshes independently of the config file, so Drive access kept working throughout. Only the config on disk degraded, and `/config-rw` is an emptyDir reseeded from the Secret on every restart — so the fault erased its own evidence on restart while never once actually rotating a token.
+
+**Method note.** Both defects were found by deploying and observing, not by reading code: the first from the live config's key set contradicting what `init_config` had written, the second from the fix landing and the symptom not moving. The lesson for this capability is the one it already encodes — a mechanism that cannot be observed running is not known to work.
 
 ## Risks / Trade-offs
 
