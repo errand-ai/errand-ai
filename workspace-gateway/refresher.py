@@ -192,20 +192,61 @@ def fetch_access_token(cfg: Config) -> dict:
     return resp.json()
 
 
-def push_token_to_rclone(cfg: Config, access_token: str, expires_at: int) -> None:
-    """Inject the access token into the running rclone via rc config/update.
+def read_remote_token(cfg: Config) -> dict:
+    """Read the running rclone's current token blob for our remote via rc.
 
-    The token is passed explicitly as the `token` parameter so rclone never
-    attempts an interactive OAuth flow. Guarded by a timeout because a
-    config/update can block re-initialising the backend under API throttling.
+    Returns {} when it cannot be read — the caller must treat that as "do not
+    push", never as "start from an empty token".
     """
-    expiry = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat() if expires_at else ""
-    token_blob = {"access_token": access_token, "token_type": "Bearer"}
-    if expiry:
-        token_blob["expiry"] = expiry
+    try:
+        resp = requests.post(
+            cfg.rc_url + "/config/get",
+            json={"name": cfg.remote},
+            timeout=cfg.rc_timeout,
+        )
+        resp.raise_for_status()
+        raw = (resp.json() or {}).get("token")
+        blob = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
+        return blob if isinstance(blob, dict) else {}
+    except Exception as exc:  # noqa: BLE001 — caller decides what a failure means
+        _log("config_get_failed", remote=cfg.remote, error=str(exc))
+        return {}
+
+
+def push_token_to_rclone(cfg: Config, access_token: str, expires_at: int) -> None:
+    """Inject a fresh access token into the running rclone via rc config/update.
+
+    The new access token is merged into the remote's EXISTING token blob rather
+    than replacing it, because `config/update` persists what it is given and the
+    blob's other fields — above all `refresh_token` — are what make the token
+    refreshable without a browser.
+
+    This is not theoretical. Sending `{access_token, token_type, expiry}` alone
+    stripped `refresh_token` from the config on the first push; rclone then found
+    a token it could not refresh, fell back to the interactive OAuth flow, bound
+    `127.0.0.1:53682`, and sat waiting for a code that can never arrive. Every
+    later `config/update` then failed with `bind: address already in use`, so
+    token rotation never worked at all — observed in production 2026-07-27,
+    one second after startup.
+
+    Pushing without a refresh token is therefore refused outright: leaving the
+    running rclone's in-memory token alone is strictly better than replacing a
+    working config with one that forces an interactive flow.
+    """
+    blob = read_remote_token(cfg)
+    if not blob.get("refresh_token"):
+        raise RuntimeError(
+            "refusing to push a token with no refresh_token for remote "
+            f"'{cfg.remote}': rclone would fall back to interactive OAuth, bind "
+            "127.0.0.1:53682 and break every later config/update"
+        )
+    blob["access_token"] = access_token
+    blob.setdefault("token_type", "Bearer")
+    if expires_at:
+        blob["expiry"] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
     resp = requests.post(
         cfg.rc_url + "/config/update",
-        json={"name": cfg.remote, "parameters": {"token": json.dumps(token_blob)}},
+        json={"name": cfg.remote, "parameters": {"token": json.dumps(blob)}},
         timeout=cfg.rc_timeout,
     )
     resp.raise_for_status()

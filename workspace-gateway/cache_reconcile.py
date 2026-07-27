@@ -239,12 +239,34 @@ def parse_fingerprint(fingerprint) -> tuple[int | None, str | None, str | None]:
 
 
 def _parse_time(text) -> datetime | None:
-    if not isinstance(text, str) or not text:
+    """Parse a timestamp from a fingerprint or an lsjson record.
+
+    Handles both forms seen in practice: RFC3339 (`2026-07-26T19:55:59Z`, what
+    lsjson emits) and Go's default `Time.String()` layout
+    (`2026-07-26 19:55:59.159 +0000 UTC`), which is what production fingerprints
+    actually contain. Getting the second one wrong is not cosmetic: it makes the
+    modtime comparison fail, so any provider that does not publish a hash would
+    have its entries quarantined instead of repaired.
+    """
+    if not isinstance(text, str) or not text.strip():
         return None
+    text = text.strip()
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
     except ValueError:
-        return None
+        pass
+    # Go's Time.String(): "2026-07-26 19:55:59.159 +0000 UTC [monotonic]"
+    cleaned = text.replace(" UTC", "").replace(" m=", " ").split(" m=")[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f %z", "%Y-%m-%d %H:%M:%S %z",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
 
 
 def fingerprint_matches(fingerprint, remote: dict | None, *, modtime_tolerance: float = 1.0) -> bool:

@@ -95,25 +95,37 @@ cloud-side copies of every dirty path. They differ — that is the entire point.
 GW=deploy/errand-workspace-gateway
 BACKUP=~/gateway-backup-$(date +%Y%m%d-%H%M%S); mkdir -p "$BACKUP"
 
-# 1. List dirty entries (metadata side)
-kubectl -n errand exec $GW -c rclone -- \
-  sh -c 'grep -rl "\"Dirty\":true" /cache/vfsMeta || true'
+# rclone in an `exec` does NOT inherit the serve process's RCLONE_CONFIG, so
+# every rclone command below sets it explicitly. Without it you get
+# "didn't find section in config file" and no data.
+RC='RCLONE_CONFIG=/config-rw/rclone.conf'
+
+# 1. List dirty entries — use the JSON-aware scan from §4.3, not a grep
 
 # For each dirty path P reported above (e.g. gdrive{a1b2}/workflow/Notes.md):
 P='gdrive{a1b2}/workflow/Notes.md'
 REL="${P#*/}"                     # path within the served folder
 
-# 2. Cache side — size, checksum, and the content itself
-kubectl -n errand exec $GW -c rclone -- sh -c "cat '/cache/vfsMeta/$P'"
+# 2. Cache side — metadata, size, checksum, and the content itself.
+#    base64 keeps it byte-exact through kubectl's text stream.
+kubectl -n errand exec $GW -c rclone -- sh -c "cat '/cache/vfsMeta/$P'" > "$BACKUP/cache-meta.json"
 kubectl -n errand exec $GW -c rclone -- sh -c "wc -c '/cache/vfs/$P'; md5sum '/cache/vfs/$P'"
-kubectl -n errand exec $GW -c rclone -- sh -c "cat '/cache/vfs/$P'" > "$BACKUP/cache-$(basename "$REL")"
+kubectl -n errand exec $GW -c rclone -- sh -c "base64 '/cache/vfs/$P'" \
+  | base64 -d > "$BACKUP/cache-$(basename "$REL")"   # macOS: base64 -d -i <file> -o <file>
 
 # 3. Cloud side — size, checksum, and the content itself
-kubectl -n errand exec $GW -c rclone -- rclone lsjson --stat --hash "gdrive:$REL"
-kubectl -n errand exec $GW -c rclone -- rclone cat "gdrive:$REL" > "$BACKUP/cloud-$(basename "$REL")"
+kubectl -n errand exec $GW -c rclone -- sh -c "$RC rclone lsjson --stat --hash 'gdrive:$REL'"
+kubectl -n errand exec $GW -c rclone -- sh -c "$RC rclone cat 'gdrive:$REL' | base64" \
+  | base64 -d > "$BACKUP/cloud-$(basename "$REL")"
 
-# 4. Verify the backups are non-empty and record their checksums
+# 4. Verify the backups are non-empty, and check whether the cache copy is a
+#    clean superset of the cloud copy (an append) or a genuine divergence.
 ls -l "$BACKUP"; md5sum "$BACKUP"/*
+CLOUD_BYTES=$(wc -c < "$BACKUP/cloud-$(basename "$REL")")
+head -c "$CLOUD_BYTES" "$BACKUP/cache-$(basename "$REL")" \
+  | cmp -s - "$BACKUP/cloud-$(basename "$REL")" \
+  && echo "cache = cloud + appended bytes (safe to upload as-is)" \
+  || echo "copies DIVERGE — merge by hand, do not just upload"
 ```
 
 Do not proceed until both files exist locally and their sizes look sane. If the
@@ -155,12 +167,33 @@ invisible to these counters. Always cross-check the dirty-entry scan below.
 
 ### 4.3 Scan the cache directly (ground truth)
 
+> **Do not grep for `"Dirty":true`.** rclone pretty-prints the metadata, so the
+> real file contains `"Dirty": true` *with a space* — a grep for the compact form
+> reports a clean cache on one that has a dirty entry. Verified the hard way on
+> 2026-07-27. Parse the JSON instead:
+
 ```bash
-kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- \
-  sh -c 'grep -rl "\"Dirty\":true" /cache/vfsMeta | while read m; do
-           p=${m#/cache/vfsMeta/}
-           printf "%s\n  meta: %s\n  data: %s\n" "$p" "$(cat "$m")" "$(wc -c < "/cache/vfs/$p" 2>/dev/null || echo MISSING)"
-         done'
+kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- python3 -c '
+import json, os
+n = 0
+for dirpath, _, files in os.walk("/cache/vfsMeta"):
+    for f in files:
+        meta_path = os.path.join(dirpath, f)
+        try:
+            meta = json.load(open(meta_path))
+        except Exception:
+            continue
+        if not meta.get("Dirty"):
+            continue
+        n += 1
+        rel = os.path.relpath(meta_path, "/cache/vfsMeta")
+        try:
+            data = os.path.getsize(os.path.join("/cache/vfs", rel))
+        except OSError:
+            data = "MISSING"
+        print("DIRTY:", rel)
+        print("   meta Size:", meta.get("Size"), " Rs:", meta.get("Rs"), " data bytes:", data)
+print("dirty entries:", n)'
 ```
 
 Compare `Size` in the metadata against the data file's byte count. If the
@@ -270,7 +303,7 @@ starts, so it never races a live cache. Per dirty entry:
 
 Quarantine never deletes anything. Both the data file and its metadata move to:
 
-```
+```text
 /cache/quarantine/vfs/<path>        # the content
 /cache/quarantine/vfsMeta/<path>    # the metadata as it was
 /cache/quarantine/manifest.jsonl    # one JSON line per quarantine: path, reason, sizes, timestamp

@@ -415,6 +415,42 @@ def test_fingerprint_matches(fingerprint, remote, expected):
     assert cr.fingerprint_matches(fingerprint, remote) is expected
 
 
+@pytest.mark.parametrize(
+    "recorded,remote,expected",
+    [
+        # The REAL production fingerprint format: Go's Time.String(), not
+        # RFC3339. Parsing it wrong makes the modtime comparison fail, so any
+        # provider that publishes no hash would be quarantined instead of
+        # repaired. Observed live on the cluster 2026-07-27.
+        ("56254,2026-07-26 19:55:59.159 +0000 UTC",
+         {"Size": 56254, "ModTime": "2026-07-26T19:55:59.159Z"}, True),
+        ("56254,2026-07-26 19:55:59 +0000 UTC",
+         {"Size": 56254, "ModTime": "2026-07-26T19:55:59Z"}, True),
+        # Same shape, genuinely different time → correctly no match.
+        ("56254,2026-07-26 19:55:59.159 +0000 UTC",
+         {"Size": 56254, "ModTime": "2026-07-27T06:24:35Z"}, False),
+    ],
+)
+def test_fingerprint_matches_go_style_timestamps(recorded, remote, expected):
+    assert cr.fingerprint_matches(recorded, remote) is expected
+
+
+def test_live_production_fingerprint_matches_its_drive_object():
+    # The exact values read off the cluster on 2026-07-27: the recorded
+    # fingerprint and the Drive object agree on size and md5 while the modtime
+    # has moved (a second client touched it). This must repair, not quarantine —
+    # and it did: the full 61481 cached bytes reached Drive.
+    recorded = "56254,2026-07-26 19:55:59.159 +0000 UTC,28f2c726f6d5c228d6977f644aae5ee4"
+    drive = {"Size": 56254, "ModTime": "2026-07-27T06:24:35.996Z",
+             "Hashes": {"md5": "28f2c726f6d5c228d6977f644aae5ee4"}}
+    assert cr.fingerprint_matches(recorded, drive) is True
+
+
+@pytest.mark.parametrize("text", ["", "not a time", "2026-13-45 99:99:99 +0000 UTC"])
+def test_unparseable_timestamps_do_not_match(text):
+    assert cr.fingerprint_matches(f"10,{text}", {"Size": 10, "ModTime": "2026-07-26T19:55:59Z"}) is False
+
+
 def _probe_with_index(index, target="gdrive:Errand"):
     probe = cr.RcloneRemoteProbe(target)
     probe._index = index

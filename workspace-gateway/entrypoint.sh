@@ -97,20 +97,26 @@ export RCLONE_CONFIG="$CONF_RW"
 
 # Fail fast unless the writable config holds a usable token for this remote.
 #
-# rclone treats a config without a usable token as "needs authorising" and starts
-# its OAuth redirect webserver, which holds 127.0.0.1:53682 for the life of the
-# process. Every subsequent refresher `rclone rc config/update` then fails with
-# `bind: address already in use`, so token rotation silently never happens — it
-# was masked for months by rclone's own internal refresh and would have become an
-# outage the first time the refresh token needed rotating. A missing token is a
+# "Usable" means BOTH an access_token and a refresh_token. An access token alone
+# is precisely the broken state: rclone cannot refresh it without a browser, so
+# it starts its OAuth redirect webserver, binds 127.0.0.1:53682 for the life of
+# the process, and sits waiting for a code that can never arrive. Every later
+# refresher `rclone rc config/update` then fails with `bind: address already in
+# use`, so token rotation never happens at all. Observed in production
+# 2026-07-27, one second after startup. A token that cannot be refreshed is a
 # fatal startup error, not a degraded start that squats the port.
-if ! awk -v remote="$REMOTE" '
+TOKEN_LINE=$(awk -v remote="$REMOTE" '
       /^\[.*\]$/ { section = substr($0, 2, length($0) - 2); next }
       section == remote && /^[[:space:]]*token[[:space:]]*=/ { print }
-    ' "$CONF_RW" | grep -q '"access_token"[[:space:]]*:[[:space:]]*"[^"][^"]*"'; then
-  echo "workspace-gateway: FATAL: no usable access token for remote [${REMOTE}] in ${CONF_RW}." >&2
-  echo "workspace-gateway: refusing to start — rclone would fall through to an interactive OAuth" >&2
-  echo "workspace-gateway: flow and squat 127.0.0.1:53682, breaking refresher config/update." >&2
+    ' "$CONF_RW")
+token_has() {
+  echo "$TOKEN_LINE" | grep -q "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"][^\"]*\""
+}
+if ! token_has access_token || ! token_has refresh_token; then
+  echo "workspace-gateway: FATAL: no usable token for remote [${REMOTE}] in ${CONF_RW}." >&2
+  echo "workspace-gateway: both access_token and refresh_token are required — without a" >&2
+  echo "workspace-gateway: refresh_token rclone falls through to an interactive OAuth flow" >&2
+  echo "workspace-gateway: and squats 127.0.0.1:53682, breaking every refresher config/update." >&2
   echo "workspace-gateway: run the refresher in 'init' mode to seed a fresh token first." >&2
   exit 1
 fi

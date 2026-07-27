@@ -243,11 +243,14 @@ def test_scan_unavailable_preserves_state_and_degrades():
 
 
 class _Cfg2(_Cfg):
-    """Config stand-in for the collect_health_stats wiring tests."""
+    """Config stand-in for the collect_health_stats / token-push tests."""
 
     cache_dir = "/nonexistent"
     rc_url = "http://127.0.0.1:5572"
     rc_timeout = 1
+    provider = "google_drive"
+    remote = "gdrive"
+    folder = ""
 
 
 def test_collect_health_stats_scan_failure_does_not_reset(monkeypatch):
@@ -703,6 +706,100 @@ def test_stat_remote_object_builds_the_fs_and_relative_path(monkeypatch):
     assert refresher.stat_remote_object(cfg, "gdrive{a1b2}/Errand/notes/todo.md") == {"Size": 42}
     assert captured["url"].endswith("/operations/stat")
     assert captured["payload"] == {"fs": "gdrive:Errand", "remote": "notes/todo.md"}
+
+
+# --- Token rotation must not destroy the refresh token -----------------------
+
+
+class _RcStub:
+    """Stands in for the rclone rc API: records config/update, serves config/get."""
+
+    def __init__(self, token_blob):
+        self.token_blob = token_blob
+        self.updates = []
+
+    def post(self, url, json=None, timeout=None):
+        stub = self
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if url.endswith("/config/get"):
+                    return {"token": __import__("json").dumps(stub.token_blob)} if stub.token_blob else {}
+                return {}
+
+        if url.endswith("/config/update"):
+            self.updates.append(json)
+        return _Resp()
+
+
+def _token_cfg():
+    cfg = _Cfg2()
+    cfg.remote, cfg.folder = "gdrive", ""
+    return cfg
+
+
+def test_pushed_token_preserves_the_refresh_token(monkeypatch):
+    # config/update PERSISTS whatever it is given. Sending only the access token
+    # strips refresh_token from the config; rclone then cannot refresh without a
+    # browser, opens the interactive OAuth flow, binds 127.0.0.1:53682 and waits
+    # forever — after which every later config/update fails with "address
+    # already in use". That is exactly what happened in production 2026-07-27.
+    import refresher
+
+    rc = _RcStub({"access_token": "old", "refresh_token": "1//keepme",
+                  "token_type": "Bearer", "expiry": "2026-01-01T00:00:00+00:00"})
+    monkeypatch.setattr(refresher.requests, "post", rc.post)
+
+    refresher.push_token_to_rclone(_token_cfg(), "ya29.fresh", 1785115522)
+
+    pushed = json.loads(rc.updates[0]["parameters"]["token"])
+    assert pushed["refresh_token"] == "1//keepme"    # survived
+    assert pushed["access_token"] == "ya29.fresh"    # updated
+    assert pushed["expiry"].startswith("2026-")      # refreshed
+
+
+def test_push_is_refused_when_no_refresh_token_is_available(monkeypatch):
+    # Leaving the running rclone's in-memory token alone is strictly better than
+    # replacing a working config with one that forces an interactive flow.
+    import refresher
+
+    rc = _RcStub({"access_token": "old", "token_type": "Bearer"})   # no refresh_token
+    monkeypatch.setattr(refresher.requests, "post", rc.post)
+
+    with pytest.raises(RuntimeError, match="refresh_token"):
+        refresher.push_token_to_rclone(_token_cfg(), "ya29.fresh", 1785115522)
+    assert rc.updates == []   # nothing was written
+
+
+def test_push_is_refused_when_the_current_token_cannot_be_read(monkeypatch):
+    # An rc failure must not be read as "start from an empty token".
+    import refresher
+
+    rc = _RcStub(None)
+    monkeypatch.setattr(refresher.requests, "post", rc.post)
+
+    with pytest.raises(RuntimeError, match="refresh_token"):
+        refresher.push_token_to_rclone(_token_cfg(), "ya29.fresh", 0)
+    assert rc.updates == []
+
+
+def test_refresh_failure_is_reported_not_swallowed(monkeypatch):
+    # The refusal must surface in health, so a gateway that cannot rotate its
+    # token is visible rather than quietly coasting on an in-memory token.
+    import refresher
+
+    rc = _RcStub({"access_token": "old"})
+    monkeypatch.setattr(refresher.requests, "post", rc.post)
+    monkeypatch.setattr(refresher, "fetch_access_token",
+                        lambda cfg: {"access_token": "ya29.fresh", "expires_at": 0})
+
+    health = {}
+    assert refresher.do_refresh(_token_cfg(), health) is False
+    assert health["auth_state"] == "error"
+    assert "refresh_token" in health["last_error"]
 
 
 def test_env_flag_parsing(monkeypatch):

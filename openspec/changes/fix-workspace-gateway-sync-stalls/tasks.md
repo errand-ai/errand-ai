@@ -48,11 +48,13 @@
 ## 5. Eliminate the interactive OAuth path (existing requirement, never met)
 
 - [x] 5.1 Confirm the mechanism: rclone's OAuth redirect listener holds `127.0.0.1:53682` for the process lifetime, so every refresher `config/update` fails `bind: address already in use`
-      — mechanism accepted from the incident evidence; the *fix* is verified by test. Live confirmation on the cluster is 5.4.
-- [x] 5.2 Ensure the writable rclone config contains a complete, usable token before `rclone serve` starts (the refresher's existing `init` mode — unchanged, now enforced by 5.3)
-- [x] 5.3 Make the gateway entrypoint verify a usable token is present and fail fast rather than letting rclone fall through to the interactive flow; also exports `RCLONE_AUTH_NO_OPEN_BROWSER`
-- [ ] 5.4 Verify no process listens on 53682 after startup, and that a refresher `config/update` succeeds against a running gateway — **needs the cluster** (commands in runbook §8)
-- [x] 5.5 Test: a config missing a usable token causes a loud startup failure, not a degraded start that squats the port (plus empty-token and wrong-remote cases)
+      — **confirmed live on the cluster 2026-07-27, and the original diagnosis was wrong.** The trigger is not the startup config (which is fine) but the refresher's own first push: `push_token_to_rclone` replaced the token blob, discarding `refresh_token`, so rclone fell into the interactive flow one second after serve started. See the revised D6 for the full evidence chain.
+- [x] 5.2 Ensure the writable rclone config contains a complete, usable token before `rclone serve` starts (the refresher's `init` mode — verified correct; it preserves `refresh_token`)
+- [x] 5.3 Make the gateway entrypoint verify a usable token is present and fail fast rather than letting rclone fall through to the interactive flow
+      — requires **both** `access_token` and `refresh_token`; checking only `access_token` accepts exactly the state that broke production. (Dropped `RCLONE_AUTH_NO_OPEN_BROWSER` — registered only on `rclone authorize`, so `serve` ignores it.)
+- [x] 5.4 Verify no process listens on 53682 after startup, and that a refresher `config/update` succeeds against a running gateway
+      — diagnosed live: 53682 WAS held (`LISTEN 1/rclone`) and every `config/update` returned 500. Root-caused and fixed (D6). Re-verification of a *successful* rotation against the fixed image is still pending a deploy.
+- [x] 5.5 Test: a config missing a usable token causes a loud startup failure, not a degraded start that squats the port (missing, empty, wrong-remote, and **access-token-without-refresh-token** — the live production shape)
 
 ## 6. Operational runbook
 
@@ -73,9 +75,16 @@
 
 - [x] 8.1 Run the full test suite: `errand/.venv/bin/python -m pytest workspace-gateway/tests/ -v` — 98 passed (44 → 98)
 - [ ] 8.2 Local stack check via `docker compose -f testing/docker-compose.yml up --build` — the gateway image builds and was verified directly (runs as 65532; `/cache` writable; rclone creates its cache `0700 gateway:gateway`). The full `--profile workspace` stack needs an authorised `rclone.conf` and a workspace bearer.
-- [ ] 8.3 End-to-end on the cluster, following the runbook from task 6: write through the mount, confirm it reaches Drive within the write-back delay, confirm no dirty entries remain — **needs the cluster + a maintenance window**
-- [ ] 8.4 Negative test on the cluster: induce a stalled entry and confirm the gateway reports degraded with the path named — the behaviour that was missing on 2026-07-26 — **needs the cluster**
-- [ ] 8.5 Confirm the refresher logs a successful startup cache scan in the deployed pod (the single check that would have caught this incident on day one) — **needs the cluster** (`grep cache_scan_selftest`, runbook §4.4)
+- [x] 8.3 End-to-end on the cluster, following the runbook from task 6
+      — **done for real, on a real fault (2026-07-27).** A live desynced entry (`workflow/BlogsToProcess.md`: meta `Size 0`/`Rs null`, 61481 bytes cached, Drive 56254) was recovered by the documented procedure: ArgoCD auto-sync suspended, no task-runner pods confirmed, both sides backed up and verified (the cache copy proved to be the Drive copy plus 5227 appended bytes — a clean append). The restart logged `remote_index_loaded` (458 objects), `remote_prefix_resolved` (depth 1), `desynced_dirty_entry_repaired` (`meta_size 0 → data_size 61481`), and Drive then reported **61481 bytes, md5 `279def08…` — byte-identical to the cached backup**. Afterwards: 0 dirty entries, `uploadsQueued/InProgress/erroredFiles` all 0, auto-sync restored. Under the previous code this same entry would have been published as a partial write.
+- [x] 8.4 Negative test on the cluster: induce a stalled entry and confirm the gateway reports degraded with the path named — the behaviour that was missing on 2026-07-26
+      — **not induced; a genuine one occurred and was caught.** The refresher logged `write_back_degraded` with `reason: dirty_entry_pinned_by_handle`, `path: gdrive{YRXYK}/workflow/BlogsToProcess.md`, `dirty_age_seconds: 905.6` — with no task-runner pods running and `in use 1`, exactly the leaked-handle case. Stronger evidence than an induced test.
+- [x] 8.5 Confirm the refresher logs a successful startup cache scan in the deployed pod (the single check that would have caught this incident on day one)
+      — `cache_scan_selftest_ok` present in the deployed pod, before and after the restart.
+
+### Follow-up still open
+
+- Re-verify a *successful* token rotation (`config/update` returning 200, nothing listening on 53682) once the merge fix from D6 is deployed. Until then the gateway coasts on rclone's in-memory refresh token, which works but is not rotation.
 
 ### Pre-deployment note
 

@@ -93,9 +93,22 @@ Detection is achievable today and is the minimum bar — a pinned entry must nev
 
 ### D6. Eliminate the interactive OAuth path at startup
 
-rclone starts the OAuth redirect listener because the config it is given looks like it needs interactive authorisation. The fix is to ensure a complete, valid token is present in the writable config *before* `rclone serve` starts — which is what the refresher's `init` mode already exists to do — and to fail loudly if it is not, rather than letting rclone fall through to the interactive flow and squat the port.
+**Revised after live diagnosis on 2026-07-27 — the original mechanism was wrong.**
 
-The gateway entrypoint SHALL verify the config contains a usable token before serving, and the deployment SHALL treat a missing token at startup as a fatal error rather than a degraded start.
+The initial reading was that rclone starts the OAuth listener because the config it is *given at startup* looks unauthorised. That is not what happens. The config at startup is fine: `init_config` seeds it from the Secret, refresh token included. Evidence from the cluster:
+
+- the Secret's token has `refresh_token`; `init_config_ok` logged `expires_at` 01:25:22;
+- the live config an hour later had keys `['access_token', 'expiry', 'token_type']` — **no `refresh_token`** — and an expiry of 07:46:10, a *later* value that only `config/update` could have written;
+- rclone opened the interactive flow at 00:25:30, **one second after serve started** — i.e. immediately after the refresher's first push.
+
+The cause is the refresher itself. `push_token_to_rclone` built a *fresh* token blob (`access_token`, `token_type`, `expiry`) and sent it to `config/update`, which persists what it is given — silently discarding `refresh_token`. rclone then held a token it could not refresh without a browser, fell back to the interactive flow, bound `127.0.0.1:53682`, and waited for a code that can never arrive. Every subsequent `config/update` failed `bind: address already in use`. The refresher was destroying the very credential it existed to maintain, on its first action, every time.
+
+The fix is therefore two-part:
+
+- **Merge, never replace.** The new access token is merged into the remote's existing token blob, read back via rc `config/get`, so `refresh_token` survives. A push is *refused* when no refresh token can be obtained: leaving the running rclone's in-memory token alone is strictly better than replacing a working config with one that forces an interactive flow.
+- **"Usable" means refreshable.** The entrypoint's startup check requires **both** `access_token` and `refresh_token`. Checking only `access_token` — as the first implementation did — accepts precisely the broken state.
+
+Why this went unnoticed for so long: rclone's in-memory `TokenSource` keeps the refresh token it loaded at startup and refreshes independently of the config file, so Drive access kept working. Only the config on disk degraded, and `/config-rw` is an emptyDir reseeded from the Secret on every restart — so the fault erased its own evidence on restart while never actually rotating a token.
 
 ## Risks / Trade-offs
 

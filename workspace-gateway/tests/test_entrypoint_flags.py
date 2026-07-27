@@ -36,6 +36,15 @@ _AUTHORIZED_CONF = (
     'token = {"access_token":"ya29.stub","token_type":"Bearer","refresh_token":"1//stub"}\n'
 )
 
+# An access token with NO refresh token: the state that actually broke
+# production. rclone cannot refresh it without a browser, so it opens the
+# interactive OAuth flow and binds 127.0.0.1:53682 for the life of the process.
+_NO_REFRESH_TOKEN_CONF = (
+    "[gdrive]\n"
+    "type = drive\n"
+    'token = {"access_token":"ya29.stub","token_type":"Bearer"}\n'
+)
+
 
 def _run_entrypoint(tmp_path, env_overrides=None, conf=_AUTHORIZED_CONF, expect_rc=0):
     """Run entrypoint.sh with stubbed rclone/python3; return the rclone argv list."""
@@ -106,9 +115,21 @@ def test_missing_token_is_a_fatal_startup_error(tmp_path):
     # for the process lifetime and makes every refresher `config/update` fail
     # with `bind: address already in use` — token rotation silently never happens.
     result = _run_entrypoint(tmp_path, conf="[gdrive]\ntype = drive\n", expect_rc=1)
-    assert "no usable access token" in result.stderr
+    assert "no usable token" in result.stderr
     assert "53682" in result.stderr
     assert not (tmp_path / "rclone.args").exists()  # never reached `exec rclone`
+
+
+def test_access_token_without_a_refresh_token_is_rejected(tmp_path):
+    # The precise production failure (2026-07-27): the config had a valid
+    # access_token and nothing else, so rclone opened the interactive OAuth flow
+    # one second after startup, bound 53682, and every subsequent refresher
+    # config/update failed with "address already in use". An access token alone
+    # is NOT a usable token.
+    result = _run_entrypoint(tmp_path, conf=_NO_REFRESH_TOKEN_CONF, expect_rc=1)
+    assert "no usable token" in result.stderr
+    assert "refresh_token" in result.stderr
+    assert not (tmp_path / "rclone.args").exists()   # never reached `exec rclone`
 
 
 def test_empty_access_token_is_rejected(tmp_path):
@@ -116,7 +137,7 @@ def test_empty_access_token_is_rejected(tmp_path):
     # as no token at all — rclone would still fall through to interactive OAuth.
     conf = '[gdrive]\ntype = drive\ntoken = {"access_token":"","token_type":"Bearer"}\n'
     result = _run_entrypoint(tmp_path, conf=conf, expect_rc=1)
-    assert "no usable access token" in result.stderr
+    assert "no usable token" in result.stderr
 
 
 def test_token_for_a_different_remote_does_not_satisfy_the_check(tmp_path):
@@ -128,7 +149,7 @@ def test_token_for_a_different_remote_does_not_satisfy_the_check(tmp_path):
         "[gdrive]\ntype = drive\n"
     )
     result = _run_entrypoint(tmp_path, conf=conf, expect_rc=1)
-    assert "no usable access token" in result.stderr
+    assert "no usable token" in result.stderr
 
 
 def test_reconcile_receives_the_serve_target(tmp_path):
