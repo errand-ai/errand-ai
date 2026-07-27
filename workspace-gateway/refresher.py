@@ -17,11 +17,20 @@ the running rclone authenticated without restarting the NFS server:
     (uploadsQueued/uploadsInProgress/erroredFiles) and scans the persistent VFS
     cache for dirty entries. A dirty entry that stays dirty past a grace period
     without making progress (nothing queued/uploading, no errored retry) — the
-    silent "dirty but idle" data-loss state seen in production — or a non-zero
+    silent "dirty but idle" data-loss state seen in production — a dirty entry
+    pinned past the maximum dirty age by a leaked NFS handle, or a non-zero
     erroredFiles count moves write-back health to `degraded` and emits a
     structured, alertable error naming the path. It also warns when a dirty
     entry's remote fingerprint changes underneath it (the symptom of a second,
-    external sync client writing the same path).
+    external sync client writing the same path);
+  * when an entry finishes uploading it verifies the published object's size
+    against the cached data that was uploaded, so a same-length-but-wrong or
+    short object is reported rather than accepted (the 2026-07-26 corruption).
+
+The monitor must be able to see what it monitors. A cache it cannot scan is
+reported `degraded` with the underlying error — never as healthy and never as
+"no dirty entries" — and a one-shot self-test at startup makes a deployment in
+which detection cannot run loud immediately rather than silent until a fault.
 
 All failures are logged as single-line structured JSON and reflected in the
 health report; rclone keeps retrying queued operations regardless.
@@ -37,8 +46,21 @@ Environment:
   RC_TIMEOUT_SECONDS        per rc call timeout (default 20)
   WORKSPACE_CACHE_DIR       persistent VFS cache dir to scan for dirty entries
                             (default /cache); mounted read-only into the sidecar
+  WORKSPACE_FOLDER          folder within the remote being served, used to build
+                            the fs for post-upload size verification (default: root)
   VFS_WRITE_BACK            gateway write-back delay, used only to derive the
                             stuck-entry grace period (default 1s)
+  MAX_DIRTY_AGE_SECONDS     upper bound on how long an entry may stay dirty
+                            regardless of open-handle state (default 900). NFSv3
+                            has no CLOSE, so --vfs-write-back (close-triggered)
+                            alone can leave an entry dirty forever.
+  FORCE_FLUSH_PINNED        opt-in (default false) to attempt forcing a flush of
+                            a pinned entry; reporting is the default because
+                            publishing a half-written file is the failure this
+                            exists to prevent
+  VERIFY_UPLOAD_SIZE        verify each completed upload's size against the
+                            cached data (default true; set false if the extra
+                            operations/stat per upload proves costly)
 
 Init mode (`python refresher.py init`, run as a Kubernetes init container before
 rclone starts) uses ERRAND_API_URL / ERRAND_WORKSPACE_BEARER / WORKSPACE_PROVIDER
@@ -103,6 +125,14 @@ def _parse_duration(text: str, default_seconds: float = 1.0) -> float:
         return default_seconds
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse a boolean-ish env var ('true'/'1'/'yes' vs 'false'/'0'/'no')."""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _require_env(name: str) -> str:
     """Return a required env var, failing fast if unset OR empty.
 
@@ -133,6 +163,15 @@ class Config:
         # latency can't flap health. Mirrors the gateway's VFS_WRITE_BACK default.
         self.write_back_seconds = _parse_duration(os.environ.get("VFS_WRITE_BACK", "1s"), 1.0)
         self.stuck_grace_seconds = max(3.0 * self.write_back_seconds, 30.0)
+        # Absolute bound on dirty age, INDEPENDENT of the close-triggered
+        # write-back delay: NFSv3 never closes, so a task container torn down
+        # mid-mount leaves an entry in-use and never queued. Past this age an
+        # entry that was never queued is reported (not force-flushed).
+        self.max_dirty_age_seconds = float(os.environ.get("MAX_DIRTY_AGE_SECONDS", "900"))
+        self.force_flush_pinned = _env_flag("FORCE_FLUSH_PINNED", False)
+        # Post-upload integrity: the folder is needed to address the object.
+        self.verify_upload_size = _env_flag("VERIFY_UPLOAD_SIZE", True)
+        self.folder = os.environ.get("WORKSPACE_FOLDER", "").strip("/")
         if self.provider not in _PROVIDER_REFRESH_PATH:
             raise SystemExit(f"unsupported WORKSPACE_PROVIDER: {self.provider}")
 
@@ -198,17 +237,68 @@ def read_vfs_stats(cfg: Config) -> dict:
     return stats
 
 
-def _scan_dirty_entries(cache_dir: str) -> list[DirtyEntry] | None:
-    """List dirty cache entries. Returns None (not []) if the scan itself failed.
+def _scan_dirty_entries(cache_dir: str) -> tuple[list[DirtyEntry] | None, str | None]:
+    """List dirty cache entries as ``(entries, error)``.
 
-    The distinction matters: an empty list means "scanned, nothing dirty", while
-    None means "couldn't scan" — the caller must not treat the latter as "all
-    clear", which would reset per-path age tracking and mask a stuck entry.
+    ``entries`` is None (not []) when the scan itself failed, with ``error``
+    carrying why. The distinction is the whole point: an empty list means
+    "scanned, nothing dirty", while None means "couldn't scan". Treating the
+    latter as "all clear" is exactly what hid the 2026-07-26 stall — the sidecar
+    could not read the root-owned cache, saw nothing, and reported healthy while
+    two completed writes sat unuploaded for 24 hours.
     """
     try:
-        return list(iter_dirty_entries(cache_dir))
+        return list(iter_dirty_entries(cache_dir)), None
     except Exception as exc:  # noqa: BLE001
-        _log("cache_scan_failed", cache_dir=cache_dir, error=str(exc))
+        error = f"{type(exc).__name__}: {exc}"
+        _log("cache_scan_failed", cache_dir=cache_dir, error=error)
+        return None, error
+
+
+def cache_scan_selftest(cfg: Config) -> bool:
+    """One-shot startup check that the monitor can actually see the cache.
+
+    Detection that cannot run is worse than no detection, because it looks
+    identical to "nothing is wrong". Logging the outcome explicitly at startup
+    makes a deployment where the sidecar cannot read the gateway's cache loud on
+    day one rather than silent until a write is lost.
+    """
+    entries, error = _scan_dirty_entries(cfg.cache_dir)
+    if entries is None:
+        _log(
+            "cache_scan_selftest_failed",
+            cache_dir=cfg.cache_dir,
+            error=error,
+            detail="write-back stuck-entry detection cannot run in this deployment — "
+                   "the refresher cannot read the gateway's VFS cache",
+        )
+        return False
+    _log("cache_scan_selftest_ok", cache_dir=cfg.cache_dir, dirty_entries=len(entries))
+    return True
+
+
+def stat_remote_object(cfg: Config, cache_path: str) -> dict | None:
+    """Stat the cloud object behind a cache path via rc `operations/stat`.
+
+    Used to verify a completed upload. The cache path's leading component is the
+    fs directory rclone derived from the serve target, so it is stripped to get
+    the object path relative to the served folder. Returns None when the object
+    is absent or the call fails (both mean "unverified", never "verified OK").
+    """
+    parts = cache_path.replace(os.sep, "/").split("/", 1)
+    rel = parts[1] if len(parts) > 1 else parts[0]
+    fs = f"{cfg.remote}:{cfg.folder}" if cfg.folder else f"{cfg.remote}:"
+    try:
+        resp = requests.post(
+            cfg.rc_url + "/operations/stat",
+            json={"fs": fs, "remote": rel},
+            timeout=cfg.rc_timeout,
+        )
+        resp.raise_for_status()
+        item = resp.json().get("item")
+        return item if isinstance(item, dict) else None
+    except Exception as exc:  # noqa: BLE001 — verification is best-effort
+        _log("upload_verify_stat_failed", path=cache_path, error=str(exc))
         return None
 
 
@@ -228,39 +318,74 @@ class WriteBackMonitor:
     known idle. Because a busy queue (uploading unrelated files) could otherwise
     mask a single non-progressing entry indefinitely, an absolute overdue backstop
     flags any entry dirty past `max(10 × grace, 300s)` regardless of queue state.
-    A non-zero `erroredFiles` count is degraded regardless of age. All surface a
-    structured, alertable error naming the path(s). The monitor also warns when a
-    dirty entry's remote fingerprint changes underneath it — the symptom of a
-    second, external sync client writing the same path.
+    An entry that is *still* dirty past the configured maximum dirty age having
+    never been seen queued is reported as pinned by an open handle — NFSv3 has no
+    CLOSE, so a task container torn down mid-mount leaves the entry permanently
+    in-use and the close-triggered write-back timer never fires. A non-zero
+    `erroredFiles` count is degraded regardless of age. All surface a structured,
+    alertable error naming the path(s). The monitor also warns when a dirty
+    entry's remote fingerprint changes underneath it — the symptom of a second,
+    external sync client writing the same path.
+
+    Finally, when an entry stops being dirty (its upload completed) the monitor
+    verifies the published object's size against the cached data that was
+    uploaded. The 2026-07-26 corruption published an object of exactly the
+    expected byte count made of new-over-stale bytes, so size equality is a floor,
+    not a proof — but a short or over-long object is caught outright, and the
+    check is what turns "rclone said it uploaded" into evidence.
     """
 
-    def __init__(self, cfg: Config, clock=time.monotonic) -> None:
+    def __init__(self, cfg: Config, clock=time.monotonic, verifier=None) -> None:
         self._grace = cfg.stuck_grace_seconds
         # Absolute backstop: past this age a dirty entry is flagged even if the
         # global upload queue is busy, so unrelated uploads can't mask it forever.
         self._overdue = max(10.0 * cfg.stuck_grace_seconds, 300.0)
+        self._max_dirty_age = cfg.max_dirty_age_seconds
+        self._force_flush = cfg.force_flush_pinned
+        # Injected `(path, expected_size) -> remote item dict | None`; None
+        # disables post-upload verification entirely (VERIFY_UPLOAD_SIZE=false).
+        self._verifier = verifier
         self._clock = clock
         # Per-path state carried across cycles.
         self._first_seen_dirty: dict[str, float] = {}
         self._fingerprints: dict[str, object] = {}
+        # Whether the upload queue was ever observed non-idle while this path was
+        # dirty. `vfs/stats` has no per-path view, so this over-attributes global
+        # activity to the path — deliberately, since the error direction is
+        # "don't claim pinned when it might have been queued".
+        self._ever_queued: dict[str, bool] = {}
+        # Last observed cached data size per dirty path, used to verify the
+        # object published once the entry goes clean.
+        self._last_data_size: dict[str, int] = {}
+        # Verified-bad uploads, kept until the path verifies clean again so a
+        # persistent mismatch stays degraded rather than flashing once.
+        self._size_mismatches: dict[str, dict] = {}
         # (path, reason) degraded conditions already logged, so a persistent
         # fault is logged once per episode rather than every health cycle.
         self._logged_degraded: set = set()
+        self._force_flush_warned = False
 
     def evaluate(self, vfs_stats: dict, dirty_entries: list[DirtyEntry]) -> dict:
         """Return a write-back health block; update per-path state in place.
 
-        Pure w.r.t. its arguments (rc stats + scanned entries + injected clock),
-        so it can be exercised deterministically in tests.
+        Deterministic given its inputs — rc stats, the scanned entries, the
+        injected clock and the injected verifier — so it can be exercised
+        exhaustively in tests without an rclone. The verifier is the only I/O it
+        performs, and only for paths that just stopped being dirty.
         """
         now = self._clock()
         current = {e.path: e for e in dirty_entries}
 
-        # Forget paths that are no longer dirty (uploaded or reconciled away).
+        # Paths that were dirty and no longer are: their upload completed (or
+        # they were reconciled away). Verify what actually got published BEFORE
+        # dropping the cached size we need to compare against.
         for path in list(self._first_seen_dirty):
             if path not in current:
+                self._verify_completed_upload(path)
                 self._first_seen_dirty.pop(path, None)
                 self._fingerprints.pop(path, None)
+                self._ever_queued.pop(path, None)
+                self._last_data_size.pop(path, None)
 
         queued = vfs_stats.get("uploads_queued")
         in_progress = vfs_stats.get("uploads_in_progress")
@@ -279,6 +404,13 @@ class WriteBackMonitor:
             first_seen = self._first_seen_dirty.setdefault(path, now)
             age = now - first_seen
             oldest_age = max(oldest_age, age)
+            # Remember the cached length while we can still read it; once the
+            # entry goes clean the data file may be evicted and there would be
+            # nothing left to verify the published object against.
+            if entry.data_size is not None:
+                self._last_data_size[path] = entry.data_size
+            if queue_state_known and not queue_idle:
+                self._ever_queued[path] = True
 
             # Concurrent-writer signal: fingerprint changed while locally dirty.
             prev_fp = self._fingerprints.get(path, entry.fingerprint)
@@ -296,12 +428,17 @@ class WriteBackMonitor:
                 continue
             # Past grace. Classify why it's stuck, most-specific first:
             #   * orphan (no data) can never upload → stuck regardless of queue;
+            #   * pinned → dirty past the absolute maximum dirty age having never
+            #     been seen queued: the leaked-NFS-handle case, where a
+            #     close-triggered write-back timer will never fire at all;
             #   * queue *known* idle → nothing is progressing (never flag on an
             #     unknown queue during an rc outage — that's a false positive);
             #   * overdue → aged past the absolute backstop, so a busy queue
             #     uploading unrelated files can't mask it indefinitely.
             if entry.is_orphaned:
                 reason = "orphaned_dirty_entry"
+            elif age >= self._max_dirty_age and not self._ever_queued.get(path):
+                reason = "dirty_entry_pinned_by_handle"
             elif queue_idle:
                 reason = "dirty_entry_not_progressing"
             elif age >= self._overdue:
@@ -309,7 +446,18 @@ class WriteBackMonitor:
             else:
                 continue
             stuck_paths.append(path)
-            errors.append({"path": path, "reason": reason, "dirty_age_seconds": round(age, 1)})
+            err = {"path": path, "reason": reason, "dirty_age_seconds": round(age, 1)}
+            if reason == "dirty_entry_pinned_by_handle":
+                err["max_dirty_age_seconds"] = round(self._max_dirty_age, 1)
+                err["detail"] = (
+                    "dirty past the maximum dirty age and never queued — the entry is held "
+                    "open (NFSv3 has no CLOSE), so the close-triggered write-back never fires"
+                )
+                self._note_force_flush(path)
+            errors.append(err)
+
+        # Verified-bad uploads persist until the path verifies clean again.
+        errors.extend(self._size_mismatches[p] for p in sorted(self._size_mismatches))
 
         if errored > 0:
             err = {"reason": "errored_uploads", "errored_files": errored}
@@ -320,7 +468,7 @@ class WriteBackMonitor:
                 err["candidate_paths"] = sorted(current)
             errors.append(err)
 
-        degraded = bool(stuck_paths) or errored > 0
+        degraded = bool(stuck_paths) or errored > 0 or bool(self._size_mismatches)
         self._emit_degraded(errors)
 
         return {
@@ -333,21 +481,81 @@ class WriteBackMonitor:
                 # Sorted so the payload/alerting is stable regardless of the
                 # os.walk order the cache scan produced.
                 "stuck_entries": sorted(stuck_paths),
+                "size_mismatches": sorted(self._size_mismatches),
                 "oldest_dirty_age_seconds": round(oldest_age, 1),
                 "grace_seconds": round(self._grace, 1),
+                "max_dirty_age_seconds": round(self._max_dirty_age, 1),
             },
             "write_back_errors": errors,
         }
 
-    def scan_unavailable(self, vfs_stats: dict) -> dict:
+    def _note_force_flush(self, path: str) -> None:
+        """Handle the opt-in force-flush request for a pinned entry.
+
+        Reporting is the required behaviour; forcing is opt-in and off by
+        default. rclone's rc API exposes no way to flush a *dirty but never
+        queued* VFS item — `vfs/queue-set-expiry` only reorders items already in
+        the queue — so when forcing is requested we say so plainly rather than
+        reaching around the VFS to publish a file a client may still be writing,
+        which is precisely the torn-write failure this change exists to prevent.
+        """
+        if not self._force_flush or self._force_flush_warned:
+            return
+        self._force_flush_warned = True
+        _log(
+            "force_flush_unavailable",
+            path=path,
+            detail="FORCE_FLUSH_PINNED is enabled but rclone's rc API offers no safe way to "
+                   "flush a dirty, never-queued VFS item; the entry is reported instead. "
+                   "Recover it via the runbook.",
+        )
+
+    def _verify_completed_upload(self, path: str) -> None:
+        """Compare the published object's size against the cached data uploaded.
+
+        Called when a path stops being dirty. A mismatch is recorded (and stays
+        recorded until the path verifies clean) so that a bad publish is
+        degraded, alertable, and named — the 2026-07-26 corruption reported
+        success and was never contradicted by anything rclone exposed.
+
+        An object we cannot stat is *unverified*, not failed: the file may simply
+        have been deleted through the mount, and turning that into an alert would
+        make the check noise rather than signal.
+        """
+        expected = self._last_data_size.get(path)
+        if self._verifier is None or expected is None:
+            return
+        item = self._verifier(path, expected)
+        if not item:
+            _log("upload_unverified", path=path, expected_size=expected)
+            return
+        actual = item.get("Size")
+        if actual == expected:
+            if self._size_mismatches.pop(path, None) is not None:
+                _log("upload_size_verified", path=path, size=actual)
+            return
+        self._size_mismatches[path] = {
+            "path": path,
+            "reason": "upload_size_mismatch",
+            "expected_size": expected,
+            "published_size": actual,
+            "detail": "the published object does not match the cached data that was uploaded; "
+                      "the local copy is retained in the cache PVC for recovery",
+        }
+
+    def scan_unavailable(self, vfs_stats: dict, error: str | None = None) -> dict:
         """Health block for a cycle where the cache scan failed.
 
-        A failed scan is "unknown", not "all clear": crucially it must NOT reset
-        per-path age/fingerprint state (doing so would restart a stuck entry's
-        clock and mask it). We preserve state, mark write-back degraded, and emit
-        a structured error so the failure is reflected in health, not swallowed.
+        A failed scan is a *fault of the monitor itself*, not "all clear": an
+        unreadable cache is reported degraded with the underlying error, never as
+        healthy and never as an absence of dirty entries. It must also NOT reset
+        per-path age/fingerprint state — doing so would restart a stuck entry's
+        clock and mask it.
         """
-        errors = [{"reason": "cache_scan_unavailable"}]
+        err = {"reason": "cache_scan_failed"}
+        if error:
+            err["error"] = error
+        errors = [err]
         self._emit_degraded(errors)
         return {
             "write_back_state": "degraded",
@@ -358,6 +566,7 @@ class WriteBackMonitor:
                 "dirty_entries": None,   # unknown — scan failed
                 "stuck_entries": [],
                 "grace_seconds": round(self._grace, 1),
+                "max_dirty_age_seconds": round(self._max_dirty_age, 1),
             },
             "write_back_errors": errors,
         }
@@ -379,11 +588,11 @@ class WriteBackMonitor:
 def collect_health_stats(cfg: Config, monitor: WriteBackMonitor) -> dict:
     """One health-cycle read: rc upload stats + write-back health from the cache."""
     stats = read_vfs_stats(cfg)
-    dirty = _scan_dirty_entries(cfg.cache_dir)
+    dirty, scan_error = _scan_dirty_entries(cfg.cache_dir)
     # None == scan failed (distinct from an empty list): don't feed it to
     # evaluate(), which would treat "no entries" as "all clean" and reset state.
     if dirty is None:
-        stats.update(monitor.scan_unavailable(stats))
+        stats.update(monitor.scan_unavailable(stats, scan_error))
     else:
         stats.update(monitor.evaluate(stats, dirty))
     return stats
@@ -498,7 +707,8 @@ def init_config() -> None:
 def main() -> None:
     cfg = Config()
     health: dict = {"auth_state": "starting", "provider": cfg.provider}
-    monitor = WriteBackMonitor(cfg)
+    verifier = (lambda path, expected: stat_remote_object(cfg, path)) if cfg.verify_upload_size else None
+    monitor = WriteBackMonitor(cfg, verifier=verifier)
     _log(
         "startup",
         provider=cfg.provider,
@@ -506,7 +716,14 @@ def main() -> None:
         refresh_interval=cfg.refresh_interval,
         cache_dir=cfg.cache_dir,
         stuck_grace_seconds=cfg.stuck_grace_seconds,
+        max_dirty_age_seconds=cfg.max_dirty_age_seconds,
+        verify_upload_size=cfg.verify_upload_size,
+        force_flush_pinned=cfg.force_flush_pinned,
     )
+    # Prove the monitor can see the cache before anything depends on it. A
+    # deployment where this fails is one where stuck-entry detection cannot run
+    # at all — the condition that made the 2026-07-26 stall invisible.
+    cache_scan_selftest(cfg)
 
     # `last_refresh` advances ONLY on a successful refresh — a failed attempt
     # (including the initial one) must be retried on the fast health-loop cadence,

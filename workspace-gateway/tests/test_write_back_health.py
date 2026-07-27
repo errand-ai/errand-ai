@@ -7,6 +7,7 @@ the concurrent-writer fingerprint-change warning (spec 5.2).
 """
 
 import json
+import os
 
 import pytest
 
@@ -17,8 +18,10 @@ from refresher import WriteBackMonitor, _parse_duration
 class _Cfg:
     """Minimal stand-in for refresher.Config (only what the monitor reads)."""
 
-    def __init__(self, grace=30.0):
+    def __init__(self, grace=30.0, max_dirty_age=900.0, force_flush=False):
         self.stuck_grace_seconds = grace
+        self.max_dirty_age_seconds = max_dirty_age
+        self.force_flush_pinned = force_flush
 
 
 class _Clock:
@@ -29,12 +32,15 @@ class _Clock:
         return self.t
 
 
-def _entry(path, *, has_data, fingerprint="fp", size=0):
+def _entry(path, *, has_data, fingerprint="fp", size=0, data_size=None):
+    if data_size is None and has_data:
+        data_size = size or 1
     return cr.DirtyEntry(
         path=path,
         meta={"Dirty": True, "Size": size, "Fingerprint": fingerprint},
         data_path=f"/cache/vfs/{path}",
         has_data=has_data,
+        data_size=data_size,
     )
 
 
@@ -221,9 +227,11 @@ def test_scan_unavailable_preserves_state_and_degrades():
     mon.evaluate(_stats(), entries)          # t=0: entry seen, age clock started
 
     clock.t = 20.0
-    unavail = mon.scan_unavailable(_stats())  # scan fails mid-way (still < grace)
+    unavail = mon.scan_unavailable(_stats(), "PermissionError: [Errno 13] /cache/vfsMeta")
     assert unavail["write_back_state"] == "degraded"
-    assert unavail["write_back_errors"][0]["reason"] == "cache_scan_unavailable"
+    assert unavail["write_back_errors"][0]["reason"] == "cache_scan_failed"
+    # The underlying error travels with the report — "blind" must be diagnosable.
+    assert "PermissionError" in unavail["write_back_errors"][0]["error"]
     assert unavail["write_back"]["dirty_entries"] is None  # unknown, not 0
 
     # State preserved: when the scan recovers past grace, the entry is correctly
@@ -234,23 +242,336 @@ def test_scan_unavailable_preserves_state_and_degrades():
     assert health["write_back"]["stuck_entries"] == ["gd/stuck.md"]
 
 
+class _Cfg2(_Cfg):
+    """Config stand-in for the collect_health_stats wiring tests."""
+
+    cache_dir = "/nonexistent"
+    rc_url = "http://127.0.0.1:5572"
+    rc_timeout = 1
+
+
 def test_collect_health_stats_scan_failure_does_not_reset(monkeypatch):
     # End-to-end wiring: _scan_dirty_entries returning None routes to
     # scan_unavailable rather than evaluate([]).
     import refresher
 
-    class Cfg2:
-        stuck_grace_seconds = 30.0
-        cache_dir = "/nonexistent"
-        rc_url = "http://127.0.0.1:5572"
-        rc_timeout = 1
-
     monkeypatch.setattr(refresher, "read_vfs_stats", lambda cfg: _stats())
-    monkeypatch.setattr(refresher, "_scan_dirty_entries", lambda cache_dir: None)
-    mon = WriteBackMonitor(Cfg2(), clock=_Clock())
-    out = refresher.collect_health_stats(Cfg2(), mon)
+    monkeypatch.setattr(refresher, "_scan_dirty_entries", lambda cache_dir: (None, "PermissionError: nope"))
+    mon = WriteBackMonitor(_Cfg2(), clock=_Clock())
+    out = refresher.collect_health_stats(_Cfg2(), mon)
     assert out["write_back_state"] == "degraded"
-    assert out["write_back_errors"][0]["reason"] == "cache_scan_unavailable"
+    assert out["write_back_errors"][0]["reason"] == "cache_scan_failed"
+    assert out["write_back_errors"][0]["error"] == "PermissionError: nope"
+
+
+def test_unreadable_cache_is_never_reported_healthy_or_empty(tmp_path, monkeypatch):
+    # The full path from a real permission error to a degraded report — the exact
+    # deployed condition on 2026-07-26, where the sidecar (uid 65532) could not
+    # read rclone's 0700 root-owned cache and reported everything healthy.
+    import refresher
+
+    cache = tmp_path / "cache"
+    meta_root = cache / "vfsMeta" / "gd"
+    meta_root.mkdir(parents=True)
+    (meta_root / "stuck.md").write_text(json.dumps({"Dirty": True, "Size": 0, "Rs": None}))
+    os.chmod(cache / "vfsMeta", 0o000)
+
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    monkeypatch.setattr(refresher, "read_vfs_stats", lambda c: _stats())
+    try:
+        out = refresher.collect_health_stats(cfg, WriteBackMonitor(cfg, clock=_Clock()))
+    finally:
+        os.chmod(cache / "vfsMeta", 0o755)
+
+    assert out["write_back_state"] == "degraded"          # never "ok"
+    assert out["write_back"]["dirty_entries"] is None     # never 0
+    assert out["write_back_errors"][0]["reason"] == "cache_scan_failed"
+
+
+def test_readable_cache_scans_normally(tmp_path, monkeypatch):
+    # The control case: a readable cache produces a real per-path scan.
+    import refresher
+
+    cache = tmp_path / "cache"
+    (cache / "vfsMeta" / "gd").mkdir(parents=True)
+    (cache / "vfsMeta" / "gd" / "a.md").write_text(json.dumps({"Dirty": True, "Size": 0, "Rs": None}))
+
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    monkeypatch.setattr(refresher, "read_vfs_stats", lambda c: _stats())
+    out = refresher.collect_health_stats(cfg, WriteBackMonitor(cfg, clock=_Clock()))
+
+    assert out["write_back_state"] == "ok"
+    assert out["write_back"]["dirty_entries"] == 1
+
+
+def test_startup_selftest_logs_both_outcomes(tmp_path, caplog):
+    # A deployment where detection cannot run must be loud at startup, not silent
+    # until a write is lost. Both outcomes are logged explicitly.
+    import refresher
+
+    cache = tmp_path / "cache"
+    (cache / "vfsMeta").mkdir(parents=True)
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+
+    with caplog.at_level("INFO"):
+        assert refresher.cache_scan_selftest(cfg) is True
+        os.chmod(cache / "vfsMeta", 0o000)
+        try:
+            assert refresher.cache_scan_selftest(cfg) is False
+        finally:
+            os.chmod(cache / "vfsMeta", 0o755)
+
+    events = [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
+    assert "cache_scan_selftest_ok" in events
+    assert "cache_scan_selftest_failed" in events
+
+
+# --- Handle-leak tolerance (dirty entries bounded regardless of open handles) ---
+
+
+def test_pinned_by_handle_past_max_dirty_age_is_reported():
+    # NFSv3 has no CLOSE: a task container torn down mid-mount leaves the entry
+    # in-use forever, so the close-triggered write-back timer never fires and the
+    # entry is never queued. This reproduces the observed production shape —
+    # uploadsQueued:0 for the entire 24 hours, "in use 2" on every log line.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=900.0), clock=clock)
+    entries = [_entry("gd/pinned.md", has_data=True)]
+    mon.evaluate(_stats(queued=0, in_progress=0), entries)
+
+    # Past grace the generic "nothing is progressing" fires first...
+    clock.t = 31.0
+    assert mon.evaluate(_stats(), entries)["write_back_errors"][0]["reason"] == \
+        "dirty_entry_not_progressing"
+
+    # ...and past the maximum dirty age it escalates to the specific diagnosis,
+    # which is what tells an operator to look for a leaked handle.
+    clock.t = 901.0
+    health = mon.evaluate(_stats(), entries)
+
+    assert health["write_back_state"] == "degraded"
+    err = health["write_back_errors"][0]
+    assert err["reason"] == "dirty_entry_pinned_by_handle"
+    assert err["path"] == "gd/pinned.md"
+    assert err["max_dirty_age_seconds"] == 900.0
+    assert health["write_back"]["max_dirty_age_seconds"] == 900.0
+
+
+def test_pinned_bound_applies_regardless_of_open_handle_state():
+    # The spec's core requirement: an abandoned mount must not silently strand a
+    # write. Whatever the entry's in-use state, it is surfaced within the bound.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=120.0), clock=clock)
+    entries = [_entry("gd/abandoned.md", has_data=True)]
+    mon.evaluate(_stats(), entries)
+    clock.t = 121.0
+    health = mon.evaluate(_stats(), entries)
+    assert health["write_back"]["stuck_entries"] == ["gd/abandoned.md"]
+    assert health["write_back_errors"][0]["reason"] == "dirty_entry_pinned_by_handle"
+
+
+def test_entry_that_was_queued_is_not_called_pinned():
+    # "Never queued" is what identifies the pinned case. An entry that WAS seen
+    # queued and is merely slow is overdue, not pinned — different diagnosis,
+    # different recovery.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=900.0), clock=clock)
+    entries = [_entry("gd/slow.md", has_data=True)]
+    mon.evaluate(_stats(queued=1), entries)   # observed queued while dirty
+    clock.t = 901.0
+    health = mon.evaluate(_stats(queued=1), entries)
+    assert health["write_back_errors"][0]["reason"] == "dirty_entry_overdue"
+
+
+def test_max_dirty_age_is_configurable():
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=60.0), clock=clock)
+    entries = [_entry("gd/pinned.md", has_data=True)]
+    mon.evaluate(_stats(), entries)
+    clock.t = 45.0
+    assert mon.evaluate(_stats(), entries)["write_back_errors"][0]["reason"] == \
+        "dirty_entry_not_progressing"          # generic, below the bound
+    clock.t = 61.0
+    assert mon.evaluate(_stats(), entries)["write_back_errors"][0]["reason"] == \
+        "dirty_entry_pinned_by_handle"         # specific, past the bound
+
+
+def test_forcing_a_flush_is_off_by_default(caplog):
+    # Reporting is the required behaviour; forcing must not happen unasked.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=60.0), clock=clock)
+    entries = [_entry("gd/pinned.md", has_data=True)]
+    mon.evaluate(_stats(), entries)
+    clock.t = 61.0
+    with caplog.at_level("INFO"):
+        mon.evaluate(_stats(), entries)
+    events = [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
+    assert "force_flush_unavailable" not in events
+
+
+def test_forcing_a_flush_only_reacts_when_explicitly_enabled(caplog):
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(grace=30.0, max_dirty_age=60.0, force_flush=True), clock=clock)
+    entries = [_entry("gd/pinned.md", has_data=True)]
+    mon.evaluate(_stats(), entries)
+    clock.t = 61.0
+    with caplog.at_level("INFO"):
+        mon.evaluate(_stats(), entries)
+        clock.t = 91.0
+        mon.evaluate(_stats(queued=1), entries)   # persistent fault → still one log
+    logged = [json.loads(r.message) for r in caplog.records if r.message.startswith("{")]
+    forced = [e for e in logged if e.get("event") == "force_flush_unavailable"]
+    assert len(forced) == 1
+    assert forced[0]["path"] == "gd/pinned.md"
+
+
+# --- Write-back integrity (post-upload size verification) ---------------------
+
+
+def _verifier(published_size):
+    """Verifier stub: reports the size the cloud object was published with."""
+    calls = []
+
+    def verify(path, expected):
+        calls.append((path, expected))
+        return None if published_size is None else {"Size": published_size}
+
+    verify.calls = calls
+    return verify
+
+
+def test_upload_size_mismatch_degrades_and_names_the_path():
+    # rclone reported success but the published object is a different length
+    # from the cached data that was uploaded — a bad publish, not a clean upload.
+    clock = _Clock()
+    verify = _verifier(1230)
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
+    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    health = mon.evaluate(_stats(), [])   # entry went clean → upload completed
+
+    assert verify.calls == [("gd/notes.md", 16563)]
+    assert health["write_back_state"] == "degraded"
+    err = [e for e in health["write_back_errors"] if e["reason"] == "upload_size_mismatch"][0]
+    assert err["path"] == "gd/notes.md"
+    assert err["expected_size"] == 16563
+    assert err["published_size"] == 1230
+    assert health["write_back"]["size_mismatches"] == ["gd/notes.md"]
+
+
+def test_upload_size_mismatch_persists_until_it_verifies_clean():
+    # A one-cycle flash would be missed by a 30s-cadence alert; the condition
+    # must hold until the path actually publishes correctly.
+    clock = _Clock()
+    verify = _verifier(1230)
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
+    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    mon.evaluate(_stats(), [])
+    assert mon.evaluate(_stats(), [])["write_back_state"] == "degraded"   # still degraded
+
+    # The path is rewritten and this time publishes at the right length.
+    mon._verifier = _verifier(16563)
+    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    assert mon.evaluate(_stats(), [])["write_back_state"] == "ok"
+
+
+def test_matching_upload_size_is_healthy():
+    clock = _Clock()
+    verify = _verifier(460)
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
+    mon.evaluate(_stats(), [_entry("gd/ok.md", has_data=True, data_size=460)])
+    health = mon.evaluate(_stats(), [])
+    assert health["write_back_state"] == "ok"
+    assert health["write_back"]["size_mismatches"] == []
+
+
+def test_unstattable_published_object_is_unverified_not_degraded(caplog):
+    # The file may simply have been deleted through the mount. Turning that into
+    # an alert would make the check noise rather than signal.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=_verifier(None))
+    mon.evaluate(_stats(), [_entry("gd/gone.md", has_data=True, data_size=99)])
+    with caplog.at_level("INFO"):
+        health = mon.evaluate(_stats(), [])
+    assert health["write_back_state"] == "ok"
+    events = [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
+    assert "upload_unverified" in events
+
+
+def test_verification_is_skipped_when_disabled():
+    # VERIFY_UPLOAD_SIZE=false wires no verifier at all — no extra stat per upload.
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=None)
+    mon.evaluate(_stats(), [_entry("gd/x.md", has_data=True, data_size=5)])
+    health = mon.evaluate(_stats(), [])
+    assert health["write_back_state"] == "ok"
+    assert health["write_back"]["size_mismatches"] == []
+
+
+def test_verification_failure_never_discards_local_content(tmp_path, monkeypatch):
+    # The monitor is a read-only observer of the cache: a failed verification
+    # must not remove or truncate the cached data (the only local copy).
+    import refresher
+
+    cache = tmp_path / "cache"
+    data = cache / "vfs" / "gd" / "notes.md"
+    data.parent.mkdir(parents=True)
+    data.write_text("x" * 16563)
+    (cache / "vfsMeta" / "gd").mkdir(parents=True)
+    (cache / "vfsMeta" / "gd" / "notes.md").write_text(
+        json.dumps({"Dirty": True, "Size": 16563, "Rs": [{"Pos": 0, "Size": 16563}]})
+    )
+
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    monkeypatch.setattr(refresher, "read_vfs_stats", lambda c: _stats())
+    mon = WriteBackMonitor(cfg, clock=_Clock(), verifier=_verifier(1230))
+    refresher.collect_health_stats(cfg, mon)
+    # Entry goes clean; verification runs and fails.
+    (cache / "vfsMeta" / "gd" / "notes.md").unlink()
+    out = refresher.collect_health_stats(cfg, mon)
+
+    assert out["write_back_state"] == "degraded"
+    assert data.read_text() == "x" * 16563   # local content untouched
+
+
+def test_stat_remote_object_builds_the_fs_and_relative_path(monkeypatch):
+    import refresher
+
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"item": {"Size": 42}}
+
+    def fake_post(url, json=None, timeout=None):
+        captured.update(url=url, payload=json)
+        return _Resp()
+
+    monkeypatch.setattr(refresher.requests, "post", fake_post)
+
+    cfg = _Cfg2()
+    cfg.remote, cfg.folder = "gdrive", "Errand"
+    assert refresher.stat_remote_object(cfg, "gdrive{a1b2}/notes/todo.md") == {"Size": 42}
+    assert captured["url"].endswith("/operations/stat")
+    assert captured["payload"] == {"fs": "gdrive:Errand", "remote": "notes/todo.md"}
+
+
+def test_env_flag_parsing(monkeypatch):
+    from refresher import _env_flag
+
+    monkeypatch.delenv("X_FLAG", raising=False)
+    assert _env_flag("X_FLAG", True) is True
+    assert _env_flag("X_FLAG", False) is False
+    for raw, expected in (("true", True), ("1", True), ("yes", True),
+                          ("false", False), ("0", False), ("no", False), ("", True)):
+        monkeypatch.setenv("X_FLAG", raw)
+        assert _env_flag("X_FLAG", True) is expected
 
 
 @pytest.mark.parametrize(

@@ -83,6 +83,31 @@ if [ ! -f "$CONF_RW" ]; then
 fi
 export RCLONE_CONFIG="$CONF_RW"
 
+# Fail fast unless the writable config holds a usable token for this remote.
+#
+# rclone treats a config without a usable token as "needs authorising" and starts
+# its OAuth redirect webserver, which holds 127.0.0.1:53682 for the life of the
+# process. Every subsequent refresher `rclone rc config/update` then fails with
+# `bind: address already in use`, so token rotation silently never happens — it
+# was masked for months by rclone's own internal refresh and would have become an
+# outage the first time the refresh token needed rotating. A missing token is a
+# fatal startup error, not a degraded start that squats the port.
+if ! awk -v remote="$REMOTE" '
+      /^\[.*\]$/ { section = substr($0, 2, length($0) - 2); next }
+      section == remote && /^[[:space:]]*token[[:space:]]*=/ { print }
+    ' "$CONF_RW" | grep -q '"access_token"[[:space:]]*:[[:space:]]*"[^"][^"]*"'; then
+  echo "workspace-gateway: FATAL: no usable access token for remote [${REMOTE}] in ${CONF_RW}." >&2
+  echo "workspace-gateway: refusing to start — rclone would fall through to an interactive OAuth" >&2
+  echo "workspace-gateway: flow and squat 127.0.0.1:53682, breaking refresher config/update." >&2
+  echo "workspace-gateway: run the refresher in 'init' mode to seed a fresh token first." >&2
+  exit 1
+fi
+
+# Never let rclone open the interactive OAuth listener even if something slips
+# past the check above: with no browser and no console it can only ever squat the
+# port, so failing the operation is strictly better than holding 53682 forever.
+export RCLONE_AUTH_NO_OPEN_BROWSER=true
+
 # Build the serve target: REMOTE:FOLDER (or REMOTE: for the whole remote root).
 if [ -n "$FOLDER" ]; then
   TARGET="${REMOTE}:${FOLDER}"
@@ -90,18 +115,31 @@ else
   TARGET="${REMOTE}:"
 fi
 
-# Reconcile orphaned dirty cache entries BEFORE serving. An orphaned entry
-# (dirty meta with no data to upload) is not a resumable upload — rclone would
-# either leave it blocking change-polling or upload an empty file. We clear the
-# stale meta so that on the first serve+poll rclone re-fetches the current cloud
-# object instead (see "Orphaned dirty entry recovered on restart").
+# Reconcile faulted dirty cache entries BEFORE serving — never while `rclone
+# serve` is running, so repair can't race a live cache. Two faults are handled:
+#   * orphaned (dirty meta, no data to upload): the stale meta is cleared so the
+#     first serve+poll re-fetches the current cloud object rather than acting on
+#     a phantom write or uploading an empty file;
+#   * desynced (dirty meta reporting Size 0 while a non-empty data file exists):
+#     the metadata is REPAIRED to match the data so the complete content uploads,
+#     or the entry is quarantined if the cloud object has moved underneath it.
+#     Uploading from that state is what corrupted a user's file on 2026-07-26.
+# The serve target is passed so the reconcile can stat the cloud object behind a
+# desynced entry (the rc API isn't listening yet — it shells out to rclone).
 #
 # The script is best-effort and self-contained: it handles its own logic errors
 # (returning 0 and logging a structured `cache_reconcile_failed` line), so this
 # `||` fires only if the reconcile can't be invoked at all (e.g. python3 or the
 # script is missing) — in which case we warn and serve anyway.
-python3 /usr/local/bin/cache_reconcile.py "$CACHE_DIR" || \
+python3 /usr/local/bin/cache_reconcile.py "$CACHE_DIR" "$TARGET" || \
   echo "workspace-gateway: could not run cache reconcile (python3/script missing?); continuing to serve" >&2
+
+# Log the identity the cache will be created under. rclone creates its VFS cache
+# dirs mode 0700, so the refresher sidecar can only scan them when it runs as the
+# SAME uid — a mismatch makes stuck-entry detection silently inert (the
+# 2026-07-26 stall). The refresher's startup self-test is the authoritative
+# check; this line makes diagnosing a mismatch a one-liner.
+echo "workspace-gateway: cache ${CACHE_DIR} owned by uid $(id -u) gid $(id -g)" >&2
 
 echo "workspace-gateway: serving ${TARGET} over NFS at ${ADDR} (poll ${POLL}, write-back ${VFS_WRITE_BACK}, transfers ${VFS_TRANSFERS}, low-level-retries ${LOW_LEVEL_RETRIES}, retries ${RETRIES})" >&2
 

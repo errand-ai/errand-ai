@@ -236,8 +236,20 @@ services:
       REFRESH_INTERVAL_SECONDS: ${WORKSPACE_REFRESH_INTERVAL:-3000}
       # Write-back health: scan the same VFS cache (read-only) for stuck dirty
       # entries; grace period is derived from the gateway's write-back delay.
+      # The scan only works because BOTH containers run as uid 65532 — rclone
+      # creates its cache dirs mode 0700, so a uid mismatch makes detection
+      # silently inert. If `cache_scan_selftest_failed` appears in the refresher
+      # logs after upgrading, remove the pre-existing root-owned cache volume:
+      #   docker compose -f testing/docker-compose.yml down
+      #   docker volume rm testing_workspace-cache
       WORKSPACE_CACHE_DIR: /cache
+      WORKSPACE_FOLDER: ${WORKSPACE_FOLDER:-Errand}
       VFS_WRITE_BACK: ${VFS_WRITE_BACK:-1s}
+      # Bound on dirty age regardless of open-handle state (NFSv3 has no CLOSE),
+      # post-upload size verification, and the (default-off) force-flush opt-in.
+      MAX_DIRTY_AGE_SECONDS: ${MAX_DIRTY_AGE_SECONDS:-900}
+      VERIFY_UPLOAD_SIZE: ${VERIFY_UPLOAD_SIZE:-true}
+      FORCE_FLUSH_PINNED: ${FORCE_FLUSH_PINNED:-false}
     volumes:
       - workspace-cache:/cache:ro
     depends_on:

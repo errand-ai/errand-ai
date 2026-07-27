@@ -46,6 +46,18 @@ spec:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/component: workspace-gateway
     spec:
+      # All three containers share ONE filesystem identity. This is a correctness
+      # requirement, not hardening: rclone creates its VFS cache dirs mode 0700,
+      # so the refresher can only scan them for stuck dirty entries when it runs
+      # as the same uid. With rclone as root and the refresher as 65532 the scan
+      # was permanently blind — it found nothing and reported healthy while
+      # completed writes sat unuploaded for 24 hours (2026-07-26). A shared group
+      # cannot fix this (0700 grants the group nothing), so the uid must match.
+      # fsGroup makes the cache PVC and the config emptyDir writable by them.
+      securityContext:
+        runAsUser: {{ $ws.runAsUser }}
+        runAsGroup: {{ $ws.runAsUser }}
+        fsGroup: {{ $ws.runAsUser }}
       initContainers:
         # Seed the writable config with a FRESH token before rclone starts, so a
         # rolled/restarted pod is authenticated at startup (the Secret's token may
@@ -134,6 +146,21 @@ spec:
               value: "/cache"
             - name: VFS_WRITE_BACK
               value: {{ $ws.cache.writeBack | quote }}
+            # Needed to address the cloud object when verifying a completed
+            # upload's published size (rc operations/stat).
+            - name: WORKSPACE_FOLDER
+              value: {{ $ws.folder | quote }}
+            # Upper bound on dirty age, independent of the close-triggered
+            # write-back delay: NFSv3 has no CLOSE, so an abandoned mount can
+            # otherwise pin an entry dirty forever without it ever being queued.
+            - name: MAX_DIRTY_AGE_SECONDS
+              value: {{ $ws.writeBackHealth.maxDirtyAgeSeconds | quote }}
+            # Off by default: publishing a file a client may still be writing is
+            # the torn-write failure this whole change exists to prevent.
+            - name: FORCE_FLUSH_PINNED
+              value: {{ $ws.writeBackHealth.forceFlushPinned | quote }}
+            - name: VERIFY_UPLOAD_SIZE
+              value: {{ $ws.writeBackHealth.verifyUploadSize | quote }}
             - name: ERRAND_WORKSPACE_BEARER
               valueFrom:
                 secretKeyRef:
