@@ -71,7 +71,7 @@
 
 ## 8. Verification
 
-- [x] 8.1 Run the full test suite: `errand/.venv/bin/python -m pytest workspace-gateway/tests/ -v` — 79 passed (44 → 79)
+- [x] 8.1 Run the full test suite: `errand/.venv/bin/python -m pytest workspace-gateway/tests/ -v` — 98 passed (44 → 98)
 - [ ] 8.2 Local stack check via `docker compose -f testing/docker-compose.yml up --build` — the gateway image builds and was verified directly (runs as 65532; `/cache` writable; rclone creates its cache `0700 gateway:gateway`). The full `--profile workspace` stack needs an authorised `rclone.conf` and a workspace bearer.
 - [ ] 8.3 End-to-end on the cluster, following the runbook from task 6: write through the mount, confirm it reaches Drive within the write-back delay, confirm no dirty entries remain — **needs the cluster + a maintenance window**
 - [ ] 8.4 Negative test on the cluster: induce a stalled entry and confirm the gateway reports degraded with the path named — the behaviour that was missing on 2026-07-26 — **needs the cluster**

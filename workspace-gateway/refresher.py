@@ -83,7 +83,12 @@ from datetime import datetime, timezone
 
 import requests
 
-from cache_reconcile import DirtyEntry, iter_dirty_entries
+from cache_reconcile import DirtyEntry, iter_dirty_entries, meta_root_present
+
+# Upper bound on unresolved upload-size mismatches carried in the health report.
+# A mismatch is held until its path verifies clean again, which for a path never
+# rewritten is indefinite; this stops the payload growing without limit.
+_MAX_TRACKED_MISMATCHES = 50
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("workspace-refresher")
@@ -255,38 +260,84 @@ def _scan_dirty_entries(cache_dir: str) -> tuple[list[DirtyEntry] | None, str | 
         return None, error
 
 
-def cache_scan_selftest(cfg: Config) -> bool:
-    """One-shot startup check that the monitor can actually see the cache.
+class VisibilityCheck:
+    """Confirms — and keeps confirming until it can — that the monitor can see
+    the cache.
 
     Detection that cannot run is worse than no detection, because it looks
-    identical to "nothing is wrong". Logging the outcome explicitly at startup
-    makes a deployment where the sidecar cannot read the gateway's cache loud on
-    day one rather than silent until a write is lost.
+    identical to "nothing is wrong", so this is checked explicitly rather than
+    assumed. It is *not* a one-shot: both containers start together, and on a
+    fresh PVC rclone has not created `vfsMeta` yet. Declaring success then would
+    prove nothing — the check would pass on exactly the deployment it exists to
+    catch. Until the tree has genuinely been listed the state is `pending`, and
+    it is retried each health cycle. Each distinct outcome is logged once, so a
+    long pending period doesn't spam.
     """
-    entries, error = _scan_dirty_entries(cfg.cache_dir)
-    if entries is None:
-        _log(
-            "cache_scan_selftest_failed",
-            cache_dir=cfg.cache_dir,
-            error=error,
-            detail="write-back stuck-entry detection cannot run in this deployment — "
-                   "the refresher cannot read the gateway's VFS cache",
-        )
-        return False
-    _log("cache_scan_selftest_ok", cache_dir=cfg.cache_dir, dirty_entries=len(entries))
-    return True
+
+    def __init__(self) -> None:
+        self.confirmed = False
+        self._last_logged: str | None = None
+
+    def check(self, cfg: Config) -> str:
+        """Return 'ok', 'pending' or 'failed'; log on each change of outcome."""
+        if self.confirmed:
+            return "ok"
+        try:
+            present = meta_root_present(cfg.cache_dir)
+        except OSError as exc:
+            return self._report("failed", cache_dir=cfg.cache_dir, error=f"{type(exc).__name__}: {exc}",
+                                detail="write-back stuck-entry detection cannot run in this deployment — "
+                                       "the refresher cannot read the gateway's cache directory")
+        if not present:
+            return self._report("pending", cache_dir=cfg.cache_dir,
+                                detail="rclone has not created the VFS metadata tree yet; "
+                                       "visibility is unproven and will be rechecked")
+        entries, error = _scan_dirty_entries(cfg.cache_dir)
+        if entries is None:
+            return self._report("failed", cache_dir=cfg.cache_dir, error=error,
+                                detail="write-back stuck-entry detection cannot run in this deployment — "
+                                       "the refresher cannot read the gateway's VFS cache")
+        self.confirmed = True
+        return self._report("ok", cache_dir=cfg.cache_dir, dirty_entries=len(entries))
+
+    def _report(self, outcome: str, **fields) -> str:
+        if outcome != self._last_logged:
+            _log(f"cache_scan_selftest_{outcome}", **fields)
+            self._last_logged = outcome
+        return outcome
+
+
+def cache_path_to_remote(cache_path: str, folder: str) -> str:
+    """Map a VFS cache path to the object path relative to the served folder.
+
+    rclone keys the cache by ``fs.Name() + "/" + fs.Root()`` (vfscache/cache.go),
+    so serving ``gdrive:Errand`` caches ``notes/a.txt`` at
+    ``gdrive{…}/Errand/notes/a.txt`` — the served folder **is** part of the cache
+    path. Stripping only the leading identity component leaves the folder
+    duplicated in the resulting reference (``gdrive:Errand/Errand/notes/a.txt``),
+    which resolves to nothing, so every verification would silently come back
+    "unverified" — detection that cannot run, looking exactly like nothing wrong.
+
+    ``Root()`` equals the configured folder for a direct remote, which is what
+    both supported providers use. (The reconcile resolves paths against a real
+    listing instead, because it also has to cope with an alias remote expanding
+    to its backend and absolute path — and because a wrong answer there strands
+    or destroys data, where a wrong answer here only degrades to "unverified".)
+    """
+    parts = cache_path.replace(os.sep, "/").split("/")
+    depth = 1 + len([c for c in folder.split("/") if c])
+    return "/".join(parts[depth:])
 
 
 def stat_remote_object(cfg: Config, cache_path: str) -> dict | None:
     """Stat the cloud object behind a cache path via rc `operations/stat`.
 
-    Used to verify a completed upload. The cache path's leading component is the
-    fs directory rclone derived from the serve target, so it is stripped to get
-    the object path relative to the served folder. Returns None when the object
-    is absent or the call fails (both mean "unverified", never "verified OK").
+    Used to verify a completed upload. Returns None when the object is absent or
+    the call fails (both mean "unverified", never "verified OK").
     """
-    parts = cache_path.replace(os.sep, "/").split("/", 1)
-    rel = parts[1] if len(parts) > 1 else parts[0]
+    rel = cache_path_to_remote(cache_path, cfg.folder)
+    if not rel:
+        return None
     fs = f"{cfg.remote}:{cfg.folder}" if cfg.folder else f"{cfg.remote}:"
     try:
         resp = requests.post(
@@ -355,8 +406,11 @@ class WriteBackMonitor:
         # "don't claim pinned when it might have been queued".
         self._ever_queued: dict[str, bool] = {}
         # Last observed cached data size per dirty path, used to verify the
-        # object published once the entry goes clean.
+        # object published once the entry goes clean, plus whether that length
+        # has settled (seen twice unchanged) — a mid-write sample is not a
+        # length worth comparing anything against.
         self._last_data_size: dict[str, int] = {}
+        self._size_stable: dict[str, bool] = {}
         # Verified-bad uploads, kept until the path verifies clean again so a
         # persistent mismatch stays degraded rather than flashing once.
         self._size_mismatches: dict[str, dict] = {}
@@ -386,6 +440,7 @@ class WriteBackMonitor:
                 self._fingerprints.pop(path, None)
                 self._ever_queued.pop(path, None)
                 self._last_data_size.pop(path, None)
+                self._size_stable.pop(path, None)
 
         queued = vfs_stats.get("uploads_queued")
         in_progress = vfs_stats.get("uploads_in_progress")
@@ -407,7 +462,15 @@ class WriteBackMonitor:
             # Remember the cached length while we can still read it; once the
             # entry goes clean the data file may be evicted and there would be
             # nothing left to verify the published object against.
+            #
+            # Only a length we have seen TWICE unchanged is eligible: the cache
+            # file grows as the NFS client writes, so a single sample taken
+            # mid-write is a partial length. Comparing that against the (correct,
+            # complete) published object would report a mismatch on a perfectly
+            # good upload — a false alarm on the one signal that has to be
+            # trustworthy. An unstable entry is left unverified instead.
             if entry.data_size is not None:
+                self._size_stable[path] = self._last_data_size.get(path) == entry.data_size
                 self._last_data_size[path] = entry.data_size
             if queue_state_known and not queue_idle:
                 self._ever_queued[path] = True
@@ -525,6 +588,11 @@ class WriteBackMonitor:
         expected = self._last_data_size.get(path)
         if self._verifier is None or expected is None:
             return
+        if not self._size_stable.get(path):
+            # Only ever sampled mid-write; we don't know the final length, so we
+            # have nothing trustworthy to compare against.
+            _log("upload_unverified", path=path, reason="cached_size_never_settled")
+            return
         item = self._verifier(path, expected)
         if not item:
             _log("upload_unverified", path=path, expected_size=expected)
@@ -542,6 +610,15 @@ class WriteBackMonitor:
             "detail": "the published object does not match the cached data that was uploaded; "
                       "the local copy is retained in the cache PVC for recovery",
         }
+        # Bounded: a mismatch is held until the path verifies clean again, which
+        # for a path never rewritten is forever. Cap the set so a pathological
+        # run cannot grow the health payload without limit; the oldest is dropped
+        # and said so, rather than silently.
+        while len(self._size_mismatches) > _MAX_TRACKED_MISMATCHES:
+            dropped, _ = next(iter(self._size_mismatches.items()))
+            self._size_mismatches.pop(dropped)
+            _log("upload_size_mismatch_dropped", path=dropped,
+                 detail=f"more than {_MAX_TRACKED_MISMATCHES} unresolved mismatches tracked")
 
     def scan_unavailable(self, vfs_stats: dict, error: str | None = None) -> dict:
         """Health block for a cycle where the cache scan failed.
@@ -722,8 +799,12 @@ def main() -> None:
     )
     # Prove the monitor can see the cache before anything depends on it. A
     # deployment where this fails is one where stuck-entry detection cannot run
-    # at all — the condition that made the 2026-07-26 stall invisible.
-    cache_scan_selftest(cfg)
+    # at all — the condition that made the 2026-07-26 stall invisible. Retried
+    # on the health cadence until it is genuinely proven (on a fresh cache
+    # rclone has not created the metadata tree yet, and "nothing there" is not
+    # evidence of visibility).
+    visibility = VisibilityCheck()
+    visibility.check(cfg)
 
     # `last_refresh` advances ONLY on a successful refresh — a failed attempt
     # (including the initial one) must be retried on the fast health-loop cadence,
@@ -735,7 +816,9 @@ def main() -> None:
         if last_refresh == 0.0 or now - last_refresh >= cfg.refresh_interval:
             if do_refresh(cfg, health):
                 last_refresh = now
+        visibility.check(cfg)
         health.update(collect_health_stats(cfg, monitor))
+        health["cache_visibility"] = "ok" if visibility.confirmed else "unproven"
         report_health(cfg, health)
         time.sleep(cfg.health_interval)
 

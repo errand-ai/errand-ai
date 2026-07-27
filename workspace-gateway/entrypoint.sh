@@ -79,6 +79,18 @@ RETRIES="${RETRIES:-3}"
 # copies from the read-only mount as before.
 mkdir -p "$(dirname "$CONF_RW")" "$CACHE_DIR"
 if [ ! -f "$CONF_RW" ]; then
+  # This container runs as uid 65532 (see Dockerfile.gateway — it must match the
+  # refresher so the VFS cache is scannable). `rclone config` writes config files
+  # mode 0600 owned by the operator, so a bind-mounted config from a dev machine
+  # is typically unreadable here. Say so plainly: under `set -eu` a bare `cp`
+  # failure would abort into a restart loop with no diagnostic.
+  if [ ! -r "$CONF_RO" ]; then
+    echo "workspace-gateway: FATAL: cannot read ${CONF_RO} as uid $(id -u)." >&2
+    echo "workspace-gateway: the gateway runs non-root so it shares the refresher's uid." >&2
+    echo "workspace-gateway: make the file world-readable (chmod 0644) or mount it with" >&2
+    echo "workspace-gateway: ownership uid 65532. Kubernetes Secret mounts are fine already." >&2
+    exit 1
+  fi
   cp "$CONF_RO" "$CONF_RW"
 fi
 export RCLONE_CONFIG="$CONF_RW"
@@ -103,10 +115,10 @@ if ! awk -v remote="$REMOTE" '
   exit 1
 fi
 
-# Never let rclone open the interactive OAuth listener even if something slips
-# past the check above: with no browser and no console it can only ever squat the
-# port, so failing the operation is strictly better than holding 53682 forever.
-export RCLONE_AUTH_NO_OPEN_BROWSER=true
+# NOTE: there is deliberately no `RCLONE_AUTH_NO_OPEN_BROWSER` here.
+# `--auth-no-open-browser` is registered only on `rclone authorize`, not on
+# `rclone serve`, so setting it would be silently ignored — a comforting line
+# that guarantees nothing. The token check above is the actual guard.
 
 # Build the serve target: REMOTE:FOLDER (or REMOTE: for the whole remote root).
 if [ -n "$FOLDER" ]; then

@@ -15,6 +15,8 @@ import os
 import stat
 import subprocess
 
+import pytest
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRYPOINT = os.path.join(os.path.dirname(HERE), "entrypoint.sh")
 
@@ -139,8 +141,33 @@ def test_reconcile_receives_the_serve_target(tmp_path):
     assert argv[2] == "gdrive:Errand"
 
 
-def test_interactive_oauth_browser_is_disabled(tmp_path):
-    # Belt and braces alongside the token check: with no browser and no console,
-    # an interactive flow can only ever squat 53682.
-    _run_entrypoint(tmp_path)
-    assert "RCLONE_AUTH_NO_OPEN_BROWSER=true" in open(ENTRYPOINT).read()
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions, so 0000 is still readable")
+def test_unreadable_source_config_fails_with_a_diagnostic(tmp_path):
+    # The gateway runs as uid 65532 so it shares the refresher's cache-scanning
+    # identity. `rclone config` writes 0600 owned by the operator, so a
+    # bind-mounted dev config is typically unreadable here. Under `set -eu` a
+    # bare `cp` failure would abort into a restart loop with no explanation.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _make_exec(str(bindir / "rclone"), "#!/bin/sh\nexit 0\n")
+    _make_exec(str(bindir / "python3"), "#!/bin/sh\nexit 0\n")
+    conf_ro = tmp_path / "rclone.conf"
+    conf_ro.write_text(_AUTHORIZED_CONF)
+    os.chmod(conf_ro, 0o000)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env.update(
+        WORKSPACE_REMOTE="gdrive",
+        WORKSPACE_RCLONE_CONF=str(conf_ro),
+        WORKSPACE_CONFIG_RW=str(tmp_path / "rw.conf"),
+        WORKSPACE_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    try:
+        result = subprocess.run(["sh", ENTRYPOINT], env=env, capture_output=True, text=True, timeout=30)
+    finally:
+        os.chmod(conf_ro, 0o644)
+
+    assert result.returncode == 1
+    assert "cannot read" in result.stderr
+    assert "chmod 0644" in result.stderr

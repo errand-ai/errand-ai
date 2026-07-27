@@ -175,9 +175,17 @@ The single check that would have caught the 2026-07-26 incident on day one:
 kubectl -n errand logs deploy/errand-workspace-gateway -c refresher | grep cache_scan_selftest
 ```
 
-`cache_scan_selftest_ok` means the refresher can read the cache. If you see
-`cache_scan_selftest_failed`, stuck-entry detection **cannot run at all** and the
-gateway is silently unmonitored. Verify both containers share a uid:
+Three outcomes:
+
+- `cache_scan_selftest_ok` — the refresher listed the cache. Detection works.
+- `cache_scan_selftest_pending` — rclone has not created `/cache/vfsMeta` yet
+  (normal for the first seconds on a fresh PVC). Visibility is **unproven**, not
+  broken; it is rechecked every health cycle and will resolve to `ok` or
+  `failed`. `cache_visibility` in the health report says `unproven` until then.
+  If it never resolves, rclone is not writing a cache at all — check the rclone
+  container.
+- `cache_scan_selftest_failed` — stuck-entry detection **cannot run** and the
+  gateway is silently unmonitored. Verify both containers share a uid:
 
 ```bash
 kubectl -n errand exec deploy/errand-workspace-gateway -c rclone -- id

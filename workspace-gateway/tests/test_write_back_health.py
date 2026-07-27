@@ -306,6 +306,10 @@ def test_readable_cache_scans_normally(tmp_path, monkeypatch):
     assert out["write_back"]["dirty_entries"] == 1
 
 
+def _events(caplog):
+    return [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
+
+
 def test_startup_selftest_logs_both_outcomes(tmp_path, caplog):
     # A deployment where detection cannot run must be loud at startup, not silent
     # until a write is lost. Both outcomes are logged explicitly.
@@ -317,16 +321,84 @@ def test_startup_selftest_logs_both_outcomes(tmp_path, caplog):
     cfg.cache_dir = str(cache)
 
     with caplog.at_level("INFO"):
-        assert refresher.cache_scan_selftest(cfg) is True
+        assert refresher.VisibilityCheck().check(cfg) == "ok"
         os.chmod(cache / "vfsMeta", 0o000)
         try:
-            assert refresher.cache_scan_selftest(cfg) is False
+            assert refresher.VisibilityCheck().check(cfg) == "failed"
         finally:
             os.chmod(cache / "vfsMeta", 0o755)
 
-    events = [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
+    events = _events(caplog)
     assert "cache_scan_selftest_ok" in events
     assert "cache_scan_selftest_failed" in events
+
+
+def test_selftest_does_not_claim_ok_on_a_cache_rclone_has_not_populated(tmp_path, caplog):
+    # Both containers start together, so on a fresh PVC rclone has not created
+    # vfsMeta yet. Reporting "ok" then would prove nothing — the check would pass
+    # on exactly the deployment it exists to catch — so it stays `pending` and is
+    # retried until the tree has genuinely been listed.
+    import refresher
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    check = refresher.VisibilityCheck()
+
+    with caplog.at_level("INFO"):
+        assert check.check(cfg) == "pending"
+        assert check.confirmed is False
+        assert check.check(cfg) == "pending"        # still unproven, logged once
+        (cache / "vfsMeta").mkdir()                 # rclone starts serving
+        assert check.check(cfg) == "ok"
+        assert check.confirmed is True
+
+    events = _events(caplog)
+    assert events.count("cache_scan_selftest_pending") == 1   # no 30s spam
+    assert "cache_scan_selftest_ok" in events
+
+
+def test_selftest_fails_when_the_cache_root_itself_is_unreadable(tmp_path, caplog):
+    # The subtler blindness: os.path.isdir swallows PermissionError and returns
+    # False, which is indistinguishable from "not created yet". An unreadable
+    # /cache must be `failed`, never `pending` and never `ok`.
+    import refresher
+
+    cache = tmp_path / "cache"
+    (cache / "vfsMeta").mkdir(parents=True)
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    os.chmod(cache, 0o000)
+    try:
+        with caplog.at_level("INFO"):
+            assert refresher.VisibilityCheck().check(cfg) == "failed"
+    finally:
+        os.chmod(cache, 0o755)
+
+    assert "cache_scan_selftest_failed" in _events(caplog)
+
+
+def test_unreadable_cache_root_degrades_the_health_scan(tmp_path, monkeypatch):
+    # Same hole, via the health path: an untraversable /cache must not read as
+    # "0 dirty entries, ok".
+    import refresher
+
+    cache = tmp_path / "cache"
+    (cache / "vfsMeta" / "gd").mkdir(parents=True)
+    (cache / "vfsMeta" / "gd" / "a.md").write_text(json.dumps({"Dirty": True, "Size": 0, "Rs": None}))
+    cfg = _Cfg2()
+    cfg.cache_dir = str(cache)
+    monkeypatch.setattr(refresher, "read_vfs_stats", lambda c: _stats())
+    os.chmod(cache, 0o000)
+    try:
+        out = refresher.collect_health_stats(cfg, WriteBackMonitor(cfg, clock=_Clock()))
+    finally:
+        os.chmod(cache, 0o755)
+
+    assert out["write_back_state"] == "degraded"
+    assert out["write_back"]["dirty_entries"] is None
+    assert out["write_back_errors"][0]["reason"] == "cache_scan_failed"
 
 
 # --- Handle-leak tolerance (dirty entries bounded regardless of open handles) ---
@@ -443,13 +515,47 @@ def _verifier(published_size):
     return verify
 
 
+def _settle(mon, entry, stats=None):
+    """Observe an entry twice so its cached length counts as settled."""
+    for _ in range(2):
+        mon.evaluate(stats or _stats(), [entry])
+
+
+def test_a_length_only_sampled_mid_write_is_not_verified(caplog):
+    # The cache file GROWS as the NFS client writes it. A single sample taken
+    # mid-write is a partial length; comparing the complete published object
+    # against it would report a mismatch on a perfectly good upload — a false
+    # alarm on the one signal that has to be trustworthy.
+    clock = _Clock()
+    verify = _verifier(40_000_000)
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
+    mon.evaluate(_stats(), [_entry("gd/big.bin", has_data=True, data_size=18_000_000)])
+    with caplog.at_level("INFO"):
+        health = mon.evaluate(_stats(), [])   # completed and uploaded between cycles
+
+    assert health["write_back_state"] == "ok"
+    assert verify.calls == []                 # never even asked
+    assert "upload_unverified" in _events(caplog)
+
+
+def test_a_growing_length_never_settles():
+    # Two observations that DIFFER are still mid-write, not a settled length.
+    clock = _Clock()
+    verify = _verifier(40_000_000)
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
+    mon.evaluate(_stats(), [_entry("gd/big.bin", has_data=True, data_size=10_000_000)])
+    mon.evaluate(_stats(), [_entry("gd/big.bin", has_data=True, data_size=25_000_000)])
+    assert mon.evaluate(_stats(), [])["write_back_state"] == "ok"
+    assert verify.calls == []
+
+
 def test_upload_size_mismatch_degrades_and_names_the_path():
     # rclone reported success but the published object is a different length
     # from the cached data that was uploaded — a bad publish, not a clean upload.
     clock = _Clock()
     verify = _verifier(1230)
     mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
-    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    _settle(mon, _entry("gd/notes.md", has_data=True, data_size=16563))
     health = mon.evaluate(_stats(), [])   # entry went clean → upload completed
 
     assert verify.calls == [("gd/notes.md", 16563)]
@@ -467,21 +573,36 @@ def test_upload_size_mismatch_persists_until_it_verifies_clean():
     clock = _Clock()
     verify = _verifier(1230)
     mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
-    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    _settle(mon, _entry("gd/notes.md", has_data=True, data_size=16563))
     mon.evaluate(_stats(), [])
     assert mon.evaluate(_stats(), [])["write_back_state"] == "degraded"   # still degraded
 
     # The path is rewritten and this time publishes at the right length.
     mon._verifier = _verifier(16563)
-    mon.evaluate(_stats(), [_entry("gd/notes.md", has_data=True, data_size=16563)])
+    _settle(mon, _entry("gd/notes.md", has_data=True, data_size=16563))
     assert mon.evaluate(_stats(), [])["write_back_state"] == "ok"
+
+
+def test_unresolved_mismatches_are_bounded():
+    # A mismatch is held until its path verifies clean, which for a path never
+    # rewritten is indefinite. The health payload must not grow without limit.
+    import refresher
+
+    clock = _Clock()
+    mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=_verifier(1))
+    for i in range(refresher._MAX_TRACKED_MISMATCHES + 10):
+        _settle(mon, _entry(f"gd/f{i:03}.md", has_data=True, data_size=999))
+        mon.evaluate(_stats(), [])
+    health = mon.evaluate(_stats(), [])
+    assert len(health["write_back"]["size_mismatches"]) == refresher._MAX_TRACKED_MISMATCHES
+    assert health["write_back_state"] == "degraded"
 
 
 def test_matching_upload_size_is_healthy():
     clock = _Clock()
     verify = _verifier(460)
     mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=verify)
-    mon.evaluate(_stats(), [_entry("gd/ok.md", has_data=True, data_size=460)])
+    _settle(mon, _entry("gd/ok.md", has_data=True, data_size=460))
     health = mon.evaluate(_stats(), [])
     assert health["write_back_state"] == "ok"
     assert health["write_back"]["size_mismatches"] == []
@@ -492,19 +613,18 @@ def test_unstattable_published_object_is_unverified_not_degraded(caplog):
     # an alert would make the check noise rather than signal.
     clock = _Clock()
     mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=_verifier(None))
-    mon.evaluate(_stats(), [_entry("gd/gone.md", has_data=True, data_size=99)])
+    _settle(mon, _entry("gd/gone.md", has_data=True, data_size=99))
     with caplog.at_level("INFO"):
         health = mon.evaluate(_stats(), [])
     assert health["write_back_state"] == "ok"
-    events = [json.loads(r.message)["event"] for r in caplog.records if r.message.startswith("{")]
-    assert "upload_unverified" in events
+    assert "upload_unverified" in _events(caplog)
 
 
 def test_verification_is_skipped_when_disabled():
     # VERIFY_UPLOAD_SIZE=false wires no verifier at all — no extra stat per upload.
     clock = _Clock()
     mon = WriteBackMonitor(_Cfg(), clock=clock, verifier=None)
-    mon.evaluate(_stats(), [_entry("gd/x.md", has_data=True, data_size=5)])
+    _settle(mon, _entry("gd/x.md", has_data=True, data_size=5))
     health = mon.evaluate(_stats(), [])
     assert health["write_back_state"] == "ok"
     assert health["write_back"]["size_mismatches"] == []
@@ -529,12 +649,34 @@ def test_verification_failure_never_discards_local_content(tmp_path, monkeypatch
     monkeypatch.setattr(refresher, "read_vfs_stats", lambda c: _stats())
     mon = WriteBackMonitor(cfg, clock=_Clock(), verifier=_verifier(1230))
     refresher.collect_health_stats(cfg, mon)
+    refresher.collect_health_stats(cfg, mon)   # length settles
     # Entry goes clean; verification runs and fails.
     (cache / "vfsMeta" / "gd" / "notes.md").unlink()
     out = refresher.collect_health_stats(cfg, mon)
 
     assert out["write_back_state"] == "degraded"
     assert data.read_text() == "x" * 16563   # local content untouched
+
+
+@pytest.mark.parametrize(
+    "cache_path,folder,expected",
+    [
+        # rclone keys the cache by fs.Name() + "/" + fs.Root(), so the SERVED
+        # FOLDER is part of the cache path. Stripping only the identity
+        # component leaves the folder duplicated in the reference
+        # (gdrive:Errand/Errand/...), which resolves to nothing — every
+        # verification would come back "unverified" forever.
+        ("gdrive{a1b2}/Errand/notes/todo.md", "Errand", "notes/todo.md"),
+        ("gdrive{a1b2}/Errand/top.md", "Errand", "top.md"),
+        ("gdrive{a1b2}/notes/todo.md", "", "notes/todo.md"),          # remote root
+        ("gdrive{a1b2}/a/b/notes/todo.md", "a/b", "notes/todo.md"),   # nested folder
+        ("gdrive{a1b2}/Errand/notes/todo.md", "/Errand/", "notes/todo.md"),  # stray slashes
+    ],
+)
+def test_cache_path_maps_to_the_folder_relative_object_path(cache_path, folder, expected):
+    from refresher import cache_path_to_remote
+
+    assert cache_path_to_remote(cache_path, folder) == expected
 
 
 def test_stat_remote_object_builds_the_fs_and_relative_path(monkeypatch):
@@ -557,7 +699,8 @@ def test_stat_remote_object_builds_the_fs_and_relative_path(monkeypatch):
 
     cfg = _Cfg2()
     cfg.remote, cfg.folder = "gdrive", "Errand"
-    assert refresher.stat_remote_object(cfg, "gdrive{a1b2}/notes/todo.md") == {"Size": 42}
+    # Note the `Errand/` component: that IS how rclone lays the cache out.
+    assert refresher.stat_remote_object(cfg, "gdrive{a1b2}/Errand/notes/todo.md") == {"Size": 42}
     assert captured["url"].endswith("/operations/stat")
     assert captured["payload"] == {"fs": "gdrive:Errand", "remote": "notes/todo.md"}
 

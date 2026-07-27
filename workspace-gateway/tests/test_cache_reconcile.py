@@ -127,8 +127,23 @@ def test_reconciled_entries_are_returned_in_sorted_order(tmp_path):
     assert [r["path"] for r in reconciled] == ["gd/a.md", "gd/m.md", "gd/z.md"]
 
 
-def test_missing_cache_dir_is_noop(tmp_path):
-    assert cr.reconcile_cache(str(tmp_path / "does-not-exist")) == []
+def test_missing_cache_dir_raises_but_main_stays_best_effort(tmp_path, capsys):
+    # A cache dir that isn't there is a deployment problem, not an empty cache:
+    # the scan must not report "nothing dirty". main() still returns 0 — a
+    # reconcile failure must never stop the gateway serving — but says why.
+    missing = str(tmp_path / "does-not-exist")
+    with pytest.raises(OSError):
+        cr.reconcile_cache(missing)
+
+    assert cr.main(["cache_reconcile.py", missing]) == 0
+    events = [json.loads(line)["event"] for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert "cache_reconcile_failed" in events
+
+
+def test_empty_cache_dir_scans_clean(tmp_path):
+    # The control case: the directory exists but rclone hasn't created vfsMeta.
+    assert cr.reconcile_cache(str(tmp_path)) == []
+    assert cr.meta_root_present(str(tmp_path)) is False
 
 
 def test_unreadable_meta_is_skipped_not_deleted(tmp_path):
@@ -417,9 +432,26 @@ def test_probe_resolves_paths_by_longest_matching_suffix():
 
     probe = _probe_with_index(index)
     assert probe.lookup("gdrive{a1b2}/Errand/notes/todo.md") == (cr.FOUND, {"Size": 7})
-    assert probe.lookup("gdrive{a1b2}/top.md") == (cr.FOUND, {"Size": 3})
+    assert probe.lookup("gdrive{a1b2}/Errand/top.md") == (cr.FOUND, {"Size": 3})
     # Deeply nested fs-root prefixes (alias/local backends) resolve the same way.
-    assert probe.lookup("local/tmp/data/Errand/notes/todo.md") == (cr.FOUND, {"Size": 7})
+    assert _probe_with_index(index).lookup("local/tmp/data/Errand/notes/todo.md") == (cr.FOUND, {"Size": 7})
+
+
+def test_probe_latches_the_prefix_depth_and_stops_shortening():
+    # Without a latched prefix, a path whose object is genuinely absent keeps
+    # shortening until it collides with an unrelated same-named file nearer the
+    # serve root — and the entry is then judged against the WRONG object. Here
+    # `sub/report.md` is new (absent) while a different `report.md` exists at the
+    # root: it must resolve as absent, not match the root file.
+    probe = _probe_with_index({"notes/todo.md": {"Size": 7}, "report.md": {"Size": 3}})
+    assert probe.lookup("gdrive{a1b2}/Errand/notes/todo.md")[0] == cr.FOUND   # latches depth 2
+    assert probe.lookup("gdrive{a1b2}/Errand/sub/report.md") == (cr.ABSENT, None)
+
+
+def test_probe_reports_paths_above_the_latched_prefix_as_absent():
+    probe = _probe_with_index({"notes/todo.md": {"Size": 7}})
+    assert probe.lookup("gdrive{a1b2}/Errand/notes/todo.md")[0] == cr.FOUND
+    assert probe.lookup("gdrive{a1b2}/stray.md") == (cr.ABSENT, None)
 
 
 def test_probe_reports_absent_distinctly_from_error():

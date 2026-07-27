@@ -55,6 +55,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Iterator, NamedTuple
 
@@ -159,6 +160,17 @@ def _raise_walk_error(exc: OSError) -> None:
     raise exc
 
 
+def meta_root_present(cache_dir: str) -> bool:
+    """True if rclone has created the metadata tree yet. Raises if we can't tell.
+
+    Deliberately *not* ``os.path.isdir``: that swallows ``PermissionError`` and
+    returns False, which is indistinguishable from "not created yet" and would
+    reinstate the silent blindness one level up. Listing the cache root raises
+    instead, so an unreadable cache is always an error and never an absence.
+    """
+    return _META_SUBDIR in os.listdir(cache_dir)
+
+
 def iter_dirty_entries(cache_dir: str) -> Iterator[DirtyEntry]:
     """Yield every dirty entry in the VFS cache under ``cache_dir``.
 
@@ -166,12 +178,13 @@ def iter_dirty_entries(cache_dir: str) -> Iterator[DirtyEntry]:
     the refresher's write-back health scan (which tracks dirty age, size and
     fingerprints). Non-dirty entries are ordinary read cache and are skipped.
     Individual meta files that are unreadable or not JSON are skipped rather than
-    guessed at — but a directory that cannot be *listed* raises ``OSError``,
-    because that means the scan is blind rather than finding nothing.
+    guessed at — but any directory that cannot be *listed*, at any level
+    including the cache root itself, raises ``OSError``, because that means the
+    scan is blind rather than finding nothing.
     """
     meta_root = os.path.join(cache_dir, _META_SUBDIR)
     data_root = os.path.join(cache_dir, _DATA_SUBDIR)
-    if not os.path.isdir(meta_root):
+    if not meta_root_present(cache_dir):
         return
     # Probe readability up front: os.walk on an unlistable root would otherwise
     # yield nothing at all, silently. This turns it into an OSError immediately.
@@ -290,13 +303,21 @@ class RcloneRemoteProbe:
     "not there" from "couldn't look".
     """
 
-    def __init__(self, target: str, *, rclone: str = "rclone", timeout: float = 120.0, attempts: int = 3):
+    def __init__(self, target: str, *, rclone: str = "rclone", timeout: float = 60.0, attempts: int = 2,
+                 backoff: float = 5.0):
         self.target = target.rstrip("/")
         self.rclone = rclone
         self.timeout = timeout
         self.attempts = attempts
+        self.backoff = backoff
         self._index: dict[str, dict] | None = None
         self._index_failed = False
+        # The fs-root prefix depth is a property of the fs, so it is identical
+        # for every entry. Latched from the first resolution and then applied
+        # uniformly: without it, a path whose object is genuinely absent could
+        # keep shortening until it collided with an unrelated same-named file
+        # nearer the serve root, and be judged against the wrong object.
+        self._prefix_depth: int | None = None
 
     def _load_index(self) -> bool:
         """List every object under the serve root once. Returns success."""
@@ -324,7 +345,14 @@ class RcloneRemoteProbe:
             except Exception as exc:  # noqa: BLE001 — probe failures are data, not crashes
                 last_error = str(exc)
             _log("remote_index_retry", target=self.target, attempt=attempt, error=last_error)
-        _log("remote_index_failed", target=self.target, error=last_error)
+            if attempt < self.attempts:
+                time.sleep(self.backoff)
+        # Every desynced entry in this run will now be quarantined rather than
+        # repaired. That is heavy-handed but safe-for-data, and it is the only
+        # option: publishing over a remote we could not read is the failure this
+        # exists to prevent. Recovery is the runbook's quarantine procedure.
+        _log("remote_index_failed", target=self.target, error=last_error,
+             detail="cannot verify any desynced entry; they will be quarantined, not uploaded")
         self._index_failed = True
         return False
 
@@ -332,16 +360,30 @@ class RcloneRemoteProbe:
         """Resolve a cache path to ``(FOUND|ABSENT|ERROR, item)``.
 
         Matches the longest suffix of the cache path that names a real object,
-        which strips the fs-root prefix without having to know its depth.
+        which strips the fs-root prefix without needing to know its depth in
+        advance. The depth is latched from the first successful resolution and
+        reused, because it is a property of the fs and identical for every
+        entry — otherwise a path whose object is genuinely absent would keep
+        shortening until it collided with an unrelated same-named file nearer
+        the serve root, and be judged against the wrong object.
         """
         if not self._load_index():
             return ERROR, None
         parts = cache_path.replace(os.sep, "/").split("/")
-        # Start after the first component (always the fs identity dir) and give
-        # up the last one (the filename itself must remain).
+        if self._prefix_depth is not None:
+            if self._prefix_depth >= len(parts):
+                return ABSENT, None
+            item = self._index.get("/".join(parts[self._prefix_depth:]))
+            return (FOUND, item) if item is not None else (ABSENT, None)
+        # Start after the first component (always the fs identity dir) and keep
+        # at least the filename. Longest suffix first, so the shallowest strip
+        # that resolves wins.
         for start in range(1, len(parts)):
             item = self._index.get("/".join(parts[start:]))
             if item is not None:
+                self._prefix_depth = start
+                _log("remote_prefix_resolved", target=self.target, prefix_depth=start,
+                     prefix="/".join(parts[:start]))
                 return FOUND, item
         return ABSENT, None
 
