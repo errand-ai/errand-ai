@@ -32,9 +32,9 @@ The gateway SHALL run with `--vfs-cache-mode full` and a cache directory on pers
 
 A completed write SHALL NOT be lost between `close()` and upload: the VFS cache SHALL retain a dirty (not-yet-uploaded) entry's data until its upload succeeds, and SHALL NOT evict a dirty entry under cache-size pressure.
 
-A dirty cache entry SHALL always be progressing toward upload — it SHALL be queued, uploading, or retrying-after-a-logged-error. A cache entry that is marked dirty while neither queued, uploading, nor retrying (observed in production as `Dirty:true, Size:0` with `uploadsQueued:0` and no data file) is a fault and SHALL be detected and surfaced, never left silent (see "Write-back health and stuck-upload detection").
+A dirty cache entry SHALL always be progressing toward upload — it SHALL be queued, uploading, or retrying-after-a-logged-error. A cache entry that is marked dirty while neither queued, uploading, nor retrying is a fault and SHALL be detected and surfaced, never left silent (see "Write-back health and stuck-upload detection"). This fault has been observed in production in two distinct forms, both of which SHALL be covered: `Dirty:true, Size:0` with `uploadsQueued:0` and **no data file**, and `Dirty:true, Size:0` with `uploadsQueued:0` and a **non-empty data file present** (see "Metadata/data desync is detected and repaired"). A dirty entry SHALL NOT be presumed to be a resumable upload merely because a data file exists.
 
-Pending uploads SHALL survive a gateway restart: on start, the gateway SHALL resume uploading any writes queued in the persistent cache, and SHALL reconcile any orphaned dirty entry (a dirty cache item with no data to upload) against the cloud rather than leaving it to block change-polling or upload an empty file.
+Pending uploads SHALL survive a gateway restart: on start, the gateway SHALL resume uploading any writes queued in the persistent cache, and SHALL reconcile any orphaned dirty entry (a dirty cache item with no data to upload) against the cloud rather than leaving it to block change-polling or upload an empty file. Resuming SHALL NOT include uploading from an entry whose metadata is inconsistent with its data; such entries SHALL be repaired or quarantined before any upload is attempted.
 
 #### Scenario: Task write reaches the cloud
 
@@ -55,6 +55,68 @@ Pending uploads SHALL survive a gateway restart: on start, the gateway SHALL res
 
 - **WHEN** the persistent cache contains a dirty entry that has no data file to upload
 - **THEN** on startup the gateway reconciles it against the cloud (re-fetching the current cloud object and clearing the dirty flag), so the entry does not block change-polling and no empty file is uploaded
+
+#### Scenario: Dirty entry with data is not assumed resumable
+
+- **WHEN** the persistent cache contains a dirty entry with a non-empty data file whose metadata reports `Size: 0`
+- **THEN** the gateway does not treat it as a resumable upload and does not upload it in that state — it is repaired or quarantined first
+
+### Requirement: Write-back integrity — complete or failed, never partial
+
+An upload SHALL publish the complete cached content of an entry or fail. The gateway SHALL NOT publish a partially-written object under any circumstance, including when the entry's own cache metadata is inconsistent with its data file.
+
+After an upload reports success, the gateway SHALL verify the resulting cloud object's size against the size of the cached data that was uploaded. A mismatch SHALL be treated as a failed publish: surfaced as degraded write-back health with a structured error naming the path, and held in that state until the path verifies clean, so a single bad publish cannot pass between two health cycles unnoticed. A size-verification failure SHALL NOT discard the cached data, so the local content remains recoverable.
+
+The existing retry policy (`--retries` / `--low-level-retries`) covers uploads that *fail*; an upload that reports success while publishing a wrong-sized object is outside it, and the gateway SHALL NOT attempt to re-drive such an upload by writing to the cloud object outside the VFS — doing so would make the gateway a second writer of a path it is mid-write on. Detection and reporting are the required behaviour; recovery is an operator procedure (see "Gateway operational runbook").
+
+A cached length observed only once while a write is still in progress SHALL NOT be used as the comparison basis, since a partial length would report a mismatch against a correct upload.
+
+Length equality alone SHALL NOT be taken as evidence of a correct upload where the cached entry's metadata is known to be inconsistent (see "Metadata/data desync is detected and repaired"): the production corruption produced an object of exactly the expected byte count whose content was a mix of new and stale bytes.
+
+#### Scenario: Partial upload is rejected, not published
+
+- **WHEN** an upload would publish fewer bytes than the cached entry holds
+- **THEN** the upload fails, the entry remains dirty with its data retained, and the gateway reports degraded write-back health naming the path
+
+#### Scenario: Size mismatch after upload is treated as failure
+
+- **WHEN** an upload reports success but the cloud object's size differs from the uploaded cached data's size
+- **THEN** the gateway reports degraded write-back health with a structured error naming the path, retains the cached data, and stays degraded until that path verifies clean
+
+#### Scenario: A write still in progress is not falsely reported
+
+- **WHEN** the cached data's length has been observed only once, while the client is still writing it
+- **THEN** the gateway does not compare it against the published object, and records the upload as unverified rather than mismatched
+
+#### Scenario: Verified upload clears the entry
+
+- **WHEN** an upload completes and the cloud object's size matches the uploaded cached data
+- **THEN** the entry's dirty flag is cleared and the cached data may be evicted normally
+
+### Requirement: Metadata/data desync is detected and repaired
+
+The startup reconcile SHALL treat a dirty entry whose cache metadata is inconsistent with its data file as a fault, in addition to the already-covered case of a dirty entry with no data file. Specifically, a dirty entry whose metadata reports `Size: 0` and no read ranges while a non-empty data file is present is inconsistent and SHALL NOT be uploaded in that state — uploading from such an entry is what produced the production corruption.
+
+For an inconsistent entry, the gateway SHALL prefer **repair over deletion**: the metadata SHALL be corrected to match the data file (size set to the data file's actual length, read ranges set to the full extent) so that the complete cached content is uploaded. The data file SHALL NOT be deleted to resolve an inconsistency, because it may hold the only copy of a completed write.
+
+Repair SHALL be conditional on the gateway still being the sole writer of the path. If the entry's recorded remote fingerprint no longer matches the current cloud object, the local content is not a safe successor to the remote and the entry SHALL be quarantined — moved aside within the persistent cache and reported with a structured error — rather than repaired and uploaded. Quarantined content SHALL be retained for manual recovery, and its location SHALL be documented in the gateway operational runbook.
+
+Reconcile actions SHALL be performed only while `rclone serve` is not running, so repair never races a live cache.
+
+#### Scenario: Inconsistent entry is repaired and uploaded in full
+
+- **WHEN** startup finds a dirty entry with `Size: 0` metadata, a non-empty data file, and a remote fingerprint still matching the cloud object
+- **THEN** the metadata is repaired to match the data file, the entry remains dirty, and the complete cached content is uploaded
+
+#### Scenario: Inconsistent entry with a changed remote is quarantined
+
+- **WHEN** startup finds an inconsistent dirty entry whose recorded remote fingerprint no longer matches the current cloud object
+- **THEN** the entry is quarantined rather than uploaded, its content is retained for manual recovery, and a structured error names the path and the fingerprint mismatch
+
+#### Scenario: Reconcile never deletes the only copy of a write
+
+- **WHEN** a dirty entry's metadata is inconsistent but its data file holds content
+- **THEN** the data file is preserved — repaired or quarantined — and never removed to clear the inconsistency
 
 ### Requirement: Google-native files are excluded
 
@@ -119,6 +181,10 @@ The gateway SHALL monitor its own VFS write-back queue via the loopback rclone r
 
 A stuck upload — a dirty cache entry that is not progressing (not queued, not uploading, not retrying) beyond a bounded grace period derived from the write-back delay, or a non-zero `erroredFiles` count — SHALL move the gateway to a degraded write-back health state and emit a structured error identifying the affected path.
 
+The monitor SHALL be able to observe what it monitors. The component performing detection SHALL have read access to the persistent VFS cache metadata in the deployed configuration; a filesystem-permission or identity mismatch between the process writing the cache and the process scanning it SHALL be treated as a deployment defect. The gateway SHALL verify this access at startup and log the outcome explicitly, so a configuration in which detection cannot run is loud immediately rather than silent until a fault occurs.
+
+A failure to scan the cache SHALL itself be a degraded, alertable condition, reported with the underlying error. An unreadable cache SHALL NOT be reported as healthy and SHALL NOT be indistinguishable from an absence of faults — otherwise the monitor's own failure mode reproduces the silent data loss it exists to prevent.
+
 #### Scenario: Stuck upload is surfaced, not silent
 
 - **WHEN** a file remains dirty in the VFS cache past the grace period without being queued, uploading, or retrying
@@ -128,6 +194,52 @@ A stuck upload — a dirty cache entry that is not progressing (not queued, not 
 
 - **WHEN** `vfs/stats` reports `erroredFiles > 0`
 - **THEN** the gateway reflects the error in health state and structured logs with enough detail to identify the affected file(s)
+
+#### Scenario: Monitor verifies its own visibility at startup
+
+- **WHEN** the gateway starts
+- **THEN** the monitoring component attempts a cache scan and logs the outcome, so a deployment in which it cannot read the cache is reported immediately
+
+#### Scenario: Unreadable cache is degraded, not healthy
+
+- **WHEN** the monitoring component cannot read the persistent VFS cache metadata (for example a permission error)
+- **THEN** write-back health is reported degraded with the underlying error, and is never reported as healthy or as an absence of dirty entries
+
+### Requirement: Dirty entries are bounded regardless of open-handle state
+
+A dirty cache entry SHALL NOT be exempt from write-back progress expectations or from stuck-upload detection solely because a client holds it open. NFSv3 has no `CLOSE` operation, so a task container terminated mid-mount leaves the entry permanently in-use; a close-triggered write-back delay alone therefore permits a dirty entry to remain unuploaded indefinitely (observed in production as `in use 2` sustained for over 24 hours with no upload ever queued).
+
+The gateway SHALL bound how long an entry may remain dirty irrespective of open-handle state. Past an operator-configurable maximum dirty age, an entry that has never been queued SHALL be reported as degraded write-back health with a structured error identifying the path and the pinned-by-handle condition.
+
+Forcing a flush of a pinned entry SHALL be opt-in and disabled by default, because a client may still be writing it and publishing a torn state is the failure this requirement exists to prevent. Reporting SHALL be the default behaviour: a stalled-but-reported write is recoverable, a torn published write may not be.
+
+No safe mechanism for forcing currently exists: rclone's rc API can reorder items already in the upload queue but cannot flush a dirty item that was never queued. Enabling the option SHALL therefore report that forcing is unavailable and continue to surface the entry, rather than reaching around the VFS to publish a file a client may still hold open. Recovery of a pinned entry is an operator procedure (see "Gateway operational runbook").
+
+#### Scenario: Handle held open past the bound is reported
+
+- **WHEN** a cache entry has been dirty past the configured maximum dirty age and has never been queued for upload, while still marked in-use
+- **THEN** the gateway reports degraded write-back health and logs a structured error naming the path and identifying the entry as pinned by an open handle
+
+#### Scenario: Abandoned mount does not silently strand a write
+
+- **WHEN** a task container is terminated without unmounting after writing a file
+- **THEN** the entry does not remain dirty and unreported — it is either uploaded or surfaced as degraded within the configured bound
+
+### Requirement: Gateway operational runbook
+
+The repository SHALL contain an operational runbook for the workspace gateway covering, at minimum: the safe procedure for taking the gateway out of service, how to detect a stalled write-back, and how to recover content from a stalled or quarantined cache entry.
+
+The runbook SHALL state that the gateway deployment is managed by a continuous-delivery controller with self-heal enabled, so an unsuspended replica scale-down is reverted automatically and the resulting restart flushes dirty cache entries. It SHALL document suspending automated sync before any maintenance that stops the gateway, and SHALL require taking a backup of both the cache-side and cloud-side copies of any dirty path before a reconcile or restart is attempted.
+
+#### Scenario: Operator takes the gateway down safely
+
+- **WHEN** an operator needs to stop the gateway to act on its cache
+- **THEN** the runbook directs them to suspend automated sync first, confirm no task containers are mounting the export, and back up both copies of any dirty path before proceeding
+
+#### Scenario: Operator recovers a stalled write
+
+- **WHEN** the gateway reports degraded write-back health naming a path
+- **THEN** the runbook describes how to retrieve that path's cached content and reconcile it against the cloud copy without losing either version
 
 ### Requirement: Gateway is the sole writer of task-written paths
 
