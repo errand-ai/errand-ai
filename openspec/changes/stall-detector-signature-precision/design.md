@@ -129,9 +129,25 @@ override must be idempotent — it is invoked per turn.
 *Consequence:* the offending call executes before the guard fires, where previously
 the abort pre-empted it. Acceptable precisely because of what the guard now tests: we
 only abort when the result was identical to last time, so the extra execution is by
-construction a no-op. The existing spec's intent — that the offending call is visible
-in the transcript — is strengthened, since both its `tool_call` and `tool_result`
-events are emitted.
+construction a no-op.
+
+*Transcript trade-off.* An earlier draft of this section claimed the change
+*strengthens* transcript visibility because both `tool_call` and `tool_result` would
+precede the abort. That is wrong, and code review caught it. The SDK runs tool output
+guardrails at `run_internal/tool_execution.py:902`, *before* `hooks.on_tool_end` at
+line 911 — and `on_tool_end` is the sole site that emits `tool_result`
+(`main.py:443`). Raising `AgentStallError` from the guardrail therefore skips
+`on_tool_end`, so the aborting call emits `tool_call` but never `tool_result`.
+
+Accepted rather than worked around. The original intent — the offending call stays
+visible — still holds via `tool_call`, the repeated result is already in the
+transcript from the preceding identical calls, and `stall_detected` carries
+`result_repeated`. Emitting `tool_result` from inside the guardrail would duplicate
+the hook's logic for no diagnostic gain.
+
+Note the asymmetry: a *nudged* call returns normally, so `on_tool_end` does run and
+its `tool_result` is emitted — carrying the nudge message rather than the tool's real
+output, as recorded in the audit section.
 
 *Edge case, now resolved by construction:* a call that never returns (tool raised,
 run torn down) never reaches its output guardrail, so it is simply never recorded.

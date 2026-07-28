@@ -62,8 +62,21 @@ starts with a clean count and no record of prior nudges.
 
 A stall abort SHALL NOT be retried: the runner SHALL record the task as `failed`
 with an error classified as `stalled` and exit non-zero, because the same prompt
-and model would reproduce the loop. The offending tool call SHALL remain visible in
-the transcript; both its `tool_call` and `tool_result` events precede the abort.
+and model would reproduce the loop.
+
+The offending tool call SHALL remain visible in the transcript via its `tool_call`
+event, which precedes the abort. Its `tool_result` event SHALL NOT be emitted: the
+guard is evaluated in a tool output guardrail, which the SDK runs *before* the hook
+that emits `tool_result`, so aborting from there bypasses it. The repeated result
+remains evident from the preceding identical calls, which emit `tool_result`
+normally, and from the `stall_detected` event's `result_repeated` field.
+
+#### Scenario: Aborting call emits tool_call but not tool_result
+
+- **WHEN** the guard aborts on the call that reaches `STALL_REPEAT_LIMIT`
+- **THEN** that call's `tool_call` event appears in the transcript, no `tool_result`
+  event is emitted for it, and `stall_detected` followed by a `stalled` `error`
+  event are emitted
 
 #### Scenario: Identical repeats with unchanged result trip the guard
 
