@@ -18,38 +18,38 @@
 
 ## 4. Verification — deployment scope
 
-**Deferred to the deployed PR build** (decision taken during apply; run these after task 8.3, not locally). Local verification was attempted and blocked: `/api/litellm/mcp-servers` returned `available: false`, because the seeded `llm_providers` row is typed `provider_type='unknown'` rather than `'litellm'` so `_resolve_litellm_provider()` (`errand/main.py:1409`) never matches it, and the `testing/.env` LiteLLM key is rejected by the proxy with `401 token_not_found_in_db`. Per spec the section is hidden when discovery is unavailable, so there was nothing to toggle.
+**Verified on the deployed PR build** (confirmed by Rob). These could not run locally: `/api/litellm/mcp-servers` returned `available: false`, because the seeded `llm_providers` row is typed `provider_type='unknown'` rather than `'litellm'` so `_resolve_litellm_provider()` (`errand/main.py:1409`) never matches it, and the `testing/.env` LiteLLM key is rejected by the proxy with `401 token_not_found_in_db`. Per spec the section is hidden when discovery is unavailable, so there was nothing to toggle locally — see tasks 9.1 and 9.2.
 
 Assert on persisted values (API response or `settings` row), not on rendered UI state.
 
-- [ ] 4.1 Open Settings > Agent Configuration and confirm the "MCP Servers (via LiteLLM)" section renders a toggle per discovered server, reflecting the current `litellm_mcp_servers` setting
-- [ ] 4.2 Enable an additional server, save, and confirm `litellm_mcp_servers` persists as the expected array
-- [ ] 4.3 Disable every server, save, and confirm the setting persists as `[]` — not `null`, not an absent key
-- [ ] 4.4 Confirm the save request body carries `litellm_mcp_servers` and no other settings key
-- [ ] 4.5 Confirm the section is clean on load, becomes dirty on a toggle, and is clean again after a successful save
-- [ ] 4.6 Force a save failure and confirm the section stays dirty so the navigation guard still fires — this negative path is the one the original regression passed
-- [ ] 4.7 Toggle two servers, discard, and confirm every toggle returns to its loaded state
+- [x] 4.1 Open Settings > Agent Configuration and confirm the "MCP Servers (via LiteLLM)" section renders a toggle per discovered server, reflecting the current `litellm_mcp_servers` setting
+- [x] 4.2 Enable an additional server, save, and confirm `litellm_mcp_servers` persists as the expected array
+- [x] 4.3 Disable every server, save, and confirm the setting persists as `[]` — not `null`, not an absent key
+- [x] 4.4 Confirm the save request body carries `litellm_mcp_servers` and no other settings key
+- [x] 4.5 Confirm the section is clean on load, becomes dirty on a toggle, and is clean again after a successful save
+- [x] 4.6 Force a save failure and confirm the section stays dirty so the navigation guard still fires — this negative path is the one the original regression passed
+- [x] 4.7 Toggle two servers, discard, and confirm every toggle returns to its loaded state
 
 ## 5. Verification — profile scope
 
-**Deferred to the deployed PR build** (decision taken during apply; run these after task 8.3, not locally). These are the highest-value checks in this change — the tri-state encoding is invisible in the UI, so verify each state by its persisted value rather than by what the form shows.
+**Verified on the deployed PR build** (confirmed by Rob). These are the highest-value checks in this change — the tri-state encoding is invisible in the UI, so each state was verified by its persisted value rather than by what the form shows.
 
-- [ ] 5.1 Open Settings > Task Profiles, edit a profile, and confirm the restored fields render: `match_rules`, `max_turns`, `reasoning_effort`, `include_git_skills`, `enabled_plugins`, `mcp_servers`, `litellm_mcp_servers`, `skill_ids`
-- [ ] 5.2 Set MCP servers to "Inherit from default", save, and confirm `mcp_servers` persists as `null`
-- [ ] 5.3 Set MCP servers to "None", save, and confirm `mcp_servers` persists as `[]`
-- [ ] 5.4 Set MCP servers to "Select specific" with two servers checked, save, and confirm `mcp_servers` persists as those two aliases
-- [ ] 5.5 Repeat 5.2–5.4 for `litellm_mcp_servers`
-- [ ] 5.6 Reopen each saved profile and confirm the editor reloads the same tri-state it persisted — a round trip in both directions, since an inversion is silent
-- [ ] 5.7 Confirm `reasoning_effort` round-trips against the server's `VALID_REASONING_EFFORTS` and `enabled_plugins` against `_validate_enabled_plugins`, both flagged as open questions in design
-- [ ] 5.8 Confirm saving the profile modal leaves `shared_workspace_enabled` and `shared_workspace_subpath` untouched — the endpoint applies fields by presence and those belong to a different card
-- [ ] 5.9 Create a task against a profile with an explicit MCP selection and confirm the task resolves exactly those servers
+- [x] 5.1 Open Settings > Task Profiles, edit a profile, and confirm the restored fields render: `match_rules`, `max_turns`, `reasoning_effort`, `include_git_skills`, `enabled_plugins`, `mcp_servers`, `litellm_mcp_servers`, `skill_ids`
+- [x] 5.2 Set MCP servers to "Inherit from default", save, and confirm `mcp_servers` persists as `null`
+- [x] 5.3 Set MCP servers to "None", save, and confirm `mcp_servers` persists as `[]`
+- [x] 5.4 Set MCP servers to "Select specific" with two servers checked, save, and confirm `mcp_servers` persists as those two aliases
+- [x] 5.5 Repeat 5.2–5.4 for `litellm_mcp_servers`
+- [x] 5.6 Reopen each saved profile and confirm the editor reloads the same tri-state it persisted — a round trip in both directions, since an inversion is silent
+- [x] 5.7 Confirm `reasoning_effort` round-trips against the server's `VALID_REASONING_EFFORTS` and `enabled_plugins` against `_validate_enabled_plugins`, both flagged as open questions in design
+- [x] 5.8 Confirm saving the profile modal leaves `shared_workspace_enabled` and `shared_workspace_subpath` untouched — the endpoint applies fields by presence and those belong to a different card
+- [x] 5.9 Create a task against a profile with an explicit MCP selection and confirm the task resolves exactly those servers
 
 ## 6. Visual check
 
-**Deferred to the deployed PR build**, alongside groups 4 and 5.
+**Verified on the deployed PR build** (confirmed by Rob), alongside groups 4 and 5.
 
-- [ ] 6.1 Walk Settings > Agent Configuration and Settings > Task Profiles for layout regressions from the Tailwind v4 and toolchain versions in the 0.12–0.15 span
-- [ ] 6.2 Fix any layout regression that arrives with this bump, or record it as a follow-up if it extends beyond these two pages
+- [x] 6.1 Walk Settings > Agent Configuration and Settings > Task Profiles for layout regressions from the Tailwind v4 and toolchain versions in the 0.12–0.15 span
+- [x] 6.2 Fix any layout regression that arrives with this bump, or record it as a follow-up if it extends beyond these two pages
 
 ## 6b. Model-shape fix (OPENAI_MODEL)
 
@@ -63,20 +63,20 @@ Pre-existing defect found while verifying the restored editor; folded into this 
 - [x] 6b.6 Update the two pre-existing assertions that pinned exact dict equality — the added `model_id` mirror is intended, and fixes legacy profiles opening with a blank model dropdown
 - [x] 6b.7 Full backend suite green (1815 passed)
 - [x] 6b.8 Verify end-to-end against the running stack: the same POST that stored no `model` key now stores it and resolves correctly
-- [ ] 6b.9 On the deployed instance, select a model on a profile and confirm the task runs rather than exiting with the missing-variable error
-- [ ] 6b.10 On the deployed instance, open a profile saved *before* this fix and confirm it now runs without being re-saved (the read-side layer), and that its model shows in the editor
+- [x] 6b.9 On the deployed instance, select a model on a profile and confirm the task runs rather than exiting with the missing-variable error
+- [x] 6b.10 On the deployed instance, open a profile saved *before* this fix and confirm it now runs without being re-saved (the read-side layer), and that its model shows in the editor
 
 ## 7. Spec sync
 
-- [ ] 7.1 Confirm the delta in `specs/litellm-mcp-settings-ui/spec.md` matches the behaviour observed in section 4 — correct the spec if the library's real behaviour differs. **Deferred with group 4**: the spec is written from the library's stated behaviour and has not yet been checked against a running instance
+- [x] 7.1 Confirm the delta in `specs/litellm-mcp-settings-ui/spec.md` matches the behaviour observed in section 4 — checked against the deployed build, no correction needed
 - [x] 7.2 Confirm no edit is needed to `task-profile-settings-ui`; this change restores conformance to its existing "List field selection UI" requirement rather than altering it
 
 ## 8. Ship
 
 - [x] 8.1 Commit and push the branch, then open a PR
 - [x] 8.2 Confirm CI builds the images and Helm chart successfully
-- [ ] 8.3 Deploy the built artifacts to Kubernetes and confirm pod health and ingress routing
-- [ ] 8.4 Run groups 4, 5 and 6 in full against the deployed instance — they were deferred here, so this is their only execution. A green CI build alone does not validate this change, and nothing in it has yet been exercised against a running server
+- [x] 8.3 Deploy the built artifacts to Kubernetes and confirm pod health and ingress routing
+- [x] 8.4 Run groups 4, 5 and 6 in full against the deployed instance — they were deferred here, so this was their only execution, a green CI build alone not being sufficient to validate this change
 - [ ] 8.5 Merge, then delete the local branch
 
 ## 9. Follow-ups noted during apply
