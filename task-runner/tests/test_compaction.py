@@ -6,13 +6,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import main
 from main import (
     COMPACTION_SUMMARY_PREFIX,
+    _compaction_backoff,
     _compact_context,
     _extract_file_operations,
     _format_file_lists,
     _is_compaction_summary,
+    _reset_compaction_backoff,
     _serialize_messages_for_summary,
 )
 
@@ -27,10 +28,14 @@ def _clear_compaction_backoff():
 
     Without this, a test that provokes a failure suppresses compaction in the
     next test, which then sees no LLM call and no log output.
+
+    `_compaction_backoff` is imported by name rather than accessed through the
+    module. That is only safe because it is mutated in place and never
+    reassigned — a rebind in main.py would leave this reference stale.
     """
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     yield
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
 
 
 def _make_user_msg(content: str) -> dict:
@@ -583,7 +588,7 @@ def _call_count(client) -> int:
 
 
 def test_backoff_suppresses_the_turn_after_a_failure():
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     client = _failing_client()
     with patch("main.OpenAI", return_value=client), \
          patch.dict(os.environ, _BASE_ENV, clear=True):
@@ -594,7 +599,7 @@ def test_backoff_suppresses_the_turn_after_a_failure():
 
 
 def test_backoff_window_widens_with_consecutive_failures():
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     client = _failing_client()
     with patch("main.OpenAI", return_value=client), \
          patch.dict(os.environ, _BASE_ENV, clear=True):
@@ -608,7 +613,7 @@ def test_backoff_window_widens_with_consecutive_failures():
 
 
 def test_backoff_resets_after_a_success():
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     summary = "## Goal\nX\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
     failing = _failing_client()
     ok_factory, _ = _capture_client(summary)
@@ -619,7 +624,7 @@ def test_backoff_resets_after_a_success():
 
     with patch("main.OpenAI", side_effect=ok_factory), \
          patch.dict(os.environ, _BASE_ENV, clear=True):
-        main._reset_compaction_backoff()           # simulate the reset path
+        _reset_compaction_backoff()           # simulate the reset path
         result = _compact_context(_big_messages())
 
     assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
@@ -627,7 +632,7 @@ def test_backoff_resets_after_a_success():
 
 def test_successful_compaction_clears_backoff_state():
     """A success must re-arm compaction for the next over-limit turn."""
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     summary = "## Goal\nX\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
     factory, _ = _capture_client(summary)
     with patch("main.OpenAI", side_effect=factory), \
@@ -635,13 +640,13 @@ def test_successful_compaction_clears_backoff_state():
         _compact_context(_big_messages())
         _compact_context(_big_messages())
 
-    assert main._compaction_backoff["consecutive_failures"] == 0
-    assert main._compaction_backoff["suppress_until_turn"] == 0
+    assert _compaction_backoff["consecutive_failures"] == 0
+    assert _compaction_backoff["suppress_until_turn"] == 0
 
 
 def test_suppressed_turn_still_trims():
     """Suppression must not let the context grow unbounded."""
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     messages = _big_messages()
     client = _failing_client()
     with patch("main.OpenAI", return_value=client), \
@@ -653,7 +658,7 @@ def test_suppressed_turn_still_trims():
 
 
 def test_backoff_entry_is_logged_at_warning(caplog):
-    main._reset_compaction_backoff()
+    _reset_compaction_backoff()
     client = _failing_client()
     with patch("main.OpenAI", return_value=client), \
          patch.dict(os.environ, _BASE_ENV, clear=True), \
