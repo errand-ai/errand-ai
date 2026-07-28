@@ -58,8 +58,8 @@ Assert on persisted values (API response or `settings` row), not on rendered UI 
 
 ## 8. Ship
 
-- [ ] 8.1 Commit and push the branch, then open a PR
-- [ ] 8.2 Confirm CI builds the images and Helm chart successfully
+- [x] 8.1 Commit and push the branch, then open a PR
+- [x] 8.2 Confirm CI builds the images and Helm chart successfully
 - [ ] 8.3 Deploy the built artifacts to Kubernetes and confirm pod health and ingress routing
 - [ ] 8.4 Run groups 4, 5 and 6 in full against the deployed instance — they were deferred here, so this is their only execution. A green CI build alone does not validate this change, and nothing in it has yet been exercised against a running server
 - [ ] 8.5 Merge, then delete the local branch
