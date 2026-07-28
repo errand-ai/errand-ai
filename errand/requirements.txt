@@ -14,7 +14,7 @@ openai==2.45.0
 docker==7.2.0
 kubernetes>=36.0.2,<37
 python-multipart>=0.0.26
-mcp[http]>=1.23.2
+mcp[http]>=1.23.2,<2
 tweepy>=4.14.0
 feedparser>=6.0,<7
 slack-sdk>=3.27.0
