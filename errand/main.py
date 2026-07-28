@@ -2477,7 +2477,11 @@ async def create_task_profile(
         name=name,
         description=body.get("description"),
         match_rules=body.get("match_rules"),
-        model=body.get("model"),
+        # The shared TaskProfileEditModal saves {provider_id, model_id}; mirror
+        # it onto `model`, the field task_manager resolves against, exactly as
+        # PUT /api/settings does for MODEL_SETTING_KEYS. Without this the
+        # profile stores no `model` key and the runner gets OPENAI_MODEL="".
+        model=normalize_model_setting_value(body.get("model")),
         system_prompt=body.get("system_prompt"),
         max_turns=body.get("max_turns"),
         reasoning_effort=reasoning_effort,
@@ -2561,7 +2565,12 @@ async def update_task_profile(
 
     for field in ("description", "match_rules", "model", "system_prompt", "max_turns", "mcp_servers", "litellm_mcp_servers", "skill_ids"):
         if field in body:
-            setattr(profile, field, body[field])
+            value = body[field]
+            # See the create path: mirror model_id onto `model` so task_manager
+            # finds the selection whichever key the client wrote.
+            if field == "model":
+                value = normalize_model_setting_value(value)
+            setattr(profile, field, value)
 
     await session.commit()
     await session.refresh(profile)

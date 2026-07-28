@@ -25,7 +25,13 @@ async def test_create_profile(admin_client):
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "email-triage"
-    assert data["model"] == {"provider_id": None, "model": "claude-haiku-4-5-20251001"}
+    # `model_id` is mirrored alongside `model` so the shared editor card (which
+    # reads model_id) shows the selection for legacy-shaped profiles too.
+    assert data["model"] == {
+        "provider_id": None,
+        "model": "claude-haiku-4-5-20251001",
+        "model_id": "claude-haiku-4-5-20251001",
+    }
     assert data["match_rules"] == "Tasks about email"
     assert data["id"]  # UUID assigned
 
@@ -250,8 +256,63 @@ async def test_update_profile(admin_client):
     pid = create_resp.json()["id"]
     resp = await admin_client.put(f"/api/task-profiles/{pid}", json={"model": {"provider_id": None, "model": "new-model"}})
     assert resp.status_code == 200
-    assert resp.json()["model"] == {"provider_id": None, "model": "new-model"}
+    assert resp.json()["model"] == {"provider_id": None, "model": "new-model", "model_id": "new-model"}
     assert resp.json()["name"] == "update-test"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_create_profile_normalizes_model_id_from_shared_card(admin_client):
+    """The shared TaskProfileEditModal writes {provider_id, model_id}, but the
+    backend resolves against `model` (task_manager reads .get("model")). Without
+    mirroring on write the profile stores no `model` key at all, so the task
+    runner receives OPENAI_MODEL="" and exits with "Missing required environment
+    variables: OPENAI_MODEL".
+    """
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "model-id-create", "model": {"provider_id": "p-1", "model_id": "claude-haiku-4-5-20251001"}},
+    )
+    assert resp.status_code == 201
+    model = resp.json()["model"]
+    assert model["model"] == "claude-haiku-4-5-20251001"
+    assert model["model_id"] == "claude-haiku-4-5-20251001"
+    assert model["provider_id"] == "p-1"
+
+
+@pytest.mark.asyncio
+async def test_update_profile_normalizes_model_id_from_shared_card(admin_client):
+    create_resp = await admin_client.post("/api/task-profiles", json={"name": "model-id-update"})
+    pid = create_resp.json()["id"]
+    resp = await admin_client.put(
+        f"/api/task-profiles/{pid}",
+        json={"model": {"provider_id": "p-2", "model_id": "claude-sonnet-4-5-20250929"}},
+    )
+    assert resp.status_code == 200
+    model = resp.json()["model"]
+    assert model["model"] == "claude-sonnet-4-5-20250929"
+    assert model["model_id"] == "claude-sonnet-4-5-20250929"
+
+
+@pytest.mark.asyncio
+async def test_profile_model_none_is_preserved(admin_client):
+    """Clearing the model must stay null (inherit), not become a dict."""
+    create_resp = await admin_client.post("/api/task-profiles", json={"name": "model-clear", "model": {"provider_id": "p", "model_id": "m"}})
+    pid = create_resp.json()["id"]
+    resp = await admin_client.put(f"/api/task-profiles/{pid}", json={"model": None})
+    assert resp.status_code == 200
+    assert resp.json()["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_profile_legacy_model_shape_still_accepted(admin_client):
+    """Profiles written before the mirror used {provider_id, model}; those must
+    keep working unchanged."""
+    resp = await admin_client.post(
+        "/api/task-profiles",
+        json={"name": "model-legacy", "model": {"provider_id": None, "model": "legacy-model"}},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["model"]["model"] == "legacy-model"
 
 
 @pytest.mark.asyncio

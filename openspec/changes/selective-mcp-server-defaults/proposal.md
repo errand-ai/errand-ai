@@ -11,9 +11,10 @@ Together these make MCP server selection unreachable from the UI at both scopes,
   - **LitellmMcpCard** gains real dirty tracking, a per-server toggle, and a `save()` that persists `{ litellm_mcp_servers: [...] }` — an empty selection persists `[]` rather than `null` or an omitted key, so disabling the last server is not a silent no-op. A failed save keeps the card dirty so the navigation guard still fires.
   - **TaskProfileEditModal** regains `match_rules`, `max_turns`, `reasoning_effort`, `include_git_skills`, `enabled_plugins`, `mcp_servers`, `litellm_mcp_servers` and `skill_ids`, with the three list fields on a tri-state control encoding `null`/`[]`/`[...]` as inherit/none/select.
 - Add a requirement to `litellm-mcp-settings-ui` covering toggle persistence. The spec's Purpose claims "viewing and toggling" but no requirement covers the save path, which is why the stubbed card shipped unnoticed. `task-profile-settings-ui` already enumerates its side and needs no change.
+- **Fix a pre-existing model-shape defect** found while verifying the restored editor (added to this change rather than a separate one, by decision during implementation). The shared editor writes `model: {provider_id, model_id}`; the profile create/update endpoints stored it raw while `task_manager` read the `model` key, so selecting a model on a profile produced `OPENAI_MODEL=""` and the runner exited with `Missing required environment variables: OPENAI_MODEL`. Fixed in two layers: mirror `model`/`model_id` on write (as `PUT /api/settings` already does for `MODEL_SETTING_KEYS`), and accept either key when resolving, which repairs already-stored profiles without a migration. Independent of the version bump — v0.11.0 wrote the same shape.
 - Bump `VERSION` (minor — restores user-facing capability).
 
-Not in scope: no server, schema, endpoint or cloud-proxy change. Every field, endpoint and validation path the restored UI calls already exists.
+Not in scope: no schema, migration, endpoint or cloud-proxy change. Every field, endpoint and validation path the restored UI calls already exists; the only server change is the model-shape normalisation described above.
 
 ## Capabilities
 
@@ -24,10 +25,12 @@ None. This restores behaviour already specified.
 ### Modified Capabilities
 
 - `litellm-mcp-settings-ui`: add a requirement that toggling a LiteLLM MCP server persists via the settings API, with dirty/save/discard semantics and `[]` (not `null`) for an empty selection. Existing display and fetch requirements are unchanged.
+- `task-profile-model`: add a requirement that the profile create/update endpoints mirror `model` and `model_id` on write. Existing CRUD requirements are unchanged.
+- `task-profile-worker-resolution`: add a requirement that the resolved model name is taken from `model` or, failing that, `model_id`. Existing inheritance requirements are unchanged.
 
 ## Impact
 
-- **Code**: `frontend/package.json`, `frontend/package-lock.json`, `VERSION`. No `.vue`/`.ts` source changes expected — `TaskProfilesPage.vue` and `AgentConfigurationPage.vue` are thin wrappers around the library cards, and `main.ts` already passes `createDirectApi({ baseUrl: '/api', ... })`.
+- **Code**: `frontend/package.json`, `frontend/package-lock.json`, `VERSION`, plus `errand/main.py` (both profile write paths) and `errand/task_manager.py` (model name resolution) for the model-shape fix. No `.vue`/`.ts` source changes — `TaskProfilesPage.vue` and `AgentConfigurationPage.vue` are thin wrappers around the library cards, and `main.ts` already passes `createDirectApi({ baseUrl: '/api', ... })`.
 - **Dependency span**: v0.12.0–v0.15.0 sit between the pinned and target versions (Vite 8/Vitest 4 toolchain, Tailwind v4, vue-router v5, marked v18). Errand's frontend is already on Tailwind v4, vue-router v5, marked v18 and Vitest 4, so no peer-version churn is expected; the toolchain moves are internal to the library's own build.
 - **Server endpoints consumed** (all present, unchanged): `GET /api/skills`, `GET /api/plugins`, `GET /api/worker/defaults`, `GET /api/litellm/mcp-servers`, `PUT /api/settings`, `POST|PUT /api/task-profiles`.
 - **Tests**: `frontend/src/pages/__tests__/TaskProfilesPage.test.ts` and `SettingsCapabilityGating.test.ts` mount the real library components and are the most likely to need updating. Requirement-level coverage of the restored fields lives in the library's own suite (302 tests).

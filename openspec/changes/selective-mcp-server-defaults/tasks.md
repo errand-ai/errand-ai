@@ -51,6 +51,21 @@ Assert on persisted values (API response or `settings` row), not on rendered UI 
 - [ ] 6.1 Walk Settings > Agent Configuration and Settings > Task Profiles for layout regressions from the Tailwind v4 and toolchain versions in the 0.12–0.15 span
 - [ ] 6.2 Fix any layout regression that arrives with this bump, or record it as a follow-up if it extends beyond these two pages
 
+## 6b. Model-shape fix (OPENAI_MODEL)
+
+Pre-existing defect found while verifying the restored editor; folded into this change by decision. The shared editor writes `{provider_id, model_id}`, the profile endpoints stored it raw, and `task_manager` read the `model` key — yielding `OPENAI_MODEL=""` and a runner exit.
+
+- [x] 6b.1 Write failing tests first: profile create/update with the editor's `{provider_id, model_id}` shape, plus guards for the legacy shape, a plain string, and `model: null`
+- [x] 6b.2 Write failing tests for resolution: `model_id`-only object resolves, `model` wins when both differ, plain string unaffected
+- [x] 6b.3 Confirm the new tests fail for the right reason before touching implementation (`KeyError: 'model'`, empty `OPENAI_MODEL`)
+- [x] 6b.4 Apply `normalize_model_setting_value()` to `model` in `POST /api/task-profiles` and `PUT /api/task-profiles/{id}`
+- [x] 6b.5 Resolve the model name from `model` or `model_id` in `task_manager`, repairing already-stored profiles without a migration
+- [x] 6b.6 Update the two pre-existing assertions that pinned exact dict equality — the added `model_id` mirror is intended, and fixes legacy profiles opening with a blank model dropdown
+- [x] 6b.7 Full backend suite green (1815 passed)
+- [x] 6b.8 Verify end-to-end against the running stack: the same POST that stored no `model` key now stores it and resolves correctly
+- [ ] 6b.9 On the deployed instance, select a model on a profile and confirm the task runs rather than exiting with the missing-variable error
+- [ ] 6b.10 On the deployed instance, open a profile saved *before* this fix and confirm it now runs without being re-saved (the read-side layer), and that its model shows in the editor
+
 ## 7. Spec sync
 
 - [ ] 7.1 Confirm the delta in `specs/litellm-mcp-settings-ui/spec.md` matches the behaviour observed in section 4 — correct the spec if the library's real behaviour differs. **Deferred with group 4**: the spec is written from the library's stated behaviour and has not yet been checked against a running instance
