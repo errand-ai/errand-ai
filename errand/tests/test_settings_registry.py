@@ -9,8 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from settings_registry import (
     EXCLUDED_KEYS,
+    MODEL_SETTING_KEYS,
+    SETTINGS_REGISTRY,
     _coerce,
     mask_sensitive_value,
+    normalize_model_setting_value,
     resolve_setting_value,
     resolve_settings,
 )
@@ -470,3 +473,78 @@ async def test_put_settings_excludes_jwt_signing_secret(admin_client: AsyncClien
     assert resp.status_code == 200
     data = resp.json()
     assert "jwt_signing_secret" not in data
+
+
+# ---------------------------------------------------------------------------
+# Compaction settings
+#
+# Context compaction had a 0% success rate in production, in part because the
+# model, timeout and token budget were fixed at deploy time and could not be
+# corrected without a redeploy.
+# ---------------------------------------------------------------------------
+
+def test_compaction_keys_registered():
+    for key in ("compaction_model", "compaction_timeout", "compaction_max_tokens"):
+        assert key in SETTINGS_REGISTRY, f"{key} must be registered"
+
+
+def test_compaction_keys_not_sensitive():
+    for key in ("compaction_model", "compaction_timeout", "compaction_max_tokens"):
+        assert SETTINGS_REGISTRY[key]["sensitive"] is False
+
+
+def test_compaction_model_is_a_model_setting_key():
+    """Without this, a model chosen in the UI resolves to an empty string.
+
+    The shared settings card writes `model_id`; the backend resolves `model`.
+    `normalize_model_setting_value` mirrors them only for keys in this set —
+    the same defect fixed for task profiles in selective-mcp-server-defaults.
+    """
+    assert "compaction_model" in MODEL_SETTING_KEYS
+
+
+def test_compaction_model_normalizes_model_id():
+    normalized = normalize_model_setting_value(
+        {"provider_id": "p1", "model_id": "claude-haiku-4-5-20251001"}
+    )
+    assert normalized["model"] == "claude-haiku-4-5-20251001"
+    assert normalized["model_id"] == "claude-haiku-4-5-20251001"
+
+
+def test_compaction_timeout_default_is_generous():
+    """30s cannot cover the token budget on a local or free-tier model."""
+    assert SETTINGS_REGISTRY["compaction_timeout"]["default"] >= 120
+
+
+def test_compaction_max_tokens_default_above_2048():
+    assert SETTINGS_REGISTRY["compaction_max_tokens"]["default"] > 2048
+
+
+def test_compaction_model_default_matches_other_model_settings():
+    """The default's TYPE drives _coerce, so it must be a dict like its peers.
+
+    A plain "" default makes _coerce stringify the stored dict on read, which
+    breaks the settings card — it expects an object carrying `model_id`. An
+    empty `model` still means "use the task's own model".
+    """
+    default = SETTINGS_REGISTRY["compaction_model"]["default"]
+    assert isinstance(default, dict), "must be a dict or _coerce stringifies stored values"
+    assert default.get("model") == ""
+    assert default == SETTINGS_REGISTRY["task_processing_model"]["default"]
+
+
+def test_compaction_model_survives_a_round_trip_as_an_object():
+    """Regression: a stored selection must read back as an object, not a string."""
+    stored = normalize_model_setting_value(
+        {"provider_id": None, "model_id": "claude-haiku-4-5-20251001"}
+    )
+    coerced = _coerce(stored, SETTINGS_REGISTRY["compaction_model"]["default"])
+    assert isinstance(coerced, dict), "read-back must stay an object"
+    assert coerced["model_id"] == "claude-haiku-4-5-20251001"
+
+
+def test_compaction_env_var_names():
+    """Existing deployments setting these in the environment must keep working."""
+    assert SETTINGS_REGISTRY["compaction_model"]["env_var"] == "COMPACTION_MODEL"
+    assert SETTINGS_REGISTRY["compaction_timeout"]["env_var"] == "COMPACTION_TIMEOUT_SECONDS"
+    assert SETTINGS_REGISTRY["compaction_max_tokens"]["env_var"] == "COMPACTION_MAX_TOKENS"

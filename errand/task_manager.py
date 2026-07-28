@@ -777,6 +777,7 @@ async def _read_settings(session: AsyncSession) -> dict:
                 "ssh_private_key", "git_ssh_hosts", "skills_git_repo",
                 "hindsight_url", "hindsight_bank_id", "hindsight_token", "litellm_mcp_servers",
                 "hot_tools", "task_processing_timeout",
+                "compaction_model", "compaction_timeout", "compaction_max_tokens",
             ])
         )
     )
@@ -828,6 +829,20 @@ async def _read_settings(session: AsyncSession) -> dict:
                 logger.warning("Ignoring non-positive task_processing_timeout setting: %r", setting.value)
                 parsed_timeout = None
             settings["task_processing_timeout"] = parsed_timeout
+        elif setting.key == "compaction_model":
+            # Stored as a model-setting object; `_process_task` reads `model`
+            # or `model_id` from it. A bare string is also accepted.
+            settings["compaction_model"] = setting.value
+        elif setting.key in ("compaction_timeout", "compaction_max_tokens"):
+            try:
+                parsed_value = int(setting.value) if setting.value is not None else None
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid %s setting: %r", setting.key, setting.value)
+                parsed_value = None
+            if parsed_value is not None and parsed_value <= 0:
+                logger.warning("Ignoring non-positive %s setting: %r", setting.key, setting.value)
+                parsed_value = None
+            settings[setting.key] = parsed_value
 
     # Query skills from dedicated tables
     skill_result = await session.execute(
@@ -1612,6 +1627,30 @@ class TaskManager:
         if effective_llm_timeout is None:
             effective_llm_timeout = 30
         env_vars["LLM_REQUEST_TIMEOUT"] = str(effective_llm_timeout)
+
+        # Context compaction: server env > stored setting > the runner's own
+        # default. Injected only when a value is resolved, so an unset setting
+        # leaves the runner on its default rather than passing an empty string.
+        # The compaction model may be stored under `model` or `model_id` — the
+        # shared settings card writes the latter.
+        compaction_model_setting = settings.get("compaction_model")
+        if isinstance(compaction_model_setting, dict):
+            compaction_model_setting = (
+                compaction_model_setting.get("model")
+                or compaction_model_setting.get("model_id")
+                or ""
+            )
+        compaction_model = os.environ.get("COMPACTION_MODEL", "") or (compaction_model_setting or "")
+        if compaction_model:
+            env_vars["COMPACTION_MODEL"] = str(compaction_model)
+
+        compaction_timeout = os.environ.get("COMPACTION_TIMEOUT_SECONDS", "") or settings.get("compaction_timeout")
+        if compaction_timeout:
+            env_vars["COMPACTION_TIMEOUT_SECONDS"] = str(compaction_timeout)
+
+        compaction_max_tokens = os.environ.get("COMPACTION_MAX_TOKENS", "") or settings.get("compaction_max_tokens")
+        if compaction_max_tokens:
+            env_vars["COMPACTION_MAX_TOKENS"] = str(compaction_max_tokens)
 
         # Hot tools for lazy MCP tool loading
         hot_tools = settings.get("hot_tools", "")

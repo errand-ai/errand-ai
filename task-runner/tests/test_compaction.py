@@ -4,6 +4,9 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import main
 from main import (
     COMPACTION_SUMMARY_PREFIX,
     _compact_context,
@@ -17,6 +20,18 @@ from main import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_compaction_backoff():
+    """Compaction backoff is module-level state and leaks between tests.
+
+    Without this, a test that provokes a failure suppresses compaction in the
+    next test, which then sees no LLM call and no log output.
+    """
+    main._reset_compaction_backoff()
+    yield
+    main._reset_compaction_backoff()
+
 
 def _make_user_msg(content: str) -> dict:
     return {"role": "user", "content": content}
@@ -380,3 +395,271 @@ def test_format_file_lists_merge_with_existing():
 def test_format_file_lists_empty_when_no_files():
     result = _format_file_lists(set(), set(), "")
     assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Compaction request configuration: timeout and token budget
+#
+# 30s could never cover 2048 tokens of generation on a local or free-tier
+# model (25-50s at 40-80 tok/s before any prefill), which is why every
+# compaction against such a model timed out.
+# ---------------------------------------------------------------------------
+
+def _capture_client(summary_text: str = "## Goal\nX\n"):
+    """Return (mock_OpenAI_factory, captured) recording constructor + create kwargs."""
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured["create_kwargs"] = kwargs
+        choice = MagicMock()
+        choice.message.content = summary_text
+        choice.finish_reason = "stop"
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = fake_create
+
+    def factory(**kwargs):
+        captured["client_kwargs"] = kwargs
+        return client
+
+    return factory, captured
+
+
+_BASE_ENV = {
+    "OPENAI_MODEL": "gpt-4",
+    "OPENAI_BASE_URL": "http://localhost",
+    "OPENAI_API_KEY": "test",
+}
+
+
+def test_compaction_timeout_default_is_generous():
+    """Default must exceed the ~50s a local model needs to generate its budget."""
+    factory, captured = _capture_client()
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["client_kwargs"]["timeout"] >= 120.0
+
+
+def test_compaction_timeout_from_env():
+    factory, captured = _capture_client()
+    env = {**_BASE_ENV, "COMPACTION_TIMEOUT_SECONDS": "240"}
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, env, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["client_kwargs"]["timeout"] == 240.0
+
+
+def test_compaction_timeout_invalid_falls_back_to_default():
+    factory, captured = _capture_client()
+    env = {**_BASE_ENV, "COMPACTION_TIMEOUT_SECONDS": "not-a-number"}
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, env, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["client_kwargs"]["timeout"] >= 120.0
+
+
+def test_compaction_timeout_does_not_inherit_llm_request_timeout():
+    """The streaming agent loop's timeout must not constrain this call."""
+    factory, captured = _capture_client()
+    env = {**_BASE_ENV, "LLM_REQUEST_TIMEOUT": "30"}
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, env, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["client_kwargs"]["timeout"] >= 120.0
+
+
+def test_compaction_max_tokens_default_above_2048():
+    factory, captured = _capture_client()
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["create_kwargs"]["max_tokens"] > 2048
+
+
+def test_compaction_max_tokens_from_env():
+    factory, captured = _capture_client()
+    env = {**_BASE_ENV, "COMPACTION_MAX_TOKENS": "8192"}
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, env, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["create_kwargs"]["max_tokens"] == 8192
+
+
+def test_compaction_max_tokens_invalid_falls_back_to_default():
+    factory, captured = _capture_client()
+    env = {**_BASE_ENV, "COMPACTION_MAX_TOKENS": "0"}
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, env, clear=True):
+        _compact_context(_big_messages())
+
+    assert captured["create_kwargs"]["max_tokens"] > 2048
+
+
+# ---------------------------------------------------------------------------
+# Empty-summary diagnostics
+#
+# 13 of 19 production failures were empty summaries. The call SUCCEEDS and
+# returns no content, so the operator cannot tell a refusal from a budget
+# consumed by reasoning tokens. Logged at WARNING because production runs the
+# task runner above INFO.
+# ---------------------------------------------------------------------------
+
+def _empty_response_client(finish_reason: str = "length", reasoning: str | None = None):
+    choice = MagicMock()
+    choice.message.content = ""
+    choice.finish_reason = finish_reason
+    if reasoning is None:
+        # Attribute must be genuinely absent, not a truthy MagicMock.
+        del choice.message.reasoning_content
+    else:
+        choice.message.reasoning_content = reasoning
+    resp = MagicMock()
+    resp.choices = [choice]
+    client = MagicMock()
+    client.chat.completions.create.return_value = resp
+    return client
+
+
+def test_empty_summary_logs_finish_reason_and_reasoning(caplog):
+    """Budget exhausted by thinking: the signature we could not previously see."""
+    client = _empty_response_client(finish_reason="length", reasoning="thinking " * 500)
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        _compact_context(_big_messages())
+
+    text = caplog.text
+    assert "length" in text, "finish_reason must be reported"
+    assert "reasoning" in text.lower(), "presence of a reasoning field must be reported"
+
+
+def test_empty_summary_logs_content_length_when_no_reasoning(caplog):
+    client = _empty_response_client(finish_reason="stop", reasoning=None)
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        _compact_context(_big_messages())
+
+    assert "stop" in caplog.text
+
+
+def test_empty_summary_still_falls_back_to_trim(caplog):
+    messages = _big_messages()
+    client = _empty_response_client()
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        result = _compact_context(messages)
+
+    assert len(result) < len(messages)
+
+
+# ---------------------------------------------------------------------------
+# Consecutive-failure backoff
+#
+# _compact_context runs from filter_model_input, which the SDK calls before
+# EVERY model request. Without suppression a broken configuration costs one
+# failed LLM call per turn for the life of the task — the production spiral.
+# ---------------------------------------------------------------------------
+
+def _failing_client(exc: Exception | None = None):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = exc or RuntimeError("boom")
+    return client
+
+
+def _call_count(client) -> int:
+    return client.chat.completions.create.call_count
+
+
+def test_backoff_suppresses_the_turn_after_a_failure():
+    main._reset_compaction_backoff()
+    client = _failing_client()
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(_big_messages())   # attempt 1: fails
+        assert _call_count(client) == 1
+        _compact_context(_big_messages())   # suppressed
+        assert _call_count(client) == 1, "suppressed turn must not call the LLM"
+
+
+def test_backoff_window_widens_with_consecutive_failures():
+    main._reset_compaction_backoff()
+    client = _failing_client()
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        # Drive 40 turns; a widening window must yield far fewer calls than turns.
+        for _ in range(40):
+            _compact_context(_big_messages())
+
+    assert _call_count(client) < 10, (
+        f"expected bounded attempts under backoff, got {_call_count(client)} in 40 turns"
+    )
+
+
+def test_backoff_resets_after_a_success():
+    main._reset_compaction_backoff()
+    summary = "## Goal\nX\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
+    failing = _failing_client()
+    ok_factory, _ = _capture_client(summary)
+
+    with patch("main.OpenAI", return_value=failing), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(_big_messages())          # fail -> backoff armed
+
+    with patch("main.OpenAI", side_effect=ok_factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        main._reset_compaction_backoff()           # simulate the reset path
+        result = _compact_context(_big_messages())
+
+    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+
+
+def test_successful_compaction_clears_backoff_state():
+    """A success must re-arm compaction for the next over-limit turn."""
+    main._reset_compaction_backoff()
+    summary = "## Goal\nX\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
+    factory, _ = _capture_client(summary)
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(_big_messages())
+        _compact_context(_big_messages())
+
+    assert main._compaction_backoff["consecutive_failures"] == 0
+    assert main._compaction_backoff["suppress_until_turn"] == 0
+
+
+def test_suppressed_turn_still_trims():
+    """Suppression must not let the context grow unbounded."""
+    main._reset_compaction_backoff()
+    messages = _big_messages()
+    client = _failing_client()
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(messages)              # fail
+        result = _compact_context(messages)     # suppressed
+
+    assert len(result) < len(messages), "suppressed turns must still trim"
+
+
+def test_backoff_entry_is_logged_at_warning(caplog):
+    main._reset_compaction_backoff()
+    client = _failing_client()
+    with patch("main.OpenAI", return_value=client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        _compact_context(_big_messages())
+        _compact_context(_big_messages())
+
+    assert "compaction" in caplog.text.lower()
+    assert "suppress" in caplog.text.lower(), "entering the backoff window must be visible"

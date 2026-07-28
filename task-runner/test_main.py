@@ -2387,3 +2387,53 @@ def test_guarded_agent_preserves_unrelated_guardrails():
     agent.stall_guardrail = guard
     asyncio.run(_collect(agent))
     assert tool.tool_output_guardrails == [other, guard]
+
+
+# --- Trim headroom and compaction backoff ---
+#
+# Trimming to exactly the limit leaves zero headroom, so the next tool result
+# re-crosses it and compaction retries on the very next turn. In production
+# that produced a re-trigger cadence tightening to roughly every 12 seconds,
+# each cycle burning an LLM call and discarding more history.
+
+
+def test_trim_lands_materially_below_the_limit():
+    messages = [{"role": "user", "content": "initial prompt"}]
+    for _ in range(40):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+
+    with patch("main.MAX_CONTEXT_TOKENS", 20000):
+        result = _trim_context_window(messages)
+        remaining = _estimate_tokens(result)
+
+    # Not merely under the ceiling — comfortably under it.
+    assert remaining <= 20000 * 0.75
+
+
+def test_trim_leaves_room_for_a_following_turn():
+    """A typical next tool result must not immediately re-cross the ceiling."""
+    messages = [{"role": "user", "content": "initial prompt"}]
+    for _ in range(40):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+
+    with patch("main.MAX_CONTEXT_TOKENS", 20000):
+        result = _trim_context_window(messages)
+        result = result + [{"role": "assistant", "content": "x" * 5000}]
+        assert _estimate_tokens(result) <= 20000
+
+
+def test_trim_still_preserves_first_message_with_headroom():
+    first = {"role": "user", "content": "Do the task"}
+    messages = [first] + [{"role": "assistant", "content": "x" * 10000} for _ in range(10)]
+    with patch("main.MAX_CONTEXT_TOKENS", 3000):
+        result = _trim_context_window(messages)
+    assert result[0] == first
+
+
+def test_trim_under_limit_unchanged_by_headroom():
+    """Headroom applies to trimming, not to messages already under the limit."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+    assert _trim_context_window(messages) == messages
