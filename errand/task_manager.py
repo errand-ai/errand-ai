@@ -1556,7 +1556,12 @@ class TaskManager:
             task_processing_model = {"provider_id": None, "model": task_processing_model}
         if isinstance(task_processing_model, dict):
             provider_id_str = task_processing_model.get("provider_id")
-            model_name = task_processing_model.get("model", "")
+            # `model` is canonical, but the shared settings/profile cards write
+            # `model_id`. Profiles saved before the write-side mirror hold only
+            # model_id; reading just `model` there yields "" and the runner
+            # exits with "Missing required environment variables: OPENAI_MODEL".
+            # Accepting either key repairs those rows without a migration.
+            model_name = task_processing_model.get("model") or task_processing_model.get("model_id", "")
             if provider_id_str:
                 provider_creds = await asyncio.get_event_loop().run_in_executor(
                     None, _resolve_provider_sync, provider_id_str,

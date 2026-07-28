@@ -72,6 +72,72 @@ def _make_mock_task(**overrides):
 # Task 1.4 — Async runtime interface
 # ---------------------------------------------------------------------------
 
+class TestModelSettingShapes:
+    """OPENAI_MODEL must resolve regardless of which key carries the model name.
+
+    The shared TaskProfileEditModal writes {provider_id, model_id}; the backend
+    historically read only `model`. A profile stored before the write-side mirror
+    was added still holds the model_id-only shape, and reading only `model` there
+    yields OPENAI_MODEL="" — which the task runner rejects with "Missing required
+    environment variables: OPENAI_MODEL". Reading either key repairs those rows
+    without a migration.
+    """
+
+    async def test_model_id_only_shape_resolves(self):
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": {"provider_id": None, "model_id": "claude-haiku-4-5-20251001"},
+            "system_prompt": "",
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["OPENAI_MODEL"] == "claude-haiku-4-5-20251001"
+
+    async def test_model_key_still_wins_when_both_present(self):
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": {"provider_id": None, "model": "canonical", "model_id": "mirror"},
+            "system_prompt": "",
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["OPENAI_MODEL"] == "canonical"
+
+    async def test_plain_string_model_still_resolves(self):
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["OPENAI_MODEL"] == "gpt-4o"
+
+
 class TestAsyncRuntimeInterface:
     """Verify TaskManager._process_task uses async_* methods on the runtime."""
 

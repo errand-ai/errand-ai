@@ -31,16 +31,18 @@ RUN <<EOF
     linux/arm64) ARCH="aarch64" ;;
     *) echo "Unsupported or unset TARGETPLATFORM: '$TARGETPLATFORM' (expected linux/amd64 or linux/arm64)" >&2; exit 1 ;;
   esac
-  # feedparser depends on sgmllib3k which only publishes source dists (no wheels).
-  # Build them into wheels in stage 2 so stage 3 can install offline without setuptools.
-  pip wheel --no-cache-dir --no-deps -w /wheels "feedparser>=6.0,<7" sgmllib3k
-  # Download remaining packages as binary wheels for the target platform.
+  # Download packages as binary wheels for the target platform.
   # Accept both the modern (manylinux_2_28) and legacy (manylinux2014 / _2_17) glibc
   # baselines: pip's --platform does not auto-accept older tags, and our pinned deps
   # are split across both (e.g. asyncpg 0.31 is 2_28-only, psycopg2-binary 2.9.12 is
   # 2014-only). The 3.13-slim runtime's glibc (>= 2.28 on current Debian bases)
   # satisfies both manylinux baselines.
-  grep -v '^feedparser' requirements.txt > requirements-filtered.txt
+  # feedparser was previously excluded here and wheel-built by name, because its
+  # old dependency sgmllib3k shipped source-only. feedparser 6.0.13 replaced that
+  # with feedparser-sgmllib, which publishes a py3-none-any wheel — so the normal
+  # path below now covers it. The hand-maintained exclusion is what broke the
+  # build when that dependency changed: --no-deps meant nothing discovered the
+  # new name automatically.
   pip download --no-cache-dir \
     --only-binary=:all: \
     --platform "manylinux_2_28_${ARCH}" \
@@ -49,7 +51,7 @@ RUN <<EOF
     --implementation cp \
     --abi cp313 \
     -d /wheels \
-    -r requirements-filtered.txt
+    -r requirements.txt
 EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
