@@ -49,13 +49,85 @@ _mock_agents.function_tool = _mock_function_tool
 _mock_agents.RunHooks = type("RunHooks", (), {})
 # ModelSettings must be a real class
 _mock_agents.ModelSettings = type("ModelSettings", (), {"__init__": lambda self, **kwargs: None})
+
+
+# Agent must be a real class so GuardedAgent can subclass it and call super().
+async def _mock_get_all_tools(self, run_context):
+    return list(getattr(self, "tools", None) or [])
+
+
+_mock_agents.Agent = type(
+    "Agent",
+    (),
+    {
+        "__init__": lambda self, **kwargs: self.__dict__.update(kwargs),
+        "get_all_tools": _mock_get_all_tools,
+    },
+)
 sys.modules.setdefault("agents", _mock_agents)
 sys.modules.setdefault("agents.mcp", MagicMock())
 sys.modules.setdefault("agents.models", MagicMock())
-# ModelBehaviorError must be a real exception class for isinstance checks
+# ModelBehaviorError must be a real exception class for isinstance checks.
+# AgentsException likewise: AgentStallError subclasses it so that the SDK's tool
+# guardrail wrap site re-raises it instead of converting it to UserError.
 _mock_exceptions = MagicMock()
+_mock_exceptions.AgentsException = type("AgentsException", (Exception,), {})
 _mock_exceptions.ModelBehaviorError = type("ModelBehaviorError", (Exception,), {})
 sys.modules.setdefault("agents.exceptions", _mock_exceptions)
+
+# FunctionTool must be a real class — GuardedAgent isinstance-checks it before
+# attaching the stall guardrail.
+_mock_tool_mod = MagicMock()
+_mock_tool_mod.FunctionTool = type(
+    "FunctionTool",
+    (),
+    {"__init__": lambda self, **kwargs: self.__dict__.update(
+        {"tool_output_guardrails": None, **kwargs}
+    )},
+)
+sys.modules.setdefault("agents.tool", _mock_tool_mod)
+
+
+# Tool guardrail primitives, faithful enough to assert behaviour on.
+class _ToolGuardrailFunctionOutput:
+    def __init__(self, behavior=None, output_info=None):
+        self.behavior = behavior or {"type": "allow"}
+        self.output_info = output_info
+
+    @classmethod
+    def allow(cls, output_info=None):
+        return cls({"type": "allow"}, output_info)
+
+    @classmethod
+    def reject_content(cls, message, output_info=None):
+        return cls({"type": "reject_content", "message": message}, output_info)
+
+    @classmethod
+    def raise_exception(cls, output_info=None):
+        return cls({"type": "raise_exception"}, output_info)
+
+
+class _ToolOutputGuardrail:
+    def __init__(self, guardrail_function=None, name=None):
+        self.guardrail_function = guardrail_function
+        self.name = name
+
+    def run(self, data):
+        return self.guardrail_function(data)
+
+
+class _ToolOutputGuardrailData:
+    def __init__(self, context=None, agent=None, output=None):
+        self.context = context
+        self.agent = agent
+        self.output = output
+
+
+_mock_guardrails = MagicMock()
+_mock_guardrails.ToolGuardrailFunctionOutput = _ToolGuardrailFunctionOutput
+_mock_guardrails.ToolOutputGuardrail = _ToolOutputGuardrail
+_mock_guardrails.ToolOutputGuardrailData = _ToolOutputGuardrailData
+sys.modules.setdefault("agents.tool_guardrails", _mock_guardrails)
 _mock_openai_provider = MagicMock()
 _mock_openai_provider.OpenAIProvider = MagicMock()
 sys.modules.setdefault("agents.models.openai_provider", _mock_openai_provider)
