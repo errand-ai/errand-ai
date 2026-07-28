@@ -193,7 +193,16 @@
       `stall_detected` with `result_repeated: true`) but not in a live model run,
       because the nudge stopped the loop before it got there — the desired outcome.*
 - [x] 7.3 Push the branch and open a PR. *PR #224.*
-- [ ] 7.4 Confirm CI builds images and the Helm chart, then validate the built
+- [x] 7.4 Confirm CI builds images and the Helm chart, then validate the built
       artifacts deploy cleanly on Kubernetes before merging.
+      *Done 2026-07-28. All 13 CI checks green (four image builds, Helm, test,
+      validate-specs, version, CodeQL, three Analyze jobs, claude-review). ArgoCD
+      deployed tag `0.140.0-pr224.1043` and it is live in the `errand` namespace:
+      `errand-server` and `errand-workspace-gateway` both on that tag, the migration
+      job `Completed`, server pod `1/1 Running`, gateway `2/2 Running`. Critically the
+      server's `TASK_RUNNER_IMAGE` also resolves to
+      `ghcr.io/errand-ai/errand-task-runner:0.140.0-pr224.1043` — this change lives in
+      the task-runner image, so a new server paired with a stale runner would have
+      looked deployed while running none of it.*
 - [ ] 7.5 After deploy, re-check Grafana Loki for `stall_detected` events on task
       `8cfb051a` to confirm the guard's new behaviour in production.
