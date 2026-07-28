@@ -82,5 +82,24 @@ jobs:
           # (blame/history). Without this the review runs but silently posts nothing.
           claude_args: |
             --allowedTools "Bash(gh:*),Bash(git:*)"
+          # TEMPORARY — DIAGNOSTIC ONLY. REVERT ONCE THE CAUSE IS KNOWN.
+          #
+          # Every real run of this workflow so far has failed with a bare
+          # `is_error: true` and no message, because the action redacts everything
+          # between "Claude Code initialized" and the result payload. Ruled out by
+          # other means: the GitHub App and OIDC exchange ("App token successfully
+          # obtained"), a missing token (setting a repo-level CLAUDE_CODE_OAUTH_TOKEN
+          # moved the failure from ~100ms to ~1800ms, i.e. a real round trip now
+          # happens), Anthropic usage limits (confirmed manually), project settings
+          # and MCP servers (this repo tracks neither), plugin install (succeeds), and
+          # the model/CLI themselves (`claude -p --model claude-sonnet-5` on the same
+          # CLI 2.1.220 returns is_error:false locally). What remains is specific to
+          # the subscription OAuth path, and only the suppressed output will say why.
+          #
+          # This prints the full SDK output into a public-by-default Actions log,
+          # including the prompt and whatever repo content the review reads. That is
+          # the reason it is off by default — turn it back off once the error is
+          # captured.
+          show_full_output: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
