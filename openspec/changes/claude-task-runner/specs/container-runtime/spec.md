@@ -1,31 +1,41 @@
 ## ADDED Requirements
 
-### Requirement: Claude image validation on K8s runtime
-When `CONTAINER_RUNTIME` is set to `kubernetes`, the container runtime SHALL reject container image values of `"claude"` during container preparation. The rejection SHALL raise a clear error indicating that claude-task-runner is not supported on Kubernetes deployments.
+### Requirement: Claude image permitted only on allowlisted runtimes
+The container runtime SHALL accept the `"claude"` container image value only when `CONTAINER_RUNTIME` is `docker` or `apple`, and SHALL reject it on every other runtime — including `kubernetes` and any runtime added later — with an error stating that the claude task-runner is supported only on local and desktop deployments.
 
-#### Scenario: Claude image rejected on K8s
-- **WHEN** TaskManager attempts to prepare a container with image `"claude"` and `CONTAINER_RUNTIME=kubernetes`
-- **THEN** the preparation fails with an error message: "Claude task-runner is not supported on Kubernetes deployments"
+The rule is an allowlist rather than a denylist on the literal string `kubernetes` so that a future shared runtime does not silently inherit permission to run a personal subscription on shared infrastructure.
 
 #### Scenario: Claude image accepted on Docker
-- **WHEN** TaskManager attempts to prepare a container with image `"claude"` and `CONTAINER_RUNTIME=docker`
-- **THEN** the preparation proceeds normally using the claude-task-runner image
+- **WHEN** container preparation requests image `"claude"` with `CONTAINER_RUNTIME=docker`
+- **THEN** preparation proceeds using the claude-task-runner image
 
 #### Scenario: Claude image accepted on Apple
-- **WHEN** TaskManager attempts to prepare a container with image `"claude"` and `CONTAINER_RUNTIME=apple`
-- **THEN** the preparation proceeds normally using the claude-task-runner image
+- **WHEN** container preparation requests image `"claude"` with `CONTAINER_RUNTIME=apple`
+- **THEN** preparation proceeds using the claude-task-runner image
 
-#### Scenario: Custom images allowed on K8s
-- **WHEN** TaskManager attempts to prepare a container with image `"my-registry/custom:v1"` and `CONTAINER_RUNTIME=kubernetes`
-- **THEN** the preparation proceeds normally (only the literal `"claude"` value is blocked)
+#### Scenario: Claude image rejected on Kubernetes
+- **WHEN** container preparation requests image `"claude"` with `CONTAINER_RUNTIME=kubernetes`
+- **THEN** preparation fails with an error stating the claude task-runner is not supported on this deployment
 
-### Requirement: Deployment mode exposed to frontend
-The backend API SHALL expose the current `CONTAINER_RUNTIME` value (or a boolean `claude_supported` flag) via the settings or status endpoint so the frontend can conditionally show/hide the Claude image option in Task Profile forms.
+#### Scenario: Unknown future runtime rejected
+- **WHEN** container preparation requests image `"claude"` with a `CONTAINER_RUNTIME` value that is neither `docker` nor `apple`
+- **THEN** preparation fails rather than defaulting to permitted
 
-#### Scenario: Docker runtime reports claude support
-- **WHEN** the frontend queries the settings/status endpoint and `CONTAINER_RUNTIME=docker`
+#### Scenario: Custom images unaffected
+- **WHEN** container preparation requests image `"my-registry/custom:v1"` with `CONTAINER_RUNTIME=kubernetes`
+- **THEN** preparation proceeds normally — only the literal `"claude"` value is restricted
+
+### Requirement: Claude support exposed to the frontend
+The backend SHALL expose a boolean `claude_supported` flag derived from the active `CONTAINER_RUNTIME` so the profile editor can show or hide the Claude image option.
+
+#### Scenario: Docker runtime reports support
+- **WHEN** the frontend queries the status endpoint with `CONTAINER_RUNTIME=docker`
 - **THEN** the response includes `claude_supported: true`
 
-#### Scenario: K8s runtime reports no claude support
-- **WHEN** the frontend queries the settings/status endpoint and `CONTAINER_RUNTIME=kubernetes`
+#### Scenario: Apple runtime reports support
+- **WHEN** the frontend queries the status endpoint with `CONTAINER_RUNTIME=apple`
+- **THEN** the response includes `claude_supported: true`
+
+#### Scenario: Kubernetes runtime reports no support
+- **WHEN** the frontend queries the status endpoint with `CONTAINER_RUNTIME=kubernetes`
 - **THEN** the response includes `claude_supported: false`
