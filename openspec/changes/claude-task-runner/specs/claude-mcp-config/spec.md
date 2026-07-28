@@ -1,42 +1,54 @@
 ## ADDED Requirements
 
-### Requirement: Claude MCP settings generation
-When TaskManager prepares a claude-task-runner container, it SHALL generate a `~/.claude/settings.json` file containing the user's configured MCP servers translated to Claude Code format. This file SHALL be injected into the container alongside the existing `/workspace/mcp.json`.
+### Requirement: MCP config translated for Claude Code
+Before invoking the CLI, the task-runner SHALL read the MCP configuration at `MCP_CONFIGURATION_PATH` (`/workspace/mcp.json`), add `"type": "http"` to every server entry that does not already declare a `type`, write the result to a separate file, and pass that file to `--mcp-config` together with `--strict-mcp-config`. The canonical `/workspace/mcp.json` SHALL NOT be modified, and the server SHALL continue to generate exactly one MCP configuration for all image variants.
 
-#### Scenario: MCP servers translated to Claude format
-- **WHEN** TaskManager prepares a claude-task-runner container with MCP servers "playwright" (url: http://playwright:3000/mcp) and "hindsight" (url: https://hindsight.example.com/mcp/bank/)
-- **THEN** the container contains `~/.claude/settings.json` with:
-  ```json
-  {
-    "mcpServers": {
-      "playwright": { "url": "http://playwright:3000/mcp" },
-      "hindsight": { "url": "https://hindsight.example.com/mcp/bank/" }
-    }
-  }
-  ```
+Errand's configuration is already `{"mcpServers": {<name>: {"url": ..., "headers": {...}}}}`, which is the shape Claude Code accepts apart from the missing transport discriminator.
 
-#### Scenario: MCP server with auth headers
-- **WHEN** an MCP server has `auth_header: "Bearer <token>"`
-- **THEN** the Claude settings entry includes `"headers": {"Authorization": "Bearer <token>"}`
+#### Scenario: Type discriminator injected
+- **WHEN** `/workspace/mcp.json` contains `{"mcpServers": {"errand": {"url": "http://errand:8000/mcp", "headers": {"Authorization": "Bearer k"}}}}`
+- **THEN** the translated config passed to `--mcp-config` contains `{"type": "http", "url": "http://errand:8000/mcp", "headers": {"Authorization": "Bearer k"}}` for `errand`
 
-#### Scenario: No MCP servers configured
-- **WHEN** the resolved MCP server list is empty
-- **THEN** `~/.claude/settings.json` contains `{"mcpServers": {}}`
+#### Scenario: Existing type preserved
+- **WHEN** a server entry already declares `"type": "sse"`
+- **THEN** the translated entry retains `"type": "sse"`
 
-#### Scenario: Profile filters MCP servers
-- **WHEN** the Task Profile has `mcp_servers: ["playwright"]` and global config has "playwright" and "hindsight"
-- **THEN** only "playwright" appears in `~/.claude/settings.json`
+#### Scenario: Headers preserved
+- **WHEN** a server entry carries an `Authorization` header
+- **THEN** the header is present unchanged in the translated entry
 
-### Requirement: Claude config directory creation
-The TaskManager SHALL ensure the `~/.claude/` directory exists in the container with appropriate permissions (mode 700) before writing `settings.json`. For Docker runtime, this SHALL be done via the file injection mechanism. The directory path SHALL be `/home/nonroot/.claude/` matching the container's nonroot user home.
+#### Scenario: Canonical config untouched
+- **WHEN** translation completes
+- **THEN** `/workspace/mcp.json` is byte-identical to what the server injected
 
-#### Scenario: Config directory created
-- **WHEN** TaskManager injects files into a claude-task-runner container
-- **THEN** `/home/nonroot/.claude/settings.json` exists with mode 600
+#### Scenario: Empty configuration
+- **WHEN** `/workspace/mcp.json` declares no servers
+- **THEN** the translated config declares no servers and claude is invoked without error
 
-### Requirement: Claude config not generated for default images
-The Claude MCP settings file SHALL only be generated when the container image is the claude-task-runner variant. Default task-runner containers SHALL NOT receive `~/.claude/settings.json`.
+#### Scenario: Strict mode requested
+- **WHEN** the task-runner invokes claude with a translated config
+- **THEN** the argument list includes `--strict-mcp-config` so no other MCP configuration source is consulted
 
-#### Scenario: Default image skips Claude config
-- **WHEN** TaskManager prepares a default task-runner container
-- **THEN** no `~/.claude/settings.json` is injected
+### Requirement: MCP server registration is verified
+After the `system` / `init` event arrives, the task-runner SHALL compare the `mcp_servers` it reports against the servers in the translated configuration and SHALL emit an `error` event naming any configured server that is absent or reports a non-connected status.
+
+Verification is mandatory because Claude Code silently discards server entries it cannot interpret: a config missing the `type` discriminator yields an empty `mcp_servers` list and no diagnostic, which would otherwise present as a task that inexplicably ignored its tools.
+
+#### Scenario: Missing server reported
+- **WHEN** the translated config declares `errand` and `playwright` but the init event reports only `errand`
+- **THEN** an `error` event is emitted naming `playwright` as not registered
+
+#### Scenario: Failed server reported
+- **WHEN** the init event reports `{"name": "errand", "status": "failed"}`
+- **THEN** an `error` event is emitted naming `errand` and its status
+
+#### Scenario: All servers registered
+- **WHEN** every configured server appears in the init event with a connected status
+- **THEN** no MCP verification error event is emitted
+
+### Requirement: Translation applies only to delegated runs
+The translated configuration SHALL be produced only when the task-runner is delegating to the CLI. A run that uses the standard Python agent loop SHALL consume `/workspace/mcp.json` unchanged.
+
+#### Scenario: Standard loop unaffected
+- **WHEN** the task-runner executes a task through the standard agent loop
+- **THEN** no translated MCP config file is produced and the agent connects using `/workspace/mcp.json`

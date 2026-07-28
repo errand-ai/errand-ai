@@ -1,49 +1,65 @@
 ## ADDED Requirements
 
-### Requirement: Claude OAuth token credential storage
-The Settings UI SHALL include a field for storing a Claude Code OAuth token under the Credentials section. The field SHALL be labelled "Claude Code Token" with helper text explaining that users should run `claude setup-token` to generate the value. The token SHALL be stored as a credential with key `CLAUDE_CODE_OAUTH_TOKEN`.
+### Requirement: Claude OAuth token setting
+The settings registry SHALL include a `claude_code_oauth_token` key marked sensitive with a default of `""`. The Security settings section SHALL include a "Claude Code Token" card with a password-style input, helper text instructing the user to run `claude setup-token` to generate the value, and Save and Clear actions. Because this is a server-admin credential, the card SHALL live in the local Security section alongside the MCP API key card rather than in `@errand-ai/ui-components`.
 
-#### Scenario: User saves Claude token
-- **WHEN** a user enters a token starting with `sk-ant-oat01-` in the Claude Code Token field and saves
-- **THEN** the credential is stored with key `CLAUDE_CODE_OAUTH_TOKEN` and the value is encrypted in the database
+#### Scenario: Token saved
+- **WHEN** a server admin enters a token and clicks Save
+- **THEN** the value is persisted under the `claude_code_oauth_token` setting
 
-#### Scenario: Token field shows masked value
-- **WHEN** a user views the Credentials settings with a stored Claude token
-- **THEN** the field shows a masked value (e.g., `sk-ant-oat01-...xxxx`)
+#### Scenario: Token returned masked
+- **WHEN** the settings API returns `claude_code_oauth_token` to the client
+- **THEN** the value is masked by the registry's sensitive-value masking and the plaintext is never sent
 
-### Requirement: Claude token injected into claude-task-runner containers
-When the TaskManager prepares a container using the claude-task-runner image and a `CLAUDE_CODE_OAUTH_TOKEN` credential exists, the token SHALL be injected as the `CLAUDE_CODE_OAUTH_TOKEN` environment variable. If no token is stored, the environment variable SHALL NOT be set (allowing the task-runner fallback to standard agent loop).
+#### Scenario: Token cleared
+- **WHEN** a server admin clicks Clear
+- **THEN** the setting is emptied and subsequent claude containers receive no token
 
-#### Scenario: Token injected when present
-- **WHEN** TaskManager prepares a claude-task-runner container and `CLAUDE_CODE_OAUTH_TOKEN` credential exists
-- **THEN** the container environment includes `CLAUDE_CODE_OAUTH_TOKEN=<token value>`
+#### Scenario: Non-admin cannot read the token
+- **WHEN** a user without server-admin rights requests the settings
+- **THEN** the token setting is not exposed in plaintext
 
-#### Scenario: Token not injected when absent
-- **WHEN** TaskManager prepares a claude-task-runner container and no `CLAUDE_CODE_OAUTH_TOKEN` credential exists
+### Requirement: Claude token injected into claude images only
+When the TaskManager prepares a container whose resolved image is the claude-task-runner image and `claude_code_oauth_token` is non-empty, it SHALL inject the value as the `CLAUDE_CODE_OAUTH_TOKEN` environment variable. When the setting is empty, the variable SHALL NOT be set, which causes the runner to use the standard agent loop. The variable SHALL NOT be injected for any other image, including custom images.
+
+#### Scenario: Token injected for the claude image
+- **WHEN** the resolved image is the claude-task-runner image and a token is stored
+- **THEN** the container environment includes `CLAUDE_CODE_OAUTH_TOKEN`
+
+#### Scenario: Token absent
+- **WHEN** the resolved image is the claude-task-runner image and no token is stored
 - **THEN** the container environment does not include `CLAUDE_CODE_OAUTH_TOKEN`
 
-#### Scenario: Token not injected for default image
-- **WHEN** TaskManager prepares a default task-runner container (not claude image)
-- **THEN** the container environment does not include `CLAUDE_CODE_OAUTH_TOKEN` regardless of credential existence
+#### Scenario: Default image never receives the token
+- **WHEN** the resolved image is the default task-runner image and a token is stored
+- **THEN** the container environment does not include `CLAUDE_CODE_OAUTH_TOKEN`
+
+#### Scenario: Custom image never receives the token
+- **WHEN** the resolved image is an arbitrary custom image and a token is stored
+- **THEN** the container environment does not include `CLAUDE_CODE_OAUTH_TOKEN`
 
 ### Requirement: User-facing disclaimer
-When a user saves a `CLAUDE_CODE_OAUTH_TOKEN` credential, the Settings UI SHALL display a warning banner explaining: (1) this uses their personal Claude Max subscription, (2) usage counts against their subscription quota, (3) concurrent tasks share the same quota, (4) Anthropic's Terms of Service apply, and (5) this feature is for personal/local use only.
+When the Claude Code Token field holds a value, the Settings UI SHALL display a warning explaining that: (1) tasks will run against the user's personal Claude subscription; (2) usage counts against that subscription's quota; (3) concurrent tasks share the same quota; (4) Anthropic's Terms of Service apply and the feature is intended for personal or local use; and (5) delegated tasks lose the runner's compaction, stall guard, tool-call recovery, and mid-task Google token refresh.
 
-#### Scenario: Disclaimer shown on token entry
-- **WHEN** a user enters a value in the Claude Code Token field
-- **THEN** a warning banner is displayed with the ToS and usage disclaimers
+#### Scenario: Disclaimer shown when a token is present
+- **WHEN** the Claude Code Token field holds a value
+- **THEN** the warning is displayed including the reduced-safety-net point
 
-#### Scenario: Disclaimer not shown when field is empty
+#### Scenario: No disclaimer when empty
 - **WHEN** the Claude Code Token field is empty
-- **THEN** no warning banner is displayed
+- **THEN** no warning is displayed
 
-### Requirement: Token expiry display
-The Settings UI SHALL display the token's expiry date if it can be determined. The `claude setup-token` tokens are valid for 1 year. If the token is within 30 days of expiry, the UI SHALL show a warning indicating the token needs renewal.
+### Requirement: Token age is recorded, not parsed
+The UI SHALL record and display the date the token was saved, together with a note that `claude setup-token` values are documented as valid for approximately one year. The UI SHALL NOT attempt to derive an expiry date from the token itself: `sk-ant-oat01-…` values are opaque strings, not decodable tokens. When the recorded save date is more than eleven months old, the UI SHALL show a renewal reminder.
 
-#### Scenario: Token expiry shown
-- **WHEN** a valid Claude token is stored and its expiry can be parsed
-- **THEN** the UI shows "Expires: <date>" below the token field
+#### Scenario: Save date displayed
+- **WHEN** a token was saved on 2026-07-01
+- **THEN** the card shows that save date and the approximate one-year validity note
 
-#### Scenario: Expiry warning
-- **WHEN** the token expires within 30 days
-- **THEN** the UI shows an amber warning "Token expires in X days — run `claude setup-token` to renew"
+#### Scenario: Renewal reminder
+- **WHEN** the recorded save date is more than eleven months in the past
+- **THEN** the card shows a reminder to run `claude setup-token` again
+
+#### Scenario: No expiry claim without a save date
+- **WHEN** a token is present but no save date was recorded
+- **THEN** the card shows no expiry or renewal claim
