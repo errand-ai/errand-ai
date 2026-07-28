@@ -204,5 +204,25 @@
       `ghcr.io/errand-ai/errand-task-runner:0.140.0-pr224.1043` — this change lives in
       the task-runner image, so a new server paired with a stale runner would have
       looked deployed while running none of it.*
-- [ ] 7.5 After deploy, re-check Grafana Loki for `stall_detected` events on task
+- [x] 7.5 After deploy, re-check Grafana Loki for `stall_detected` events on task
       `8cfb051a` to confirm the guard's new behaviour in production.
+      *Done 2026-07-28, pod `task-runner-5f02e9f7-sgmff` on
+      `errand-task-runner:0.140.0-pr224.1043`. Every mechanism confirmed live:*
+      - *Result-aware rule ignored the healthy phase — the first three writes
+        returned 418/408/394 bytes (real revision) and accrued nothing. Counting
+        began only once the content stabilised at 394.*
+      - *`stall_nudge` fired at exactly 3, and the following `tool_result` carries
+        the nudge text verbatim, proving `reject_content` substitution reaches the
+        model through the real pipeline.*
+      - *The counter did **not** reset after the nudge (3→4→5→6). This was the
+        load-bearing constraint behind siting the detector in the guardrail; the
+        stream-loop design would have oscillated here and never aborted.*
+      - *`stall_detected` at 6 with `result_repeated: true`, classified `stalled`.*
+
+      ***The nudge did not rescue this run.*** *The model received a clear, targeted
+      instruction and kept writing identical bytes, so the run still ended
+      `failed` with an empty result. That is the ~10% case the spike predicted,
+      landing on the first production sample — consistent at n=1, but it is one
+      sample and should not be read as either confirming or refuting the 90%
+      figure. It does hint that production is harsher than the synthetic
+      context-bloat harness, where even the control arm escaped 47% of the time.*

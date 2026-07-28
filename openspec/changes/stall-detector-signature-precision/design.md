@@ -216,6 +216,11 @@ force.
   not 100%, and does not significantly reduce identical repeats. Roughly one nudged
   run in ten still reaches the abort. → Accepted; the abort backstop remains. Do not
   describe this feature as preventing stalls.
+  *Borne out immediately: the first production firing (2026-07-28, pod
+  `task-runner-5f02e9f7-sgmff`) delivered the nudge correctly and the model ignored
+  it, aborting at 6 with an empty result. One sample proves nothing about the rate,
+  but it is a concrete reminder that a nudged run can still fail — and an argument
+  for attacking context load, which the spike showed is the larger lever.*
 - **Nudging at 3 interrupts an agent that was about to recover unaided.** The control
   arm escaped 47% of the time with no intervention, so some nudges land on runs that
   did not need one. → The nudge is additive information, not a redirect away from a
