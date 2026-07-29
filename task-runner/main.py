@@ -1658,6 +1658,74 @@ _compaction_backoff = {
 }
 
 
+# Held compaction summary. The SDK never persists the compacted message list —
+# `call_model_input_filter` output is discarded after the call and history is
+# rebuilt from the run loop's own items — so a prior summary is never visible in
+# the messages. Detecting one by marker cannot work; holding it here can.
+_compaction_summary = {
+    "summary": "",          # inner summary text, without prefix or <summary> tags
+    "covered_digest": "",   # identity of the messages the summary describes
+    "covered_count": 0,     # prefix length; a hint, only trusted once the digest agrees
+}
+
+
+def _reset_compaction_summary() -> None:
+    """Drop the held summary. Reset per agent attempt, as the backoff is."""
+    _compaction_summary["summary"] = ""
+    _compaction_summary["covered_digest"] = ""
+    _compaction_summary["covered_count"] = 0
+
+
+def _digest_messages(messages: list) -> str:
+    """Content identity for a run of messages.
+
+    Keyed on content rather than index or count: the SDK rebuilds the message
+    list between turns so indices shift, and a count establishes nothing about
+    identity — a tampered message at the same position would pass a length
+    check and merge a summary onto history it does not describe.
+    """
+    return hashlib.sha256(
+        json.dumps(messages, default=str, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _match_held_summary(to_summarize: list):
+    """Return (summary, messages_beyond_it) when the held summary covers a prefix.
+
+    None on any doubt — no summary held, a prefix longer than what is being
+    summarised, or a digest that disagrees. An unnecessary full summarisation
+    costs about 30 seconds; a wrong merge hands the model a false account of
+    its own history and raises nothing.
+    """
+    if not _compaction_summary["summary"]:
+        return None
+    count = _compaction_summary["covered_count"]
+    if count <= 0 or count > len(to_summarize):
+        return None
+    if _digest_messages(to_summarize[:count]) != _compaction_summary["covered_digest"]:
+        return None
+    return _compaction_summary["summary"], to_summarize[count:]
+
+
+def _summary_message(summary_text: str) -> dict:
+    """Wrap summary text in the marker and tags the compacted history carries."""
+    return {
+        "role": "user",
+        "content": (
+            COMPACTION_SUMMARY_PREFIX
+            + "\n\n<summary>\n"
+            + summary_text
+            + "\n</summary>"
+        ),
+    }
+
+
+def _hold_summary(summary_text: str, covered: list) -> None:
+    _compaction_summary["summary"] = summary_text
+    _compaction_summary["covered_digest"] = _digest_messages(covered)
+    _compaction_summary["covered_count"] = len(covered)
+
+
 def _reset_compaction_backoff() -> None:
     """Clear backoff state. Called on success, and by tests between cases."""
     _compaction_backoff["turn"] = 0
@@ -1724,6 +1792,33 @@ def _describe_reasoning_field(response) -> str:
     return "absent"
 
 
+def _snap_split_forward(messages: list, split_idx: int) -> int:
+    """Move a compaction split forward until it no longer orphans a tool result.
+
+    A `function_call_output` at the head of the retained portion always has its
+    `function_call` in the summarised portion — calls precede their outputs — so
+    it is orphaned by construction. That makes a type check sufficient here; no
+    `call_id` lookup is needed, which matters because the id is not always
+    present on reconstructed history.
+
+    Forward, never backward. Moving the boundary later cuts deeper and is merely
+    lossy. Moving it earlier would retain a larger tail and could leave the
+    conversation still above the limit after a compaction that reported success
+    — a silent failure rather than a visible one.
+
+    At least one message is always kept, so a run of outputs at the very end
+    cannot consume the entire conversation.
+    """
+    limit = len(messages) - 1
+    while split_idx < limit and _is_function_call_output(messages[split_idx]):
+        split_idx += 1
+    return split_idx
+
+
+def _is_function_call_output(message) -> bool:
+    return isinstance(message, dict) and message.get("type") == "function_call_output"
+
+
 def _is_compaction_summary(message: dict) -> bool:
     """Return True if message is a compaction summary (identified by prefix marker)."""
     if not isinstance(message, dict):
@@ -1779,25 +1874,52 @@ def _compact_context(messages: list) -> list:
     # Ensure at least one message is summarized and at least one is kept
     split_idx = max(1, min(split_idx, len(messages) - 1))
 
+    # Never cut between a tool call and its result. Snapping happens after the
+    # clamp and preserves its guarantee: it stops at len-1, so "at least one
+    # summarized, at least one kept" still holds.
+    snapped_idx = _snap_split_forward(messages, split_idx)
+    if snapped_idx != split_idx:
+        logger.warning(
+            "Context compaction split moved forward %d -> %d to avoid orphaning "
+            "a tool result from its call",
+            split_idx, snapped_idx,
+        )
+        split_idx = snapped_idx
+
     to_summarize = messages[:split_idx]
     to_keep = messages[split_idx:]
 
-    # Detect existing compaction summary (task 3.4)
+    # Prefer the held summary. The marker path below can only fire if a summary
+    # message is actually present in the history, which the SDK does not do —
+    # it is kept for the case where one arrives by some other route.
     existing_msg_content: str = ""
-    is_subsequent = bool(to_summarize) and _is_compaction_summary(to_summarize[0])
-    if is_subsequent:
-        raw = to_summarize[0].get("content", "")
-        if isinstance(raw, list):
-            raw = " ".join(
-                p.get("text", "") for p in raw
-                if isinstance(p, dict) and p.get("type") == "text"
+    held = _match_held_summary(to_summarize)
+    if held is not None:
+        existing_msg_content, new_to_summarize = held
+        is_subsequent = True
+        if not new_to_summarize:
+            # Nothing new since the held summary describes this exact prefix.
+            # Merging an empty conversation would spend a summarisation call to
+            # produce, at best, what we already hold.
+            logger.warning(
+                "Context compaction reused held summary unchanged: no new messages "
+                "beyond the %d it already covers", len(to_summarize),
             )
-        existing_msg_content = str(raw)
-
-    # For subsequent compactions exclude the existing summary message from the
-    # "new conversation content" — it would otherwise appear twice in the merge
-    # prompt (once as existing_summary, again inside conversation_text).
-    new_to_summarize = to_summarize[1:] if is_subsequent else to_summarize
+            return [_summary_message(existing_msg_content)] + list(to_keep)
+    else:
+        is_subsequent = bool(to_summarize) and _is_compaction_summary(to_summarize[0])
+        if is_subsequent:
+            raw = to_summarize[0].get("content", "")
+            if isinstance(raw, list):
+                raw = " ".join(
+                    p.get("text", "") for p in raw
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            existing_msg_content = str(raw)
+        # For subsequent compactions exclude the existing summary message from
+        # the "new conversation content" — it would otherwise appear twice in
+        # the merge prompt (once as existing_summary, again in conversation_text).
+        new_to_summarize = to_summarize[1:] if is_subsequent else to_summarize
 
     # Extract file operations from messages being summarized
     read_files, modified_files = _extract_file_operations(new_to_summarize)
@@ -1910,23 +2032,19 @@ def _compact_context(messages: list) -> list:
     if file_lists:
         summary_text = summary_text.rstrip() + "\n\n" + file_lists
 
-    summary_message = {
-        "role": "user",
-        "content": (
-            COMPACTION_SUMMARY_PREFIX
-            + "\n\n<summary>\n"
-            + summary_text
-            + "\n</summary>"
-        ),
-    }
+    _hold_summary(summary_text, to_summarize)
 
-    compacted = [summary_message] + list(to_keep)
+    compacted = [_summary_message(summary_text)] + list(to_keep)
     estimated_after = _estimate_tokens(compacted)
+    # The mode belongs in the log. Without it, "did chaining actually engage?"
+    # is answerable only by inferring from call timings — the same position that
+    # left the original compaction defect invisible for weeks.
     logger.warning(
-        "Context compaction complete: %d -> %d messages, ~%d -> ~%d estimated tokens "
-        "(%d messages summarized, model=%s)",
+        "Context compaction complete (%s): %d -> %d messages, ~%d -> ~%d estimated "
+        "tokens (%d of %d messages sent to the model, model=%s)",
+        "merge" if is_subsequent else "full summarisation",
         len(messages), len(compacted), estimated_before, estimated_after,
-        len(to_summarize), compaction_model,
+        len(new_to_summarize), len(to_summarize), compaction_model,
     )
     _record_compaction_success()
     return compacted
@@ -2418,6 +2536,11 @@ async def main():
                 # the original prompt, so it deserves a fresh chance to compact
                 # rather than inheriting suppression from the previous attempt.
                 _reset_compaction_backoff()
+                # The held summary describes the previous attempt's history. A
+                # retry restarts from the original prompt, so that summary no
+                # longer covers what is about to be summarised — and a stale
+                # merge misrepresents history without raising anything.
+                _reset_compaction_summary()
                 stall = StallDetector(stall_limit, stall_nudge_limit)
                 agent.stall_guardrail = make_stall_guardrail(
                     stall, lambda: hooks._current_turn_id
