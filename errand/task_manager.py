@@ -778,6 +778,7 @@ async def _read_settings(session: AsyncSession) -> dict:
                 "hindsight_url", "hindsight_bank_id", "hindsight_token", "litellm_mcp_servers",
                 "hot_tools", "task_processing_timeout",
                 "compaction_model", "compaction_timeout", "compaction_max_tokens",
+                "max_context_tokens",
             ])
         )
     )
@@ -833,7 +834,7 @@ async def _read_settings(session: AsyncSession) -> dict:
             # Stored as a model-setting object; `_process_task` reads `model`
             # or `model_id` from it. A bare string is also accepted.
             settings["compaction_model"] = setting.value
-        elif setting.key in ("compaction_timeout", "compaction_max_tokens"):
+        elif setting.key in ("compaction_timeout", "compaction_max_tokens", "max_context_tokens"):
             try:
                 parsed_value = int(setting.value) if setting.value is not None else None
             except (TypeError, ValueError):
@@ -1058,6 +1059,32 @@ def _resolve_init_value(key: str, registry: dict, coerce):
             logger.warning("Failed to coerce env value for %s on init; using default", key)
             return default
     return default
+
+
+# Event types that stay on the task runner's stderr — and therefore in the
+# container log and Loki — but never reach the live view or the replay buffer.
+# These payloads are large and exist for retrospective analysis; publishing them
+# and filtering client-side would still push them across the wire and would
+# displace real entries in the bounded buffer.
+LIVE_EXCLUDED_EVENT_TYPES = frozenset({"context_snapshot"})
+
+
+def _live_log_message(line: str) -> str | None:
+    """Map a task-runner stderr line to its Valkey payload.
+
+    Returns None when the event type is excluded from the live path. Publish and
+    buffer both derive from this single value, so an excluded event cannot reach
+    one of them by omission.
+    """
+    try:
+        parsed = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict) and "type" in parsed and "data" in parsed:
+        if parsed["type"] in LIVE_EXCLUDED_EVENT_TYPES:
+            return None
+        return json.dumps({"event": "task_event", "type": parsed["type"], "data": parsed["data"]})
+    return json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
 
 
 class TaskManager:
@@ -1330,6 +1357,34 @@ class TaskManager:
                     self._task_log_buffer_ttl_seconds = new_buf_ttl
         except Exception:
             logger.debug("Failed to read tunable settings", exc_info=True)
+
+    async def _forward_log_line(self, valkey, line: str, log_channel: str, buffer_key: str) -> None:
+        """Publish one task-runner output line to the live channel and mirror it
+        into the replay buffer.
+
+        Excluded event types produce no message and so reach neither.
+        """
+        msg = _live_log_message(line)
+        if msg is None:
+            return
+        publish_ok = False
+        try:
+            await valkey.publish(log_channel, msg)
+            publish_ok = True
+        except Exception:
+            logger.warning("Failed to publish log line to Valkey", exc_info=True)
+        # Only mirror to the replay buffer when the live publish succeeded —
+        # keeps the buffer in sync with what subscribers actually received.
+        # Pipelined to avoid 3 round-trips per event.
+        if publish_ok:
+            try:
+                pipe = valkey.pipeline(transaction=False)
+                pipe.rpush(buffer_key, msg)
+                pipe.ltrim(buffer_key, -self._task_log_buffer_max_entries, -1)
+                pipe.expire(buffer_key, self._task_log_buffer_ttl_seconds)
+                await pipe.execute()
+            except Exception:
+                logger.warning("Failed to append log line to Valkey buffer", exc_info=True)
 
     async def _run_task(
         self,
@@ -1651,6 +1706,14 @@ class TaskManager:
         compaction_max_tokens = os.environ.get("COMPACTION_MAX_TOKENS", "") or settings.get("compaction_max_tokens")
         if compaction_max_tokens:
             env_vars["COMPACTION_MAX_TOKENS"] = str(compaction_max_tokens)
+
+        # The context ceiling drives compaction and the pressure thresholds
+        # measured against it. It was hard-coded in the runner and unreachable
+        # from the server, so a deployment whose models want a different ceiling
+        # had no lever to set one. Left unset, the runner keeps its own default.
+        max_context_tokens = os.environ.get("MAX_CONTEXT_TOKENS", "") or settings.get("max_context_tokens")
+        if max_context_tokens:
+            env_vars["MAX_CONTEXT_TOKENS"] = str(max_context_tokens)
 
         # Hot tools for lazy MCP tool loading
         hot_tools = settings.get("hot_tools", "")
@@ -2099,33 +2162,7 @@ class TaskManager:
                         except Exception:
                             logger.warning("Failed to refresh callback token TTL for task %s", task.id, exc_info=True)
                     if valkey is not None:
-                        try:
-                            parsed_event = json.loads(line)
-                            if isinstance(parsed_event, dict) and "type" in parsed_event and "data" in parsed_event:
-                                msg = json.dumps({"event": "task_event", "type": parsed_event["type"], "data": parsed_event["data"]})
-                            else:
-                                msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                        except (json.JSONDecodeError, ValueError):
-                            msg = json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
-                        publish_ok = False
-                        try:
-                            await valkey.publish(log_channel, msg)
-                            publish_ok = True
-                        except Exception:
-                            logger.warning("Failed to publish log line to Valkey", exc_info=True)
-                        # Only mirror to the replay buffer when the live publish
-                        # succeeded — keeps the buffer in sync with what
-                        # subscribers actually received. Pipelined to avoid 3
-                        # round-trips per event.
-                        if publish_ok:
-                            try:
-                                pipe = valkey.pipeline(transaction=False)
-                                pipe.rpush(buffer_key, msg)
-                                pipe.ltrim(buffer_key, -self._task_log_buffer_max_entries, -1)
-                                pipe.expire(buffer_key, self._task_log_buffer_ttl_seconds)
-                                await pipe.execute()
-                            except Exception:
-                                logger.warning("Failed to append log line to Valkey buffer", exc_info=True)
+                        await self._forward_log_line(valkey, line, log_channel, buffer_key)
             except Exception:
                 logger.warning("Error during log streaming for task %s", task.id, exc_info=True)
 

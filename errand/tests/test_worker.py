@@ -758,6 +758,33 @@ async def test_read_settings_defaults(db_session):
     assert settings["hot_tools"] == ""
 
 
+async def test_read_settings_with_max_context_tokens(db_session):
+    """The context ceiling has to be read from the settings table, not merely
+    forwarded once present. Adding the forwarding without adding the key to the
+    loader's select list produced a setting that silently did nothing — caught
+    on a real run, where the runner kept reporting against its own default."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "max_context_tokens", "value": json.dumps(90000)},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["max_context_tokens"] == 90000
+
+
+async def test_read_settings_rejects_non_positive_max_context_tokens(db_session):
+    """A ceiling of zero would make every turn infinitely over budget."""
+    await db_session.execute(
+        text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+        {"key": "max_context_tokens", "value": json.dumps(0)},
+    )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["max_context_tokens"] is None
+
+
 async def test_read_settings_with_mcp(db_session):
     """Reads mcp_servers from settings table."""
     await db_session.execute(

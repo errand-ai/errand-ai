@@ -413,11 +413,44 @@ def _build_synthetic_tool_call_chunk(recovered_dicts: list, template_chunk):
     )
 
 
+def _usage_fields(response) -> dict:
+    """Extract the provider's own token accounting from a model response.
+
+    Returns an empty dict when the provider supplies no usage. The internal
+    estimate is deliberately not substituted: a reported number that disagrees
+    with the provider's accounting is worse than no number at all.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        fields: dict = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = getattr(usage, key, None)
+            if isinstance(value, int):
+                fields[key] = value
+        # A usage block of zeros is a report of nothing, not a measurement of
+        # nothing: no real turn has an empty prompt. Providers reached through a
+        # proxy do this when the streaming usage chunk is missing, and a
+        # confident "0 tokens" on the badge would be worse than no figure.
+        if not fields.get("input_tokens"):
+            return {}
+        cached = getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", None)
+        if isinstance(cached, int):
+            fields["cached_tokens"] = cached
+        return fields
+    except Exception:
+        # Usage reporting must never break a turn that otherwise succeeded.
+        logger.warning("Failed to read usage from model response", exc_info=True)
+        return {}
+
+
 class StreamEventEmitter(RunHooks):
     """Emits structured JSON events to stderr for agent lifecycle callbacks."""
 
     def __init__(self):
         self._current_turn_id: str | None = None
+        self._turn_start_time: float | None = None
         self._tool_start_times: dict[str, float] = {}
 
     async def on_agent_start(self, context, agent) -> None:
@@ -451,13 +484,24 @@ class StreamEventEmitter(RunHooks):
 
     async def on_llm_start(self, context, agent, *args, **kwargs) -> None:
         self._current_turn_id = str(uuid4())[:8]
+        self._turn_start_time = time.monotonic()
         emit_event("llm_turn_start", {
             "turn_id": self._current_turn_id,
             "model": os.environ.get("OPENAI_MODEL") or os.environ.get("MODEL", "unknown"),
         })
 
     async def on_llm_end(self, context, agent, *args, **kwargs) -> None:
-        pass
+        """Report what the turn actually cost, as the provider counted it."""
+        response = kwargs.get("response") or (args[0] if args else None)
+        data: dict = {}
+        if self._current_turn_id:
+            data["turn_id"] = self._current_turn_id
+        if self._turn_start_time is not None:
+            data["duration_ms"] = int((time.monotonic() - self._turn_start_time) * 1000)
+            self._turn_start_time = None
+        data.update(_usage_fields(response))
+        emit_event("llm_turn_end", data)
+        _check_context_pressure(data.get("input_tokens"))
 
 
 class TaskRunnerOutput(BaseModel):
@@ -1289,6 +1333,141 @@ def _estimate_tokens(messages: list) -> int:
     return len(json.dumps(messages, default=str)) // CHARS_PER_TOKEN
 
 
+# --- Context telemetry ---
+#
+# Nothing in errand has ever reported how full the context window is, so a task
+# misbehaving under a heavy context could only be diagnosed from symptoms. These
+# events answer two questions: how full is the window (per turn, from the
+# provider's own count) and what filled it (on significant events only).
+
+CONTEXT_PRESSURE_THRESHOLDS = (0.75, 0.90)
+SNAPSHOT_TOP_CONTRIBUTORS = 5
+
+_context_tracking: dict = {"messages": [], "crossed": set()}
+
+
+def _reset_context_tracking() -> None:
+    _context_tracking["messages"] = []
+    _context_tracking["crossed"] = set()
+
+
+def _record_model_input(messages: list) -> None:
+    """Hold the message list most recently sent to the model.
+
+    A snapshot has to say what filled the context, and the pre-model filter is
+    the only place that list exists.
+    """
+    _context_tracking["messages"] = messages
+
+
+def _context_contributors(messages: list, limit: int = SNAPSHOT_TOP_CONTRIBUTORS) -> list:
+    """Rank the largest items in the context by role, tool name and size.
+
+    Deliberately carries no message content. Names and sizes answer "what filled
+    the context"; the content would answer nothing further while placing task
+    data into log retention and inflating the payload by orders of magnitude.
+    """
+    # A tool result names only the call it answers, so the tool name has to come
+    # from the matching call.
+    tool_names: dict[str, str] = {}
+    for item in messages:
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id")
+            if call_id:
+                tool_names[call_id] = item.get("name") or "unknown"
+
+    entries: list[dict] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            entries.append({"role": "unknown", "chars": len(str(item))})
+            continue
+        chars = len(json.dumps(item, default=str))
+        item_type = item.get("type")
+        if item_type == "function_call":
+            entries.append({
+                "role": "tool_call", "tool": item.get("name") or "unknown", "chars": chars,
+            })
+        elif item_type == "function_call_output":
+            entries.append({
+                "role": "tool_result",
+                "tool": tool_names.get(item.get("call_id"), "unknown"),
+                "chars": chars,
+            })
+        else:
+            entries.append({"role": item.get("role") or item_type or "unknown", "chars": chars})
+
+    entries.sort(key=lambda e: e["chars"], reverse=True)
+    return entries[:limit]
+
+
+def _emit_context_snapshot(
+    reason: str,
+    messages: list | None = None,
+    *,
+    input_tokens: int | None = None,
+    estimated_tokens: int | None = None,
+) -> None:
+    """Record what filled the context, for retrospective analysis.
+
+    Emitted as a structured event rather than logged: production runs the task
+    runner above INFO, so `logger.info` diagnostics are discarded, while
+    `emit_event` writes to stderr regardless of level. The server drops this
+    type before publishing, so it reaches the container log — and therefore
+    Loki — without reaching the live view or the replay buffer.
+
+    Emitted on significant events only. Per-turn emission would make it routine
+    noise in a channel intended for the exceptional.
+    """
+    if messages is None:
+        messages = _context_tracking["messages"]
+    messages = messages or []
+    data: dict = {
+        "reason": reason,
+        "limit": MAX_CONTEXT_TOKENS,
+        "message_count": len(messages),
+        "top_contributors": _context_contributors(messages),
+    }
+    if input_tokens is not None:
+        data["input_tokens"] = input_tokens
+    # The estimate drives compaction and has never been checked against the
+    # provider's own count. Carrying both makes the divergence observable.
+    data["estimated_tokens"] = (
+        estimated_tokens if estimated_tokens is not None else _estimate_tokens(messages)
+    )
+    emit_event("context_snapshot", data)
+
+
+def _check_context_pressure(input_tokens: int | None) -> None:
+    """Signal a threshold crossing once, rather than warning continuously.
+
+    The operator needs to know when the situation changes, not that it persists.
+    """
+    limit = MAX_CONTEXT_TOKENS
+    if not input_tokens or limit <= 0:
+        return
+    ratio = input_tokens / limit
+    crossed: set = _context_tracking["crossed"]
+
+    # A threshold the context has dropped back below can be crossed again:
+    # compaction pulls it down and it climbs back, and that sawtooth is the
+    # signal this whole change exists to make visible.
+    for threshold in CONTEXT_PRESSURE_THRESHOLDS:
+        if ratio < threshold:
+            crossed.discard(threshold)
+
+    newly = [t for t in CONTEXT_PRESSURE_THRESHOLDS if ratio >= t and t not in crossed]
+    if not newly:
+        return
+    crossed.update(newly)
+    # One turn is one change of situation, however many lines it stepped over.
+    emit_event("context_pressure", {
+        "input_tokens": input_tokens,
+        "limit": limit,
+        "threshold": max(newly),
+    })
+    _emit_context_snapshot("threshold_crossed", input_tokens=input_tokens)
+
+
 def _repair_truncated_json(s: str) -> str | None:
     """Attempt to repair truncated JSON by closing unclosed strings and delimiters.
 
@@ -1749,8 +1928,9 @@ def _compaction_suppressed() -> bool:
     return _compaction_backoff["turn"] < _compaction_backoff["suppress_until_turn"]
 
 
-def _record_compaction_failure() -> None:
+def _record_compaction_failure(messages: list | None = None) -> None:
     """Widen the suppression window after a failed attempt."""
+    _emit_context_snapshot("compaction_failed", messages)
     _compaction_backoff["consecutive_failures"] += 1
     failures = _compaction_backoff["consecutive_failures"]
     window = min(2 ** failures, COMPACTION_BACKOFF_CAP_TURNS)
@@ -1870,6 +2050,9 @@ def _compact_context(messages: list) -> list:
         "Context compaction triggered: ~%d estimated tokens (limit %d), %d messages",
         estimated_before, MAX_CONTEXT_TOKENS, len(messages),
     )
+    # After the suppression check, so a task sitting above the limit under
+    # backoff does not emit one of these every turn.
+    _emit_context_snapshot("compaction_triggered", messages, estimated_tokens=estimated_before)
 
     # Find split point: keep ~KEEP_RECENT_TOKENS of the most recent messages
     recent_tokens = 0
@@ -2041,7 +2224,7 @@ def _compact_context(messages: list) -> list:
         logger.warning(
             "Context compaction failed (LLM call error) — falling back to trim", exc_info=True,
         )
-        _record_compaction_failure()
+        _record_compaction_failure(messages)
         return _trim_context_window(messages)
 
     if not summary_text.strip():
@@ -2058,7 +2241,7 @@ def _compact_context(messages: list) -> list:
             _describe_reasoning_field(response),
             compaction_max_tokens,
         )
-        _record_compaction_failure()
+        _record_compaction_failure(messages)
         return _trim_context_window(messages)
 
     # Append file lists to summary (task 3.4 carry-forward)
@@ -2090,6 +2273,7 @@ def filter_model_input(data: CallModelData) -> ModelInputData:
     messages = _sanitize_tool_calls(messages)
     messages = _strip_screenshots(messages)
     messages = _compact_context(messages)
+    _record_model_input(messages)
     return ModelInputData(input=messages, instructions=data.model_data.instructions)
 
 
@@ -2503,6 +2687,12 @@ async def main():
             model_settings=ModelSettings(
                 max_tokens=max_output_tokens,
                 reasoning=Reasoning(effort=reasoning_effort, generate_summary="auto"),
+                # Streaming providers only send a usage chunk when asked. The SDK
+                # asks by default solely when the client points at
+                # api.openai.com, and errand's points at LiteLLM, so without
+                # this every turn reports zero tokens and the measurement is
+                # worthless. Confirmed against a real run before it was set.
+                include_usage=True,
             ),
         )
 
