@@ -3,7 +3,7 @@
 - [x] 1.1 Create branch `reduce-compaction-recomputation`
 - [ ] 1.2 Bump `VERSION` (minor — behaviour change to compaction)
 - [ ] 1.3 Settle the order against `pin-constraints-across-compaction` and record it in both changes. Both edit the split in `_compact_context` — that one excludes `messages[0]` from summarisation, this one constrains where the boundary may fall. Compatible in principle, conflicting if developed in parallel
-- [ ] 1.4 Note the branch dependency: this branch is cut from `pin-constraints-across-compaction`, because the archive/sync of `fix-context-compaction` lives there and `main`'s specs are stale without it. Either merge that first, or rebase this onto `main` once it lands
+- [x] 1.4 Note the branch dependency: this branch is cut from `pin-constraints-across-compaction`, because the archive/sync of `fix-context-compaction` lives there and `main`'s specs are stale without it. Either merge that first, or rebase this onto `main` once it lands — **resolved**: PR #236 merged as `dff635e` (squash), carrying both the `fix-context-compaction` archive and the `pin-constraints-across-compaction` artifacts. This branch was reconstructed from `main` (the squash made a plain rebase replay commits already present). `main`'s `task-runner-context-compaction` spec now holds all 8 synced requirements, so this change's `MODIFIED` delta targets live text
 
 ## 2. Split-point safety — do this first
 
