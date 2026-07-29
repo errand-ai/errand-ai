@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 import pytest
 
 import main
-from main import StreamEventEmitter
 
 
 @pytest.fixture
@@ -65,7 +64,7 @@ def _of_type(events, event_type):
 
 @pytest.fixture
 def emitter():
-    return StreamEventEmitter()
+    return main.StreamEventEmitter()
 
 
 # --- Message fixtures -------------------------------------------------------
