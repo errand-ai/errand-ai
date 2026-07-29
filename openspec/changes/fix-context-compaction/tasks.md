@@ -41,7 +41,7 @@ These four are the fix. None requires a server, settings or library change, so t
 
 - [x] 6.1 Commit, push, open a PR
 - [x] 6.2 Confirm CI is green
-- [ ] 6.3 Deploy to Kubernetes and confirm pod health
+- [x] 6.3 Deploy to Kubernetes and confirm pod health
 - [ ] 6.4 Run a task heavy enough to trigger compaction, then query Loki: `{app="task-runner"} |= "Context compaction"` filtered by `content_manager_task_id`. Baseline is 19 failures / 0 successes over 14 days — anything other than a success here means the change did not work
 - [ ] 6.5 If compaction still fails, read the new empty-summary diagnostic before changing anything: it identifies which lever to pull, and guessing is what this change exists to stop
 - [ ] 6.6 Merge, delete the branch

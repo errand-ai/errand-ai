@@ -73,6 +73,32 @@ Entering and leaving the suppression window SHALL be logged at `WARNING`, so a t
 - **WHEN** compaction fails on every attempt for the duration of a task
 - **THEN** the number of summarization calls SHALL be bounded by the backoff schedule rather than growing with the turn count
 
+### Requirement: The compaction lifecycle is observable at the production log level
+
+The task runner SHALL log compaction lifecycle events — triggered, complete, skipped, and every failure path — at `WARNING` or above. Context trimming SHALL also be logged at `WARNING`, because it discards conversation history irrecoverably.
+
+Production runs the task runner above `INFO`. Logging failures at `WARNING` while logging the trigger and the success at `INFO` makes a broken mechanism observable and a working one silent, which is the wrong way round for confirming that a fix worked. It also makes "did compaction run at all?" unanswerable from logs, leaving operators to infer it from token arithmetic.
+
+#### Scenario: A successful compaction is visible
+
+- **WHEN** compaction completes successfully and the task runner is configured at `WARNING`
+- **THEN** a log line reporting the completion is emitted
+
+#### Scenario: The trigger is visible
+
+- **WHEN** compaction is triggered and the task runner is configured at `WARNING`
+- **THEN** a log line reporting the trigger, the estimated tokens and the limit is emitted
+
+#### Scenario: Trimming is visible
+
+- **WHEN** the context is trimmed and the task runner is configured at `WARNING`
+- **THEN** a log line reporting the message and token counts before and after is emitted
+
+#### Scenario: A skipped compaction is visible
+
+- **WHEN** compaction is skipped because the model or API key is missing, at `WARNING`
+- **THEN** a log line reporting the missing configuration is emitted
+
 ### Requirement: Empty summary responses are diagnosable
 
 When the summarization call returns successfully but produces no usable summary text, the task runner SHALL log — at `WARNING`, since production runs the task runner above `INFO` — the response's finish reason, the length of the returned content, and whether a reasoning or thinking field was populated.

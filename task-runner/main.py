@@ -1471,7 +1471,11 @@ def _trim_context_window(messages: list) -> list:
 
     trimmed = first + rest
     estimated_after = _estimate_tokens(trimmed)
-    logger.info(
+    # WARNING, not INFO: trimming discards conversation history irrecoverably.
+    # Production runs the task runner above INFO, so an INFO line here would
+    # make a lossy operation invisible in exactly the deployment where it
+    # matters most.
+    logger.warning(
         "Context window trimmed: %d -> %d messages, ~%d -> ~%d estimated tokens (target %d, limit %d)",
         len(messages), len(trimmed), estimated_before, estimated_after, target, MAX_CONTEXT_TOKENS,
     )
@@ -1752,7 +1756,11 @@ def _compact_context(messages: list) -> list:
     if _compaction_suppressed():
         return _trim_context_window(messages)
 
-    logger.info(
+    # The whole compaction lifecycle logs at WARNING. Failures already did,
+    # while the trigger and the success did not — so a broken mechanism was
+    # observable in production and a working one was silent, which is exactly
+    # backwards for confirming a fix.
+    logger.warning(
         "Context compaction triggered: ~%d estimated tokens (limit %d), %d messages",
         estimated_before, MAX_CONTEXT_TOKENS, len(messages),
     )
@@ -1820,7 +1828,7 @@ def _compact_context(messages: list) -> list:
     )
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not compaction_model or not api_key:
-        logger.info(
+        logger.warning(
             "Context compaction skipped (missing %s) — falling back to trim",
             "OPENAI_MODEL" if not compaction_model else "OPENAI_API_KEY",
         )
@@ -1914,7 +1922,7 @@ def _compact_context(messages: list) -> list:
 
     compacted = [summary_message] + list(to_keep)
     estimated_after = _estimate_tokens(compacted)
-    logger.info(
+    logger.warning(
         "Context compaction complete: %d -> %d messages, ~%d -> ~%d estimated tokens "
         "(%d messages summarized, model=%s)",
         len(messages), len(compacted), estimated_before, estimated_after,

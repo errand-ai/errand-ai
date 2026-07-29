@@ -15,6 +15,7 @@ from main import (
     _is_compaction_summary,
     _reset_compaction_backoff,
     _serialize_messages_for_summary,
+    _trim_context_window,
 )
 
 
@@ -668,3 +669,58 @@ def test_backoff_entry_is_logged_at_warning(caplog):
 
     assert "compaction" in caplog.text.lower()
     assert "suppress" in caplog.text.lower(), "entering the backoff window must be visible"
+
+
+# ---------------------------------------------------------------------------
+# Log-level visibility
+#
+# Production runs the task runner at WARNING. Compaction's failure paths logged
+# at WARNING and were visible; its trigger and success logged at INFO and were
+# not. The result: 19 failures were observable in Loki over 14 days while a
+# success would have been silent — exactly backwards for confirming a fix.
+# ---------------------------------------------------------------------------
+
+def test_compaction_success_is_visible_at_warning(caplog):
+    summary = "## Goal\nX\n## Progress\n### Done\n\n### In Progress\n\n### Blocked\n\n## Key Decisions\n\n## Next Steps\n\n## Critical Context\n"
+    factory, _ = _capture_client(summary)
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        result = _compact_context(_big_messages())
+
+    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert "compaction complete" in caplog.text.lower(), (
+        "a successful compaction must be observable at the production log level"
+    )
+
+
+def test_compaction_trigger_is_visible_at_warning(caplog):
+    summary = "## Goal\nX\n"
+    factory, _ = _capture_client(summary)
+    with patch("main.OpenAI", side_effect=factory), \
+         patch.dict(os.environ, _BASE_ENV, clear=True), \
+         caplog.at_level("WARNING"):
+        _compact_context(_big_messages())
+
+    assert "compaction triggered" in caplog.text.lower()
+
+
+def test_trim_is_visible_at_warning(caplog):
+    """Trimming discards history irrecoverably — it should not be silent."""
+    messages = [{"role": "user", "content": "initial"}]
+    for _ in range(40):
+        messages.append({"role": "assistant", "content": "x" * 5000})
+
+    with patch("main.MAX_CONTEXT_TOKENS", 20000), caplog.at_level("WARNING"):
+        _trim_context_window(messages)
+
+    assert "trimmed" in caplog.text.lower()
+
+
+def test_compaction_skipped_is_visible_at_warning(caplog):
+    """A missing model or key is a misconfiguration, not routine information."""
+    env = {k: v for k, v in _BASE_ENV.items() if k != "OPENAI_API_KEY"}
+    with patch.dict(os.environ, env, clear=True), caplog.at_level("WARNING"):
+        _compact_context(_big_messages())
+
+    assert "compaction skipped" in caplog.text.lower()
