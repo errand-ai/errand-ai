@@ -39,7 +39,19 @@ The only item here that can fail a live task rather than merely cost time. Indep
 - [x] 6.1 Full task-runner suite green — 321 pass (301 baseline + 20 new)
 - [x] 6.2 Drive two compactions in one run and confirm the second is a merge, sending only the new messages — `test_second_compaction_merges_when_the_held_summary_matches` and `test_merge_sends_only_the_messages_beyond_the_covered_prefix`, both driving `_compact_context` twice with the SDK's rebuild simulated (original messages returned, plus new turns)
 - [x] 6.3 Confirm a mismatch genuinely falls back rather than merging anyway — `test_the_digest_is_what_rejects_a_mismatch` is a mutation guard: with `_digest_messages` neutralised across **both** compactions, the tampered history *is* merged onto. That the outcome flips is the evidence the check does the work rather than the merge path simply never engaging
-- [ ] 6.4 Deploy and confirm via Loki: `{app="task-runner"} |= "Context compaction"` should show one full summarisation followed by merges, where the baseline showed four full summarisations in 104 seconds each re-covering the same 49 messages
+- [x] 6.4 Deploy and confirm via Loki — **confirmed on `0.143.0-pr237.1075`**, task `2ece82fc` (GetBookable security review, `qwen3.6-35b-a3b-ud-mlx`). Five compactions:
+
+  | Time | Mode | Sent to model |
+  |---|---|---|
+  | 14:53:44 | full summarisation | 148 of 148 |
+  | 15:02:52 | full summarisation | 91 of 91 |
+  | 15:03:53 | merge | **6 of 97** |
+  | 15:04:43 | merge | **4 of 101** |
+  | 15:05:44 | merge | **8 of 109** |
+
+  Chaining engages and holds — ~94% fewer messages summarised. The split fix also fired **twice on live history** (`95 → 97`, `107 → 109`), confirming the orphaning bug was real rather than theoretical. Compaction takes 41–47s, which would have timed out under the pre-`fix-context-compaction` 30s default.
+
+  The second compaction fell back correctly (held record covered 148, only 91 were being summarised, so `count > len(to_summarize)` rejected it) — but see the new open question in `design.md`: the message list *shrank* 184 → 121 between compactions, which neither the "history is rebuilt from originals" premise nor "the compacted list persists" explains. Not blocking; recorded rather than guessed at
 
 ## 7. Ship
 
