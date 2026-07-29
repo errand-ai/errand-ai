@@ -18,7 +18,13 @@ The structural fix, and the whole reason this change exists.
 - [x] 3.2 Write a failing test that a large first message is preserved in full rather than truncated — `test_a_large_first_message_is_preserved_in_full` (~56k-char prompt, asserted byte-identical)
 - [x] 3.3 Write a test asserting trimming and compaction agree — `test_trimming_and_compaction_agree_about_the_first_message`
 - [x] 3.4 Exclude `messages[0]` from the summarised portion and carry it through ahead of the summary — `to_summarize = messages[1:split_idx]`, result assembled as `preserved + [summary] + to_keep`
-- [x] 3.5 Confirm this composes with the clamp — the lower bound moves from 1 to 2 (`max(2, min(split_idx, len-1))`), so one message is preserved, at least one summarised and at least one kept. `len(messages) > 2` is guaranteed at entry, so the bounds cannot cross. `test_the_clamp_reserves_room_for_the_preserved_prompt` pins it
+- [x] 3.5 Confirm this composes with the clamp — the lower bound moves from 1 to 2 (`max(2, min(split_idx, len-1))`), so one message is preserved, at least one summarised and at least one kept. `len(messages) > 2` is guaranteed at entry, so the bounds cannot cross.
+
+  `test_the_clamp_reserves_room_for_the_preserved_prompt` pins it — but only after the PR #238 review caught that the **first version of the test pinned nothing**. Its fixture put the large message in the middle, so the token walk returned `split_idx = 2` on its own and `max(1, ...)` / `max(2, ...)` agreed; reverting the bound would not have failed it. Rewritten with a large `messages[0]` and small trailing messages so the walk returns 1 and the clamp is what raises it to 2.
+
+  Mutation-verified: with the bound reverted to `max(1, ...)` the test fails, and the log shows why the clamp is load-bearing rather than defensive — `3 -> 4 messages, ~153402 -> ~153456 estimated tokens (0 of 0 messages sent to the model)`. An LLM call spent summarising nothing, returning *more* messages and *more* tokens than it received.
+
+  This is the second test in this change to have initially passed against unchanged behaviour (see 2.1 in `reduce-compaction-recomputation`). Writing a test that fails for the right reason is evidently the hard part.
 - [x] 3.6 Confirm no double-counting — `test_first_message_is_not_sent_for_summarisation` asserts the prompt text is absent from the serialised conversation. Preserved means excluded, not duplicated; otherwise it would be paraphrased and pinned at once
 
 ## 4. Carry later constraints through the summary

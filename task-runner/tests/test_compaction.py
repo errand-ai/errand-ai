@@ -1157,21 +1157,34 @@ def test_a_conversation_without_constraints_still_summarises_normally():
 def test_the_clamp_reserves_room_for_the_preserved_prompt():
     """With messages[0] reserved the lower bound is 2, not 1.
 
-    At 1 the summarised portion would be empty and compaction would spend a
-    call summarising nothing.
+    At 1 the summarised portion would be `messages[1:1]` — empty — and
+    compaction would spend an LLM call summarising nothing.
+
+    The fixture must make the token walk itself return `split_idx == 1`, so the
+    clamp is what raises it to 2. That needs a LARGE `messages[0]` with the
+    remaining messages small enough to fit inside `KEEP_RECENT_TOKENS`: walking
+    backwards, the tail messages accumulate cheaply and `messages[0]` is the one
+    that busts the budget, giving `split_idx = 0 + 1`. An earlier version of
+    this test put the large message in the middle, which made the walk return 2
+    on its own — so `max(1, ...)` and `max(2, ...)` agreed and the test pinned
+    nothing.
     """
     _reset_compaction_summary()
-    # Three messages, the middle one huge: the token walk wants to split early.
     messages = [
-        _make_user_msg(_PROMPT_TEXT),
-        _make_assistant_msg("x" * 460_000),
+        _make_user_msg(_PROMPT_TEXT + " " + "pad " * 115_000),
+        _make_assistant_msg("MARKER-MIDDLE small message"),
         _make_assistant_msg("tail"),
     ]
 
     _, client = _compact_with(messages)
 
+    # split_idx == 2 means messages[1] is summarised. Under the old lower bound
+    # of 1 there would be nothing to summarise at all.
     sent = _prompt_sent(client)
-    assert "<conversation>" in sent
+    assert "MARKER-MIDDLE" in sent, (
+        "summarised portion was empty — the clamp did not reserve room for the "
+        "preserved prompt"
+    )
     assert _PROMPT_TEXT not in sent
 
 
