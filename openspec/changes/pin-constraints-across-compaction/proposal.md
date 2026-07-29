@@ -31,8 +31,9 @@ This is not hypothetical. The GetBookable security review run (task `8114ff66`) 
 
 - **Preserve the initial task prompt across compaction**, matching the guarantee trimming already makes. The cheapest and highest-value item: it is one message, it contains the user's actual instructions, and the inconsistency with trimming is almost certainly unintended.
 - **Add a constraints section to the summarisation prompt**, instructed to carry forward prohibitions, approval requirements and scope limits verbatim rather than paraphrased. Anthropic's guidance for compaction prompts is to *maximise recall first, then improve precision* — constraints are the clearest case for recall.
-- **Re-inject pinned constraint text after compaction** rather than trusting the summary to have retained it, so survival does not depend on model behaviour. This is the mitigation the paper validates.
-- **Log which constraints were pinned** at `WARNING`, so a task that silently lost one is visible — consistent with the lifecycle logging added in `fix-context-compaction`.
+- **Log that the prompt was preserved** at `WARNING`, so a task that somehow lost it is visible — consistent with the lifecycle logging added in `fix-context-compaction`.
+
+Re-injecting extracted constraint text was considered and dropped during design: preserving the first message verbatim subsumes it, and extraction requires classifying text as constraint-or-not, where a rule that misses one is worse than none because it manufactures confidence. See `design.md`.
 
 **Not in scope:**
 
@@ -48,8 +49,9 @@ None.
 
 ### Modified Capabilities
 
-- `task-runner-context-compaction`: preserve the initial prompt; carry constraints through summarisation; re-inject pinned text post-compaction.
-- `agent-context-management`: state the initial-prompt guarantee once, so trimming and compaction stop disagreeing.
+- `task-runner-context-compaction`: preserve the initial prompt; carry constraints through summarisation; make preservation observable.
+
+`agent-context-management` is **not** modified. It already guarantees the initial prompt survives trimming; the new compaction requirement references that guarantee rather than restating it, so the two paths agree without duplicating the rule in two specs.
 
 ## Impact
 
