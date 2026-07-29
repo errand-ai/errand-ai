@@ -44,11 +44,11 @@ These four are the fix. None requires a server, settings or library change, so t
 - [x] 6.3 Deploy to Kubernetes and confirm pod health
 - [x] 6.4 Run a task heavy enough to trigger compaction, then query Loki: `{app="task-runner"} |= "Context compaction"` filtered by `content_manager_task_id`. Baseline is 19 failures / 0 successes over 14 days — anything other than a success here means the change did not work — CONFIRMED. Four compactions on task 8114ff66 (qwen3.6), all successful, zero failures: 153,938→16,100 / 157,402→19,564 / 158,648→20,809 / 172,462→19,615 tokens. Against a baseline of 19 attempts / 19 failures / 0 successes over 14 days
 - [x] 6.5 If compaction still fails, read the new empty-summary diagnostic before changing anything: it identifies which lever to pull, and guessing is what this change exists to stop — not needed: compaction did not fail. The empty-summary diagnostic was never triggered
-- [ ] 6.6 Merge, delete the branch
+- [x] 6.6 Merge, delete the branch — merged as 7a5f567, branches deleted
 
 ## 7. Follow-ups (not this change)
 
 - [ ] 7.1 Expose the three settings on the Task Management tab. Requires a `TaskManagementCard` change in `@errand-ai/ui-components`, a release, and a consumer bump — the settings work via the API without it, which is why it is separated
-- [ ] 7.2 Decide whether to disable thinking for compaction calls on reasoning models. The diagnostic from 2.4 should decide this rather than guesswork
-- [ ] 7.3 Revisit `KEEP_RECENT_TOKENS = 20_000`, never validated against a successful compaction because there has not been one
-- [ ] 7.4 Consider whether compaction failure should surface as a task event, not only a log line — likely belongs in `context-usage-visibility`
+- [x] 7.2 Decide whether to disable thinking for compaction calls on reasoning models. The diagnostic from 2.4 should decide this rather than guesswork — ANSWERED, no action: run against the real proxy showed qwen3.6 emitting a 1,248-char summary alongside 5,538 chars of reasoning_content, finishing on `stop` not `length`. Both fit inside the 4096 budget, so disabling thinking is unnecessary
+- [x] 7.3 Revisit `KEEP_RECENT_TOKENS = 20_000`, never validated against a successful compaction because there has not been one — ANSWERED, no change: 20,000 is the convergent constant across Cline (DEFAULT_PRESERVE_RECENT_TOKENS) and Codex (COMPACT_USER_MESSAGE_MAX_TOKENS). Our 13% retention is a consequence of a larger budget, not aggression; published work suggests less retention performs better
+- [x] 7.4 Consider whether compaction failure should surface as a task event, not only a log line — likely belongs in `context-usage-visibility` — SUPERSEDED: carried into the context-usage-visibility change
