@@ -44,7 +44,7 @@ Covers what the structural fix cannot: constraints arriving mid-task from a skil
 
 ## 7. Ship
 
-- [ ] 7.1 Commit, push, open a PR
+- [x] 7.1 Commit, push, open a PR — [#238](https://github.com/errand-ai/errand-ai/pull/238)
 - [ ] 7.2 CI green
 - [ ] 7.3 Deploy and run 6.3 against the deployment
 - [ ] 7.4 Merge, delete branch
