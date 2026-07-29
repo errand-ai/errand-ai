@@ -53,6 +53,10 @@ The concrete case is from this repository's own use: the GetBookable review task
 
 **Preserving the prompt can look like the problem is solved** → It covers prompt-borne constraints only. Skill-borne and mid-task constraints remain exposed, and the non-goal above should not get lost when this ships.
 
+**The compaction trigger can be reached too late to help** → Found while attempting 6.3, and unrelated to this change's own logic. `_estimate_tokens` is `len(json.dumps(messages)) // 3`. JSON-escaped source code tokenises closer to ~2 chars/token, so the estimate under-counts: compaction fires at an *estimated* 150,000 tokens, which for that content is nearer 225,000 real tokens. On `claude-sonnet-4-5` via Bedrock (200k window) the provider rejected the request — `litellm.ContextWindowExceededError: BedrockException: Input is too long` — **before compaction ever ran**. On that arithmetic no amount of preservation or chaining helps, because the request never reaches the model.
+
+This makes `context-usage-visibility` a correctness change rather than an observability one: an estimate that errs low means `MAX_CONTEXT_TOKENS` does not bound what the provider actually receives. It is also the likely mechanism behind the "model gets stuck under heavy context" reports that prompted this line of work. Not in scope here, but it blocks empirical verification on any model whose real window sits near the configured limit.
+
 **Verification is not a unit test** → "The constraint survived" is checkable structurally (is `messages[0]` still present and unmodified after compaction?) and that part is testable. Whether a *summarised* constraint survived is a model-behaviour question, only answerable empirically — the same way `fix-context-compaction` was confirmed.
 
 ## Migration Plan
