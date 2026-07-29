@@ -8,7 +8,9 @@ import pytest
 
 from main import (
     COMPACTION_SUMMARY_PREFIX,
+    FIRST_COMPACTION_PROMPT,
     KEEP_RECENT_TOKENS,
+    MERGE_COMPACTION_PROMPT,
     _compaction_backoff,
     _compaction_summary,
     _estimate_tokens,
@@ -98,7 +100,7 @@ def test_compaction_triggers_and_produces_summary():
         result = _compact_context(messages)
 
     assert len(result) < len(messages)
-    first = result[0]
+    first = result[1]
     assert first["role"] == "user"
     assert first["content"].startswith(COMPACTION_SUMMARY_PREFIX)
     assert "<summary>" in first["content"]
@@ -637,7 +639,7 @@ def test_backoff_resets_after_a_success():
         _reset_compaction_backoff()           # simulate the reset path
         result = _compact_context(_big_messages())
 
-    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert result[1]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
 
 
 def test_successful_compaction_clears_backoff_state():
@@ -697,7 +699,7 @@ def test_compaction_success_is_visible_at_warning(caplog):
          caplog.at_level("WARNING"):
         result = _compact_context(_big_messages())
 
-    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert result[1]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
     assert "compaction complete" in caplog.text.lower(), (
         "a successful compaction must be observable at the production log level"
     )
@@ -827,8 +829,8 @@ def test_retained_portion_never_begins_with_an_orphaned_output():
          patch.dict(os.environ, _BASE_ENV, clear=True):
         result = _compact_context(messages)
 
-    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
-    assert result[1].get("type") != "function_call_output", (
+    assert result[1]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert result[2].get("type") != "function_call_output", (
         "retained portion starts with a tool result whose call was summarised away"
     )
 
@@ -861,14 +863,19 @@ def test_compaction_proceeds_when_snapping_retains_less_than_keep_recent():
          patch.dict(os.environ, _BASE_ENV, clear=True):
         result = _compact_context(messages)
 
-    assert result == [result[0], messages[-1]]
-    assert _estimate_tokens(result[1:]) < KEEP_RECENT_TOKENS
+    # Preserved prompt, then the summary, then only the short tail.
+    assert result == [messages[0], result[1], messages[-1]]
+    assert _estimate_tokens(result[2:]) < KEEP_RECENT_TOKENS
 
 
 # ---------------------------------------------------------------------------
 # Held summary state: repeated compactions merge rather than re-summarising the
 # whole prefix (reduce-compaction-recomputation tasks 3.1-3.5, 4.1)
 # ---------------------------------------------------------------------------
+
+def _summary_message_text(inner: str) -> str:
+    return COMPACTION_SUMMARY_PREFIX + "\n\n<summary>\n" + inner + "\n</summary>"
+
 
 def _prompt_sent(mock_client) -> str:
     return mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
@@ -1035,7 +1042,7 @@ def test_file_lists_carry_forward_across_a_held_state_merge():
     ]
     result, _ = _compact_with(second)
 
-    summary = result[0]["content"]
+    summary = result[1]["content"]
     assert "/workspace/early.py" in summary, "file list from the previous summary was dropped"
     assert "/workspace/later.py" in summary, "file list from the new messages was dropped"
 
@@ -1053,4 +1060,147 @@ def test_nothing_new_reuses_the_held_summary_without_an_llm_call():
         result = _compact_context(messages)
 
     mock_client.chat.completions.create.assert_not_called()
-    assert held in result[0]["content"]
+    assert held in result[1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# The initial task prompt survives compaction
+# (pin-constraints-across-compaction tasks 3.x, 4.x, 5.x)
+# ---------------------------------------------------------------------------
+
+_PROMPT_TEXT = "Do not open pull requests, push commits, or modify the repository."
+
+
+def _messages_with_real_prompt(n: int = 10, first: str = _PROMPT_TEXT) -> list:
+    msgs = [_make_user_msg(first)]
+    for _ in range(n - 1):
+        msgs.append(_make_assistant_msg("x" * 60_000))
+    return msgs
+
+
+def test_first_message_is_present_and_byte_identical_after_compaction():
+    """The task's own instructions must not depend on what the summariser kept."""
+    _reset_compaction_summary()
+    messages = _messages_with_real_prompt()
+    original = dict(messages[0])
+
+    result, _ = _compact_with(messages)
+
+    assert result[0] == original
+
+
+def test_the_summary_follows_the_preserved_prompt():
+    _reset_compaction_summary()
+    result, _ = _compact_with(_messages_with_real_prompt())
+
+    assert result[1]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+
+
+def test_first_message_is_not_sent_for_summarisation():
+    """Preserved verbatim means excluded from the summarised portion, not merely
+    duplicated ahead of it — otherwise it is paraphrased and pinned at once."""
+    _reset_compaction_summary()
+    _, client = _compact_with(_messages_with_real_prompt())
+
+    assert _PROMPT_TEXT not in _prompt_sent(client)
+
+
+def test_a_large_first_message_is_preserved_in_full():
+    """Truncating a constraint mid-sentence is the exact failure this prevents."""
+    _reset_compaction_summary()
+    big_prompt = _PROMPT_TEXT + " " + "detail " * 8_000
+    messages = _messages_with_real_prompt(first=big_prompt)
+
+    result, _ = _compact_with(messages)
+
+    assert result[0]["content"] == big_prompt
+
+
+def test_trimming_and_compaction_agree_about_the_first_message():
+    """Both context-management paths must treat the prompt as load-bearing."""
+    _reset_compaction_summary()
+    messages = _messages_with_real_prompt()
+
+    trimmed = _trim_context_window(messages)
+    compacted, _ = _compact_with(messages)
+
+    assert trimmed[0] == messages[0]
+    assert compacted[0] == messages[0]
+
+
+def test_preservation_is_logged_at_warning(caplog):
+    """Production runs above INFO; a task that lost its prompt must be detectable."""
+    _reset_compaction_summary()
+    with caplog.at_level("WARNING"):
+        _compact_with(_messages_with_real_prompt())
+
+    assert "preserv" in caplog.text.lower()
+
+
+def test_both_compaction_prompts_ask_for_constraints():
+    """Covers constraints arriving after the first message — from a skill, a tool
+    result, or a follow-up — which preservation cannot protect."""
+    for prompt in (FIRST_COMPACTION_PROMPT, MERGE_COMPACTION_PROMPT):
+        lowered = prompt.lower()
+        assert "constraint" in lowered
+        assert "original wording" in lowered
+
+
+def test_a_conversation_without_constraints_still_summarises_normally():
+    _reset_compaction_summary()
+    result, _ = _compact_with(_big_messages())
+
+    assert result[1]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert "## Goal" in result[1]["content"]
+
+
+def test_the_clamp_reserves_room_for_the_preserved_prompt():
+    """With messages[0] reserved the lower bound is 2, not 1.
+
+    At 1 the summarised portion would be `messages[1:1]` — empty — and
+    compaction would spend an LLM call summarising nothing.
+
+    The fixture must make the token walk itself return `split_idx == 1`, so the
+    clamp is what raises it to 2. That needs a LARGE `messages[0]` with the
+    remaining messages small enough to fit inside `KEEP_RECENT_TOKENS`: walking
+    backwards, the tail messages accumulate cheaply and `messages[0]` is the one
+    that busts the budget, giving `split_idx = 0 + 1`. An earlier version of
+    this test put the large message in the middle, which made the walk return 2
+    on its own — so `max(1, ...)` and `max(2, ...)` agreed and the test pinned
+    nothing.
+    """
+    _reset_compaction_summary()
+    messages = [
+        _make_user_msg(_PROMPT_TEXT + " " + "pad " * 115_000),
+        _make_assistant_msg("MARKER-MIDDLE small message"),
+        _make_assistant_msg("tail"),
+    ]
+
+    _, client = _compact_with(messages)
+
+    # split_idx == 2 means messages[1] is summarised. Under the old lower bound
+    # of 1 there would be nothing to summarise at all.
+    sent = _prompt_sent(client)
+    assert "MARKER-MIDDLE" in sent, (
+        "summarised portion was empty — the clamp did not reserve room for the "
+        "preserved prompt"
+    )
+    assert _PROMPT_TEXT not in sent
+
+
+def test_a_summary_at_position_zero_is_not_treated_as_the_prompt():
+    """A summary there means the real prompt was already summarised away.
+
+    Preserving it verbatim would pin a summary permanently and stop it ever
+    being merged again — worse than not preserving at all.
+    """
+    _reset_compaction_summary()
+    prior = _summary_message_text("## Goal\nOld goal\n")
+    messages = [{"role": "user", "content": prior}]
+    for _ in range(8):
+        messages.append(_make_assistant_msg("y" * 62_000))
+
+    result, client = _compact_with(messages)
+
+    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert "Old goal" in _prompt_sent(client), "the stale summary was pinned instead of merged"
