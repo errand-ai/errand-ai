@@ -57,9 +57,9 @@ The only item here that can fail a live task rather than merely cost time. Indep
 
 - [x] 7.1 Commit, push, open a PR — [#237](https://github.com/errand-ai/errand-ai/pull/237), three commits: split fix, summary chaining, scope confirmation
 - [x] 7.2 CI green — all 13 checks pass (test, version, helm, four build jobs, CodeQL + three analyses, validate-specs, claude-review); `mergeStateStatus: CLEAN`. No review findings posted: `claude-review` passed without comment, and the Copilot reviewer was quota-blocked rather than clean, so treat it as no signal either way
-- [ ] 7.3 Deploy and run 6.4 against the deployment
+- [x] 7.3 Deploy and run 6.4 against the deployment — ArgoCD deployed `0.143.0-pr237.1075` (SHA `b71fc3e`); 6.4 verified against it
 - [ ] 7.4 Merge, delete branch
-- [ ] 7.5 Archive the change so its deltas reach `openspec/specs/` — `fix-context-compaction` was merged without archiving and left the main specs stale for a day
+- [x] 7.5 Archive the change so its deltas reach `openspec/specs/` — archived **on the branch, before merge**, so PR #237 carries implementation and archive together. `fix-context-compaction` was merged without archiving and left the main specs stale for a day, which forced this branch to be reconstructed
 
 ## 8. Deliberately not addressed
 

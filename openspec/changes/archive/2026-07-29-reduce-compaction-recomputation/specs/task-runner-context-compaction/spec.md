@@ -3,7 +3,7 @@
 ### Requirement: Iterative compaction via summary merging
 The task runner SHALL merge new context into an existing compaction summary on subsequent compactions rather than re-summarizing from scratch.
 
-The previous summary SHALL be held in the task runner's own state, together with a record of exactly which messages it covered. It SHALL NOT be detected by searching the conversation for a summary marker: the compacted message list is not persisted by the agent framework, so no later compaction ever observes a prior summary in the history, and detection by marker cannot succeed.
+The previous summary SHALL be held in the task runner's own state, together with a record of exactly which messages it covered. The task runner SHALL NOT depend on detecting a prior summary by searching the conversation for a marker: the agent framework does not write the compacted message list back into the conversation, so a later compaction cannot rely on observing one. A marker check MAY be retained as a fallback for a summary that reaches the history by some other route, but it SHALL NOT be the primary mechanism.
 
 The record SHALL identify the covered messages by their content, not by index or count. Indices shift as the framework rebuilds the message list between turns, and a count does not establish identity.
 
