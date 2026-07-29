@@ -43,7 +43,7 @@ The only item here that can fail a live task rather than merely cost time. Indep
 
 ## 7. Ship
 
-- [ ] 7.1 Commit, push, open a PR
+- [x] 7.1 Commit, push, open a PR — [#237](https://github.com/errand-ai/errand-ai/pull/237), three commits: split fix, summary chaining, scope confirmation
 - [ ] 7.2 CI green
 - [ ] 7.3 Deploy and run 6.4 against the deployment
 - [ ] 7.4 Merge, delete branch
