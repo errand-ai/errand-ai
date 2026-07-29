@@ -30,6 +30,12 @@ Preserving the message verbatim SHALL be preferred over extracting and re-inject
 - **WHEN** the first message is large enough that preserving it consumes a significant share of the budget
 - **THEN** it is preserved in full and not truncated
 
+#### Scenario: A compaction summary at the first position is not preserved
+- **WHEN** the first message is itself a compaction summary rather than an initial prompt
+- **THEN** it SHALL NOT be preserved verbatim, and SHALL remain eligible for merging
+
+Preserving it would pin a summary permanently and stop it ever being updated, which is worse than not preserving. A summary in that position means the original prompt was already summarised away, so there is nothing left to protect.
+
 #### Scenario: Consistency with trimming
 
 - **WHEN** the same conversation is trimmed instead of compacted

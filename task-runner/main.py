@@ -668,6 +668,11 @@ Concrete actions remaining to complete the goal.
 ## Critical Context
 Important facts, constraints, or context the agent must remember.
 
+## Constraints
+Any prohibitions, approval requirements, or scope limits stated in the conversation. \
+Record each one in its ORIGINAL WORDING rather than paraphrasing it, and prefer \
+including a borderline item over omitting it. Leave this section empty if there are none.
+
 ---
 {conversation}"""
 
@@ -684,6 +689,12 @@ The merged summary must have exactly these sections:
 ## Key Decisions
 ## Next Steps
 ## Critical Context
+## Constraints
+
+Under Constraints, carry forward every prohibition, approval requirement, and scope limit \
+from both the existing summary and the new content, in its ORIGINAL WORDING rather than \
+paraphrased. Never drop a constraint when merging; prefer keeping a borderline item over \
+omitting it. Leave the section empty if there are none.
 
 ---
 Existing summary:
@@ -1871,8 +1882,10 @@ def _compact_context(messages: list) -> list:
     else:
         split_idx = 1
 
-    # Ensure at least one message is summarized and at least one is kept
-    split_idx = max(1, min(split_idx, len(messages) - 1))
+    # messages[0] is reserved, so the lower bound is 2: one message preserved,
+    # at least one summarized, at least one kept. len(messages) > 2 is
+    # guaranteed above, so this cannot exceed the upper bound.
+    split_idx = max(2, min(split_idx, len(messages) - 1))
 
     # Never cut between a tool call and its result. Snapping happens after the
     # clamp and preserves its guarantee: it stops at len-1, so "at least one
@@ -1886,7 +1899,28 @@ def _compact_context(messages: list) -> list:
         )
         split_idx = snapped_idx
 
-    to_summarize = messages[:split_idx]
+    # The initial task prompt is carried through verbatim rather than
+    # summarized. It holds the task's own instructions — prohibitions and scope
+    # limits included — and these tasks run unattended with tools that post to
+    # Slack, send mail and push to git. Leaving their survival to the
+    # summariser's discretion is the failure this prevents. _trim_context_window
+    # already makes the same guarantee; compaction not doing so was an
+    # inconsistency, not a decision.
+    # A compaction summary occupying position 0 is not an initial prompt — the
+    # real prompt was summarised away before this change existed, or arrived by
+    # some other route. Preserving it verbatim would pin a summary permanently
+    # and stop it ever being merged again, which is worse than not preserving.
+    if _is_compaction_summary(messages[0]):
+        preserved = []
+        to_summarize = messages[:split_idx]
+    else:
+        preserved = [messages[0]]
+        to_summarize = messages[1:split_idx]
+        logger.warning(
+            "Context compaction preserved the initial prompt verbatim (~%d tokens, "
+            "excluded from summarisation)",
+            _estimate_tokens(preserved),
+        )
     to_keep = messages[split_idx:]
 
     # Prefer the held summary. The marker path below can only fire if a summary
@@ -1905,7 +1939,7 @@ def _compact_context(messages: list) -> list:
                 "Context compaction reused held summary unchanged: no new messages "
                 "beyond the %d it already covers", len(to_summarize),
             )
-            return [_summary_message(existing_msg_content)] + list(to_keep)
+            return preserved + [_summary_message(existing_msg_content)] + list(to_keep)
     else:
         is_subsequent = bool(to_summarize) and _is_compaction_summary(to_summarize[0])
         if is_subsequent:
@@ -2034,7 +2068,7 @@ def _compact_context(messages: list) -> list:
 
     _hold_summary(summary_text, to_summarize)
 
-    compacted = [_summary_message(summary_text)] + list(to_keep)
+    compacted = preserved + [_summary_message(summary_text)] + list(to_keep)
     estimated_after = _estimate_tokens(compacted)
     # The mode belongs in the log. Without it, "did chaining actually engage?"
     # is answerable only by inferring from call timings — the same position that
