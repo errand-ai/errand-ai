@@ -51,8 +51,8 @@ The only item here that can fail a live task rather than merely cost time. Indep
 
 ## 8. Deliberately not addressed
 
-- [ ] 8.1 Making compaction persist across turns. The SDK does not support it: `call_model_input_filter` is per-call by construction, sessions are read once before the turn loop, and maintainers have declined to add a provider-agnostic equivalent (issue #2671 remains open)
-- [ ] 8.2 The overflow-retry architecture (strix, koder, Datus) — compact between runs and restart `Runner` with the compacted history. The only approach that genuinely persists, and errand is closer to it than expected since it already retries around `Runner.run_streamed()`. Its own change
-- [ ] 8.3 Evicting reconstructible tool outputs before summarising — the Manus tiering, and `agents.extensions.ToolOutputTrimmer` (undocumented, provider-agnostic). Probably higher value than anything here, since errand's context is dominated by large file reads. Its own change
-- [ ] 8.4 Changing `KEEP_RECENT_TOKENS`. Settled: 20,000 is the convergent constant across Cline and Codex
-- [ ] 8.5 A forced full re-summarisation every N merges, to bound drift. No published guidance found on where that threshold should sit; add a generation counter if quality degradation is observed
+- [x] 8.1 Making compaction persist across turns. The SDK does not support it: `call_model_input_filter` is per-call by construction, sessions are read once before the turn loop, and maintainers have declined to add a provider-agnostic equivalent (issue #2671 remains open)
+- [x] 8.2 The overflow-retry architecture (strix, koder, Datus) — compact between runs and restart `Runner` with the compacted history. The only approach that genuinely persists, and errand is closer to it than expected since it already retries around `Runner.run_streamed()`. Its own change
+- [x] 8.3 Evicting reconstructible tool outputs before summarising — the Manus tiering, and `agents.extensions.ToolOutputTrimmer` (undocumented, provider-agnostic). Probably higher value than anything here, since errand's context is dominated by large file reads. Its own change
+- [x] 8.4 Changing `KEEP_RECENT_TOKENS`. Settled: 20,000 is the convergent constant across Cline and Codex
+- [x] 8.5 A forced full re-summarisation every N merges, to bound drift. No published guidance found on where that threshold should sit; add a generation counter if quality degradation is observed
