@@ -1724,6 +1724,33 @@ def _describe_reasoning_field(response) -> str:
     return "absent"
 
 
+def _snap_split_forward(messages: list, split_idx: int) -> int:
+    """Move a compaction split forward until it no longer orphans a tool result.
+
+    A `function_call_output` at the head of the retained portion always has its
+    `function_call` in the summarised portion — calls precede their outputs — so
+    it is orphaned by construction. That makes a type check sufficient here; no
+    `call_id` lookup is needed, which matters because the id is not always
+    present on reconstructed history.
+
+    Forward, never backward. Moving the boundary later cuts deeper and is merely
+    lossy. Moving it earlier would retain a larger tail and could leave the
+    conversation still above the limit after a compaction that reported success
+    — a silent failure rather than a visible one.
+
+    At least one message is always kept, so a run of outputs at the very end
+    cannot consume the entire conversation.
+    """
+    limit = len(messages) - 1
+    while split_idx < limit and _is_function_call_output(messages[split_idx]):
+        split_idx += 1
+    return split_idx
+
+
+def _is_function_call_output(message) -> bool:
+    return isinstance(message, dict) and message.get("type") == "function_call_output"
+
+
 def _is_compaction_summary(message: dict) -> bool:
     """Return True if message is a compaction summary (identified by prefix marker)."""
     if not isinstance(message, dict):
@@ -1778,6 +1805,18 @@ def _compact_context(messages: list) -> list:
 
     # Ensure at least one message is summarized and at least one is kept
     split_idx = max(1, min(split_idx, len(messages) - 1))
+
+    # Never cut between a tool call and its result. Snapping happens after the
+    # clamp and preserves its guarantee: it stops at len-1, so "at least one
+    # summarized, at least one kept" still holds.
+    snapped_idx = _snap_split_forward(messages, split_idx)
+    if snapped_idx != split_idx:
+        logger.warning(
+            "Context compaction split moved forward %d -> %d to avoid orphaning "
+            "a tool result from its call",
+            split_idx, snapped_idx,
+        )
+        split_idx = snapped_idx
 
     to_summarize = messages[:split_idx]
     to_keep = messages[split_idx:]

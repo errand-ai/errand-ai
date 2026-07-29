@@ -8,13 +8,16 @@ import pytest
 
 from main import (
     COMPACTION_SUMMARY_PREFIX,
+    KEEP_RECENT_TOKENS,
     _compaction_backoff,
+    _estimate_tokens,
     _compact_context,
     _extract_file_operations,
     _format_file_lists,
     _is_compaction_summary,
     _reset_compaction_backoff,
     _serialize_messages_for_summary,
+    _snap_split_forward,
     _trim_context_window,
 )
 
@@ -724,3 +727,133 @@ def test_compaction_skipped_is_visible_at_warning(caplog):
         _compact_context(_big_messages())
 
     assert "compaction skipped" in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Split-point safety: a compaction boundary must never separate a
+# function_call from its function_call_output (reduce-compaction-recomputation
+# tasks 2.1-2.4)
+# ---------------------------------------------------------------------------
+
+def test_split_moved_forward_off_a_tool_pair_boundary():
+    """A split landing between a call and its output moves past the output.
+
+    Forward, not backward: cutting deeper is merely lossy, whereas retaining a
+    larger tail can leave the conversation still over the limit after a
+    compaction that reported success.
+    """
+    messages = [
+        _make_user_msg("initial"),
+        _make_assistant_msg("thinking"),
+        _make_tool_call("read_file", {"path": "a.txt"}),
+        _make_tool_result("file contents"),
+        _make_assistant_msg("done"),
+    ]
+    # Boundary sits between the call (index 2) and its output (index 3).
+    assert _snap_split_forward(messages, 3) == 4
+
+
+def test_split_moves_past_several_parallel_tool_outputs():
+    """Parallel tool calls produce consecutive outputs; all must move together."""
+    messages = [
+        _make_user_msg("initial"),
+        _make_tool_call("a", {}),
+        _make_tool_call("b", {}),
+        _make_tool_result("out a"),
+        _make_tool_result("out b"),
+        _make_assistant_msg("done"),
+    ]
+    assert _snap_split_forward(messages, 3) == 5
+
+
+def test_split_at_a_safe_boundary_is_left_alone():
+    """A boundary that orphans nothing must not be moved."""
+    messages = [
+        _make_user_msg("initial"),
+        _make_tool_call("a", {}),
+        _make_tool_result("out a"),
+        _make_assistant_msg("done"),
+        _make_user_msg("next"),
+    ]
+    assert _snap_split_forward(messages, 3) == 3
+
+
+def test_split_forward_stops_before_consuming_every_message():
+    """Degenerate case: snapping must still leave at least one message kept.
+
+    Otherwise the clamp that guarantees "at least one kept" would hand back a
+    boundary the snap had just rejected.
+    """
+    messages = [
+        _make_user_msg("initial"),
+        _make_tool_call("a", {}),
+        _make_tool_result("out a"),
+        _make_tool_result("out b"),
+    ]
+    assert _snap_split_forward(messages, 2) == len(messages) - 1
+
+
+def _messages_splitting_on_a_tool_pair() -> list:
+    """Build a conversation whose natural split falls between a call and its output.
+
+    The sizes matter and are not arbitrary. Walking backwards from the end:
+    the tail (~16 tokens) and the output (~19,016 tokens) both fit inside
+    KEEP_RECENT_TOKENS, but the call's large arguments (~1,340 tokens) push the
+    running total past 20,000 — so the boundary lands between the call and the
+    output it belongs to. A small call would simply fit, and the bug would not
+    reproduce.
+    """
+    messages = [_make_user_msg("initial task")]
+    for _ in range(9):
+        messages.append(_make_assistant_msg("x" * 60_000))
+    messages.append(_make_tool_call("write_file", {"path": "big.txt", "content": "z" * 4_000}))
+    messages.append(_make_tool_result("y" * 57_000))
+    messages.append(_make_assistant_msg("short tail"))
+    return messages
+
+
+def test_retained_portion_never_begins_with_an_orphaned_output():
+    """End-to-end: the message after the summary is never a stray tool result."""
+    messages = _messages_splitting_on_a_tool_pair()
+
+    mock_client = _mock_openai_response("## Goal\nsummary\n")
+    with patch("main.OpenAI", return_value=mock_client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        result = _compact_context(messages)
+
+    assert result[0]["content"].startswith(COMPACTION_SUMMARY_PREFIX)
+    assert result[1].get("type") != "function_call_output", (
+        "retained portion starts with a tool result whose call was summarised away"
+    )
+
+
+def test_the_summarised_portion_keeps_the_pair_together():
+    """The output must follow its call into the summary, not vanish between them."""
+    messages = _messages_splitting_on_a_tool_pair()
+
+    mock_client = _mock_openai_response("## Goal\nsummary\n")
+    with patch("main.OpenAI", return_value=mock_client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        _compact_context(messages)
+
+    sent = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "[TOOL CALL: write_file]" in sent
+    assert "[TOOL RESULT]" in sent
+
+
+def test_compaction_proceeds_when_snapping_retains_less_than_keep_recent():
+    """Moving past a large pair retains little; compaction still runs.
+
+    Snapping forward here leaves only the short tail — far below
+    KEEP_RECENT_TOKENS. Refusing to compact would leave the conversation over
+    the limit, which is worse than retaining less than the constant suggests.
+    """
+    messages = _messages_splitting_on_a_tool_pair()
+
+    mock_client = _mock_openai_response("## Goal\nsummary\n")
+    with patch("main.OpenAI", return_value=mock_client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        result = _compact_context(messages)
+
+    assert result == [result[0], messages[-1]]
+    assert _estimate_tokens(result[1:]) < KEEP_RECENT_TOKENS

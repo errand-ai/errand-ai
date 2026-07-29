@@ -7,8 +7,8 @@
 
 Both this and `reduce-compaction-recomputation` edit the split in `_compact_context`. Settle the order before writing code, not after.
 
-- [ ] 2.1 Decide which of the two lands first and record it in both changes. They are compatible in principle — one constrains where the split may fall (never between a `function_call` and its `function_call_output`), the other what is excluded from summarisation (`messages[0]`) — but developed blind to each other they will conflict
-- [ ] 2.2 If this one lands second, rebase onto the other before starting
+- [x] 2.1 Decide which of the two lands first and record it in both changes. They are compatible in principle — one constrains where the split may fall (never between a `function_call` and its `function_call_output`), the other what is excluded from summarisation (`messages[0]`) — but developed blind to each other they will conflict — **decided: `reduce-compaction-recomputation` lands first.** Its split-point bug can orphan a tool call from its result and fail a live task; this change costs safety margin but is not actively breaking runs. Recorded in that change's `tasks.md` §1.3
+- [ ] 2.2 If this one lands second, rebase onto the other before starting — **this one lands second**, so rebase onto `main` after `reduce-compaction-recomputation` merges. Expect to touch the same lines: that change snaps `split_idx` forward to a tool-pair boundary, this one reserves `messages[0]` from the summarised portion. Both operate on `split_idx`, so reconcile rather than reapply
 
 ## 3. Preserve the initial task prompt
 
