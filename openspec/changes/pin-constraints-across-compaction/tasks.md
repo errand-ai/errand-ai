@@ -45,7 +45,7 @@ Covers what the structural fix cannot: constraints arriving mid-task from a skil
 ## 7. Ship
 
 - [x] 7.1 Commit, push, open a PR — [#238](https://github.com/errand-ai/errand-ai/pull/238)
-- [ ] 7.2 CI green
+- [x] 7.2 CI green — all 13 checks pass, `mergeStateStatus: CLEAN`
 - [ ] 7.3 Deploy and run 6.3 against the deployment
 - [ ] 7.4 Merge, delete branch
 - [ ] 7.5 Archive the change so its deltas reach `openspec/specs/` — `fix-context-compaction` was merged without archiving and left the main specs stale for a day
