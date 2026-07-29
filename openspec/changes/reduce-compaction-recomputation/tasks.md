@@ -17,28 +17,28 @@ The only item here that can fail a live task rather than merely cost time. Indep
 
 ## 3. Summary state
 
-- [ ] 3.1 Write failing tests first: a held summary matching the messages triggers the merge prompt; only messages beyond the covered prefix are sent; a content mismatch falls back to a full summarisation; no held summary falls back to a full summarisation
-- [ ] 3.2 Write a failing test that the held summary is cleared on agent retry, as `_compaction_backoff` is
-- [ ] 3.3 Add the summary record alongside `_compaction_backoff` — summary text plus a digest of exactly what it covered — with the same per-attempt reset
-- [ ] 3.4 Key the record on **content**, not index or message count. Indices shift as the SDK rebuilds the list between turns and a count establishes nothing about identity. This is the change's main hazard: a stale summary spliced in front of unrelated messages misrepresents history with no error raised
-- [ ] 3.5 Fall back to full summarisation on any doubt — mismatch, missing record, post-reset. An unnecessary full pass costs 30 seconds; a wrong merge costs correctness
+- [x] 3.1 Write failing tests first: a held summary matching the messages triggers the merge prompt; only messages beyond the covered prefix are sent; a content mismatch falls back to a full summarisation; no held summary falls back to a full summarisation
+- [x] 3.2 Write a failing test that the held summary is cleared on agent retry, as `_compaction_backoff` is
+- [x] 3.3 Add the summary record alongside `_compaction_backoff` — `_compaction_summary` holds the summary text, a digest of what it covered, and the prefix length; `_reset_compaction_summary()` is called next to `_reset_compaction_backoff()` per agent attempt
+- [x] 3.4 Key the record on **content**, not index or message count — SHA-256 over the serialised covered prefix. `covered_count` is stored but is only a slicing hint; it is never trusted until the digest agrees, so a tampered message at the same position cannot pass
+- [x] 3.5 Fall back to full summarisation on any doubt — mismatch, missing record, post-reset. `_match_held_summary` returns `None` on each and the caller takes the first-compaction path
 
 ## 4. Make the merge path live
 
-- [ ] 4.1 Route to `MERGE_COMPACTION_PROMPT` when a held summary matches, using the existing `_is_compaction_summary` logic only where it still applies
-- [ ] 4.2 Treat `MERGE_COMPACTION_PROMPT` as **unproven code**. It is specified and unit-tested against synthetic input but has never executed in production, because the marker it depends on is never present. Review and test it as new, not as existing behaviour
-- [ ] 4.3 Confirm the file-operation tracking requirement still holds across a merge — `File operation tracking across compactions` specifies that merged summaries carry file lists from both sides
+- [x] 4.1 Route to `MERGE_COMPACTION_PROMPT` when a held summary matches — the held record is checked first; the `_is_compaction_summary` marker path is retained beneath it for the case where a summary message does reach the history by some other route, and its existing test still passes
+- [x] 4.2 Treat `MERGE_COMPACTION_PROMPT` as **unproven code** — covered by 7 new tests exercising it through `_compact_context` rather than by calling the formatter: merge routing, prefix exclusion, mismatch fallback, retry clearing, file carry-forward, mode logging, and the no-new-messages short circuit. Still unproven against a *real* model; that is task 6.4
+- [x] 4.3 Confirm the file-operation tracking requirement still holds across a merge — `test_file_lists_carry_forward_across_a_held_state_merge`. The held summary is stored **with** its file blocks attached, so `_format_file_lists` can read them back; the merge prompt strips them, exactly as the marker path did. First draft of this test failed for its own reason — a trailing tool call sits in the retained tail and is never summarised, so it never reaches the file lists
 
 ## 5. Observability
 
-- [ ] 5.1 Log merge-versus-full at `WARNING`, so whether chaining engaged is readable rather than inferred from call timings
-- [ ] 5.2 Write a test that both lines survive a `WARNING`-configured runner
+- [x] 5.1 Log merge-versus-full at `WARNING` — the completion line now carries the mode and both counts: `Context compaction complete (merge): ... (2 of 11 messages sent to the model)`. The two counts are the saving, stated rather than inferred
+- [x] 5.2 Write a test that both lines survive a `WARNING`-configured runner — `test_merge_and_full_paths_are_distinguishable_at_warning`
 
 ## 6. Verify
 
-- [ ] 6.1 Full task-runner suite green
-- [ ] 6.2 Drive two compactions in one run and confirm the second is a merge, sending only the new messages
-- [ ] 6.3 Confirm a mismatch genuinely falls back rather than merging anyway — the failure this design fears most is the one that raises no error
+- [x] 6.1 Full task-runner suite green — 321 pass (301 baseline + 20 new)
+- [x] 6.2 Drive two compactions in one run and confirm the second is a merge, sending only the new messages — `test_second_compaction_merges_when_the_held_summary_matches` and `test_merge_sends_only_the_messages_beyond_the_covered_prefix`, both driving `_compact_context` twice with the SDK's rebuild simulated (original messages returned, plus new turns)
+- [x] 6.3 Confirm a mismatch genuinely falls back rather than merging anyway — `test_the_digest_is_what_rejects_a_mismatch` is a mutation guard: with `_digest_messages` neutralised across **both** compactions, the tampered history *is* merged onto. That the outcome flips is the evidence the check does the work rather than the merge path simply never engaging
 - [ ] 6.4 Deploy and confirm via Loki: `{app="task-runner"} |= "Context compaction"` should show one full summarisation followed by merges, where the baseline showed four full summarisations in 104 seconds each re-covering the same 49 messages
 
 ## 7. Ship

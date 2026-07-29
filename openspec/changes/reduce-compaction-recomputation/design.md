@@ -51,6 +51,8 @@ Two further facts shape the work:
 
 **Collision with `pin-constraints-across-compaction`** → Both edit the split. That change excludes `messages[0]` from summarisation; this one constrains where the boundary may fall. Compatible in principle, conflicting in practice if developed in parallel.
 
+**Screenshot-heavy tasks will not benefit** → Found during implementation. `_strip_screenshots` runs ahead of `_compact_context` on every turn and replaces the *oldest* screenshots once more than `MAX_RETAINED_SCREENSHOTS` exist. Which images qualify shifts as new ones arrive, so a message inside the covered prefix can be rewritten between compactions. The digest then disagrees and the merge falls back to a full summarisation — correct, but the saving is lost precisely in the tasks whose context grows fastest. Making the digest ignore screenshot placeholders would recover it, at the cost of a digest that no longer covers the full content. Not attempted here.
+
 **Merging drifts** → Each merge summarises a summary. Over many compactions detail erodes in ways a single full summarisation would not. Cline and OpenHands both accept this, and it is the standard trade, but a very long task may end up working from a summary several generations removed from events.
 
 ## Migration Plan

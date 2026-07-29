@@ -10,8 +10,10 @@ from main import (
     COMPACTION_SUMMARY_PREFIX,
     KEEP_RECENT_TOKENS,
     _compaction_backoff,
+    _compaction_summary,
     _estimate_tokens,
     _compact_context,
+    _reset_compaction_summary,
     _extract_file_operations,
     _format_file_lists,
     _is_compaction_summary,
@@ -28,18 +30,22 @@ from main import (
 
 @pytest.fixture(autouse=True)
 def _clear_compaction_backoff():
-    """Compaction backoff is module-level state and leaks between tests.
+    """Compaction backoff and the held summary are module-level state.
 
-    Without this, a test that provokes a failure suppresses compaction in the
-    next test, which then sees no LLM call and no log output.
+    Both leak between tests. A test that provokes a failure would otherwise
+    suppress compaction in the next one, which then sees no LLM call and no log
+    output; a test that leaves a held summary would send the next one down the
+    merge path — or short-circuit it entirely, with no LLM call to inspect.
 
-    `_compaction_backoff` is imported by name rather than accessed through the
-    module. That is only safe because it is mutated in place and never
-    reassigned — a rebind in main.py would leave this reference stale.
+    Both dicts are imported by name rather than through the module. That is only
+    safe because they are mutated in place and never reassigned — a rebind in
+    main.py would leave these references stale.
     """
     _reset_compaction_backoff()
+    _reset_compaction_summary()
     yield
     _reset_compaction_backoff()
+    _reset_compaction_summary()
 
 
 def _make_user_msg(content: str) -> dict:
@@ -857,3 +863,194 @@ def test_compaction_proceeds_when_snapping_retains_less_than_keep_recent():
 
     assert result == [result[0], messages[-1]]
     assert _estimate_tokens(result[1:]) < KEEP_RECENT_TOKENS
+
+
+# ---------------------------------------------------------------------------
+# Held summary state: repeated compactions merge rather than re-summarising the
+# whole prefix (reduce-compaction-recomputation tasks 3.1-3.5, 4.1)
+# ---------------------------------------------------------------------------
+
+def _prompt_sent(mock_client) -> str:
+    return mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+
+
+def _compact_with(messages: list, summary: str = "## Goal\nsummary\n"):
+    mock_client = _mock_openai_response(summary)
+    with patch("main.OpenAI", return_value=mock_client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        result = _compact_context(messages)
+    return result, mock_client
+
+
+def test_no_held_summary_uses_the_full_summarisation_prompt():
+    _reset_compaction_summary()
+    _, client = _compact_with(_big_messages())
+    assert "Existing summary:" not in _prompt_sent(client)
+
+
+def test_second_compaction_merges_when_the_held_summary_matches():
+    """The whole point: a repeat compaction must not re-summarise the prefix.
+
+    The SDK rebuilds history from its own items every turn, so the second
+    compaction sees the original messages again, not the compacted list. The
+    held record is what makes the merge path reachable at all.
+    """
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    _compact_with(first)
+
+    # Next turn: the SDK hands back the original conversation, plus new turns.
+    second = first + [_make_assistant_msg("z" * 60_000), _make_assistant_msg("new work")]
+    _, client = _compact_with(second)
+
+    assert "Existing summary:" in _prompt_sent(client)
+
+
+def test_merge_sends_only_the_messages_beyond_the_covered_prefix():
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    _compact_with(first)
+
+    # The marker sits at the head of a filler that lands beyond the covered
+    # prefix but ahead of the retained tail — i.e. in the newly-summarised
+    # range. Serialisation truncates to ~2k chars, so it must lead the content.
+    second = first + [
+        _make_assistant_msg("MARKER-NEW " + "z" * 60_000),
+        _make_assistant_msg("retained tail"),
+    ]
+    _, client = _compact_with(second)
+
+    sent = _prompt_sent(client)
+    new_conversation = sent.split("New conversation content to merge:", 1)[1]
+    assert "MARKER-NEW" in new_conversation
+    assert "initial task" not in new_conversation, (
+        "the covered prefix was re-sent — the merge saved nothing"
+    )
+
+
+def test_content_mismatch_falls_back_to_a_full_summarisation():
+    """A stale summary spliced onto unrelated messages is the failure to avoid.
+
+    It raises no error and silently misrepresents history, so any doubt must
+    take the full path.
+    """
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    _compact_with(first)
+
+    # Same shape and length, different content — a count check would pass here.
+    tampered = list(first)
+    tampered[3] = _make_assistant_msg("q" * 60_000)
+    second = tampered + [_make_assistant_msg("z" * 60_000), _make_assistant_msg("new")]
+    _, client = _compact_with(second)
+
+    assert "Existing summary:" not in _prompt_sent(client)
+
+
+def test_held_summary_is_cleared_on_agent_retry():
+    """Reset on the same boundary as the backoff, so an attempt cannot inherit
+    a summary describing the previous attempt's history."""
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    _compact_with(first)
+    assert _compaction_summary["summary"]
+
+    _reset_compaction_summary()
+
+    second = first + [_make_assistant_msg("z" * 60_000), _make_assistant_msg("new")]
+    _, client = _compact_with(second)
+    assert "Existing summary:" not in _prompt_sent(client)
+
+
+def test_a_failed_compaction_does_not_leave_a_held_summary():
+    """An empty summary is a failure; recording it would merge onto nothing."""
+    _reset_compaction_summary()
+    _, _ = _compact_with(_big_messages(), summary="")
+    assert not _compaction_summary["summary"]
+
+
+def test_merge_and_full_paths_are_distinguishable_at_warning(caplog):
+    """Whether chaining engaged must be readable, not inferred from timings."""
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    with caplog.at_level("WARNING"):
+        _compact_with(first)
+    assert "full summarisation" in caplog.text.lower()
+
+    caplog.clear()
+    second = first + [_make_assistant_msg("z" * 60_000), _make_assistant_msg("new")]
+    with caplog.at_level("WARNING"):
+        _compact_with(second)
+    assert "merge" in caplog.text.lower()
+
+
+def test_the_digest_is_what_rejects_a_mismatch():
+    """Mutation guard: neutralise the digest and the stale merge happens.
+
+    Without this, `test_content_mismatch_falls_back_to_a_full_summarisation`
+    could pass for the wrong reason — a count check, or the merge path simply
+    not engaging — and the protection would be decorative. Here the digest is
+    forced to agree, and the tampered history is merged onto after all. That it
+    changes the outcome is the evidence that the real check does the work.
+    """
+    _reset_compaction_summary()
+    first = _big_messages(10)
+    tampered = list(first)
+    tampered[3] = _make_assistant_msg("q" * 60_000)
+    second = tampered + [_make_assistant_msg("z" * 60_000), _make_assistant_msg("new")]
+
+    # The patch must span both compactions: storing a real digest and comparing
+    # a constant one would mismatch for the wrong reason and prove nothing.
+    with patch("main._digest_messages", lambda messages: "constant"):
+        _compact_with(first)
+        _, client = _compact_with(second)
+
+    assert "Existing summary:" in _prompt_sent(client), (
+        "with the digest neutralised the merge should proceed; if it does not, "
+        "the mismatch test is passing for some other reason"
+    )
+
+
+def test_file_lists_carry_forward_across_a_held_state_merge():
+    """`File operation tracking across compactions` must survive the new path.
+
+    The held summary is stored with its file blocks attached, so the next merge
+    can read them back out — the same contract the marker-based path had.
+    """
+    _reset_compaction_summary()
+    # The tool call must sit inside the summarised portion, not the retained
+    # tail — a trailing call is kept verbatim and never reaches the file lists.
+    first = [_make_user_msg("initial task")]
+    for _ in range(7):
+        first.append(_make_assistant_msg("x" * 60_000))
+    first.append(_make_tool_call("execute_command", {"command": "cat /workspace/early.py"}))
+    first.append(_make_assistant_msg("x" * 60_000))
+    _compact_with(first)
+    assert "/workspace/early.py" in _compaction_summary["summary"]
+
+    second = list(first) + [
+        _make_assistant_msg("z" * 60_000),
+        _make_tool_call("execute_command", {"command": "cat /workspace/later.py"}),
+        _make_assistant_msg("z" * 60_000),
+    ]
+    result, _ = _compact_with(second)
+
+    summary = result[0]["content"]
+    assert "/workspace/early.py" in summary, "file list from the previous summary was dropped"
+    assert "/workspace/later.py" in summary, "file list from the new messages was dropped"
+
+
+def test_nothing_new_reuses_the_held_summary_without_an_llm_call():
+    """Merging an empty conversation would spend a call to reproduce what we hold."""
+    _reset_compaction_summary()
+    messages = _big_messages(10)
+    _compact_with(messages)
+    held = _compaction_summary["summary"]
+
+    mock_client = _mock_openai_response("should not be called")
+    with patch("main.OpenAI", return_value=mock_client), \
+         patch.dict(os.environ, _BASE_ENV, clear=True):
+        result = _compact_context(messages)
+
+    mock_client.chat.completions.create.assert_not_called()
+    assert held in result[0]["content"]

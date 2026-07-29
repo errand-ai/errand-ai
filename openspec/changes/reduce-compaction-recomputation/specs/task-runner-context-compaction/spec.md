@@ -24,6 +24,10 @@ The summary state SHALL be reset on the same boundary as the compaction backoff 
 - **WHEN** a held summary covers a prefix of the messages being summarized
 - **THEN** only the messages beyond that prefix SHALL be sent for summarization
 
+#### Scenario: No new messages beyond the held summary
+- **WHEN** the held summary covers exactly the messages about to be summarized, leaving nothing new
+- **THEN** the task runner SHALL reuse the held summary without making a summarization call
+
 #### Scenario: Content mismatch falls back to a full summarization
 - **WHEN** the held record does not match the messages being summarized
 - **THEN** the task runner SHALL perform a full summarization rather than merging
