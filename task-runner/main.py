@@ -616,6 +616,23 @@ CHARS_PER_TOKEN = 3  # conservative: base64 images tokenize at ~2-3 chars/token
 MAX_TOOL_OUTPUT_CHARS = int(MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN * 0.25)
 KEEP_RECENT_TOKENS = 20_000  # tokens of recent messages to retain during compaction
 
+# Trim to this fraction of MAX_CONTEXT_TOKENS rather than stopping at the limit.
+# Stopping at the limit leaves zero headroom, so the next tool result re-crosses
+# it and the trimmer (or a failing compaction ahead of it) runs again on the very
+# next turn — observed in production as a re-trigger every ~12 seconds.
+TRIM_TARGET_FRACTION = 0.6
+
+# Compaction request budget. A 30s timeout cannot cover 2048 tokens of
+# generation on a local or free-tier model (25-50s at 40-80 tok/s, before any
+# prompt processing), which is why every compaction against one timed out.
+DEFAULT_COMPACTION_TIMEOUT = 180.0
+DEFAULT_COMPACTION_MAX_TOKENS = 4096
+
+# Consecutive-failure backoff. Compaction runs from the pre-model input filter,
+# so without suppression a broken configuration costs one failed LLM call per
+# turn for the life of the task.
+COMPACTION_BACKOFF_CAP_TURNS = 16
+
 # Marker that identifies a compaction summary message (task 4.2)
 COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:"
 
@@ -1432,22 +1449,35 @@ def _strip_screenshots(messages: list) -> list:
 
 
 def _trim_context_window(messages: list) -> list:
-    """Drop oldest messages (after the first) until under MAX_CONTEXT_TOKENS."""
+    """Drop oldest messages (after the first) until well under MAX_CONTEXT_TOKENS.
+
+    Trimming stops at TRIM_TARGET_FRACTION of the limit, not at the limit
+    itself. Stopping at the limit leaves no headroom, so the next tool result
+    re-crosses it and this runs again — along with any compaction attempt ahead
+    of it — on the following turn. Trimming further in one step discards less
+    history overall than trimming minimally every turn.
+    """
     estimated_before = _estimate_tokens(messages)
     if len(messages) <= 2 or estimated_before <= MAX_CONTEXT_TOKENS:
         return messages
 
+    target = int(MAX_CONTEXT_TOKENS * TRIM_TARGET_FRACTION)
+
     # Keep first message (initial user prompt) and trim from the front of the rest
     first = messages[:1]
     rest = messages[1:]
-    while len(rest) > 1 and _estimate_tokens(first + rest) > MAX_CONTEXT_TOKENS:
+    while len(rest) > 1 and _estimate_tokens(first + rest) > target:
         rest = rest[1:]
 
     trimmed = first + rest
     estimated_after = _estimate_tokens(trimmed)
-    logger.info(
-        "Context window trimmed: %d -> %d messages, ~%d -> ~%d estimated tokens (limit %d)",
-        len(messages), len(trimmed), estimated_before, estimated_after, MAX_CONTEXT_TOKENS,
+    # WARNING, not INFO: trimming discards conversation history irrecoverably.
+    # Production runs the task runner above INFO, so an INFO line here would
+    # make a lossy operation invisible in exactly the deployment where it
+    # matters most.
+    logger.warning(
+        "Context window trimmed: %d -> %d messages, ~%d -> ~%d estimated tokens (target %d, limit %d)",
+        len(messages), len(trimmed), estimated_before, estimated_after, target, MAX_CONTEXT_TOKENS,
     )
     return trimmed
 
@@ -1616,6 +1646,84 @@ def _format_file_lists(read_files: set[str], modified_files: set[str], existing_
     return "\n".join(parts)
 
 
+# Consecutive-failure backoff state. _compact_context runs from the pre-model
+# input filter, so an unsuppressed failure repeats on every subsequent turn.
+# Turn-counted rather than wall-clock: turn duration varies by two orders of
+# magnitude between local and cloud models, so a time-based cooldown would
+# behave unpredictably across them.
+_compaction_backoff = {
+    "turn": 0,
+    "consecutive_failures": 0,
+    "suppress_until_turn": 0,
+}
+
+
+def _reset_compaction_backoff() -> None:
+    """Clear backoff state. Called on success, and by tests between cases."""
+    _compaction_backoff["turn"] = 0
+    _compaction_backoff["consecutive_failures"] = 0
+    _compaction_backoff["suppress_until_turn"] = 0
+
+
+def _compaction_suppressed() -> bool:
+    """True when this turn falls inside the suppression window."""
+    return _compaction_backoff["turn"] < _compaction_backoff["suppress_until_turn"]
+
+
+def _record_compaction_failure() -> None:
+    """Widen the suppression window after a failed attempt."""
+    _compaction_backoff["consecutive_failures"] += 1
+    failures = _compaction_backoff["consecutive_failures"]
+    window = min(2 ** failures, COMPACTION_BACKOFF_CAP_TURNS)
+    _compaction_backoff["suppress_until_turn"] = _compaction_backoff["turn"] + window
+    logger.warning(
+        "Context compaction suppressed for the next %d turn(s) after %d consecutive "
+        "failure(s) — trimming instead. A task that stops compacting is visible here "
+        "rather than silently retrying every turn.",
+        window, failures,
+    )
+
+
+def _record_compaction_success() -> None:
+    if _compaction_backoff["consecutive_failures"]:
+        logger.warning(
+            "Context compaction recovered after %d consecutive failure(s)",
+            _compaction_backoff["consecutive_failures"],
+        )
+    _compaction_backoff["consecutive_failures"] = 0
+    _compaction_backoff["suppress_until_turn"] = 0
+
+
+def _describe_finish_reason(response) -> str:
+    """Finish reason of a summarization response, or 'unknown' if unavailable.
+
+    Never raises: this runs on the diagnostic path, where an exception would
+    replace the information we are trying to capture.
+    """
+    try:
+        return str(getattr(response.choices[0], "finish_reason", None) or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _describe_reasoning_field(response) -> str:
+    """Describe any reasoning/thinking content carried outside `content`.
+
+    A reasoning model can consume its entire output budget thinking and emit no
+    content at all. That is invisible from `content` alone, so report whether
+    such a field is present and how large it is.
+    """
+    try:
+        message = response.choices[0].message
+    except Exception:
+        return "unknown"
+    for attr in ("reasoning_content", "reasoning", "thinking"):
+        value = getattr(message, attr, None)
+        if isinstance(value, str) and value:
+            return f"{attr}({len(value)} chars)"
+    return "absent"
+
+
 def _is_compaction_summary(message: dict) -> bool:
     """Return True if message is a compaction summary (identified by prefix marker)."""
     if not isinstance(message, dict):
@@ -1642,7 +1750,17 @@ def _compact_context(messages: list) -> list:
     if len(messages) <= 2 or estimated_before <= MAX_CONTEXT_TOKENS:
         return messages
 
-    logger.info(
+    # Only over-limit turns advance the counter, so the window is measured in
+    # turns that would actually have attempted compaction.
+    _compaction_backoff["turn"] += 1
+    if _compaction_suppressed():
+        return _trim_context_window(messages)
+
+    # The whole compaction lifecycle logs at WARNING. Failures already did,
+    # while the trigger and the success did not — so a broken mechanism was
+    # observable in production and a working one was silent, which is exactly
+    # backwards for confirming a fix.
+    logger.warning(
         "Context compaction triggered: ~%d estimated tokens (limit %d), %d messages",
         estimated_before, MAX_CONTEXT_TOKENS, len(messages),
     )
@@ -1710,7 +1828,7 @@ def _compact_context(messages: list) -> list:
     )
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not compaction_model or not api_key:
-        logger.info(
+        logger.warning(
             "Context compaction skipped (missing %s) — falling back to trim",
             "OPENAI_MODEL" if not compaction_model else "OPENAI_API_KEY",
         )
@@ -1721,7 +1839,7 @@ def _compact_context(messages: list) -> list:
     # non-streaming summarisation call with much tighter latency expectations
     # than the streaming agent loop. Tuning them together would force users to
     # accept either a too-loose compaction timeout or a too-tight agent timeout.
-    compaction_timeout = 30.0
+    compaction_timeout = DEFAULT_COMPACTION_TIMEOUT
     timeout_raw = os.environ.get("COMPACTION_TIMEOUT_SECONDS", "").strip()
     if timeout_raw:
         try:
@@ -1732,6 +1850,21 @@ def _compact_context(messages: list) -> list:
                 logger.warning("Invalid COMPACTION_TIMEOUT_SECONDS '%s' (must be positive), using %.0fs", timeout_raw, compaction_timeout)
         except ValueError:
             logger.warning("Invalid COMPACTION_TIMEOUT_SECONDS '%s' (not a number), using %.0fs", timeout_raw, compaction_timeout)
+
+    # Output budget. The empty-summary failure mode is a budget consumed by
+    # reasoning tokens before any content is emitted, so this needs to be
+    # raisable per deployment rather than fixed.
+    compaction_max_tokens = DEFAULT_COMPACTION_MAX_TOKENS
+    max_tokens_raw = os.environ.get("COMPACTION_MAX_TOKENS", "").strip()
+    if max_tokens_raw:
+        try:
+            parsed_max = int(max_tokens_raw)
+            if parsed_max > 0:
+                compaction_max_tokens = parsed_max
+            else:
+                logger.warning("Invalid COMPACTION_MAX_TOKENS '%s' (must be positive), using %d", max_tokens_raw, compaction_max_tokens)
+        except ValueError:
+            logger.warning("Invalid COMPACTION_MAX_TOKENS '%s' (not an integer), using %d", max_tokens_raw, compaction_max_tokens)
 
     sync_client = OpenAI(
         base_url=os.environ.get("OPENAI_BASE_URL") or None,
@@ -1745,17 +1878,31 @@ def _compact_context(messages: list) -> list:
                 {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=2048,
+            max_tokens=compaction_max_tokens,
         )
         summary_text = response.choices[0].message.content or ""
     except Exception:
         logger.warning(
             "Context compaction failed (LLM call error) — falling back to trim", exc_info=True,
         )
+        _record_compaction_failure()
         return _trim_context_window(messages)
 
     if not summary_text.strip():
-        logger.warning("Context compaction returned empty summary — falling back to trim")
+        # An empty summary means the call SUCCEEDED and returned nothing usable.
+        # Without the finish reason and reasoning-field presence, a model that
+        # declined is indistinguishable from one whose thinking consumed the
+        # whole token budget — different problems with different remedies.
+        # WARNING, not INFO: production runs the task runner above INFO.
+        logger.warning(
+            "Context compaction returned empty summary — falling back to trim "
+            "(finish_reason=%s, content_length=%d, reasoning_field=%s, max_tokens=%d)",
+            _describe_finish_reason(response),
+            len(summary_text),
+            _describe_reasoning_field(response),
+            compaction_max_tokens,
+        )
+        _record_compaction_failure()
         return _trim_context_window(messages)
 
     # Append file lists to summary (task 3.4 carry-forward)
@@ -1775,12 +1922,13 @@ def _compact_context(messages: list) -> list:
 
     compacted = [summary_message] + list(to_keep)
     estimated_after = _estimate_tokens(compacted)
-    logger.info(
+    logger.warning(
         "Context compaction complete: %d -> %d messages, ~%d -> ~%d estimated tokens "
         "(%d messages summarized, model=%s)",
         len(messages), len(compacted), estimated_before, estimated_after,
         len(to_summarize), compaction_model,
     )
+    _record_compaction_success()
     return compacted
 
 
@@ -2266,6 +2414,10 @@ async def main():
                 # Fresh budget per attempt: counts, result digests and nudge
                 # history must not leak across a legitimate retry. The guardrail
                 # is rebound each attempt so it closes over the current detector.
+                # Compaction backoff follows the same rule — a retry starts from
+                # the original prompt, so it deserves a fresh chance to compact
+                # rather than inheriting suppression from the previous attempt.
+                _reset_compaction_backoff()
                 stall = StallDetector(stall_limit, stall_nudge_limit)
                 agent.stall_guardrail = make_stall_guardrail(
                     stall, lambda: hooks._current_turn_id

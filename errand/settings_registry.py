@@ -35,6 +35,17 @@ SETTINGS_REGISTRY = {
     "title_generation_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "task_processing_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "transcription_timeout": {"env_var": None, "sensitive": False, "default": 30},
+    # Context compaction. Fixed at deploy time until now, which is part of why
+    # compaction failed every time it ran: a 30s timeout cannot cover the token
+    # budget on a local or free-tier model, and correcting it meant a redeploy.
+    # Empty `compaction_model` means "use the task's own model".
+    # Same default shape as the other model settings: `_coerce` targets the type
+    # of the default, so a plain "" here would stringify the stored dict on read
+    # and break the settings card, which expects an object with `model_id`.
+    # An empty `model` means "use the task's own model".
+    "compaction_model": {"env_var": "COMPACTION_MODEL", "sensitive": False, "default": {"provider_id": None, "model": ""}},
+    "compaction_timeout": {"env_var": "COMPACTION_TIMEOUT_SECONDS", "sensitive": False, "default": 180},
+    "compaction_max_tokens": {"env_var": "COMPACTION_MAX_TOKENS", "sensitive": False, "default": 4096},
     "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://errand.cloud"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
     "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
@@ -156,7 +167,11 @@ async def resolve_setting_value(
 
 
 # The per-role LLM model settings whose value is a `{provider_id, model}` dict.
-MODEL_SETTING_KEYS = {"llm_model", "task_processing_model", "transcription_model"}
+# Keys whose value is a model selection object. Membership is what makes
+# `normalize_model_setting_value` mirror `model` and `model_id` — the shared
+# settings card writes `model_id` while the backend resolves `model`, so a key
+# omitted here resolves to an empty model name at runtime.
+MODEL_SETTING_KEYS = {"llm_model", "task_processing_model", "transcription_model", "compaction_model"}
 
 
 def normalize_model_setting_value(value):

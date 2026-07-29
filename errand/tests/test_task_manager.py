@@ -953,3 +953,95 @@ class TestExistingTestCompat:
         assert tm._runtime is None
         assert tm._leader_connection is None
         assert not tm._stop_event.is_set()
+
+
+class TestCompactionSettingsInjection:
+    """Compaction model, timeout and token budget reach the runner.
+
+    Until now these were deploy-time env vars only, so a 30s timeout that could
+    never cover the token budget on a local model needed a redeploy to correct.
+    """
+
+    async def test_compaction_settings_injected_from_settings(self):
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+            "compaction_model": {"provider_id": None, "model": "claude-haiku-4-5-20251001"},
+            "compaction_timeout": 240,
+            "compaction_max_tokens": 8192,
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["COMPACTION_MODEL"] == "claude-haiku-4-5-20251001"
+        assert env["COMPACTION_TIMEOUT_SECONDS"] == "240"
+        assert env["COMPACTION_MAX_TOKENS"] == "8192"
+
+    async def test_compaction_model_accepts_model_id_shape(self):
+        """The shared settings card writes model_id; it must still resolve."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+            "compaction_model": {"provider_id": None, "model_id": "mirror-only"},
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["COMPACTION_MODEL"] == "mirror-only"
+
+    async def test_compaction_settings_absent_when_unset(self):
+        """Unset settings leave the runner on its own defaults, not an empty string."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env.get("COMPACTION_MODEL", "") == ""
+        assert "COMPACTION_TIMEOUT_SECONDS" not in env
+
+    async def test_server_environment_overrides_the_setting(self):
+        """Deployments already setting COMPACTION_MODEL must keep working."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+            "compaction_model": {"provider_id": None, "model": "from-db"},
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None), \
+             patch.dict(os.environ, {"COMPACTION_MODEL": "from-env"}):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["COMPACTION_MODEL"] == "from-env"
