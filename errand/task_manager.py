@@ -1081,9 +1081,14 @@ def _live_log_message(line: str) -> str | None:
     except (json.JSONDecodeError, ValueError):
         parsed = None
     if isinstance(parsed, dict) and "type" in parsed and "data" in parsed:
-        if parsed["type"] in LIVE_EXCLUDED_EVENT_TYPES:
+        event_type = parsed["type"]
+        # Guard the isinstance check, not just the membership test: this parses
+        # arbitrary container stderr, so `type` can be any JSON value, and
+        # hashing an unhashable one would raise inside the log-streaming loop and
+        # end log capture for the remainder of the task.
+        if isinstance(event_type, str) and event_type in LIVE_EXCLUDED_EVENT_TYPES:
             return None
-        return json.dumps({"event": "task_event", "type": parsed["type"], "data": parsed["data"]})
+        return json.dumps({"event": "task_event", "type": event_type, "data": parsed["data"]})
     return json.dumps({"event": "task_event", "type": "raw", "data": {"line": line}})
 
 

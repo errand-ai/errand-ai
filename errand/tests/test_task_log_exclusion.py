@@ -91,6 +91,28 @@ class TestLiveLogMessage:
 
         assert json.loads(_live_log_message(line))["type"] == "raw"
 
+    def test_unhashable_type_value_does_not_raise(self):
+        """The parser consumes arbitrary container stderr, not only the runner's
+        own events — a subprocess the agent runs can put any JSON on that stream.
+        Testing set membership on a non-string `type` raises TypeError, and the
+        caller sits inside the log-streaming loop's single try/except, so one such
+        line would end log capture for the rest of the task.
+
+        The pre-existing code never hashed the value, so this is a regression
+        guard rather than a hypothetical.
+        """
+        line = json.dumps({"type": {"nested": 1}, "data": {}})
+
+        msg = _live_log_message(line)
+
+        assert msg is not None
+        assert json.loads(msg)["type"] == {"nested": 1}
+
+    def test_list_type_value_does_not_raise(self):
+        line = json.dumps({"type": ["a"], "data": {}})
+
+        assert _live_log_message(line) is not None
+
     def test_excluded_type_yields_no_message(self):
         line = _event_line("context_snapshot", {"top_contributors": []})
 
