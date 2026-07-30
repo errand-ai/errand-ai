@@ -43,7 +43,7 @@ Groups 2 and 3 deliver the diagnostic value on their own. Neither needs a librar
 
 Requires a `@errand-ai/ui-components` release and a consumer bump. Everything above ships without it.
 
-**Delegated.** 5.1–5.3 are now `show-turn-context-usage` in `errand-component-library`, tracked as its own OpenSpec change rather than as work in this one. The library repo has `add-compaction-model-role` in flight with `package.json` already bumped, so implementing the badge here would have meant editing a dirty tree and releasing someone else's unfinished change alongside this one.
+**Delegated, and now landed.** 5.1–5.3 became `show-turn-context-usage` in `errand-component-library`, tracked as its own OpenSpec change rather than as work in this one — that repo had `add-compaction-model-role` in flight with `package.json` already bumped, so implementing the badge here would have meant editing a dirty tree and releasing someone else's unfinished change alongside this one. Both changes have since shipped and archived; v0.18.0 carries the badge, and the pin is bumped in this branch.
 
 - [x] 5.1 In the library, handle `llm_turn_end` and attach usage to the matching turn group by `turn_id`
       — *specified in `errand-component-library` → `show-turn-context-usage`, group 2.*
@@ -51,19 +51,20 @@ Requires a `@errand-ai/ui-components` release and a consumer bump. Everything ab
       — *specified there, group 3.*
 - [x] 5.3 Confirm a turn with no `llm_turn_end` renders exactly as today — no placeholder number, no error
       — *specified there, tasks 3.2 and 3.3.*
-- [ ] 5.4 Release the library, then bump the pin in `errand`
-      — *blocked on `show-turn-context-usage` shipping.*
+- [x] 5.4 Release the library, then bump the pin in `errand`
+      — *`@errand-ai/ui-components` 0.16.0 → 0.18.0. Verified against the real published component rather than trusting the pin: a new integration test mounts `TaskLogViewer` from the installed package and feeds it a log stream captured verbatim from a real task, asserting the badge text. The separator renders `Turn · claude-haiku-4-5-20251001 · 5.5k tokens · 3.3s`, then `5.9k tokens · 2.0s` — the climb, visible.*
+      — *That test guards the seam between the two repos, which neither repo's own suite can see: the library tests its rendering against fixtures it wrote, and errand tests its emission against fixtures it wrote. Whether the fields one emits are the fields the other reads is only checked here.*
 - [x] 5.5 Note `errand-cloud` remains on `^0.11.0` and falls further behind; out of scope here but worth recording
       — *recorded in the library change's proposal and in its task 5.3.*
 
-One finding worth carrying: `llm_turn_end` and `context_pressure` now reach the live view, and the current library handles neither, so both fall through `FlatEntryView`'s final `v-else`, which renders `entry.data.line` — undefined for these events. Each one draws an empty element, once per turn for `llm_turn_end`. That makes the library change a defect fix as well as a feature, which is why it earned its own change rather than a note.
+One finding worth carrying, now resolved: `llm_turn_end` and `context_pressure` reach the live view, and the library at 0.16.0 handled neither, so both fell through `FlatEntryView`'s final `v-else`, which renders `entry.data.line` — undefined for these events. Each drew an empty element, once per turn for `llm_turn_end`. That made the library change a defect fix as well as a feature, which is why it earned its own change rather than a note. 0.18.0 consumes both, and a regression test asserts `llm_turn_end` produces no rendered entry.
 
 ## 6. Verify
 
 - [x] 6.1 Backend, task-runner and frontend suites green
-      — *1,843 errand + 404 task-runner + 261 frontend, all passing.*
+      — *1,845 errand + 404 task-runner + 38 evals + 267 frontend, all passing.*
 - [x] 6.2 Run a task heavy enough to trigger compaction and confirm the turn badges show context climbing across turns
-      — *partially. Real runs against the local stack (LiteLLM → claude-haiku-4-5) show measured context climbing across turns: 2,098 → 5,925, and 5,521 → 5,762 on another. Pressure and snapshots were exercised by lowering the ceiling with the new setting rather than by building a 150k-token context. **The badge itself cannot be confirmed until the library change ships** — see group 5.*
+      — *the badges show the climb: `5.5k tokens · 3.3s` then `5.9k tokens · 2.0s`, rendered by the released component from a real task's events. No local run reached the 150k compaction trigger, so pressure and snapshots were exercised by lowering the ceiling through the new setting instead — which is a fair substitute for the thresholds but leaves compaction's own behaviour under a genuinely large context unobserved.*
 - [x] 6.3 Confirm no `context_snapshot` appears anywhere in the live Task Logs view
       — *verified by subscribing to `task_logs:*` for a whole task: 30 events arrived including `llm_turn_end` ×2 and `context_pressure` ×1, and zero `context_snapshot`, while the container log for the same task held one.*
 - [ ] 6.4 Confirm the same snapshots are retrievable from Loki for that task
