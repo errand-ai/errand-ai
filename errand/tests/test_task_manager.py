@@ -985,6 +985,50 @@ class TestCompactionSettingsInjection:
         assert env["COMPACTION_TIMEOUT_SECONDS"] == "240"
         assert env["COMPACTION_MAX_TOKENS"] == "8192"
 
+    async def test_context_ceiling_injected_from_settings(self):
+        """The ceiling drives compaction and the pressure thresholds measured
+        against it. It was hard-coded at 150,000 in the runner and unreachable
+        from the server, so there was no lever to correct it per deployment."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+            "max_context_tokens": 90000,
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None):
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert env["MAX_CONTEXT_TOKENS"] == "90000"
+
+    async def test_context_ceiling_omitted_when_unset(self):
+        """Absent means the runner keeps its own default rather than receiving
+        an empty string it would have to parse."""
+        task = _make_mock_task()
+        settings = {
+            "mcp_servers": {},
+            "credentials": [],
+            "task_processing_model": "gpt-4o",
+            "system_prompt": "",
+        }
+        mock_runtime = _make_mock_runtime()
+        tm = TaskManager()
+        tm._runtime = mock_runtime
+
+        with patch("task_manager.get_valkey", return_value=None), \
+                patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAX_CONTEXT_TOKENS", None)
+            await tm._process_task(task, settings)
+
+        env = mock_runtime.async_prepare.call_args.kwargs["env"]
+        assert "MAX_CONTEXT_TOKENS" not in env
+
     async def test_compaction_model_accepts_model_id_shape(self):
         """The shared settings card writes model_id; it must still resolve."""
         task = _make_mock_task()

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,6 +94,149 @@ class TestOnLlmStart:
             os.environ.pop("MODEL", None)
             asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
         assert captured_events[0]["data"]["model"] == "unknown"
+
+
+class TestOnLlmEnd:
+    """on_llm_end reports the provider's own accounting for the turn."""
+
+    @staticmethod
+    def _response(input_tokens=None, output_tokens=None, cached_tokens=None, usage=True):
+        """Build a stand-in ModelResponse. usage=False models a provider that
+        returns no usage block at all."""
+        response = SimpleNamespace()
+        if not usage:
+            response.usage = None
+            return response
+        response.usage = SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=(input_tokens or 0) + (output_tokens or 0),
+            input_tokens_details=(
+                SimpleNamespace(cached_tokens=cached_tokens) if cached_tokens is not None else None
+            ),
+        )
+        return response
+
+    def test_emits_llm_turn_end(self, emitter, captured_events):
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+        captured_events.clear()
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(38204, 512)))
+
+        assert [e["type"] for e in captured_events] == ["llm_turn_end"]
+
+    def test_carries_the_turn_id_of_its_turn_start(self, emitter, captured_events):
+        """The badge attaches usage to a rendered turn by turn_id, so the pairing
+        is the whole point of the event."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+        start_turn_id = captured_events[0]["data"]["turn_id"]
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(38204, 512)))
+
+        assert captured_events[1]["data"]["turn_id"] == start_turn_id
+
+    def test_reports_provider_usage_not_the_internal_estimate(self, emitter, captured_events):
+        """_estimate_tokens drives compaction; reporting it here would put a
+        number on screen that disagrees with the provider's own accounting."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(38204, 512)))
+
+        data = captured_events[-1]["data"]
+        assert data["input_tokens"] == 38204
+        assert data["output_tokens"] == 512
+
+    def test_reports_cached_token_details_when_supplied(self, emitter, captured_events):
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(
+            emitter.on_llm_end(None, MagicMock(), self._response(38204, 512, cached_tokens=1024))
+        )
+
+        assert captured_events[-1]["data"]["cached_tokens"] == 1024
+
+    def test_omits_cached_tokens_when_provider_supplies_none(self, emitter, captured_events):
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(38204, 512)))
+
+        assert "cached_tokens" not in captured_events[-1]["data"]
+
+    def test_reports_turn_duration(self, emitter, captured_events):
+        """Context size alone does not explain a slow task: every turn re-prefills
+        the whole context, so duration is what makes the size actionable."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+        emitter._turn_start_time -= 1.5  # backdate the turn by 1.5s
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(38204, 512)))
+
+        assert 1400 <= captured_events[-1]["data"]["duration_ms"] <= 2000
+
+    def test_response_keyword_argument_is_accepted(self, emitter, captured_events):
+        """The SDK may pass the response by keyword."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(
+            emitter.on_llm_end(None, MagicMock(), response=self._response(1234, 56))
+        )
+
+        assert captured_events[-1]["data"]["input_tokens"] == 1234
+
+    def test_missing_usage_completes_the_turn_without_token_fields(self, emitter, captured_events):
+        """A provider with no usage block must not break the turn."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(usage=False)))
+
+        data = captured_events[-1]["data"]
+        assert captured_events[-1]["type"] == "llm_turn_end"
+        assert "input_tokens" not in data
+        assert "output_tokens" not in data
+        assert "duration_ms" in data
+
+    def test_all_zero_usage_is_treated_as_no_measurement(self, emitter, captured_events):
+        """A provider that sends a usage block of zeros has reported nothing, and a
+        confident `0` on the badge is worse than no figure. Observed for real:
+        LiteLLM omits the streaming usage chunk unless asked for it, and the SDK
+        only asks when the client points at api.openai.com."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(0, 0, cached_tokens=0)))
+
+        data = captured_events[-1]["data"]
+        assert captured_events[-1]["type"] == "llm_turn_end"
+        assert "input_tokens" not in data
+        assert "output_tokens" not in data
+        assert "cached_tokens" not in data
+        assert "duration_ms" in data
+
+    def test_a_real_turn_with_no_output_tokens_still_reports(self, emitter, captured_events):
+        """Only a zero *prompt* is impossible. A turn that produced no output is
+        merely unusual, so the prompt size still gets reported."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(1200, 0)))
+
+        assert captured_events[-1]["data"]["input_tokens"] == 1200
+
+    def test_absent_response_does_not_raise(self, emitter, captured_events):
+        """Called with no response at all, the turn still completes."""
+        asyncio.run(emitter.on_llm_start(None, MagicMock(name="agent")))
+
+        asyncio.run(emitter.on_llm_end(None, MagicMock()))
+
+        assert captured_events[-1]["type"] == "llm_turn_end"
+        assert "input_tokens" not in captured_events[-1]["data"]
+
+    def test_end_without_a_start_still_emits(self, emitter, captured_events):
+        """No turn_id and no start time is degenerate, not fatal."""
+        asyncio.run(emitter.on_llm_end(None, MagicMock(), self._response(100, 10)))
+
+        data = captured_events[-1]["data"]
+        assert captured_events[-1]["type"] == "llm_turn_end"
+        assert "turn_id" not in data
+        assert "duration_ms" not in data
+        assert data["input_tokens"] == 100
 
 
 class TestOnToolStart:

@@ -23,10 +23,40 @@ Turn duration SHALL be reported alongside the token counts. Context size alone d
 - **WHEN** a turn takes 41 seconds
 - **THEN** the `llm_turn_end` event reports a duration corresponding to that elapsed time
 
+The task runner SHALL request usage reporting from the provider. Streaming providers send a usage chunk only when asked, and the agent SDK asks by default solely when the client points at OpenAI's own endpoint, so a proxied provider otherwise reports nothing.
+
 #### Scenario: Missing usage does not break the turn
 
 - **WHEN** a provider returns a response without usage information
 - **THEN** the task runner SHALL still complete the turn, omitting the token fields rather than failing
+
+#### Scenario: A usage report of zeros is not a measurement
+
+- **WHEN** a provider returns a usage block whose prompt size is zero
+- **THEN** the token fields SHALL be omitted rather than reported as zero
+
+No real turn has an empty prompt, so a zero is the provider declining to answer. Reporting it would put a confidently wrong number on screen, which is the outcome measuring rather than estimating exists to avoid.
+
+### Requirement: The context ceiling is resolved rather than assumed
+
+The ceiling that compaction fires at, and that pressure thresholds are measured against, SHALL be configurable and SHALL be passed to the task runner. When no value is configured the runner SHALL keep its own default.
+
+The percentage in a pressure event is meaningless without a stated denominator, and a ceiling hard-coded in the runner cannot be corrected for a deployment whose models want a different one.
+
+#### Scenario: Configured ceiling reaches the runner
+
+- **WHEN** a context ceiling of 90,000 is configured
+- **THEN** the task runner receives that value and measures pressure against it
+
+#### Scenario: Unconfigured ceiling leaves the runner's default intact
+
+- **WHEN** no context ceiling is configured
+- **THEN** no ceiling is passed and the task runner applies its own default
+
+#### Scenario: Pressure events state the ceiling they used
+
+- **WHEN** a `context_pressure` event is emitted
+- **THEN** it carries the ceiling the measurement was compared against
 
 ### Requirement: Context pressure is signalled at thresholds
 

@@ -46,6 +46,9 @@ SETTINGS_REGISTRY = {
     "compaction_model": {"env_var": "COMPACTION_MODEL", "sensitive": False, "default": {"provider_id": None, "model": ""}},
     "compaction_timeout": {"env_var": "COMPACTION_TIMEOUT_SECONDS", "sensitive": False, "default": 180},
     "compaction_max_tokens": {"env_var": "COMPACTION_MAX_TOKENS", "sensitive": False, "default": 4096},
+    # The ceiling compaction fires at, and the denominator the context pressure
+    # thresholds are measured against. Matches the task runner's own default.
+    "max_context_tokens": {"env_var": "MAX_CONTEXT_TOKENS", "sensitive": False, "default": 150000},
     "cloud_service_url": {"env_var": None, "sensitive": False, "default": "https://errand.cloud"},
     "cloud_endpoints": {"env_var": None, "sensitive": False, "default": []},
     "telemetry_enabled": {"env_var": "TELEMETRY_ENABLED", "sensitive": False, "default": True},
