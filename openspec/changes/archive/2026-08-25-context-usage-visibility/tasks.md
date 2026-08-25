@@ -81,6 +81,13 @@ One finding worth carrying, now resolved: `llm_turn_end` and `context_pressure` 
 
 ## 7. Follow-ups (not this change)
 
+*Carried forward on 2026-08-24 into three changes, split by kind of work. These items stay unchecked here by design — they were never in this change's scope, and the record of where each went belongs with the evidence that produced it.*
+
+- 7.5, 7.7 -> `context-accounting-correctness` — the two items with measured defect evidence.
+- 7.3, 7.4, 7.6 -> `context-usage-observability` — surfacing what this change made measurable.
+- 7.1, 7.2 -> `context-ceiling-research` — an investigation with no predetermined code outcome.
+
+
 - [ ] 7.1 Decide the right ceiling from the collected evidence. Capability and latency give different answers: gemma-4 26B reports a 260,352-token window against a 150,000 trigger, while every turn re-prefills the whole context so latency binds first on local hardware
 - [ ] 7.2 Resolve a model's true window via LiteLLM `/model/info` → provider `api_base` → LM Studio's `max_context_length`. Note `errand/model_metadata.py` already downloads `model_prices_and_context_window.json` and reads only two fields from it
 - [ ] 7.3 Consider persisting peak context on the task record for cross-task comparison — a schema change, but the data would exist

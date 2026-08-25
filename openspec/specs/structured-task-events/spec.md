@@ -15,8 +15,16 @@ The task runner SHALL emit structured JSON events to stderr, one JSON object per
 | `tool_result` | `tool` (string), `output` (string), `length` (integer) | Tool returned a result |
 | `agent_end` | `output` (object) | Agent produced final structured output |
 | `error` | `message` (string) | Error during execution |
+| `llm_turn_start` | `turn_id` (string), `model` (string) | Model call starting; assigns the turn identifier |
+| `llm_turn_end` | `turn_id` (string), `input_tokens` (integer), `output_tokens` (integer), `duration_ms` (integer) | Model call completed, with provider-reported usage |
+| `context_pressure` | `input_tokens` (integer), `limit` (integer), `threshold` (number) | Context crossed a pressure threshold |
+| `context_snapshot` | `input_tokens` (integer), `message_count` (integer), `top_contributors` (array) | Diagnostic detail on a significant context event |
 
 The `tool_result` event's `output` field SHALL be truncated to a maximum of 500 characters. The `length` field SHALL contain the original untruncated length.
+
+The `context_snapshot` event's `top_contributors` entries SHALL identify contributors by role, tool name and size, and SHALL NOT include message content.
+
+Events SHALL be written directly to stderr rather than through the logging framework, so that delivery does not depend on the configured log level. The task runner runs above `INFO` in production, and diagnostics routed through `logger.info` are discarded.
 
 #### Scenario: Agent start event emitted
 
@@ -38,39 +46,25 @@ The `tool_result` event's `output` field SHALL be truncated to a maximum of 500 
 - **WHEN** the stream completes without producing any `ReasoningItem` objects
 - **THEN** no `reasoning` events appear on stderr (the absence is not an error)
 
-#### Scenario: Tool call event emitted
+#### Scenario: Turn start and end are paired by turn_id
 
-- **WHEN** the agent invokes a tool named `execute_command` with args `{"command": "ls -la"}`
-- **THEN** stderr contains a line `{"type": "tool_call", "data": {"tool": "execute_command", "args": {"command": "ls -la"}}}`
+- **WHEN** a model call starts and later completes
+- **THEN** stderr contains an `llm_turn_start` and an `llm_turn_end` line sharing the same `turn_id`
 
-#### Scenario: Tool result event emitted with truncation
+#### Scenario: Events emitted regardless of log level
 
-- **WHEN** a tool returns a result of 1200 characters
-- **THEN** stderr contains a line with `"type": "tool_result"`, `"output"` truncated to 500 characters with `...` appended, and `"length": 1200`
-
-#### Scenario: Tool result event emitted without truncation
-
-- **WHEN** a tool returns a result of 200 characters
-- **THEN** stderr contains a line with `"type": "tool_result"`, the full `"output"`, and `"length": 200`
-
-#### Scenario: Agent end event emitted
-
-- **WHEN** the agent produces its final structured output
-- **THEN** stderr contains a line `{"type": "agent_end", "data": {"output": <TaskRunnerOutput object>}}`
-
-#### Scenario: Error event emitted
-
-- **WHEN** the agent encounters an error during execution
-- **THEN** stderr contains a line `{"type": "error", "data": {"message": "<error description>"}}`
-
-#### Scenario: All events are valid JSON
-
-- **WHEN** any event is emitted to stderr
-- **THEN** the line is parseable as valid JSON with exactly `type` (string) and `data` (object) top-level keys
+- **WHEN** the task runner is configured at `WARNING`
+- **THEN** structured events are still written to stderr
 
 ### Requirement: Valkey message format for structured events
 
 The worker SHALL publish structured events to the per-task Valkey pub/sub channel `task_logs:{task_id}` using the format `{"event": "task_event", "type": "<event_type>", "data": <event_data>}`. The `task_log_end` sentinel SHALL remain as `{"event": "task_log_end"}`.
+
+A designated set of event types SHALL be excluded from publication. An excluded event SHALL NOT be published to the channel and SHALL NOT be written to the replay buffer. Excluded events remain on the task runner's stderr and therefore in the container log, where they are available for later analysis.
+
+The exclusion exists because diagnostic events are large and intended for retrospective analysis rather than live viewing. Publishing them and filtering client-side would still carry the payload across the wire and would displace real entries in the bounded replay buffer.
+
+The exclusion SHALL cover both the publish and the buffer write. These are separate operations, and excluding only the publish would leave the payload in the replay buffer — the thing the exclusion exists to protect.
 
 #### Scenario: Structured event published to Valkey
 
@@ -81,6 +75,26 @@ The worker SHALL publish structured events to the per-task Valkey pub/sub channe
 
 - **WHEN** the worker reads a stderr line that is not valid JSON (e.g., a Python traceback or library log message)
 - **THEN** the worker publishes `{"event": "task_event", "type": "raw", "data": {"line": "<raw stderr line>"}}` to the Valkey channel
+
+#### Scenario: Excluded event type is not published
+
+- **WHEN** the worker reads a well-formed event whose type is in the excluded set
+- **THEN** the worker publishes nothing for that line
+
+#### Scenario: Excluded event type is not buffered
+
+- **WHEN** the worker reads a well-formed event whose type is in the excluded set
+- **THEN** the replay buffer for that task is unchanged
+
+#### Scenario: Excluded events remain available in the container log
+
+- **WHEN** an excluded event has been emitted during a task
+- **THEN** the line is still present in the task runner's container log output
+
+#### Scenario: Non-excluded types are unaffected
+
+- **WHEN** the worker reads a well-formed event whose type is not in the excluded set
+- **THEN** the event is published and buffered exactly as before
 
 #### Scenario: End sentinel unchanged
 
