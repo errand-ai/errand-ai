@@ -6,7 +6,7 @@ alembic==1.18.5
 psycopg2-binary==2.9.12
 pydantic>=2.11.0
 PyJWT>=2.10.1
-cryptography==48.0.1
+cryptography==50.0.0
 httpx==0.28.1
 packaging>=24.0
 redis[hiredis]==8.0.1
