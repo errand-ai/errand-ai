@@ -75,7 +75,8 @@ None. Version bumps change no requirement.
 
 ## Impact
 
-- **Code**: `frontend/package-lock.json`, `errand/requirements.txt`, `evals/requirements.txt`, `workspace-gateway/requirements-test.txt`. No application source changes.
+- **Code**: `frontend/package-lock.json`, `errand/requirements.txt`, `evals/requirements.txt`, `workspace-gateway/requirements-test.txt`, `workspace-gateway/Dockerfile.refresher`. No application source changes.
+- **Found during implementation**: `Dockerfile.refresher` pinned `requests==2.32.3` — the vulnerable version — while `requirements-test.txt` carries the comment *"keep it pinned to the image's"*. Renovate PR #218 bumped only the test file, so merging it alone would have left the vulnerability in the running refresher image while making the test pin claim it was fixed. Both are bumped. This is the clearest example of the proposal's thesis: the `[SECURITY]` label tracks the manifest Renovate can parse, not the artefact that ships.
 - **Breaking**: none expected. All npm fixes are non-major. `cryptography` crosses two majors, but errand's usage is confined to `Fernet` and `Ed25519` key handling, both stable across the range.
 - **Risk**: concentrated in `marked` and `dompurify`, because they are the two that actually render output. A sanitiser or tokenizer change can alter how existing task output displays. This is the part that wants looking at in a browser, not just a green test run.
 - **Deliberately separate from `address-security-review-findings`**: that change rewrites the OIDC callback and the CORS policy, and its own tasks note that an auth regression there is a lockout rather than a degradation. Landing a `cryptography` major bump and a frontend lockfile rebuild in the same deploy would give a broken login or a blank frontend two candidate causes instead of one. The two changes address the same programme of work and are intentionally not the same deploy.

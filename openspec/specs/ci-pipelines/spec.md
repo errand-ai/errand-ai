@@ -1,9 +1,7 @@
 ## Purpose
 
 GitHub Actions CI pipeline with multi-stage Docker builds, Helm chart packaging, and version tagging for PRs and main.
-
 ## Requirements
-
 ### Requirement: Multi-stage Docker builds
 The CI pipeline SHALL use a multi-stage Dockerfile for the application image: a Node.js 24 stage to build the frontend assets, a Python build stage to install dependencies, and a slim Python runtime as the final stage. The Dockerfile SHALL copy source from `errand/` (not `backend/`). The task runner SHALL continue to use its own Dockerfile. The Dockerfile SHALL accept an `APP_VERSION` build argument and set it as an environment variable in the final image. CI SHALL pass the computed version tag (including `-prN` suffix for PR builds) as `--build-arg APP_VERSION=<tag>` when building the application image.
 
@@ -44,7 +42,7 @@ The GitHub Actions build workflow (`.github/workflows/build.yml`) SHALL declare 
 
 ### Requirement: Dependency-update automation via Renovate
 
-The repository's dependency-update automation SHALL be provided by Renovate, configured centrally in the `errand-ai/.github` default-repo so the policy inherits to all repositories in the `errand-ai` GitHub organisation without per-repo configuration files. The Renovate policy SHALL open a pull request for every update it proposes (patch, minor, and major) and SHALL NOT auto-merge any update; human review and merge are required for every PR. GitHub Dependabot `version-updates` for this repository SHALL be disabled via GitHub UI settings once Renovate is actively opening PRs. Dependabot `security-updates` MAY remain enabled initially and SHALL be evaluated for removal after Renovate's `vulnerabilityAlerts` behaviour has been observed to be adequate in operation.
+The repository's dependency-update automation SHALL be provided by Renovate. The update *policy* SHALL be configured centrally in the `errand-ai/.github` default-repo so it inherits to all repositories in the `errand-ai` GitHub organisation. Each repository MAY carry a minimal root `renovate.json` whose only role is to extend that central preset (`"extends": ["local>errand-ai/.github:renovate"]`); such a file SHALL NOT restate or override policy. The Renovate policy SHALL open a pull request for every update it proposes (patch, minor, and major) and SHALL NOT auto-merge any update; human review and merge are required for every PR. GitHub Dependabot `version-updates` for this repository SHALL be disabled via GitHub UI settings once Renovate is actively opening PRs. Dependabot `security-updates` MAY remain enabled initially and SHALL be evaluated for removal after Renovate's `vulnerabilityAlerts` behaviour has been observed to be adequate in operation.
 
 #### Scenario: Renovate opens a PR for a patch-level dependency update
 - **WHEN** a direct or transitive dependency pinned in `errand/requirements.txt`, `errand/requirements-test.txt`, `frontend/package.json`, or `frontend/package-lock.json` has a patch-level release available
@@ -54,10 +52,16 @@ The repository's dependency-update automation SHALL be provided by Renovate, con
 - **WHEN** a dependency has a minor or major release available
 - **THEN** Renovate opens a pull request and does not auto-merge it, regardless of CI result
 
+#### Scenario: Root config extends the central preset and nothing more
+- **WHEN** a reviewer inspects `renovate.json` at the root of the `errand-ai/errand-ai` repository
+- **THEN** it contains only a `$schema` key and an `extends` array naming `local>errand-ai/.github:renovate`, and declares no package rules, schedules, or other policy of its own
+
 #### Scenario: Renovate config is not in this repository
-- **WHEN** a reviewer searches for a `renovate.json`, `renovate.json5`, `.renovaterc`, or `renovate` key in `package.json` in the `errand-ai/errand-ai` repository
-- **THEN** no such file or key is present; the effective configuration is provided by the `errand-ai/.github` default-repo
+- **WHEN** a reviewer searches this repository for Renovate *policy* — package rules, grouping, schedules, or automerge settings — in `renovate.json`, `renovate.json5`, `.renovaterc`, or a `renovate` key in `package.json`
+- **THEN** no such policy is present; the effective configuration is provided by the `errand-ai/.github` default-repo
+- **AND** the root `renovate.json` that does exist is a pointer, not policy — it carries only `$schema` and `extends`
 
 #### Scenario: Dependabot version-updates disabled
 - **WHEN** a reviewer inspects this repository's GitHub Security & analysis settings
 - **THEN** Dependabot version-updates is disabled (Dependabot security-updates MAY remain enabled pending the Renovate vulnerability-alerts evaluation)
+

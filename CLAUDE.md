@@ -13,7 +13,15 @@ This project uses the `openspec` CLI (v1.1.1) with the `spec-driven` schema. Cha
 1. **Create a change**: `openspec new change "<name>"` — scaffolds `openspec/changes/<name>/`
 2. **Create artifacts in order**: proposal → design + specs (parallel, both depend on proposal) → tasks
 3. **Implement**: Work through tasks, marking `- [ ]` → `- [x]` as each is completed
-4. **Archive**: Once all tasks are done, archive the change
+4. **Archive**: Once the implementation tasks are done, archive the change **on the feature branch and commit it as part of the same PR** — never as a follow-up PR
+
+**Archive belongs in the PR that implements the change.** Run `openspec archive <name>` before merging and commit the result (the flattened `openspec/specs/` update plus the move into `openspec/changes/archive/`) alongside the code it describes. A change and the spec it establishes should land in one commit range, so a reader of `git log` sees the requirement and its implementation together, and `main` never carries an active change whose work is already merged.
+
+Consequences to plan for, not reasons to defer:
+- Archiving re-triggers CI and produces a new image tag, so any pre-archive deployment verification must be repeated on the post-archive build.
+- Do **not** write tasks of the form "merge, then archive". The only genuinely post-merge tasks are ones that depend on the merge having happened (e.g. confirming Renovate auto-closed superseded PRs).
+- `openspec archive` refuses to drop a scenario present in the current spec. To retire a scenario deliberately, keep its heading in the `MODIFIED` block and correct its body; the guard compares scenario headings, and silently losing one is the failure it exists to prevent.
+- Never hand-copy a delta into `openspec/specs/` — CI rejects `ADDED/MODIFIED/REMOVED/RENAMED Requirements` headings there. Let `openspec archive` flatten it.
 
 When updating a design decision across artifacts, grep the change directory for the old term to ensure all references are updated (proposal, design, specs, and tasks must stay in sync).
 
@@ -136,7 +144,16 @@ After pushing, CI builds container images and the Helm chart. **Before merging t
 
 **Do not merge a PR until the built artifacts have been validated on Kubernetes.** A green CI build alone is not sufficient — the deployment must work end-to-end.
 
-### 6. Clean up after merge
+### 6. Archive the change before merging
+
+```bash
+openspec archive "<change-name>" -y   # flattens delta specs, moves change to archive/
+git add openspec/ && git commit        # part of THIS PR, not a follow-up
+```
+
+See the OpenSpec Workflow section above. Re-verify the redeployed build afterwards, since this produces a new image tag.
+
+### 7. Clean up after merge
 
 ```bash
 git checkout main

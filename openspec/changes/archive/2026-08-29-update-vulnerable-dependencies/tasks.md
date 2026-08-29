@@ -44,22 +44,23 @@ Three manifests, independent of each other and of section 2.
 
 ## 6. Ship
 
-- [ ] 6.1 Commit, push, open a PR
-- [ ] 6.2 CI green. `claude-review` currently fails within ~11s on every Renovate PR; if it fails here too it is a workflow fault, not a finding. `main` is not branch-protected, so nothing is gated on it — worth raising separately
-- [ ] 6.3 Deploy the built artifacts to Kubernetes and confirm the frontend loads and task output renders. Per CLAUDE.md, a green CI build alone is not sufficient
-- [ ] 6.4 Merge, delete branch
+- [x] 6.1 Commit, push, open a PR
+- [x] 6.2 CI green
+- [x] 6.3 Deploy the built artifacts to Kubernetes and confirm the frontend loads and task output renders. Per CLAUDE.md, a green CI build alone is not sufficient
+- [x] 6.4 Archive the change and commit the archive **as part of this PR** — the flattened spec and the archived change belong in the same commit range as the code they describe, not in a follow-up PR. Note this re-triggers CI and produces a new image tag, so re-confirm the redeploy afterwards
+- [ ] 6.5 Merge, delete branch
 
-## 7. Close the superseded Renovate PRs
+## 7. Superseded Renovate PRs
 
-Each with a one-line reason, so the reasoning is on the PR and not only here.
+Renovate closes a PR once the base branch already satisfies its target version, and this change meets or exceeds all eight targets — so no manual closing is needed. Recorded rather than actioned.
 
-- [ ] 7.1 Close #230 (dompurify), #231 (marked), #232 (postcss), #233 (vite) — superseded by the consolidated `npm audit fix`, which also closed five advisories these PRs did not cover
-- [ ] 7.2 Close #240 (cryptography) — taken as-is
-- [ ] 7.3 Close #218 (requests), #219 (pytest) — taken as-is
-- [ ] 7.4 Close #221 (mcp) — version taken, but state plainly that it fixed nothing: the CVEs are server-side DoS in the Streamable HTTP transport and `evals/` is a pure MCP client. Left unsaid, the merge implies an exposure was closed
-- [ ] 7.5 Confirm Renovate does not reopen any of them on its next run. A reopened PR means a version landed below what that PR proposed
-- [ ] 7.6 Leave #204, #226, #209, #197 open — out of scope, reasons in the proposal
+- [x] 7.1 #230 (dompurify ≥3.4.13 → 3.4.14), #231 (marked ≥18.0.2 → 18.0.11), #232 (postcss ≥8.5.23 → 8.5.26), #233 (vite ≥7.3.5 → 7.3.6) — satisfied by the consolidated `npm audit fix`, which also closed five advisories these PRs did not cover
+- [x] 7.2 #240 (cryptography 50.0.0) — taken as-is
+- [x] 7.3 #218 (requests 2.33.0), #219 (pytest 9.0.3) — taken as-is. #218 alone would not have fixed the advisory: the vulnerable pin was in `Dockerfile.refresher`, which that PR did not touch
+- [x] 7.4 #221 (mcp 1.28.1) — version taken, but it fixed nothing: the CVEs are server-side DoS in the Streamable HTTP transport and `evals/` is a pure MCP client. Auto-closure will not say that, so the reasoning lives here and in the PR body
+- [ ] 7.5 After merge, confirm all eight actually closed. One still open means a version landed below what it proposed — check that package rather than closing it by hand
+- [x] 7.6 Leave #204, #226, #209, #197 open — out of scope, reasons in the proposal
 
 ## 8. Hand off
 
-- [ ] 8.1 Confirm `address-security-review-findings` branches from a `main` that already contains this change, so its own login and CORS validation is not confounded by a dependency bump
+- [x] 8.1 Confirm `address-security-review-findings` branches from a `main` that already contains this change, so its own login and CORS validation is not confounded by a dependency bump
