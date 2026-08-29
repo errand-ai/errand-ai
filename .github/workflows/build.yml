@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     permissions:
       contents: read
     outputs:
@@ -66,7 +66,7 @@ jobs:
           done
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     permissions:
       contents: read
       packages: read
@@ -124,7 +124,7 @@ jobs:
   build-errand:
     needs: [version, test]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     timeout-minutes: 10
     permissions:
       contents: read
@@ -162,7 +162,7 @@ jobs:
   build-task-runner:
     needs: [version, test]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     timeout-minutes: 10
     permissions:
       contents: read
@@ -197,7 +197,7 @@ jobs:
   build-workspace-gateway:
     needs: [version, test]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     timeout-minutes: 10
     permissions:
       contents: read
@@ -232,7 +232,7 @@ jobs:
   build-workspace-refresher:
     needs: [version, test]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     timeout-minutes: 10
     permissions:
       contents: read
@@ -267,7 +267,7 @@ jobs:
   helm:
     needs: [version, build-errand, build-task-runner, build-workspace-gateway, build-workspace-refresher]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     permissions:
       contents: read
       packages: write

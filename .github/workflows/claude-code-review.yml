@@ -53,7 +53,7 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
 
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     permissions:
       contents: read
       pull-requests: write # the code-review plugin posts its review via `gh pr comment`

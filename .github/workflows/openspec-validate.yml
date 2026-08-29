@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   validate-specs:
-    runs-on: ubuntu-latest
+    runs-on: errand-ai-runner
     steps:
       - uses: actions/checkout@v7
 
