@@ -63,4 +63,4 @@ Renovate closes a PR once the base branch already satisfies its target version, 
 
 ## 8. Hand off
 
-- [x] 8.1 Confirm `address-security-review-findings` branches from a `main` that already contains this change, so its own login and CORS validation is not confounded by a dependency bump
+- [ ] 8.1 Confirm `address-security-review-findings` branches from a `main` that already contains this change, so its own login and CORS validation is not confounded by a dependency bump

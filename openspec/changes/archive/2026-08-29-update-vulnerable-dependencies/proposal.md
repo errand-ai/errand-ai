@@ -55,7 +55,7 @@ The lesson actually recorded from that incident was not "pin every line" — it 
 - Bump `pytest` to `9.0.3` and `requests` to `2.33.0` in `workspace-gateway/requirements-test.txt`.
 - Bump `mcp` to `1.28.1` in `evals/requirements.txt`.
 - Correct the `ci-pipelines` spec, which asserts that no `renovate.json` exists in this repository. One does, at the repository root, extending the org preset — added in `d1415d9` and amended in `4e49850`. The spec has been wrong since then.
-- Close Renovate PRs #218, #219, #221, #230, #231, #232, #233 and #240 as superseded, each with a one-line reason.
+- Supersede Renovate PRs #218, #219, #221, #230, #231, #232, #233 and #240. No manual closing is needed — Renovate closes a PR once the base branch already satisfies its target version, and this change meets or exceeds all eight. The reasoning each one deserves (notably that #221 fixed nothing real, and that #218 alone would not have fixed the `requests` advisory) is recorded in `tasks.md` §7 and the PR body, because auto-closure records none of it.
 
 **Not in scope**, and left open:
 

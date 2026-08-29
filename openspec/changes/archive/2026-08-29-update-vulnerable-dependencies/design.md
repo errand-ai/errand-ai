@@ -33,7 +33,7 @@ The check that makes this safe: `npm audit --json` reports `fixAvailable: true` 
 
 **Do not pin `mcp[http]` while leaving sixteen other ranges untouched.** The instinct is right and the scope is wrong. Pinning one range because an advisory happened to point at it produces a `requirements.txt` that is neither consistently pinned nor consistently ranged, and invites the next reader to assume the pinned ones were pinned for a reason. Either the file is pinned or it is not; that is a real trade-off (reproducibility against automatic transitive patching on rebuild) and it needs its own change.
 
-**Verify `marked` and `dompurify` by looking at rendered output.** The frontend suite has 267 tests and `TaskOutputModalXssRegression.test.ts` guards the sanitiser seam specifically, but neither proves that ordinary task output still *renders the same* after a tokenizer change. `marked` 18.0.1 → 18.0.2 changes how the block tokenizer handles whitespace it previously mishandled; that is exactly the class of change that alters real output subtly and passes every assertion. A green suite is necessary and not sufficient here.
+**Verify `marked` and `dompurify` by looking at rendered output.** The frontend suite has 267 tests and `TaskOutputModalXssRegression.test.ts` guards the sanitiser seam specifically, but neither proves that ordinary task output still *renders the same* after a tokenizer change. `marked` 18.0.1 → 18.0.11 changes how the block tokenizer handles whitespace it previously mishandled; that is exactly the class of change that alters real output subtly and passes every assertion. Note the delta is ten patch releases, not the single one the superseded Renovate PR proposed — `npm audit fix` resolves to current, not to a floor. A green suite is necessary and not sufficient here.
 
 **Ship as its own PR, ahead of `address-security-review-findings`.** Landing first means the security-review change is developed and deployed against an already-patched dependency set, so its own validation is not confounded. Landing separately means a broken login after that change has one candidate cause. The cost is two deploys instead of one, which is the correct price for that.
 
@@ -41,15 +41,15 @@ The check that makes this safe: `npm audit --json` reports `fixAvailable: true` 
 
 ## Risks / Trade-offs
 
-**`marked` 18.0.2 changes how existing task output renders** → The highest-probability way this change causes visible harm, and the reason the verification step is a browser check rather than a test count. Mitigated by viewing a real task's output — one with code blocks, tables and tool results — before merging.
+**`marked` 18.0.11 changes how existing task output renders** → The highest-probability way this change causes visible harm, and the reason the verification step is a browser check rather than a test count. Mitigated by viewing a real task's output — one with code blocks, tables and tool results — before merging.
 
-**`dompurify` 3.4.0 → 3.4.13 tightens sanitisation and strips markup that previously rendered** → Thirteen patch releases of a sanitiser is thirteen opportunities for something legitimate to start being filtered. Same mitigation, same check.
+**`dompurify` 3.4.0 → 3.4.14 tightens sanitisation and strips markup that previously rendered** → Fourteen patch releases of a sanitiser is fourteen opportunities for something legitimate to start being filtered. Same mitigation, same check.
 
 **`cryptography` crosses two majors** → Low risk given errand's usage (`Fernet` in `llm_providers.py`, `Ed25519` in `main.py`), but it is the one pip bump that touches a running code path. The backend suite exercises credential encryption; a green run is meaningful here in a way it is not for the frontend renderers.
 
 **`npm audit fix` rewrites more of the lockfile than four targeted bumps would** → A larger diff to review, and a small chance of an unrelated transitive moving at the same time. Accepted: the diff is mechanical, and the alternative leaves five advisories open.
 
-**Closing eight Renovate PRs invites Renovate to reopen them** → It will not, provided the versions in the merged tree are at or above what each PR proposed. Worth confirming after the merge rather than assuming; a reopened PR is the signal that a bump was missed.
+**Renovate may not auto-close the eight superseded PRs** → Renovate closes a PR once the base branch already satisfies its target version, so no manual closing is needed provided the merged tree is at or above what each proposed. Worth confirming after the merge rather than assuming; a PR still open is the signal that a bump landed below its target.
 
 **Deploying separately doubles the deploy count for one programme of work** → Deliberate. The alternative is a single deploy in which a lockout and a dependency bump are indistinguishable.
 

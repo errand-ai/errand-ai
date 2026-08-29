@@ -16,7 +16,7 @@ The repository's dependency-update automation SHALL be provided by Renovate. The
 - **WHEN** a reviewer inspects `renovate.json` at the root of the `errand-ai/errand-ai` repository
 - **THEN** it contains only a `$schema` key and an `extends` array naming `local>errand-ai/.github:renovate`, and declares no package rules, schedules, or other policy of its own
 
-#### Scenario: Renovate config is not in this repository
+#### Scenario: Renovate policy is not duplicated in this repository
 - **WHEN** a reviewer searches this repository for Renovate *policy* — package rules, grouping, schedules, or automerge settings — in `renovate.json`, `renovate.json5`, `.renovaterc`, or a `renovate` key in `package.json`
 - **THEN** no such policy is present; the effective configuration is provided by the `errand-ai/.github` default-repo
 - **AND** the root `renovate.json` that does exist is a pointer, not policy — it carries only `$schema` and `extends`
