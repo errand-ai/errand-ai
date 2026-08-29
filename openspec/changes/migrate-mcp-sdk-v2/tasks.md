@@ -60,9 +60,18 @@ The failure this change most plausibly ships is DNS rebinding protection silentl
 - [ ] 8.2 CI green
 - [ ] 8.3 Deploy to Kubernetes and confirm MCP works **against the real hostname through the ingress**, not a localhost smoke test. The `421` this change guards against is invisible to a loopback check
 - [ ] 8.4 Confirm a task submitted through MCP runs to completion on the deployed build
-- [ ] 8.5 Merge, delete branch
+- [ ] 8.5 Archive this change and commit the archive **as part of the same PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
 
-## 9. Follow-ups, not done here
+## 9. Post-merge notes
 
-- [ ] 9.1 `task-runner/requirements.txt` declares `mcp>=1.0.0` with no upper bound, and escaped the 2026-07-28 breakage only because `openai-agents` declares `mcp<2,>=1.19.0` on its behalf. Same defect, still live, protected by a third party. One line, and it should not wait for this change
-- [ ] 9.2 Move the tool-call logging to `middleware` if section 3 kept the private wrapper. It is a known future breakage
+Not tasks. The task list is frozen when the archive is committed, so anything that can only happen at or after the merge must not be a checkbox — see CLAUDE.md.
+
+- Merge and delete the branch.
+- Confirm the MCP endpoint still serves the deployed hostname after the merge build, and that a task submitted through MCP completes.
+
+## 10. Follow-ups, not part of this change
+
+Separate work, recorded so it is not lost. Not tasks of this change.
+
+- `task-runner/requirements.txt` declares `mcp>=1.0.0` with no upper bound, and escaped the 2026-07-28 breakage only because `openai-agents` declares `mcp<2,>=1.19.0` on its behalf. Same defect, still live, protected by a third party. One line, and it should not wait for this change.
+- Move the tool-call logging to `middleware` if section 3 kept the private wrapper. It is a known future breakage.
