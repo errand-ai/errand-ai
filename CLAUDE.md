@@ -13,7 +13,16 @@ This project uses the `openspec` CLI (v1.1.1) with the `spec-driven` schema. Cha
 1. **Create a change**: `openspec new change "<name>"` — scaffolds `openspec/changes/<name>/`
 2. **Create artifacts in order**: proposal → design + specs (parallel, both depend on proposal) → tasks
 3. **Implement**: Work through tasks, marking `- [ ]` → `- [x]` as each is completed
-4. **Archive**: Once all tasks are done, archive the change
+4. **Archive**: Once the implementation tasks are done, archive the change **on the feature branch and commit it as part of the same PR** — never as a follow-up PR
+
+**Archive belongs in the PR that implements the change.** Run `openspec archive <name>` before merging and commit the result (the flattened `openspec/specs/` update plus the move into `openspec/changes/archive/`) alongside the code it describes. A change and the spec it establishes should land in one commit range, so a reader of `git log` sees the requirement and its implementation together, and `main` never carries an active change whose work is already merged.
+
+Consequences to plan for, not reasons to defer:
+- Archiving re-triggers CI and produces a new image tag, so any pre-archive deployment verification must be repeated on the post-archive build.
+- Do **not** write tasks of the form "merge, then archive".
+- Anything that can only happen at or after the merge (merging itself, confirming Renovate auto-closed superseded PRs, re-verifying the redeploy, branching the next change) must be written as a **plain bullet under a "Post-merge notes" heading, not a checkbox**. The task list is frozen when the archive is committed, so such a checkbox can never be ticked and leaves the archived change looking permanently incomplete. A `tasks.md` reaching archive should have no unchecked boxes.
+- `openspec archive` refuses to drop a scenario present in the current spec — it compares scenario **headings**, and silently losing one is the failure it exists to prevent. Renaming a scenario is not an expressible delta operation, so when the heading itself is wrong: keep the old heading in the `MODIFIED` block so the archive succeeds, then rename it in the flattened `openspec/specs/` file **in the same PR**. Correcting only the body leaves a scenario whose heading contradicts it.
+- Never hand-copy a delta into `openspec/specs/` — CI rejects `ADDED/MODIFIED/REMOVED/RENAMED Requirements` headings there. Let `openspec archive` flatten it.
 
 When updating a design decision across artifacts, grep the change directory for the old term to ensure all references are updated (proposal, design, specs, and tasks must stay in sync).
 
@@ -136,7 +145,16 @@ After pushing, CI builds container images and the Helm chart. **Before merging t
 
 **Do not merge a PR until the built artifacts have been validated on Kubernetes.** A green CI build alone is not sufficient — the deployment must work end-to-end.
 
-### 6. Clean up after merge
+### 6. Archive the change before merging
+
+```bash
+openspec archive "<change-name>" -y   # flattens delta specs, moves change to archive/
+git add openspec/ && git commit        # part of THIS PR, not a follow-up
+```
+
+See the OpenSpec Workflow section above. Re-verify the redeployed build afterwards, since this produces a new image tag.
+
+### 7. Clean up after merge
 
 ```bash
 git checkout main
