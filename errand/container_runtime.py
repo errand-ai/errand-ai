@@ -688,10 +688,28 @@ class KubernetesRuntime(ContainerRuntime):
         if exit_code == -1:
             logger.warning("Could not determine exit code for pod %s after retries", pod_name)
 
-        # Get full logs (combined stdout+stderr from the pod)
+        # Get full logs (combined stdout+stderr from the pod).
+        #
+        # `_preload_content=False` is load-bearing, not incidental — do not
+        # "simplify" it away. With preloading on, the kubernetes client
+        # deserialises the body into the declared `str` type: it tries
+        # `json.loads(response.data)`, which raises for pod logs (they are never
+        # valid JSON), leaves `data` as the raw bytes, and then returns
+        # `str(bytes)` — the Python repr, `b'...\n...'`, whose line breaks are the
+        # two-character sequence backslash-n rather than real newlines. Stored
+        # logs then collapse into a single unparseable line and every consumer
+        # (log viewer, `task_logs` MCP tool) falls back to raw rendering.
+        #
+        # Decoding here ourselves is also what `run()` does above, which keeps the
+        # streamed and stored paths equivalent instead of only similar-looking.
         full_logs = ""
         try:
-            full_logs = self.core_v1.read_namespaced_pod_log(pod_name, namespace)
+            log_response = self.core_v1.read_namespaced_pod_log(
+                pod_name,
+                namespace,
+                _preload_content=False,
+            )
+            full_logs = log_response.read().decode("utf-8", errors="replace")
         except ApiException:
             logger.warning("Failed to read logs from pod %s", pod_name, exc_info=True)
 

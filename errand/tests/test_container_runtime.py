@@ -269,6 +269,25 @@ class TestDockerRuntime:
         runtime.cleanup(handle)
 
 
+
+def _fake_pod_log_response(text):
+    """Stand in for the un-preloaded urllib3 response `read_namespaced_pod_log` returns.
+
+    With `_preload_content=False` the client hands back a response object whose
+    `.read()` yields raw bytes, which the runtime decodes itself. Mocking a plain
+    `str` here would re-encode the very bug this guards against: a `str` only comes
+    back when preloading is on, and then it is the bytes repr.
+    """
+    class _FakePodLogResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    return _FakePodLogResponse(text.encode("utf-8") if isinstance(text, str) else text)
+
+
 # ---------------------------------------------------------------------------
 # KubernetesRuntime
 # ---------------------------------------------------------------------------
@@ -605,7 +624,7 @@ class TestKubernetesRuntime:
         runtime.core_v1.read_namespaced_pod.return_value = mock_pod
 
         # Pod logs contain structured JSON output as last line
-        runtime.core_v1.read_namespaced_pod_log.return_value = (
+        runtime.core_v1.read_namespaced_pod_log.return_value = _fake_pod_log_response(
             "some debug output\n"
             '{"status":"completed","result":"done"}'
         )
@@ -638,7 +657,7 @@ class TestKubernetesRuntime:
             "2026-01-01 INFO Processing task\n"
             '{"status":"completed","result":"the answer is 42","questions":[]}'
         )
-        runtime.core_v1.read_namespaced_pod_log.return_value = combined_logs
+        runtime.core_v1.read_namespaced_pod_log.return_value = _fake_pod_log_response(combined_logs)
 
         exit_code, stdout, stderr = runtime.result(handle)
 
@@ -646,6 +665,135 @@ class TestKubernetesRuntime:
         assert '"status":"completed"' in stdout
         assert '"result":"the answer is 42"' in stdout
         assert stderr == combined_logs
+
+    # -- Regression: pod logs must be decoded text, not a bytes repr ----------
+    #
+    # The tests above mock `runtime.core_v1` wholesale, so `read_namespaced_pod_log`
+    # never runs the kubernetes client's own deserialisation. That is exactly why
+    # they stayed green while production stored a bytes repr for six months: the
+    # defect lives *inside* the client, below the level those tests mock.
+    #
+    # These tests build a real CoreV1Api over a real ApiClient and fake only the
+    # REST transport, so the client's deserialisation genuinely runs.
+
+    def _make_runtime_with_real_client(self, raw_log_bytes):
+        """KubernetesRuntime whose core_v1 is a real CoreV1Api over a faked transport."""
+        from kubernetes import client as k8s
+
+        class FakeRESTResponse:
+            def __init__(self, data):
+                self.status, self.reason, self.data = 200, "OK", data
+
+            def getheaders(self):
+                return {}
+
+            def getheader(self, name, default=None):
+                return default
+
+            def read(self):
+                return self.data
+
+        api_client = k8s.ApiClient()
+        rest = MagicMock()
+        rest.GET.return_value = FakeRESTResponse(raw_log_bytes)
+        api_client.rest_client = rest
+
+        with patch("container_runtime.KubernetesRuntime.__init__", return_value=None):
+            runtime = KubernetesRuntime.__new__(KubernetesRuntime)
+        runtime.core_v1 = k8s.CoreV1Api(api_client)
+        runtime.batch_v1 = MagicMock()
+        runtime.namespace = "test-ns"
+        runtime.task_runner_image = "task-runner:latest"
+
+        # Pod status: one terminated container with exit code 0.
+        mock_pod = MagicMock()
+        cs = MagicMock()
+        cs.name = "task-runner"
+        cs.state.terminated.exit_code = 0
+        mock_pod.status.container_statuses = [cs]
+        runtime.core_v1.read_namespaced_pod = MagicMock(return_value=mock_pod)
+
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "pod_name": "pod-abc",
+            "namespace": "test-ns",
+        })
+        return runtime, handle
+
+    def test_result_logs_are_decoded_text_not_bytes_repr(self):
+        """result() must return decoded text with real line breaks.
+
+        Asserting only that logs are non-empty passes against the corrupt value —
+        `str(b'...')` is a non-empty str. The shape is what is wrong.
+        """
+        raw = (
+            b'{"type":"agent_start","data":{"turn_id":"t1"}}\n'
+            b'{"type":"llm_turn_end","data":{"input_tokens":1234}}\n'
+            b'Collecting google-genai\n'
+        )
+        runtime, handle = self._make_runtime_with_real_client(raw)
+
+        _, _, stderr = runtime.result(handle)
+
+        assert not stderr.startswith("b'"), "logs are a Python bytes repr, not decoded text"
+        assert not stderr.startswith('b"'), "logs are a Python bytes repr, not decoded text"
+        assert "\n" in stderr, "logs contain no real line breaks"
+        assert "\\n" not in stderr, "line breaks were escaped into literal backslash-n"
+
+    def test_result_log_lines_are_independently_parseable(self):
+        """Splitting stored logs on newlines must yield parseable task-runner events.
+
+        This is what the log viewer does. It is the assertion that ties the test to
+        the reported symptom: a bytes repr collapses to a single unparseable line.
+        """
+        import json
+
+        raw = (
+            b'{"type":"agent_start","data":{"turn_id":"t1"}}\n'
+            b'{"type":"llm_turn_end","data":{"input_tokens":1234}}\n'
+            b'Collecting google-genai\n'
+        )
+        runtime, handle = self._make_runtime_with_real_client(raw)
+
+        _, _, stderr = runtime.result(handle)
+
+        lines = [ln for ln in stderr.split("\n") if ln.strip()]
+        assert len(lines) >= 3, f"expected multiple lines, got {len(lines)}"
+
+        events = []
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and "type" in obj:
+                events.append(obj["type"])
+
+        assert "agent_start" in events
+        assert "llm_turn_end" in events, (
+            "turn-usage events must be reachable — they carry the token counts"
+        )
+
+    def test_result_reads_logs_without_client_deserialisation(self):
+        """Pod logs are read with _preload_content=False.
+
+        The client's preloaded `str` deserialisation returns `str(bytes)` whenever the
+        body is not valid JSON, which pod logs never are.
+        """
+        runtime, handle = self._make_runtime_with_real_client(b"line one\nline two\n")
+
+        class FakeStream:
+            def read(self):
+                return b"line one\nline two\n"
+
+        runtime.core_v1.read_namespaced_pod_log = MagicMock(return_value=FakeStream())
+
+        runtime.result(handle)
+
+        _, kwargs = runtime.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs.get("_preload_content") is False, (
+            "must not rely on the client deserialising pod logs to str"
+        )
 
     def test_result_handles_api_errors_gracefully(self):
         """result() returns defaults when K8s API calls fail."""
@@ -692,7 +840,7 @@ class TestKubernetesRuntime:
         mock_pod_done.status.container_statuses = [cs_done]
 
         runtime.core_v1.read_namespaced_pod.side_effect = [mock_pod_pending, mock_pod_done]
-        runtime.core_v1.read_namespaced_pod_log.return_value = (
+        runtime.core_v1.read_namespaced_pod_log.return_value = _fake_pod_log_response(
             '{"status":"completed","result":"ok"}'
         )
 
