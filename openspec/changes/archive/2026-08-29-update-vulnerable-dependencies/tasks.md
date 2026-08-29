@@ -48,7 +48,6 @@ Three manifests, independent of each other and of section 2.
 - [x] 6.2 CI green
 - [x] 6.3 Deploy the built artifacts to Kubernetes and confirm the frontend loads and task output renders. Per CLAUDE.md, a green CI build alone is not sufficient
 - [x] 6.4 Archive the change and commit the archive **as part of this PR** — the flattened spec and the archived change belong in the same commit range as the code they describe, not in a follow-up PR. Note this re-triggers CI and produces a new image tag, so re-confirm the redeploy afterwards
-- [ ] 6.5 Merge, delete branch
 
 ## 7. Superseded Renovate PRs
 
@@ -58,9 +57,13 @@ Renovate closes a PR once the base branch already satisfies its target version, 
 - [x] 7.2 #240 (cryptography 50.0.0) — taken as-is
 - [x] 7.3 #218 (requests 2.33.0), #219 (pytest 9.0.3) — taken as-is. #218 alone would not have fixed the advisory: the vulnerable pin was in `Dockerfile.refresher`, which that PR did not touch
 - [x] 7.4 #221 (mcp 1.28.1) — version taken, but it fixed nothing: the CVEs are server-side DoS in the Streamable HTTP transport and `evals/` is a pure MCP client. Auto-closure will not say that, so the reasoning lives here and in the PR body
-- [ ] 7.5 After merge, confirm all eight actually closed. One still open means a version landed below what it proposed — check that package rather than closing it by hand
-- [x] 7.6 Leave #204, #226, #209, #197 open — out of scope, reasons in the proposal
+- [x] 7.5 Leave #204, #226, #209, #197 open — out of scope, reasons in the proposal
 
-## 8. Hand off
+## 8. Post-merge notes
 
-- [ ] 8.1 Confirm `address-security-review-findings` branches from a `main` that already contains this change, so its own login and CORS validation is not confounded by a dependency bump
+Not tasks. Under in-PR archiving this file is frozen at archive time, so anything that can only happen at or after the merge can never be ticked — recording it as an unchecked box would leave the archived change looking permanently incomplete. These are the things to do once #243 lands:
+
+- Merge and delete the branch.
+- Confirm all eight superseded Renovate PRs (#218, #219, #221, #230–#233, #240) auto-closed. Renovate closes a PR once the base branch satisfies its target version. One still open means a version landed below what it proposed — investigate that package rather than closing it by hand.
+- Branch `address-security-review-findings` from a `main` that already contains this change, so its login and CORS validation is not confounded by a dependency bump.
+- Re-verify the deployed build. The archive and review-fix commits each produced a new image tag after the `0.145.2-pr243.1141` build was confirmed.

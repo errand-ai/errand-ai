@@ -19,7 +19,8 @@ This project uses the `openspec` CLI (v1.1.1) with the `spec-driven` schema. Cha
 
 Consequences to plan for, not reasons to defer:
 - Archiving re-triggers CI and produces a new image tag, so any pre-archive deployment verification must be repeated on the post-archive build.
-- Do **not** write tasks of the form "merge, then archive". The only genuinely post-merge tasks are ones that depend on the merge having happened (e.g. confirming Renovate auto-closed superseded PRs).
+- Do **not** write tasks of the form "merge, then archive".
+- Anything that can only happen at or after the merge (merging itself, confirming Renovate auto-closed superseded PRs, re-verifying the redeploy, branching the next change) must be written as a **plain bullet under a "Post-merge notes" heading, not a checkbox**. The task list is frozen when the archive is committed, so such a checkbox can never be ticked and leaves the archived change looking permanently incomplete. A `tasks.md` reaching archive should have no unchecked boxes.
 - `openspec archive` refuses to drop a scenario present in the current spec — it compares scenario **headings**, and silently losing one is the failure it exists to prevent. Renaming a scenario is not an expressible delta operation, so when the heading itself is wrong: keep the old heading in the `MODIFIED` block so the archive succeeds, then rename it in the flattened `openspec/specs/` file **in the same PR**. Correcting only the body leaves a scenario whose heading contradicts it.
 - Never hand-copy a delta into `openspec/specs/` — CI rejects `ADDED/MODIFIED/REMOVED/RENAMED Requirements` headings there. Let `openspec archive` flatten it.
 
