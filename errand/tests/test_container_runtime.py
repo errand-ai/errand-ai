@@ -13,7 +13,9 @@ from container_runtime import (
     create_runtime,
     _read_namespace,
     K8S_JOB_TTL_SECONDS,
+    K8S_LOG_STREAM_MAX_BARREN_RESUMES,
     K8S_LOG_STREAM_MAX_RESUMES,
+    K8S_LOG_STREAM_MAX_RESUME_DELAY,
     _put_archive,
     _split_log_timestamp,
 )
@@ -881,22 +883,102 @@ class TestKubernetesRuntime:
 
         assert "since_seconds" not in runtime.core_v1.read_namespaced_pod_log.call_args.kwargs
 
-    def test_resumption_is_bounded_by_a_backstop(self):
-        """Pod state is the primary bound; the attempt cap stops a pathological loop."""
+    def test_a_productive_stream_resumes_up_to_the_attempt_backstop(self):
+        """Pod state is the primary bound; the attempt cap stops a pathological loop.
+
+        Each resumed stream delivers a line here, so the barren-resume guard never
+        engages and the run is bounded by the attempt cap alone.
+        """
         runtime = self._make_runtime()
         handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
 
-        # A stream that always ends immediately against a pod that never terminates.
-        runtime.core_v1.read_namespaced_pod_log.side_effect = lambda *a, **k: _log_chunks()
+        def _one_line(*_a, **_k):
+            i = _one_line.i
+            _one_line.i += 1
+            m, sec = divmod(i, 60)
+            return _log_chunks(f"2026-08-30T03:{m:02d}:{sec:02d}.000000000+01:00 line {i}\n")
+        _one_line.i = 0
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = _one_line
         runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Running")
 
         with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
                 patch("container_runtime.time.sleep"):
             lines = list(runtime.run(handle))
 
-        assert lines == []
-        assert runtime.core_v1.read_namespaced_pod_log.call_count == K8S_LOG_STREAM_MAX_RESUMES + 1
+        assert len(lines) == K8S_LOG_STREAM_MAX_RESUMES + 1
         assert handle.runtime_data["log_stream_outcome"] == "resume_limit_reached"
+
+    def test_a_stream_that_delivers_nothing_stops_long_before_the_attempt_cap(self):
+        """A stream that keeps ending empty is not following — don't grind on it.
+
+        A working `follow` blocks through a quiet period rather than ending, so
+        repeated empty resumes mean the stream is broken. Observed in production
+        when the node ran out of inotify instances: the old flat 1s retry spun 100
+        times in ~100 seconds against a node that could not follow at all.
+        """
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = lambda *a, **k: _log_chunks()
+        runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Running")
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep") as sleep:
+            lines = list(runtime.run(handle))
+
+        assert lines == []
+        assert handle.runtime_data["log_stream_outcome"] == "stream_not_following"
+        assert runtime.core_v1.read_namespaced_pod_log.call_count <= K8S_LOG_STREAM_MAX_BARREN_RESUMES + 2
+        # And it backed off rather than hammering at the base delay.
+        delays = [c.args[0] for c in sleep.call_args_list]
+        assert delays == sorted(delays), f"delay should be non-decreasing, got {delays}"
+        assert max(delays) == K8S_LOG_STREAM_MAX_RESUME_DELAY
+
+    def test_a_delivered_line_resets_the_barren_counter(self):
+        """A quiet patch must not condemn a stream that is still producing output."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        # Empty, empty, then a line, then empty... never reaching the barren limit.
+        streams = ([_log_chunks()] * 3 + [_log_chunks(f"{_ts(5)} alive\n")]) * 3
+        runtime.core_v1.read_namespaced_pod_log.side_effect = streams + [
+            _log_chunks(f"{_ts(9)} done\n")
+        ]
+        phases = [_pod_in_phase("Running")] * (len(streams)) + [_pod_in_phase("Succeeded")]
+        runtime.core_v1.read_namespaced_pod.side_effect = phases
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["alive", "done"]
+        assert handle.runtime_data["log_stream_outcome"] == "pod_terminated"
+
+    def test_follow_failure_is_reported_to_the_operator_not_the_task_log(self):
+        """`failed to create fsnotify watcher` is infrastructure, not task output."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(
+                f"{_ts(1)} real output\n",
+                "failed to create fsnotify watcher: too many open files\n",
+            ),
+            _log_chunks(f"{_ts(4)} more output\n"),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"), \
+                patch("container_runtime.logger") as log:
+            lines = list(runtime.run(handle))
+
+        assert lines == ["real output", "more output"], "the API's error is not task output"
+        warned = " ".join(str(c) for c in log.warning.call_args_list)
+        assert "inotify" in warned, "the operator should be told what to raise"
 
     def test_unreadable_pod_stops_the_stream_rather_than_looping(self):
         """"Cannot tell" must not resume forever against a pod that is already gone."""

@@ -40,13 +40,13 @@ Do this before the resume logic. The defect survived a week because a broken str
 
 ## 6. Ship
 
-- [ ] 6.1 Commit, push, open a PR
-- [ ] 6.2 CI green
-- [ ] 6.3 Deploy to Kubernetes
+- [x] 6.1 Commit, push, open a PR
+- [x] 6.2 CI green
+- [x] 6.3 Deploy to Kubernetes
 - [ ] 6.4 Run a task that installs skill dependencies — the case that reliably failed — and confirm it completes
 - [ ] 6.5 Confirm `Could not determine exit code for pod` no longer appears for tasks whose pods are still running. Query Loki: `{namespace="errand", container="server"} |= "Could not determine exit code"` — datasource `P8E80F9AEF21F6940`
-- [ ] 6.6 Confirm no Job is deleted while its pod is `1/1 Running`, the state observed on `task-runner-6ac9fe38-brbtj`
-- [ ] 6.7 Confirm live log streaming still works end to end — the change is inside the streaming path
+- [x] 6.6 Confirm no Job is deleted while its pod is `1/1 Running`, the state observed on `task-runner-6ac9fe38-brbtj` — verified in the real scenario, not simulated: `Withholding cleanup of Job task-runner-531abe9e: exit code unknown and the container in pod task-runner-531abe9e-lwlgl is still running`, and the Job survived 21 minutes with its pod `1/1 Running`. The later startup sweep did delete it — that is the separate orphan-reclamation path, and is itself the "abandoned pod is still reclaimed" scenario confirmed live
+- [x] 6.7 Confirm live log streaming still works end to end — the change is inside the streaming path
 - [ ] 6.8 Archive this change and commit the archive **as part of this PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
 
 ## 7. Post-merge notes
@@ -61,7 +61,7 @@ Not tasks. The task list is frozen when the archive is committed, so anything th
 
 Separate work, recorded so it is not lost.
 
-- **Find the EOF trigger.** Unknown: candidates are an idle timeout during the quiet period after skill installation, an intermediate proxy, or client behaviour on an un-preloaded response. The cut is consistently right after `pip install` completes, which is a natural quiet gap. A live capture correlating pod phase against the "Streaming logs from pod" line would settle it, and might permit a simpler fix such as an explicit timeout.
+- ~~**Find the EOF trigger.**~~ Found while verifying this change: the API server appends `failed to create fsnotify watcher: too many open files` to the stream. The node's inotify limits were at their defaults (`max_user_instances=128`, `max_user_watches=8192`), so the kubelet could not watch the container log and `follow=true` closed immediately. The remedy is a node sysctl, not a code change — raise `fs.inotify.max_user_instances` on `rancher.devops-consultants.net`. Recorded in `design.md` under Open Questions.
 - `result()` allows five seconds for a container to report termination. Probably too short, but with the stream fixed it is no longer the thing failing.
 - **Suppress the retry when cleanup was withheld.** A task whose Job is left in place because its container is still running can still be retried, producing two live pods for one task. Rare (it needs the resume backstop exhausted or the stream to raise) and strictly better than today's "kill the work" resolution, but it is a real hole. Fixing it means touching retry policy, which this change excludes — `log_stream_outcome` on the handle is the signal a fix would read.
 - Consider surfacing a task that has resumed many times. Silently resuming forever is its own blind spot, and a high resume count is a signal about the cluster rather than the task.

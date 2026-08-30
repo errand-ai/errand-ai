@@ -354,7 +354,19 @@ K8S_POD_START_TIMEOUT = 300  # seconds to wait for pod to start
 # own phase — so it is deliberately generous: a long task on a flaky connection
 # is exactly the case that most needs resuming.
 K8S_LOG_STREAM_MAX_RESUMES = 100
-K8S_LOG_STREAM_RESUME_DELAY = 1  # seconds to wait before reopening the stream
+K8S_LOG_STREAM_RESUME_DELAY = 1  # base seconds to wait before reopening the stream
+K8S_LOG_STREAM_MAX_RESUME_DELAY = 30  # ceiling for the barren-resume backoff
+# Consecutive resumes that deliver no new line at all. A working `follow` blocks
+# during a quiet period rather than ending, so a stream that keeps ending with
+# nothing to show is not following — most often because the node is out of
+# inotify instances (see `_LOG_FOLLOW_FAILURE_MARKER`). Retrying that at the base
+# delay is a hot loop against a broken node, so it backs off and then stops.
+K8S_LOG_STREAM_MAX_BARREN_RESUMES = 10
+
+# What the API server appends to the stream when the kubelet cannot watch the
+# container's log file. It is infrastructure diagnostics, not task output, so it
+# is reported to the operator rather than yielded into the task's log.
+_LOG_FOLLOW_FAILURE_MARKER = "failed to create fsnotify watcher"
 # `since_seconds` is whole-second and server-relative, so it is padded to cover
 # rounding and clock skew. Over-reading is harmless — lines at or before the last
 # one already yielded are filtered out by timestamp; under-reading loses output.
@@ -734,8 +746,11 @@ class KubernetesRuntime(ContainerRuntime):
         buf = ""
         last_ts: datetime | None = None
         resumes = 0
+        barren = 0  # consecutive resumes that delivered no new line
 
         while True:
+            yielded = 0
+            follow_failed = False
             kwargs: dict[str, Any] = {}
             if last_ts is not None:
                 elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
@@ -770,12 +785,19 @@ class KubernetesRuntime(ContainerRuntime):
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     ts, text = _split_log_timestamp(line)
+                    if ts is None and _LOG_FOLLOW_FAILURE_MARKER in text:
+                        follow_failed = True
+                        continue
                     if ts is not None:
                         if last_ts is not None and ts <= last_ts:
                             continue  # re-read across the resume; already yielded
                         last_ts = ts
                     if text:
+                        yielded += 1
                         yield text
+            if _LOG_FOLLOW_FAILURE_MARKER in buf:
+                follow_failed = True
+                buf = ""
 
             # The stream ended. That is a question, not an answer — ask the pod.
             if self._pod_has_terminated(pod_name, namespace):
@@ -785,6 +807,26 @@ class KubernetesRuntime(ContainerRuntime):
                         yield text
                 if outcome is not None:
                     outcome["reason"] = "pod_terminated"
+                return
+
+            if follow_failed:
+                logger.warning(
+                    "The Kubernetes API could not follow the log of pod %s: %r. The node is "
+                    "out of inotify instances — raise fs.inotify.max_user_instances on it. "
+                    "Streaming cannot follow until then, so output will arrive in batches.",
+                    pod_name, _LOG_FOLLOW_FAILURE_MARKER,
+                )
+
+            barren = 0 if yielded else barren + 1
+            if barren > K8S_LOG_STREAM_MAX_BARREN_RESUMES:
+                logger.error(
+                    "Log stream for pod %s has ended %d times in a row with nothing to "
+                    "deliver; the stream is not following. Giving up on streaming — the "
+                    "pod is left alone and its result is still collected normally.",
+                    pod_name, barren,
+                )
+                if outcome is not None:
+                    outcome["reason"] = "stream_not_following"
                 return
 
             resumes += 1
@@ -798,18 +840,22 @@ class KubernetesRuntime(ContainerRuntime):
                     outcome["reason"] = "resume_limit_reached"
                 return
 
+            delay = min(
+                K8S_LOG_STREAM_RESUME_DELAY * (2 ** barren),
+                K8S_LOG_STREAM_MAX_RESUME_DELAY,
+            )
             logger.warning(
                 "Log stream for pod %s ended while the pod was still running; "
-                "resuming from %s (resume %d)",
+                "resuming from %s in %ds (resume %d, %d line(s) since the last break)",
                 pod_name,
                 last_ts.isoformat() if last_ts is not None else "the start of the log",
-                resumes,
+                delay, resumes, yielded,
             )
             # Drop any partial line. The resumed stream re-delivers it whole, and
             # its timestamp is newer than the last yielded one, so it survives the
             # filter above — yielding the fragment here would split one line in two.
             buf = ""
-            time.sleep(K8S_LOG_STREAM_RESUME_DELAY)
+            time.sleep(delay)
 
     def run(self, handle: RuntimeHandle) -> Iterator[str]:
         job_name = handle.runtime_data["job_name"]

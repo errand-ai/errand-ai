@@ -44,6 +44,8 @@ A partial line held in the buffer when a stream is cut is discarded rather than 
 
 ## Risks / Trade-offs
 
+**A resume loop that cannot follow degenerates into polling** → Found in production. Where `follow` is broken outright, every resumed stream ends immediately with nothing to deliver, and a flat retry delay turns the attempt cap into a hot loop — 100 resumes in about 100 seconds, per task attempt, repeated on every retry. Consecutive resumes that deliver no line now back off exponentially to a ceiling, and a run that stays barren stops early with its own outcome (`stream_not_following`) rather than grinding to the attempt cap. A resume that does deliver a line resets the counter, so a genuinely productive stream is still bounded only by pod state. The distinction matters because a working `follow` blocks through a quiet period rather than ending — a stream that keeps ending empty is not merely quiet, it is broken.
+
 **A resume loop that never terminates hangs the task instead of failing it** → The main risk the fix introduces, and a worse failure than the one being fixed, because a hung task occupies a concurrency slot indefinitely. Bounded by pod state, with an attempt backstop; a task whose pod is genuinely gone must still fail.
 
 **Duplicated or missing log lines across a resume** → The only request-side anchor the client offers, `since_seconds`, is whole-second and server-relative, so lines sharing a second with the last received one would repeat or drop if the request window were the only control. It is not: `timestamps=True` gives every line a nanosecond stamp, the request is padded to over-read deliberately, and the overlap is filtered out per line. Still worth checking against a real resumed run rather than only reasoning about, since the log feeds both the live viewer and the stored record.
@@ -72,7 +74,17 @@ Verification is unusual for this change: the bug is a race that did not reproduc
 
 ## Open Questions
 
-- **What actually causes the EOF?** Unknown. Candidates: an idle timeout on the connection during the quiet period while the agent starts after skill installation; an intermediate proxy between errand and the API server; or client-side behaviour when iterating an un-preloaded response. It is suspicious that the observed cut is consistently right after the skill `pip install` completes — a natural quiet gap. A live capture correlating pod phase against errand's "Streaming logs from pod" line would settle it. The fix does not depend on the answer, but the answer might permit a simpler one, such as setting an explicit timeout.
+- ~~**What actually causes the EOF?**~~ **Answered, in production, while verifying this change.** The API server appends it to the stream itself:
+
+  ```
+  failed to create fsnotify watcher: too many open files
+  ```
+
+  The kubelet needs one inotify instance per followed container log. On the node the limits were at their defaults — `fs.inotify.max_user_instances = 128`, `fs.inotify.max_user_watches = 8192` — and once exhausted, `follow=true` cannot work: the API returns the log so far and closes immediately. None of the three original candidates was right.
+
+  This explains the pattern the proposal could not: the burstiness (it tracks inotify pressure on the node, not anything about the task), the cut landing "consistently right after `pip install`" (a burst of file activity competing for instances), and why one pod streamed for twenty minutes with no interruption while another, started minutes later, could not follow at all.
+
+  The remedy is on the node, not in this repo: raise `fs.inotify.max_user_instances`. The change here is still worth having — a stream can be interrupted for other reasons, and destroying a running container on an unknown exit code is wrong regardless — but it cannot make a node follow logs it has no watchers for.
 - ~~**Should `run()` be fixed too, or only `async_run()`?**~~ **Resolved: both.** The streaming, resuming and filtering logic lives in one shared generator, `_iter_pod_log_lines`, which the sync `run()` iterates directly and the async `async_run()` drives from its executor thread. Fixing only the async path would have left exactly the divergence that produced the bytes-repr bug in this file; sharing the implementation means the two paths cannot drift.
 - ~~**Is `since_time`'s one-second granularity sufficient?**~~ **Moot: `since_time` does not exist in the Python client.** See the corrected resume decision above — the anchor is the per-line `timestamps=True` stamp, which is nanosecond-precise.
 - **Should a task whose stream broke repeatedly be surfaced differently?** Silently resuming forever is its own blind spot. A task that has resumed many times is a signal about the cluster, not about the task.
