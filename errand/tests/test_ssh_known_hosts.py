@@ -70,7 +70,8 @@ def test_write_known_hosts_is_private_and_writable():
     path = write_known_hosts(["github.com"])
     try:
         assert oct(os.stat(path).st_mode)[-3:] == "600"
-        assert "github.com" in open(path).read()
+        hosts = {line.split(" ", 1)[0] for line in open(path).read().splitlines() if line}
+        assert hosts == {"github.com"}
     finally:
         os.unlink(path)
 
@@ -94,7 +95,7 @@ def test_mismatch_on_pinned_host_names_host_and_cause():
         "Host key verification failed.\n"
     )
     explanation = explain_host_key_failure(stderr)
-    assert "github.com" in explanation
+    assert explanation.startswith("SSH host key verification failed for 'github.com'.")
     assert "not a network fault" in explanation
 
 
@@ -129,3 +130,14 @@ def test_accept_new_refuses_changed_key_but_accepts_unknown_host(
         text=True,
     )
     assert (found.returncode == 0) is expect_refusal
+
+
+def test_unpinned_host_named_in_stderr_is_not_claimed_as_pinned():
+    """The host comes from ssh's own wording, so a lookalike is not mislabelled."""
+    stderr = (
+        "Host key for notgithub.com has changed and you have requested strict checking.\n"
+        "Host key verification failed.\n"
+    )
+    explanation = explain_host_key_failure(stderr)
+    assert "'notgithub.com'" in explanation
+    assert "errand pins" not in explanation

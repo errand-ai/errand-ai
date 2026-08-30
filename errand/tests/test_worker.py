@@ -2205,7 +2205,7 @@ class TestRefreshGitClone:
         with pytest.raises(GitSkillsError) as exc:
             refresh_git_clone(repo_url, None, "fake-ssh-key-content")
 
-        assert "github.com" in str(exc.value)
+        assert "verification failed for 'github.com'" in str(exc.value)
         assert "not a network fault" in str(exc.value)
 
     def test_branch_checkout(self, tmp_path, monkeypatch):

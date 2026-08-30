@@ -36,6 +36,7 @@ problem this module exists to remove.
 
 import logging
 import os
+import re
 import tempfile
 from collections.abc import Iterable
 
@@ -103,6 +104,12 @@ _MISMATCH_MARKERS = (
     "WARNING: POSSIBLE DNS SPOOFING DETECTED",
 )
 
+# ssh names the host itself: "Host key for github.com has changed and you have
+# requested strict checking." Reading the name out of that is exact — scanning
+# stderr for a pinned hostname as a substring would label a failure against
+# `notgithub.com` as `github.com`.
+_HOST_KEY_CHANGED_RE = re.compile(r"Host key for ([^\s]+) has changed")
+
 
 def explain_host_key_failure(stderr: str) -> str | None:
     """Return an errand-specific explanation if `stderr` is a host-key refusal.
@@ -113,17 +120,17 @@ def explain_host_key_failure(stderr: str) -> str | None:
     if not stderr or not any(marker in stderr for marker in _MISMATCH_MARKERS):
         return None
 
-    host = next(
-        (h for h in PINNED_HOST_KEYS if h in stderr),
-        None,
-    )
+    match = _HOST_KEY_CHANGED_RE.search(stderr)
+    host = match.group(1) if match else None
     subject = f"'{host}'" if host else "the remote host"
-    pinned_note = (
-        f" errand pins the host key for {subject}, so this is not a network "
-        f"fault: either the host rotated its key (update PINNED_HOST_KEYS in "
-        f"errand/ssh_known_hosts.py from the vendor's published keys) or the "
-        f"connection was intercepted."
-        if host
-        else " The key presented did not match the one previously recorded for it."
-    )
-    return f"SSH host key verification failed for {subject}.{pinned_note}"
+
+    if host in PINNED_HOST_KEYS:
+        detail = (
+            f" errand pins the host key for {subject}, so this is not a network "
+            f"fault: either the host rotated its key (update PINNED_HOST_KEYS in "
+            f"errand/ssh_known_hosts.py from the vendor's published keys) or the "
+            f"connection was intercepted."
+        )
+    else:
+        detail = " The key it presented did not match the one previously recorded for it."
+    return f"SSH host key verification failed for {subject}.{detail}"
