@@ -19,6 +19,13 @@ def _public_dns():
     the suite would make real DNS queries for `example.com`. SSRF refusal
     itself is covered in test_url_guard.py and in the tool tests below, which
     stub the resolver themselves.
+
+    Note for anyone "fixing" the `patch("mcp_server.httpx.AsyncClient")` calls
+    below: they still work. `mcp_server.httpx` resolves to the httpx *module*,
+    the same object `url_guard` imported, so patching that attribute swaps the
+    client for both. Verified by running this file with `socket.connect` and
+    `getaddrinfo` blocked — no test reaches the network. It would stop working
+    if url_guard switched to `from httpx import AsyncClient`.
     """
     with patch("url_guard._resolve", AsyncMock(return_value=["93.184.216.34"])):
         yield

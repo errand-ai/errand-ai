@@ -321,7 +321,7 @@ async def test_callback_expired_state_is_rejected(route_client: AsyncClient):
     """Correctly signed and matching the cookie, but past its expiry."""
     import jwt as pyjwt
 
-    resp = await route_client.get("/auth/login")
+    await route_client.get("/auth/login")
     nonce = route_client.cookies["errand_oauth_state"]
     expired = pyjwt.encode(
         {"nonce": nonce, "exp": 1000000000}, TEST_SIGNING_SECRET, algorithm="HS256"

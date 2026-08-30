@@ -7,6 +7,7 @@ as an opaque git failure.
 """
 
 import os
+import pathlib
 import subprocess
 
 import pytest
@@ -70,7 +71,8 @@ def test_write_known_hosts_is_private_and_writable():
     path = write_known_hosts(["github.com"])
     try:
         assert oct(os.stat(path).st_mode)[-3:] == "600"
-        hosts = {line.split(" ", 1)[0] for line in open(path).read().splitlines() if line}
+        content = pathlib.Path(path).read_text()
+        hosts = {line.split(" ", 1)[0] for line in content.splitlines() if line}
         assert hosts == {"github.com"}
     finally:
         os.unlink(path)
@@ -113,23 +115,28 @@ def test_ordinary_git_failure_is_not_misreported_as_a_key_problem():
 # --- real ssh behaviour: the assumption the whole design rests on ---
 
 
-@pytest.mark.parametrize("seeded_key,expect_refusal", [(True, True), (False, False)])
-def test_accept_new_refuses_changed_key_but_accepts_unknown_host(
-    tmp_path, seeded_key, expect_refusal
+@pytest.mark.parametrize("seeded,expect_recorded", [(True, True), (False, False)])
+def test_seeding_decides_whether_ssh_already_knows_the_host(
+    tmp_path, seeded, expect_recorded
 ):
-    """Prove `accept-new` distinguishes 'changed' from 'unknown'.
+    """A seeded known_hosts makes ssh treat the host as already known.
 
-    Uses ssh's own parser offline: `ssh-keygen -F` reports whether a host is
-    already recorded, which is the condition accept-new branches on.
+    This asserts the *input* to accept-new's decision, read with ssh's own
+    parser (`ssh-keygen -F`), not the decision itself: whether a recorded
+    host with a changed key is refused is ssh's behaviour, not errand's, and
+    proving it needs a live server. That was verified by hand against
+    github.com — pinned key authenticates, tampered key is refused with
+    "REMOTE HOST IDENTIFICATION HAS CHANGED", unpinned host still accepted.
+    Naming the test for what it checks so the gap is visible.
     """
     known = tmp_path / "known_hosts"
-    known.write_text(known_hosts_content(["github.com"]) if seeded_key else "")
+    known.write_text(known_hosts_content(["github.com"]) if seeded else "")
     found = subprocess.run(
         ["ssh-keygen", "-F", "github.com", "-f", str(known)],
         capture_output=True,
         text=True,
     )
-    assert (found.returncode == 0) is expect_refusal
+    assert (found.returncode == 0) is expect_recorded
 
 
 def test_unpinned_host_named_in_stderr_is_not_claimed_as_pinned():

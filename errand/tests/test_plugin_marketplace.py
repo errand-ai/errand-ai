@@ -343,6 +343,7 @@ async def test_sync_marketplace_auth_failure_preserves_status_code(session, monk
 def test_ssh_env_pins_known_hosts_and_keeps_accept_new():
     """The marketplace clone path uses the same host-key policy as the others."""
     import os
+    import pathlib
 
     from plugin_marketplace import _ssh_env
 
@@ -350,7 +351,8 @@ def test_ssh_env_pins_known_hosts_and_keeps_accept_new():
     try:
         assert "-o UserKnownHostsFile=" in env["GIT_SSH_COMMAND"]
         assert "-o StrictHostKeyChecking=accept-new" in env["GIT_SSH_COMMAND"]
-        assert "github.com ssh-ed25519 " in open(known_hosts).read()
+        seeded = pathlib.Path(known_hosts).read_text()
+        assert "github.com ssh-ed25519 " in seeded
     finally:
         for path in (key_file, known_hosts):
             if path and os.path.exists(path):
