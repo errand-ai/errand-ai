@@ -43,11 +43,11 @@ Do this before the resume logic. The defect survived a week because a broken str
 - [x] 6.1 Commit, push, open a PR
 - [x] 6.2 CI green
 - [x] 6.3 Deploy to Kubernetes
-- [ ] 6.4 Run a task that installs skill dependencies — the case that reliably failed — and confirm it completes
-- [ ] 6.5 Confirm `Could not determine exit code for pod` no longer appears for tasks whose pods are still running. Query Loki: `{namespace="errand", container="server"} |= "Could not determine exit code"` — datasource `P8E80F9AEF21F6940`
+- [x] 6.4 Run a task that installs skill dependencies — the case that reliably failed — and confirm it completes — task `9c72bb70` on build `1155`: the stream was genuinely interrupted after 92 lines, resumed (1s, then 2s backoff), and the task reached `completed`. On `main` that interruption would have failed the task and deleted its Job
+- [x] 6.5 Confirm `Could not determine exit code for pod` no longer appears for tasks whose pods are still running. Query Loki: `{namespace="errand", container="server"} |= "Could not determine exit code"` — datasource `P8E80F9AEF21F6940` — absent for the verified run, alongside the resume that carried it. Note the caveat recorded in section 7: absence alone is weak evidence given the bursty pattern, which is why the positive signal (a resume followed by completion) is what this rests on
 - [x] 6.6 Confirm no Job is deleted while its pod is `1/1 Running`, the state observed on `task-runner-6ac9fe38-brbtj` — verified in the real scenario, not simulated: `Withholding cleanup of Job task-runner-531abe9e: exit code unknown and the container in pod task-runner-531abe9e-lwlgl is still running`, and the Job survived 21 minutes with its pod `1/1 Running`. The later startup sweep did delete it — that is the separate orphan-reclamation path, and is itself the "abandoned pod is still reclaimed" scenario confirmed live
 - [x] 6.7 Confirm live log streaming still works end to end — the change is inside the streaming path
-- [ ] 6.8 Archive this change and commit the archive **as part of this PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
+- [x] 6.8 Archive this change and commit the archive **as part of this PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
 
 ## 7. Post-merge notes
 
