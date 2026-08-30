@@ -76,3 +76,18 @@ async def test_credentials_are_not_allowed():
     """Unset `allow_credentials` is what keeps a loose origin list harmless."""
     resp = await _probe(_app_with_origins("https://ui.example"), "https://ui.example")
     assert "access-control-allow-credentials" not in resp.headers
+
+
+async def test_same_origin_request_succeeds_with_no_configuration():
+    """The standard deployment: the server serves its own frontend.
+
+    A same-origin browser request carries no `Origin` header, so CORS never
+    applies — this asserts the empty default does not get in its way.
+    """
+    target = _app_with_origins("")
+    transport = ASGITransport(app=target)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/probe")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
