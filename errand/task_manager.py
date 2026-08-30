@@ -37,8 +37,6 @@ from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, t
 from ssh_known_hosts import (
     explain_host_key_failure,
     git_ssh_command,
-    known_hosts_content,
-    unpinned_hosts,
     write_known_hosts,
 )
 from utils import _next_position

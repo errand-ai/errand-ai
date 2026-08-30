@@ -8,6 +8,7 @@ as an opaque git failure.
 
 import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
@@ -21,6 +22,13 @@ from ssh_known_hosts import (
     write_known_hosts,
 )
 
+
+# These two read key material with ssh's own tooling, which is the point — a
+# pure-Python fingerprint would not catch a key ssh cannot parse. Skipped
+# rather than failed where the binary is absent (minimal images, Windows).
+requires_ssh_keygen = pytest.mark.skipif(
+    shutil.which("ssh-keygen") is None, reason="ssh-keygen not available"
+)
 
 def test_default_hosts_are_pinned():
     assert set(PINNED_HOST_KEYS) == {"github.com", "bitbucket.org"}
@@ -41,6 +49,7 @@ def test_unpinned_hosts_identifies_user_supplied_remotes():
     assert unpinned_hosts(["github.com", "git.internal.example"]) == ["git.internal.example"]
 
 
+@requires_ssh_keygen
 def test_pinned_keys_are_wellformed_and_match_published_fingerprints(tmp_path):
     """Guards against a typo in a transcribed key.
 
@@ -115,6 +124,7 @@ def test_ordinary_git_failure_is_not_misreported_as_a_key_problem():
 # --- real ssh behaviour: the assumption the whole design rests on ---
 
 
+@requires_ssh_keygen
 @pytest.mark.parametrize("seeded,expect_recorded", [(True, True), (False, False)])
 def test_seeding_decides_whether_ssh_already_knows_the_host(
     tmp_path, seeded, expect_recorded

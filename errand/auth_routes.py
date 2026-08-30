@@ -38,9 +38,12 @@ async def _state_secret(session: AsyncSession) -> str:
         select(Setting.value).where(Setting.key == "jwt_signing_secret")
     )
     secret = result.scalar_one_or_none()
-    if not secret:
+    # Settings values are JSON, so a mis-seeded row could hold a dict or a
+    # number. `str()` would happily stringify it into a different signing key
+    # on each read shape, breaking login with no clue why — fail loudly.
+    if not isinstance(secret, str) or not secret:
         raise HTTPException(status_code=500, detail="JWT signing secret not configured")
-    return str(secret)
+    return secret
 
 
 @router.get("/login")
