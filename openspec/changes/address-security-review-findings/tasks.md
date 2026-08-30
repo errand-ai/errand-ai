@@ -48,7 +48,7 @@ Lowest severity — trust-on-first-use, not disabled verification.
 ## 6. Verify
 
 - [x] 6.1 Backend suite green
-- [ ] 6.2 Complete a real OIDC login end-to-end against Keycloak — the `state` change touches the one flow that locks everyone out if it breaks
+- [x] 6.2 Complete a real OIDC login end-to-end against Keycloak — the `state` change touches the one flow that locks everyone out if it breaks
 - [x] 6.3 Confirm a task using `read_url` against a normal public site still succeeds
 - [x] 6.4 Confirm the frontend still reaches the API with the new CORS default
 - [x] 6.5 Confirm a git clone from `github.com` still works with pinned keys
@@ -57,7 +57,7 @@ Lowest severity — trust-on-first-use, not disabled verification.
 
 - [x] 7.1 Commit, push, open a PR
 - [x] 7.2 CI green
-- [ ] 7.3 Deploy and confirm login works **before** merging. An auth regression here is a lockout, not a degradation
+- [x] 7.3 Deploy and confirm login works **before** merging. An auth regression here is a lockout, not a degradation
 
 ### Post-merge notes
 
