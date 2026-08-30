@@ -53,7 +53,7 @@ It also explains why *any* task ever succeeds: `task_manager` has an `exit_code 
 ## What Changes
 
 - Treat the end of the log stream as a **question**, not an answer. After the stream ends, confirm the pod reached a terminal phase (`Succeeded` or `Failed`). If it has not, the pod is still working and the run is not over.
-- Resume streaming from where it stopped when the pod is still running, rather than returning. Kubernetes supports `since_time`/`since_seconds` for exactly this.
+- Resume streaming from where it stopped when the pod is still running, rather than returning. Anchored on the per-line timestamps Kubernetes emits with `timestamps=True`, with `since_seconds` bounding how much is re-read.
 - Distinguish a broken stream from a finished pod in the worker: catch and record the failure rather than letting `finally` emit the same sentinel for both outcomes.
 - **Never delete a Job whose container is still running with an unknown exit code.** This is the step that turns a recoverable stream glitch into destroyed work, and it is worth fixing even if everything above were left alone.
 - Log the distinction, so "stream ended early, pod still running, resuming" is visible rather than silent.

@@ -14,6 +14,7 @@ import tarfile
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -347,6 +348,42 @@ class DockerRuntime(ContainerRuntime):
 K8S_JOB_TTL_SECONDS = 300
 K8S_POD_START_TIMEOUT = 300  # seconds to wait for pod to start
 
+# Log streaming resumes while the pod is still running. The attempt cap is a
+# backstop against a pathological loop, not the primary bound — that is the pod's
+# own phase — so it is deliberately generous: a long task on a flaky connection
+# is exactly the case that most needs resuming.
+K8S_LOG_STREAM_MAX_RESUMES = 100
+K8S_LOG_STREAM_RESUME_DELAY = 1  # seconds to wait before reopening the stream
+# `since_seconds` is whole-second and server-relative, so it is padded to cover
+# rounding and clock skew. Over-reading is harmless — lines at or before the last
+# one already yielded are filtered out by timestamp; under-reading loses output.
+K8S_LOG_STREAM_RESUME_PAD_SECONDS = 2
+
+
+def _split_log_timestamp(line: str) -> tuple[datetime | None, str]:
+    """Split a `timestamps=True` log line into its RFC3339 stamp and its text.
+
+    Kubernetes prefixes each line with an RFC3339 nanosecond timestamp and a
+    single space. `datetime.fromisoformat` accepts at most microsecond precision,
+    so the fractional part is truncated to six digits. A line that does not carry
+    a parseable stamp is returned verbatim with no timestamp, so unexpected output
+    is passed through rather than dropped.
+    """
+    head, sep, rest = line.partition(" ")
+    if not sep:
+        return None, line
+    stamp = head[:-1] if head.endswith("Z") else head
+    if "." in stamp:
+        whole, _, frac = stamp.partition(".")
+        stamp = f"{whole}.{frac[:6]}"
+    try:
+        ts = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None, line
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts, rest
+
 
 def _read_namespace() -> str:
     """Read the K8s namespace from env var or service account mount."""
@@ -631,6 +668,119 @@ class KubernetesRuntime(ContainerRuntime):
 
         raise TimeoutError(f"Pod for job {job_name} did not start within {K8S_POD_START_TIMEOUT}s")
 
+    def _pod_has_terminated(self, pod_name: str, namespace: str) -> bool:
+        """Whether the pod has reached a terminal phase.
+
+        This is the authority on whether a run is over. The end of the log stream
+        is not: EOF on a `follow=True` request is what you get when the pod
+        finishes *and* what you get when the connection drops.
+
+        An unreadable pod answers True — the opposite default from
+        `_container_still_running`, and deliberately so. There, "cannot tell" must
+        not withhold cleanup, or a transient API error leaks Jobs. Here, "cannot
+        tell" must not resume, or a deleted pod spins forever. Both defaults fail
+        towards neither hanging nor leaking.
+        """
+        from kubernetes.client.rest import ApiException
+
+        try:
+            pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
+        except ApiException:
+            logger.warning(
+                "Could not read the phase of pod %s; treating the log stream as finished",
+                pod_name, exc_info=True,
+            )
+            return True
+        return pod.status.phase in ("Succeeded", "Failed")
+
+    def _iter_pod_log_lines(
+        self, pod_name: str, namespace: str, outcome: dict | None = None,
+    ) -> Iterator[str]:
+        """Yield a pod's log lines, resuming if the stream ends before the pod does.
+
+        Shared by the sync `run()` and the async `async_run()` so the two paths
+        cannot drift apart — the divergence that produced the stored-logs bytes-repr
+        bug in this same file.
+
+        `timestamps=True` is what makes a resume safe: each line carries its own
+        RFC3339 stamp, so the resumed stream can be over-requested and then filtered
+        back to exactly the lines that follow the last one already yielded. (The
+        Kubernetes Python client has no `since_time`; `since_seconds` is the only
+        anchor it offers, and whole-second granularity is not precise enough on its
+        own.)
+
+        `outcome`, when given, receives the reason the iteration stopped, so a
+        caller can tell a finished pod from an abandoned stream.
+        """
+        buf = ""
+        last_ts: datetime | None = None
+        resumes = 0
+
+        while True:
+            kwargs: dict[str, Any] = {}
+            if last_ts is not None:
+                elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
+                kwargs["since_seconds"] = max(
+                    1, int(elapsed) + K8S_LOG_STREAM_RESUME_PAD_SECONDS,
+                )
+
+            log_stream = self.core_v1.read_namespaced_pod_log(
+                pod_name,
+                namespace,
+                follow=True,
+                timestamps=True,
+                _preload_content=False,
+                **kwargs,
+            )
+
+            for chunk in log_stream:
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode("utf-8", errors="replace")
+                buf += chunk
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    ts, text = _split_log_timestamp(line)
+                    if ts is not None:
+                        if last_ts is not None and ts <= last_ts:
+                            continue  # re-read across the resume; already yielded
+                        last_ts = ts
+                    if text:
+                        yield text
+
+            # The stream ended. That is a question, not an answer — ask the pod.
+            if self._pod_has_terminated(pod_name, namespace):
+                if buf.strip():
+                    ts, text = _split_log_timestamp(buf.strip())
+                    if text and not (ts is not None and last_ts is not None and ts <= last_ts):
+                        yield text
+                if outcome is not None:
+                    outcome["reason"] = "pod_terminated"
+                return
+
+            resumes += 1
+            if resumes > K8S_LOG_STREAM_MAX_RESUMES:
+                logger.error(
+                    "Log stream for pod %s was interrupted %d times and the pod is still "
+                    "running; giving up on streaming. The pod is left alone.",
+                    pod_name, resumes - 1,
+                )
+                if outcome is not None:
+                    outcome["reason"] = "resume_limit_reached"
+                return
+
+            logger.warning(
+                "Log stream for pod %s ended while the pod was still running; "
+                "resuming from %s (resume %d)",
+                pod_name,
+                last_ts.isoformat() if last_ts is not None else "the start of the log",
+                resumes,
+            )
+            # Drop any partial line. The resumed stream re-delivers it whole, and
+            # its timestamp is newer than the last yielded one, so it survives the
+            # filter above — yielding the fragment here would split one line in two.
+            buf = ""
+            time.sleep(K8S_LOG_STREAM_RESUME_DELAY)
+
     def run(self, handle: RuntimeHandle) -> Iterator[str]:
         job_name = handle.runtime_data["job_name"]
         namespace = handle.runtime_data["namespace"]
@@ -639,25 +789,11 @@ class KubernetesRuntime(ContainerRuntime):
         handle.runtime_data["pod_name"] = pod_name
         logger.info("Streaming logs from pod %s", pod_name)
 
-        # Stream logs — follow=True blocks until pod exits
-        log_stream = self.core_v1.read_namespaced_pod_log(
-            pod_name,
-            namespace,
-            follow=True,
-            _preload_content=False,
-        )
-
-        buf = ""
-        for chunk in log_stream:
-            if isinstance(chunk, bytes):
-                chunk = chunk.decode("utf-8", errors="replace")
-            buf += chunk
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                if line:
-                    yield line
-        if buf.strip():
-            yield buf.strip()
+        outcome: dict = {}
+        try:
+            yield from self._iter_pod_log_lines(pod_name, namespace, outcome)
+        finally:
+            handle.runtime_data["log_stream_outcome"] = outcome.get("reason")
 
     def result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
         from kubernetes.client.rest import ApiException
@@ -687,6 +823,12 @@ class KubernetesRuntime(ContainerRuntime):
 
         if exit_code == -1:
             logger.warning("Could not determine exit code for pod %s after retries", pod_name)
+
+        # `cleanup()` reads this to decide whether deleting the Job is safe. An
+        # unknown exit code is the signature of the log stream having ended while
+        # the container was still working, and deleting the Job then destroys
+        # work in progress rather than tidying up after it.
+        handle.runtime_data["exit_code_unknown"] = exit_code == -1
 
         # Get full logs (combined stdout+stderr from the pod).
         #
@@ -733,12 +875,54 @@ class KubernetesRuntime(ContainerRuntime):
 
         return exit_code, stdout, full_logs
 
+    def _container_still_running(self, pod_name: str, namespace: str) -> bool:
+        """True only when the pod's task-runner container is *confirmed* running.
+
+        Used to decide whether cleanup may delete a Job whose exit code could not
+        be read. "Cannot tell" deliberately answers False: a pod that cannot be
+        read is not work that can be saved, and withholding cleanup on every
+        transient API error would leak Jobs indefinitely.
+        """
+        from kubernetes.client.rest import ApiException
+
+        if not pod_name:
+            return False
+        try:
+            pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
+        except ApiException:
+            logger.debug(
+                "Could not read pod %s to check whether it is still running",
+                pod_name, exc_info=True,
+            )
+            return False
+
+        if pod.status.phase in ("Succeeded", "Failed"):
+            return False
+        for cs in (pod.status.container_statuses or []):
+            if cs.name == "task-runner":
+                return bool(cs.state and cs.state.running and not cs.state.terminated)
+        return False
+
     def cleanup(self, handle: RuntimeHandle) -> None:
         from kubernetes.client.rest import ApiException
 
         job_name = handle.runtime_data.get("job_name", "")
         configmap_name = handle.runtime_data.get("configmap_name", "")
         namespace = handle.runtime_data.get("namespace", self.namespace)
+
+        # Never destroy a container that is still doing work. Deleting the Job
+        # kills the pod, and with it the ConfigMap and Secret it has mounted, so
+        # all three are withheld together rather than only the Job.
+        if handle.runtime_data.get("exit_code_unknown"):
+            pod_name = handle.runtime_data.get("pod_name", "")
+            if self._container_still_running(pod_name, namespace):
+                logger.warning(
+                    "Withholding cleanup of Job %s: exit code unknown and the container in pod %s "
+                    "is still running. Leaving it in place — it remains subject to the Job's "
+                    "ttlSecondsAfterFinished (%ds) and to orphaned-Job recovery on restart.",
+                    job_name, pod_name, K8S_JOB_TTL_SECONDS,
+                )
+                return
 
         if job_name:
             try:
@@ -821,23 +1005,22 @@ class KubernetesRuntime(ContainerRuntime):
 
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()
+        # Why the reader stopped. Previously `finally` emitted the same `None`
+        # sentinel for a finished pod, a broken stream and a raised exception, so
+        # the three were indistinguishable to the consumer and to a human reading
+        # the logs — which is why this defect went unnoticed.
+        outcome: dict[str, Any] = {"reason": None, "error": None}
 
         def _stream_logs():
             try:
-                log_stream = self.core_v1.read_namespaced_pod_log(
-                    pod_name, namespace, follow=True, _preload_content=False,
+                for line in self._iter_pod_log_lines(pod_name, namespace, outcome):
+                    loop.call_soon_threadsafe(queue.put_nowait, line)
+            except Exception as exc:
+                outcome["reason"] = "stream_error"
+                outcome["error"] = exc
+                logger.warning(
+                    "Log stream for pod %s failed: %s", pod_name, exc, exc_info=True,
                 )
-                buf = ""
-                for chunk in log_stream:
-                    if isinstance(chunk, bytes):
-                        chunk = chunk.decode("utf-8", errors="replace")
-                    buf += chunk
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        if line:
-                            loop.call_soon_threadsafe(queue.put_nowait, line)
-                if buf.strip():
-                    loop.call_soon_threadsafe(queue.put_nowait, buf.strip())
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
@@ -850,6 +1033,12 @@ class KubernetesRuntime(ContainerRuntime):
                 yield item
         finally:
             await task
+            handle.runtime_data["log_stream_outcome"] = outcome["reason"]
+            if outcome["reason"] != "pod_terminated":
+                logger.warning(
+                    "Log streaming for pod %s ended without the pod terminating (reason=%s)",
+                    pod_name, outcome["reason"],
+                )
 
     async def async_result(self, handle: RuntimeHandle) -> tuple[int, str, str]:
         loop = asyncio.get_event_loop()

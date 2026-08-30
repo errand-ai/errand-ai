@@ -13,7 +13,9 @@ from container_runtime import (
     create_runtime,
     _read_namespace,
     K8S_JOB_TTL_SECONDS,
+    K8S_LOG_STREAM_MAX_RESUMES,
     _put_archive,
+    _split_log_timestamp,
 )
 
 
@@ -270,6 +272,23 @@ class TestDockerRuntime:
 
 
 
+def _ts(second: int) -> str:
+    """An RFC3339 nanosecond stamp, as `timestamps=True` prefixes each log line with."""
+    return f"2026-08-30T01:00:{second:02d}.000000000Z"
+
+
+def _log_chunks(*lines: str):
+    """Byte chunks as the un-preloaded log stream delivers them."""
+    return iter([line.encode("utf-8") for line in lines])
+
+
+def _pod_in_phase(phase: str):
+    """A pod stub reporting `phase` — the authority on whether a run is over."""
+    pod = MagicMock()
+    pod.status.phase = phase
+    return pod
+
+
 def _fake_pod_log_response(text):
     """Stand in for the un-preloaded urllib3 response `read_namespaced_pod_log` returns.
 
@@ -286,6 +305,49 @@ def _fake_pod_log_response(text):
             return self._data
 
     return _FakePodLogResponse(text.encode("utf-8") if isinstance(text, str) else text)
+
+
+# ---------------------------------------------------------------------------
+# _split_log_timestamp
+# ---------------------------------------------------------------------------
+
+
+class TestSplitLogTimestamp:
+    """The anchor the whole resume mechanism rests on.
+
+    `since_seconds` is whole-second and server-relative, so a resumed stream is
+    deliberately over-read and then filtered back by per-line timestamp. If this
+    parser is wrong, the filter either duplicates lines or drops them.
+    """
+
+    def test_parses_nanosecond_stamp_and_returns_the_text(self):
+        ts, text = _split_log_timestamp("2026-08-30T01:00:01.123456789Z hello world")
+        assert text == "hello world"
+        assert ts is not None
+        assert (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second) == (
+            2026, 8, 30, 1, 0, 1,
+        )
+        assert ts.tzinfo is not None
+
+    def test_stamps_order_correctly_within_the_same_second(self):
+        earlier, _ = _split_log_timestamp("2026-08-30T01:00:01.000001000Z a")
+        later, _ = _split_log_timestamp("2026-08-30T01:00:01.900000000Z b")
+        assert earlier < later
+
+    def test_line_without_a_stamp_is_passed_through_verbatim(self):
+        ts, text = _split_log_timestamp("not a timestamp at all")
+        assert ts is None
+        assert text == "not a timestamp at all"
+
+    def test_line_with_no_space_is_passed_through_verbatim(self):
+        ts, text = _split_log_timestamp("solid")
+        assert ts is None
+        assert text == "solid"
+
+    def test_empty_text_after_a_stamp(self):
+        ts, text = _split_log_timestamp("2026-08-30T01:00:01.000000000Z ")
+        assert ts is not None
+        assert text == ""
 
 
 # ---------------------------------------------------------------------------
@@ -584,26 +646,206 @@ class TestKubernetesRuntime:
         assert handle.runtime_data["secret_name"] == ""
 
     def test_run_streams_pod_logs(self):
-        """run() waits for the pod, then streams log lines."""
+        """run() waits for the pod, then streams log lines with timestamps stripped."""
         runtime = self._make_runtime()
 
         handle = RuntimeHandle(runtime_data={
             "job_name": "task-runner-abc",
             "namespace": "test-ns",
         })
+        runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Succeeded")
 
-        # Mock _wait_for_pod
         with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"):
-            # Mock log stream
-            runtime.core_v1.read_namespaced_pod_log.return_value = iter([
-                b"log line 1\n",
-                b"log line 2\n",
-            ])
+            runtime.core_v1.read_namespaced_pod_log.return_value = _log_chunks(
+                f"{_ts(1)} log line 1\n",
+                f"{_ts(2)} log line 2\n",
+            )
 
             lines = list(runtime.run(handle))
 
         assert lines == ["log line 1", "log line 2"]
         assert handle.runtime_data["pod_name"] == "pod-abc"
+        assert handle.runtime_data["log_stream_outcome"] == "pod_terminated"
+
+    # -- The stream ending is a question, not an answer ----------------------
+    #
+    # EOF on a `follow=True` request is what you get when the pod finishes *and*
+    # what you get when the connection drops. Treating the first as proof of the
+    # second is what failed the task, retried it, and deleted its Job while the
+    # container was still working.
+
+    def test_run_resumes_when_stream_ends_while_pod_still_running(self):
+        """A stream that ends early does not end the run."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(f"{_ts(1)} before the cut\n"),
+            _log_chunks(f"{_ts(5)} after the resume\n"),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"),    # asked after the first stream ends
+            _pod_in_phase("Succeeded"),  # asked after the resumed stream ends
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["before the cut", "after the resume"]
+        assert runtime.core_v1.read_namespaced_pod_log.call_count == 2
+        # The resumed request is anchored, not a re-read from the beginning.
+        assert "since_seconds" in runtime.core_v1.read_namespaced_pod_log.call_args.kwargs
+
+    def test_run_completes_when_the_pod_reached_a_terminal_phase(self):
+        """A stream that ends with the pod finished completes, without resuming."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.return_value = _log_chunks(
+            f"{_ts(1)} all done\n",
+        )
+        runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Succeeded")
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["all done"]
+        assert runtime.core_v1.read_namespaced_pod_log.call_count == 1
+
+    def test_run_ends_promptly_when_the_pod_dies(self):
+        """A genuinely dead pod — OOM, eviction — must not be masked by resumption."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.return_value = _log_chunks(
+            f"{_ts(1) } killed\n",
+        )
+        runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Failed")
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["killed"]
+        assert runtime.core_v1.read_namespaced_pod_log.call_count == 1
+        assert handle.runtime_data["log_stream_outcome"] == "pod_terminated"
+
+    def test_resumed_stream_is_continuous(self):
+        """No duplicated line, no dropped line, across the interruption.
+
+        The resumed request is deliberately over-read (`since_seconds` is whole-second
+        and server-relative), so the overlap is real and must be filtered by timestamp.
+        The log feeds both the live viewer and the stored record, so a duplicate
+        corrupts both.
+        """
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(f"{_ts(1)} one\n", f"{_ts(2)} two\n"),
+            # The resume re-delivers "two" and adds "three".
+            _log_chunks(f"{_ts(2)} two\n", f"{_ts(3)} three\n"),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["one", "two", "three"]
+
+    def test_a_line_cut_in_half_by_the_interruption_is_yielded_once_whole(self):
+        """A partial line is discarded, not emitted — the resume re-delivers it whole."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            # Cut mid-line: no trailing newline.
+            _log_chunks(f"{_ts(1)} complete\n", f"{_ts(2)} half a li"),
+            _log_chunks(f"{_ts(2)} half a line and the rest\n"),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["complete", "half a line and the rest"]
+
+    def test_resumption_is_bounded_by_a_backstop(self):
+        """Pod state is the primary bound; the attempt cap stops a pathological loop."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        # A stream that always ends immediately against a pod that never terminates.
+        runtime.core_v1.read_namespaced_pod_log.side_effect = lambda *a, **k: _log_chunks()
+        runtime.core_v1.read_namespaced_pod.return_value = _pod_in_phase("Running")
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            lines = list(runtime.run(handle))
+
+        assert lines == []
+        assert runtime.core_v1.read_namespaced_pod_log.call_count == K8S_LOG_STREAM_MAX_RESUMES + 1
+        assert handle.runtime_data["log_stream_outcome"] == "resume_limit_reached"
+
+    def test_unreadable_pod_stops_the_stream_rather_than_looping(self):
+        """"Cannot tell" must not resume forever against a pod that is already gone."""
+        from kubernetes.client.rest import ApiException
+
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.return_value = _log_chunks(
+            f"{_ts(1)} last words\n",
+        )
+        runtime.core_v1.read_namespaced_pod.side_effect = ApiException(status=404)
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"):
+            lines = list(runtime.run(handle))
+
+        assert lines == ["last words"]
+        assert runtime.core_v1.read_namespaced_pod_log.call_count == 1
+
+    async def test_async_run_resumes_and_records_why_it_stopped(self):
+        """The async path shares the same iterator, and reports its outcome."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(f"{_ts(1)} before\n"),
+            _log_chunks(f"{_ts(5)} after\n"),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_async_wait_for_pod", AsyncMock(return_value="pod-abc")), \
+                patch("container_runtime.time.sleep"):
+            lines = [line async for line in runtime.async_run(handle)]
+
+        assert lines == ["before", "after"]
+        assert handle.runtime_data["log_stream_outcome"] == "pod_terminated"
+
+    async def test_async_run_distinguishes_a_stream_error_from_a_finished_pod(self):
+        """A raised exception and a clean EOF were previously indistinguishable."""
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("connection reset")
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = _boom
+
+        with patch.object(runtime, "_async_wait_for_pod", AsyncMock(return_value="pod-abc")):
+            lines = [line async for line in runtime.async_run(handle)]
+
+        assert lines == []
+        assert handle.runtime_data["log_stream_outcome"] == "stream_error"
 
     def test_result_reads_exit_code_and_output(self):
         """result() reads exit code from pod status and extracts output from logs."""
@@ -906,6 +1148,144 @@ class TestKubernetesRuntime:
 
         # Should not raise
         runtime.cleanup(handle)
+
+    # -- Cleanup must never destroy a container that is still running --------
+    #
+    # The failure this guards against: the log stream ends early, `result()`
+    # cannot read an exit code, the task is failed and retried, and `cleanup()`
+    # deletes the Job — killing a container that is still doing work. Observed
+    # on production pod `task-runner-6ac9fe38-brbtj`, which was `1/1 Running`
+    # while its Job was already `Terminating`.
+
+    def _pod_with_container_state(self, *, phase, state):
+        """Build a pod stub whose `task-runner` container is in `state`."""
+        cs = MagicMock()
+        cs.name = "task-runner"
+        cs.state = MagicMock()
+        cs.state.running = state == "running"
+        cs.state.terminated = MagicMock() if state == "terminated" else None
+        pod = MagicMock()
+        pod.status.phase = phase
+        pod.status.container_statuses = [cs]
+        return pod
+
+    def test_cleanup_withheld_when_exit_code_unknown_and_container_running(self):
+        """A running container is never destroyed on an unknown exit code."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "configmap_name": "task-runner-abc",
+            "secret_name": "task-runner-ssh-abc",
+            "namespace": "test-ns",
+            "pod_name": "pod-abc",
+            "exit_code_unknown": True,
+        })
+        runtime.core_v1.read_namespaced_pod.return_value = self._pod_with_container_state(
+            phase="Running", state="running",
+        )
+
+        runtime.cleanup(handle)
+
+        runtime.batch_v1.delete_namespaced_job.assert_not_called()
+        # The ConfigMap and Secret are mounted by the running pod; removing them
+        # while it works would be its own way of breaking the container.
+        runtime.core_v1.delete_namespaced_config_map.assert_not_called()
+        runtime.core_v1.delete_namespaced_secret.assert_not_called()
+
+    def test_cleanup_proceeds_when_exit_code_unknown_but_container_terminated(self):
+        """Withholding is scoped to running containers — it must not leak resources."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "configmap_name": "task-runner-abc",
+            "namespace": "test-ns",
+            "pod_name": "pod-abc",
+            "exit_code_unknown": True,
+        })
+        runtime.core_v1.read_namespaced_pod.return_value = self._pod_with_container_state(
+            phase="Failed", state="terminated",
+        )
+
+        runtime.cleanup(handle)
+
+        runtime.batch_v1.delete_namespaced_job.assert_called_once()
+        runtime.core_v1.delete_namespaced_config_map.assert_called_once()
+
+    def test_cleanup_proceeds_when_exit_code_is_known(self):
+        """The pod is not even read when the exit code was determined normally."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "configmap_name": "task-runner-abc",
+            "namespace": "test-ns",
+            "pod_name": "pod-abc",
+        })
+
+        runtime.cleanup(handle)
+
+        runtime.batch_v1.delete_namespaced_job.assert_called_once()
+        runtime.core_v1.read_namespaced_pod.assert_not_called()
+
+    def test_cleanup_proceeds_when_pod_cannot_be_read(self):
+        """An unreadable pod is not a running pod — fail open rather than leak."""
+        from kubernetes.client.rest import ApiException
+
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={
+            "job_name": "task-runner-abc",
+            "configmap_name": "task-runner-abc",
+            "namespace": "test-ns",
+            "pod_name": "pod-abc",
+            "exit_code_unknown": True,
+        })
+        runtime.core_v1.read_namespaced_pod.side_effect = ApiException(status=404)
+
+        runtime.cleanup(handle)
+
+        runtime.batch_v1.delete_namespaced_job.assert_called_once()
+
+    def test_result_records_that_the_exit_code_was_unknown(self):
+        """`result()` is what tells `cleanup()` the exit code could not be read."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "pod_name": "pod-abc",
+            "namespace": "test-ns",
+        })
+        pod = MagicMock()
+        pod.status.container_statuses = []
+        runtime.core_v1.read_namespaced_pod.return_value = pod
+        runtime.core_v1.read_namespaced_pod_log.return_value = _fake_pod_log_response("")
+
+        with patch("time.sleep"):
+            exit_code, _, _ = runtime.result(handle)
+
+        assert exit_code == -1
+        assert handle.runtime_data["exit_code_unknown"] is True
+
+    def test_result_clears_unknown_flag_when_exit_code_is_read(self):
+        """A determined exit code must not leave a stale withhold flag behind."""
+        runtime = self._make_runtime()
+
+        handle = RuntimeHandle(runtime_data={
+            "pod_name": "pod-abc",
+            "namespace": "test-ns",
+        })
+        cs = MagicMock()
+        cs.name = "task-runner"
+        cs.state.terminated.exit_code = 0
+        pod = MagicMock()
+        pod.status.container_statuses = [cs]
+        runtime.core_v1.read_namespaced_pod.return_value = pod
+        runtime.core_v1.read_namespaced_pod_log.return_value = _fake_pod_log_response("done\n")
+
+        exit_code, _, _ = runtime.result(handle)
+
+        assert exit_code == 0
+        assert handle.runtime_data["exit_code_unknown"] is False
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")
