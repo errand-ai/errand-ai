@@ -57,6 +57,11 @@ SETTINGS_REGISTRY = {
     "task_log_buffer_max_entries": {"env_var": None, "sensitive": False, "default": 5000},
     "task_log_buffer_ttl_seconds": {"env_var": None, "sensitive": False, "default": 86400},
     "plugin_poll_interval_seconds": {"env_var": None, "sensitive": False, "default": 21600},
+    # Hosts `read_url`/`read_rss_feed` may fetch despite resolving to private
+    # address space. Empty by default: without a supported escape hatch the
+    # SSRF guard gets removed wholesale the first time it blocks an internal
+    # wiki, losing the protection entirely.
+    "url_fetch_allowlist": {"env_var": None, "sensitive": False, "default": []},
 }
 
 # Keys excluded from API responses

@@ -335,5 +335,5 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Version: tracked in the `VERSION` file (single source of truth — do not hard-code it here) — bump per semver for main/release commits (CI enforces immutable tags on `main`; PR builds auto-version via the `github.run_number` suffix, so no per-commit bump is needed on a PR branch)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
-- Tests: 1845 errand + 404 task-runner + 38 evals (pytest) + 267 frontend (vitest) — CI `test` job gates both build jobs
+- Tests: 1952 errand + 404 task-runner + 38 evals (pytest) + 267 frontend (vitest) — CI `test` job gates both build jobs
 - 181 component specs in `openspec/specs/`

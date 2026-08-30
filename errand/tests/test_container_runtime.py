@@ -637,7 +637,7 @@ class TestKubernetesRuntime:
     ))
     @patch.dict("os.environ", {}, clear=False)
     def test_prepare_ssh_with_hosts_prepopulates_known_hosts(self, mock_uuid):
-        """prepare() runs ssh-keyscan for configured hosts and points GIT_SSH_COMMAND at known_hosts."""
+        """prepare() seeds pinned keys, keyscans only unpinned hosts, and pins GIT_SSH_COMMAND at known_hosts."""
         runtime = self._make_runtime()
 
         handle = runtime.prepare(
@@ -654,7 +654,13 @@ class TestKubernetesRuntime:
         job = job_call[0][1]
         init_container = job.spec.template.spec.init_containers[0]
         init_cmd = init_container.command[2]
-        assert "ssh-keyscan github.com gitlab.com" in init_cmd
+        # github.com is pinned, so it is written from the bundled key rather
+        # than keyscanned — keyscanning it would restore trust-on-first-use
+        # for a host whose key is published. gitlab.com is not pinned, so it
+        # keeps first-use acceptance.
+        assert "ssh-keyscan gitlab.com" in init_cmd
+        assert "ssh-keyscan github.com" not in init_cmd
+        assert "github.com ssh-ed25519 " in init_cmd
         assert "known_hosts" in init_cmd
 
         # Main container mounts ssh-credentials as writable (no read_only)
@@ -670,6 +676,7 @@ class TestKubernetesRuntime:
         env_dict = {e.name: e.value for e in container_spec.env}
         assert "UserKnownHostsFile" in env_dict["GIT_SSH_COMMAND"]
         assert "/home/nonroot/.ssh/known_hosts" in env_dict["GIT_SSH_COMMAND"]
+        assert "StrictHostKeyChecking=accept-new" in env_dict["GIT_SSH_COMMAND"]
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")

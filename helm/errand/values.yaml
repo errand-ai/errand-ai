@@ -8,6 +8,11 @@ server:
     port: 8000
   maxConcurrentTasks: 3
   maxTurns: "200"
+  # Comma-separated origins permitted to call the API cross-origin. Empty is
+  # correct for a standard deployment: the server serves its own frontend, so
+  # the browser never makes a cross-origin request. Only needed if the
+  # frontend is served from a different origin to the API.
+  corsAllowedOrigins: ""
 
 taskRunner:
   image:

@@ -1404,6 +1404,20 @@ async def test_web_search_error_handling(db_session):
 # --- read_url MCP tool ---
 
 
+@pytest.fixture(autouse=True)
+def _public_dns():
+    """Resolve every host to a public address for this module.
+
+    The URL-fetching tools now validate resolved addresses, so without this
+    the suite would make real DNS queries for `example.com`. SSRF refusal
+    itself is covered in test_url_guard.py and in the tool tests below, which
+    stub the resolver themselves.
+    """
+    with patch("url_guard._resolve", AsyncMock(return_value=["93.184.216.34"])):
+        yield
+
+
+
 async def test_read_url_success(db_session):
     """read_url fetches URL and returns JSON with title and markdown content."""
     html = "<html><head><title>Test Page</title></head><body><h1>Hello</h1><p>World</p></body></html>"
@@ -1952,3 +1966,28 @@ async def test_upsert_skill_consecutive_hyphens(db_session):
         skill_result = await session.execute(select(Skill).where(Skill.name == "code-review--abc123"))
         skill = skill_result.scalar_one()
         assert skill.name == "code-review--abc123"
+
+
+# --- read_url SSRF refusals ---
+
+from mcp_server import read_url as read_url_tool  # noqa: E402
+
+
+async def test_read_url_refuses_loopback(db_session):
+    with patch("url_guard._resolve", AsyncMock(return_value=["127.0.0.1"])):
+        data = json.loads(await read_url_tool("http://127.0.0.1:9090/metrics"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data
+
+
+async def test_read_url_refuses_cloud_metadata(db_session):
+    with patch("url_guard._resolve", AsyncMock(return_value=["169.254.169.254"])):
+        data = json.loads(await read_url_tool("http://169.254.169.254/latest/meta-data/"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data
+
+
+async def test_read_url_refuses_file_scheme(db_session):
+    data = json.loads(await read_url_tool("file:///etc/passwd"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data

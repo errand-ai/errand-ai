@@ -108,6 +108,10 @@ spec:
             - name: MAX_CONCURRENT_TASKS
               value: {{ .Values.server.maxConcurrentTasks | quote }}
             {{- end }}
+            {{- if .Values.server.corsAllowedOrigins }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ .Values.server.corsAllowedOrigins | quote }}
+            {{- end }}
             {{- if .Values.onedrive.enabled }}
             - name: ONEDRIVE_MCP_URL
               value: "http://{{ include "errand.fullname" . }}-onedrive-mcp:{{ .Values.onedrive.port }}/mcp"

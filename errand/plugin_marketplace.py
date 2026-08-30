@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import Marketplace, Plugin
 from platforms.credentials import decrypt as decrypt_blob, encrypt as encrypt_blob
 
+from ssh_known_hosts import explain_host_key_failure, git_ssh_command, write_known_hosts
 logger = logging.getLogger(__name__)
 
 CACHE_BASE = Path(os.environ.get("PLUGIN_CACHE_BASE", "/var/cache/errand/plugins"))
@@ -200,19 +201,27 @@ def _split_ref(maybe_with_ref: str, explicit_ref: Optional[str]) -> tuple[str, O
     return maybe_with_ref, None
 
 
-def _ssh_env(ssh_private_key: Optional[str], extra_env: Optional[dict] = None) -> tuple[dict, Optional[str]]:
+def _ssh_env(
+    ssh_private_key: Optional[str], extra_env: Optional[dict] = None
+) -> tuple[dict, Optional[str], Optional[str]]:
+    """Build the git environment. Returns (env, key_file_path, known_hosts_path).
+
+    Both temporary files belong to the caller and must be unlinked.
+    """
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
     key_file_path = None
+    known_hosts_path = None
     if ssh_private_key:
         key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False)
         key_file.write(ssh_private_key)
         key_file.close()
         os.chmod(key_file.name, 0o600)
-        env["GIT_SSH_COMMAND"] = f"ssh -i {key_file.name} -o StrictHostKeyChecking=accept-new"
         key_file_path = key_file.name
-    return env, key_file_path
+        known_hosts_path = write_known_hosts()
+        env["GIT_SSH_COMMAND"] = git_ssh_command(key_file_path, known_hosts_path)
+    return env, key_file_path, known_hosts_path
 
 
 _ALLOWED_GIT_URL_PREFIXES = ("https://", "http://", "ssh://", "git://", "git@")
@@ -234,7 +243,7 @@ def _git_clone(url: str, ref: Optional[str], dest: Path, ssh_private_key: Option
     if dest.exists():
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    env, key_file = _ssh_env(ssh_private_key)
+    env, key_file, known_hosts_file = _ssh_env(ssh_private_key)
     try:
         cmd = ["git", "clone", "--depth", "1"]
         if ref:
@@ -243,13 +252,17 @@ def _git_clone(url: str, ref: Optional[str], dest: Path, ssh_private_key: Option
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "").strip()
+            host_key_hint = explain_host_key_failure(result.stderr or "")
+            if host_key_hint:
+                err = f"{host_key_hint} Original error: {err}"
             raise RuntimeError(f"git clone failed: {err}")
     finally:
-        if key_file:
-            try:
-                os.unlink(key_file)
-            except OSError:
-                logger.debug("Failed to remove temp SSH key file %s", key_file, exc_info=True)
+        for path, label in ((key_file, "SSH key"), (known_hosts_file, "known_hosts")):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.debug("Failed to remove temp %s file %s", label, path, exc_info=True)
 
 
 _ALLOWED_HTTP_SCHEMES = ("https://", "http://")
