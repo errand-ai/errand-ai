@@ -56,7 +56,7 @@ Lowest severity — trust-on-first-use, not disabled verification.
 ## 7. Ship
 
 - [x] 7.1 Commit, push, open a PR
-- [ ] 7.2 CI green
+- [x] 7.2 CI green
 - [ ] 7.3 Deploy and confirm login works **before** merging. An auth regression here is a lockout, not a degradation
 
 ### Post-merge notes
