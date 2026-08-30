@@ -273,8 +273,15 @@ class TestDockerRuntime:
 
 
 def _ts(second: int) -> str:
-    """An RFC3339 nanosecond stamp, as `timestamps=True` prefixes each log line with."""
-    return f"2026-08-30T01:00:{second:02d}.000000000Z"
+    """An RFC3339 nanosecond stamp, as `timestamps=True` prefixes each log line with.
+
+    Deliberately in `+01:00`, not `Z`. A k3s node running in a local timezone emits
+    an offset, and the first version of this suite used `Z` throughout — so it
+    passed while the parser was silently truncating the offset and reading the
+    result as UTC. Every streaming test below now exercises the format production
+    actually produces. The instant is the same as 01:00:ss UTC.
+    """
+    return f"2026-08-30T02:00:{second:02d}.000000000+01:00"
 
 
 def _log_chunks(*lines: str):
@@ -333,6 +340,40 @@ class TestSplitLogTimestamp:
         earlier, _ = _split_log_timestamp("2026-08-30T01:00:01.000001000Z a")
         later, _ = _split_log_timestamp("2026-08-30T01:00:01.900000000Z b")
         assert earlier < later
+
+    def test_offset_zone_is_honoured_not_truncated(self):
+        """The regression: a `+01:00` stamp must not be read as UTC.
+
+        k3s nodes in a local timezone emit an offset rather than `Z`. Truncating
+        the fractional seconds with a plain slice removed the offset with it,
+        putting every parsed timestamp an hour into the future — which collapsed
+        `since_seconds` to its floor and made the "already yielded" filter reject
+        every subsequent line. It reached production before it was caught.
+        """
+        ts, text = _split_log_timestamp("2026-08-30T13:21:50.495042123+01:00 hello")
+        assert text == "hello"
+        assert ts.utcoffset().total_seconds() == 0, "should be normalised to UTC"
+        assert ts.hour == 12, f"expected 12:21 UTC, got {ts.isoformat()}"
+
+    def test_the_same_instant_in_Z_and_offset_form_compares_equal(self):
+        """Mixed zone formats must order correctly — the filter depends on it."""
+        z, _ = _split_log_timestamp("2026-08-30T12:21:50.000000000Z x")
+        off, _ = _split_log_timestamp("2026-08-30T13:21:50.000000000+01:00 x")
+        assert z == off
+
+    def test_negative_offset_is_honoured(self):
+        ts, _ = _split_log_timestamp("2026-08-30T08:21:50.000000000-05:00 x")
+        assert ts.hour == 13
+
+    def test_stamp_without_fractional_seconds(self):
+        ts, text = _split_log_timestamp("2026-08-30T13:21:50+01:00 hello")
+        assert text == "hello"
+        assert (ts.hour, ts.minute) == (12, 21)
+
+    def test_short_fraction_is_not_misread_as_a_smaller_number(self):
+        """`.5` is half a second, not five microseconds."""
+        ts, _ = _split_log_timestamp("2026-08-30T13:21:50.5+01:00 x")
+        assert ts.microsecond == 500000
 
     def test_line_without_a_stamp_is_passed_through_verbatim(self):
         ts, text = _split_log_timestamp("not a timestamp at all")
@@ -775,6 +816,70 @@ class TestKubernetesRuntime:
             lines = list(runtime.run(handle))
 
         assert lines == ["complete", "half a line and the rest"]
+
+    def test_resume_window_is_derived_from_real_elapsed_time(self):
+        """The interaction that actually broke in production.
+
+        The streaming tests above cannot catch a zone error: every stamp gets the
+        same treatment, so relative ordering survives and the filter still works.
+        The bug only bites where a parsed stamp meets the wall clock — computing
+        `since_seconds`. A stamp read an hour into the future made `elapsed`
+        negative, floored the window to its minimum, and dropped everything the
+        resumed stream should have carried.
+        """
+        from datetime import datetime, timedelta, timezone as _tz
+
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        # A real instant ~30s ago, written the way the cluster writes it: +01:00.
+        recent = (datetime.now(_tz.utc) - timedelta(seconds=30)).astimezone(
+            _tz(timedelta(hours=1))
+        )
+        stamp = recent.strftime("%Y-%m-%dT%H:%M:%S.%f000") + "+01:00"
+
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(f"{stamp} recent line\n"),
+            _log_chunks(),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            list(runtime.run(handle))
+
+        since = runtime.core_v1.read_namespaced_pod_log.call_args.kwargs.get("since_seconds")
+        assert since is not None, "the resume must be anchored"
+        assert 25 <= since <= 120, (
+            f"since_seconds={since}: expected roughly the 30s actually elapsed. "
+            "A floored value means the stamp was parsed in the wrong zone."
+        )
+
+    def test_a_future_anchor_asks_for_the_whole_log_rather_than_a_window(self):
+        """Defence in depth: clock disagreement must not silently narrow the read."""
+        from datetime import datetime, timedelta, timezone as _tz
+
+        runtime = self._make_runtime()
+        handle = RuntimeHandle(runtime_data={"job_name": "j", "namespace": "test-ns"})
+
+        ahead = (datetime.now(_tz.utc) + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f000"
+        ) + "Z"
+        runtime.core_v1.read_namespaced_pod_log.side_effect = [
+            _log_chunks(f"{ahead} from the future\n"),
+            _log_chunks(),
+        ]
+        runtime.core_v1.read_namespaced_pod.side_effect = [
+            _pod_in_phase("Running"), _pod_in_phase("Succeeded"),
+        ]
+
+        with patch.object(runtime, "_wait_for_pod", return_value="pod-abc"), \
+                patch("container_runtime.time.sleep"):
+            list(runtime.run(handle))
+
+        assert "since_seconds" not in runtime.core_v1.read_namespaced_pod_log.call_args.kwargs
 
     def test_resumption_is_bounded_by_a_backstop(self):
         """Pod state is the primary bound; the attempt cap stops a pathological loop."""

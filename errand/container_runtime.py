@@ -10,6 +10,7 @@ import base64
 import io
 import logging
 import os
+import re
 import tarfile
 import time
 from abc import ABC, abstractmethod
@@ -360,29 +361,47 @@ K8S_LOG_STREAM_RESUME_DELAY = 1  # seconds to wait before reopening the stream
 K8S_LOG_STREAM_RESUME_PAD_SECONDS = 2
 
 
+# An RFC3339 timestamp as the kubelet prefixes each log line with, split so the
+# fractional seconds can be truncated to the microseconds `datetime` supports
+# *without* disturbing the zone that follows them.
+#
+# The zone is not always `Z`. A k3s node running in a local timezone emits an
+# offset — `2026-08-30T13:23:49.012003586+01:00` — and an earlier version of this
+# function truncated the fraction with a plain `frac[:6]`, which silently sliced
+# the `+01:00` away and left the value to be read as UTC. That put every parsed
+# timestamp an hour into the future, which collapsed `since_seconds` to its floor
+# and made the "already yielded" filter reject every subsequent line. It reached
+# production and dropped log output on a live task before being caught, so the
+# zone is now matched explicitly rather than assumed.
+_LOG_TIMESTAMP_RE = re.compile(
+    r"^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<frac>\d+))?"
+    r"(?P<tz>Z|z|[+-]\d{2}:?\d{2})$"
+)
+
+
 def _split_log_timestamp(line: str) -> tuple[datetime | None, str]:
     """Split a `timestamps=True` log line into its RFC3339 stamp and its text.
 
-    Kubernetes prefixes each line with an RFC3339 nanosecond timestamp and a
-    single space. `datetime.fromisoformat` accepts at most microsecond precision,
-    so the fractional part is truncated to six digits. A line that does not carry
-    a parseable stamp is returned verbatim with no timestamp, so unexpected output
-    is passed through rather than dropped.
+    The returned timestamp is normalised to UTC so that stamps from differently
+    zoned sources compare correctly. A line that does not carry a parseable stamp
+    is returned verbatim with no timestamp, so unexpected output is passed through
+    rather than dropped.
     """
     head, sep, rest = line.partition(" ")
     if not sep:
         return None, line
-    stamp = head[:-1] if head.endswith("Z") else head
-    if "." in stamp:
-        whole, _, frac = stamp.partition(".")
-        stamp = f"{whole}.{frac[:6]}"
+    m = _LOG_TIMESTAMP_RE.match(head)
+    if m is None:
+        return None, line
+    frac = (m.group("frac") or "").ljust(6, "0")[:6]
+    tz = m.group("tz")
+    tz = "+00:00" if tz in ("Z", "z") else tz
     try:
-        ts = datetime.fromisoformat(stamp)
+        ts = datetime.fromisoformat(f"{m.group('base')}.{frac}{tz}")
     except ValueError:
         return None, line
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts, rest
+    return ts.astimezone(timezone.utc), rest
 
 
 def _read_namespace() -> str:
@@ -720,9 +739,20 @@ class KubernetesRuntime(ContainerRuntime):
             kwargs: dict[str, Any] = {}
             if last_ts is not None:
                 elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
-                kwargs["since_seconds"] = max(
-                    1, int(elapsed) + K8S_LOG_STREAM_RESUME_PAD_SECONDS,
-                )
+                if elapsed < 0:
+                    # The anchor is in the future, so this clock and the log
+                    # source's disagree. Any `since_seconds` computed from it
+                    # would be too small and would silently drop output, so ask
+                    # for the whole log and let the per-line filter do the work.
+                    logger.warning(
+                        "Last log timestamp for pod %s (%s) is ahead of the current "
+                        "time; requesting the full log rather than a window",
+                        pod_name, last_ts.isoformat(),
+                    )
+                else:
+                    kwargs["since_seconds"] = (
+                        int(elapsed) + K8S_LOG_STREAM_RESUME_PAD_SECONDS
+                    )
 
             log_stream = self.core_v1.read_namespaced_pod_log(
                 pod_name,
