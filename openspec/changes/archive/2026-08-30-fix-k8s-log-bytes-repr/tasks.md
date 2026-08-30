@@ -41,15 +41,15 @@ The reason this survived six months is that every plausible weak assertion passe
 
 ## 6. Ship
 
-- [ ] 6.1 Commit, push, open a PR
-- [ ] 6.2 CI green
-- [ ] 6.3 Deploy to Kubernetes. Confirm a **newly run** task's completed logs render formatted — this is the actual fix
-- [ ] 6.4 Confirm a **pre-existing** task's logs now render formatted — this is the backfill. Checking only new tasks leaves the migration unverified
-- [ ] 6.5 Confirm live streaming still works on a running task. The change is next to the streaming path and must not disturb it
-- [ ] 6.6 Confirm the `task_logs` MCP tool returns parseable logs for a completed task
-- [ ] 6.7 Confirm the per-turn context-usage badge now appears on completed tasks — it has never rendered outside live streaming, because `llm_turn_end` events were entombed in the repr
-- [ ] 6.8 Confirm errand-cloud renders completed task logs correctly, with **no change in that repository**. It binds the same `runner_logs` through a verbatim proxy into the same `@errand-ai/ui-components` 0.18.0
-- [ ] 6.9 Archive this change and commit the archive **as part of this PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
+- [x] 6.1 Commit, push, open a PR
+- [x] 6.2 CI green
+- [x] 6.3 Deploy to Kubernetes. Confirm a **newly run** task's completed logs render formatted — this is the actual fix
+- [x] 6.4 Confirm a **pre-existing** task's logs now render formatted — this is the backfill. Checking only new tasks leaves the migration unverified
+- [x] 6.5 Confirm live streaming still works on a running task. The change is next to the streaming path and must not disturb it
+- [x] 6.6 Confirm the `task_logs` MCP tool returns parseable logs for a completed task
+- [x] 6.7 Confirm the per-turn context-usage badge now appears on completed tasks — it has never rendered outside live streaming, because `llm_turn_end` events were entombed in the repr
+- [x] 6.8 Confirm errand-cloud renders completed task logs correctly, with **no change in that repository**. It binds the same `runner_logs` through a verbatim proxy into the same `@errand-ai/ui-components` 0.18.0
+- [x] 6.9 Archive this change and commit the archive **as part of this PR** (see CLAUDE.md). Re-verify the redeploy afterwards — archiving produces a new image tag
 
 ## 7. Post-merge notes
 
