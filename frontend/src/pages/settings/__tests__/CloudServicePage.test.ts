@@ -628,6 +628,81 @@ describe('CloudServicePage', () => {
       }
     })
 
+    it('stops polling and surfaces an error when the status check is unauthorized', async () => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+          if (url === '/api/cloud/status') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'not_configured' }) })
+          }
+          if (url === '/api/cloud/auth/device') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(GRANT) })
+          }
+          // The session died mid-grant: polling on would leave the panel
+          // pending forever while the grant quietly expires.
+          return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) })
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(true)
+
+        await vi.advanceTimersByTimeAsync(3100)
+        await flushPromises()
+
+        expect(wrapper.find('[data-testid="cloud-device-failure"]').text()).toContain('session expired')
+        const callsAfterFailure = fetchMock.mock.calls.length
+
+        await vi.advanceTimersByTimeAsync(9300)
+        await flushPromises()
+        expect(fetchMock.mock.calls.length).toBe(callsAfterFailure)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ignores a stale poll response that lands after a newer one', async () => {
+      vi.useFakeTimers()
+      try {
+        const pendingBody = { status: 'pending', ...GRANT }
+        let call = 0
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+          if (url === '/api/cloud/status') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'not_configured' }) })
+          }
+          if (url === '/api/cloud/auth/device') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(GRANT) })
+          }
+          call += 1
+          // First status poll is slow and stale; the second overtakes it.
+          if (call === 1) {
+            return new Promise((resolve) =>
+              setTimeout(() => resolve({ ok: true, json: () => Promise.resolve(pendingBody) }), 5000),
+            )
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'connected' }) })
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+
+        await vi.advanceTimersByTimeAsync(3100)   // poll 1 issued, still in flight
+        await vi.advanceTimersByTimeAsync(3100)   // poll 2 issued and resolves: connected
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(5000)   // the stale "pending" finally lands
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('restores a pending grant on reload', async () => {
       const fetchMock = routedFetch({
         deviceStatuses: [{ status: 'pending', ...GRANT }],

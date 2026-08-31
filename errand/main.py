@@ -1998,20 +1998,24 @@ async def cloud_auth_device_start(
         # and a non-numeric interval would surface as a 500 here.
         device_code = grant.get("device_code") or ""
         user_code = grant.get("user_code") or ""
+        verification_uri = grant.get("verification_uri") or ""
+        # The completion URI only saves the user retyping the code; the bare
+        # verification URI is what the grant cannot be completed without.
+        verification_uri_complete = grant.get("verification_uri_complete") or verification_uri
         try:
             expires_in = int(grant.get("expires_in") or 600)
             interval = int(grant.get("interval") or 0)
         except (TypeError, ValueError):
             logger.error("Cloud returned a malformed device authorization: %r", grant)
             raise HTTPException(status_code=502, detail="Malformed device authorization response")
-        if not device_code or not user_code or expires_in <= 0:
+        if not device_code or not user_code or not verification_uri or expires_in <= 0:
             logger.error("Cloud returned a malformed device authorization: %r", grant)
             raise HTTPException(status_code=502, detail="Malformed device authorization response")
 
         display = {
             "user_code": user_code,
-            "verification_uri": grant.get("verification_uri", ""),
-            "verification_uri_complete": grant.get("verification_uri_complete", ""),
+            "verification_uri": verification_uri,
+            "verification_uri_complete": verification_uri_complete,
             "expires_in": expires_in,
         }
         _cloud_device_grant = {"status": "pending", **display}

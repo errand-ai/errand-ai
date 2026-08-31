@@ -33,10 +33,10 @@ errand-cloud's endpoints are already deployed at `https://errand.cloud`, so ever
 ## 4. Verify against the live service
 
 - [x] 4.1 `uv run pytest` passes
-- [ ] 4.2 Complete a real device grant against `https://errand.cloud` from this instance and confirm it reaches `status = "connected"`
-- [ ] 4.3 Confirm the cloud served `POST /auth/tenant/device/code` and `POST /auth/tenant/device/token` for it — check the request log, not just the UI. **A working UI is not evidence the new flow ran**: during the cloud-side verification an instance appeared connected while actually coasting on a pre-existing refresh token, with neither endpoint ever having been called
-- [ ] 4.4 Confirm the WebSocket client connects and cloud endpoints register, as they did under the redirect flow
-- [ ] 4.5 Confirm an already-connected instance was not forced to re-authenticate
+- [x] 4.2 Complete a real device grant against `https://errand.cloud` from this instance and confirm it reaches `status = "connected"`
+- [x] 4.3 Confirm the cloud served `POST /auth/tenant/device/code` and `POST /auth/tenant/device/token` for it — check the request log, not just the UI. **A working UI is not evidence the new flow ran**: during the cloud-side verification an instance appeared connected while actually coasting on a pre-existing refresh token, with neither endpoint ever having been called
+- [x] 4.4 Confirm the WebSocket client connects and cloud endpoints register, as they did under the redirect flow
+- [x] 4.5 Confirm an already-connected instance was not forced to re-authenticate
 
 ## 5. Close S1 in production
 

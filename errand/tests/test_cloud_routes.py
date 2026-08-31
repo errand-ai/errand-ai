@@ -400,7 +400,7 @@ class TestRunDeviceGrant:
             resp = await client.post("/api/cloud/auth/device")
             assert resp.status_code == 200
             task = main_module._cloud_device_task
-            await task
+            await asyncio.wait_for(task, timeout=5)
 
         assert task.done()
         status = await client.get("/api/cloud/auth/device/status")
@@ -450,6 +450,7 @@ class TestMalformedCloudResponse:
         {"device_code": "dc", "expires_in": 600, "interval": 5},               # no user code
         {"device_code": "dc", "user_code": "A", "expires_in": "soon"},         # unusable expiry
         {"device_code": "dc", "user_code": "A", "expires_in": -1},             # already expired
+        {"device_code": "dc", "user_code": "A", "expires_in": 600},            # nowhere to send the user
     ])
     async def test_returns_502_rather_than_starting_a_doomed_poller(
         self, cloud_client, device_grant_state, grant

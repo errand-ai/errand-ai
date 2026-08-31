@@ -59,7 +59,13 @@ const deviceGrant = ref<DeviceGrant | null>(null)
 const deviceStatus = ref<DeviceGrantStatus>('none')
 const deviceDetail = ref<string | null>(null)
 const DEVICE_POLL_MS = 3000
+const MAX_POLL_FAILURES = 3
 let devicePoll: ReturnType<typeof setInterval> | null = null
+// Polls are async and overlapping: a slow response can land after a newer one.
+// Only the newest poll may touch state, or a stale "pending" could overwrite
+// "connected" and leave the panel wrong with polling already stopped.
+let pollSeq = 0
+let pollFailures = 0
 
 const isConnected = computed(() => cloudStatus.value.status === 'connected' || cloudStatus.value.status === 'disconnected')
 const isError = computed(() => cloudStatus.value.status === 'error')
@@ -75,7 +81,7 @@ const isPendingGrant = computed(() => deviceStatus.value === 'pending' && !!devi
 const deviceFailureMessage = computed(() => {
   switch (deviceStatus.value) {
     case 'denied':
-      return 'Authorisation was refused. Start again to retry.'
+      return 'The request was refused. Start again to retry.'
     case 'expired':
       return 'The code expired before it was approved. Start again to retry.'
     case 'error':
@@ -143,16 +149,55 @@ function stopDevicePolling() {
   }
 }
 
-async function pollDeviceStatus() {
-  let data: { status: DeviceGrantStatus; detail?: string } & Partial<DeviceGrant>
-  try {
-    const resp = await apiFetch('/api/cloud/auth/device/status')
-    if (!resp.ok) return
-    data = await resp.json()
-  } catch {
-    // Transient — keep polling; the grant is bounded by its own expiry server-side.
+function failDeviceGrant(detail: string) {
+  stopDevicePolling()
+  deviceGrant.value = null
+  deviceStatus.value = 'error'
+  deviceDetail.value = detail
+}
+
+/** A failed status check. Transient ones are tolerated; a dead session is not. */
+function noteDevicePollFailure(status: number | null) {
+  if (status === 401 || status === 403) {
+    // This will not fix itself, and polling on would leave the panel pending
+    // forever while the grant expires unseen.
+    failDeviceGrant('Your session expired. Sign in again, then start over.')
     return
   }
+  if (++pollFailures >= MAX_POLL_FAILURES) {
+    failDeviceGrant(
+      status === null
+        ? 'Lost contact with the server while waiting for authorization.'
+        : `Checking the authorization status failed (HTTP ${status}).`,
+    )
+  }
+}
+
+async function pollDeviceStatus() {
+  const seq = ++pollSeq
+  let resp: Response
+  try {
+    resp = await apiFetch('/api/cloud/auth/device/status')
+  } catch {
+    if (seq === pollSeq) noteDevicePollFailure(null)
+    return
+  }
+  if (seq !== pollSeq) return
+
+  if (!resp.ok) {
+    noteDevicePollFailure(resp.status)
+    return
+  }
+
+  let data: { status: DeviceGrantStatus; detail?: string } & Partial<DeviceGrant>
+  try {
+    data = await resp.json()
+  } catch {
+    noteDevicePollFailure(null)
+    return
+  }
+  if (seq !== pollSeq) return
+  pollFailures = 0
 
   deviceStatus.value = data.status
   if (data.status === 'pending') {
@@ -176,16 +221,20 @@ async function pollDeviceStatus() {
 
 function startDevicePolling() {
   stopDevicePolling()
+  pollFailures = 0
   devicePoll = setInterval(pollDeviceStatus, DEVICE_POLL_MS)
 }
 
 async function restoreDeviceGrant() {
   // A reload must not lose an in-flight grant: the backend still holds it.
+  // Shares the poll sequence, so a slow restore cannot revive a grant the
+  // user has already superseded or that has since completed.
+  const seq = ++pollSeq
   try {
     const resp = await apiFetch('/api/cloud/auth/device/status')
-    if (!resp.ok) return
+    if (!resp.ok || seq !== pollSeq) return
     const data = await resp.json()
-    if (data.status !== 'pending') return
+    if (seq !== pollSeq || data.status !== 'pending') return
     deviceGrant.value = {
       user_code: data.user_code ?? '',
       verification_uri: data.verification_uri ?? '',
@@ -301,7 +350,7 @@ onBeforeUnmount(stopDevicePolling)
         </p>
         <div class="flex items-center gap-3">
           <span class="text-sm text-gray-500" data-testid="cloud-device-waiting">
-            Waiting for authorisation...
+            Waiting for approval...
           </span>
           <button
             class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-200"
