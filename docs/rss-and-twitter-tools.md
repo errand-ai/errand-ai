@@ -20,6 +20,19 @@ Fetch and parse an RSS or Atom feed.
 read_rss_feed("https://blog.example.com/feed.xml", max_items=5)
 ```
 
+**URL restrictions.** `read_rss_feed` and `read_url` refuse any URL that is not
+`http`/`https`, or whose hostname *resolves* to loopback, link-local, private or
+otherwise non-routable address space — checked against the resolved addresses,
+and re-checked after every redirect. A refusal returns
+`{"error": "Refused to fetch ..."}` and no content.
+
+To fetch an internal wiki or feed, add its hostname to the `url_fetch_allowlist`
+setting (a JSON list, empty by default):
+
+```json
+["wiki.internal", "feeds.corp.example"]
+```
+
 ### reply_to_tweet
 
 Reply to a tweet by ID.

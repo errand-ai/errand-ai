@@ -24,6 +24,7 @@ from eval_marking import resolve_is_eval
 from events import publish_event
 from llm import generate_title, ProfileInfo
 from models import EvalResult, EvalRun, Setting, Skill, SkillFile, Task, TaskProfile
+from url_guard import UrlNotPermitted, fetch_validated
 from task_manager import normalize_interval
 from version_checker import APP_VERSION
 
@@ -1199,15 +1200,35 @@ async def search_tweets(query: str, max_results: int = 10) -> str:
         return json.dumps({"error": str(e)})
 
 
+async def _url_fetch_allowlist() -> list[str]:
+    """Hosts exempt from the SSRF guard's private-address check.
+
+    An empty list is the safe default, so a DB failure here fails closed and
+    is logged rather than raised — unlike the Slack allowlist, where empty
+    means unrestricted and a silent [] would be dangerous.
+    """
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Setting.value).where(Setting.key == "url_fetch_allowlist")
+            )
+            value = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Could not load url_fetch_allowlist, treating as empty: %s", exc)
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
 @mcp.tool()
 async def read_url(url: str, max_length: int = 50000) -> str:
     """Fetch a URL and convert its HTML content to markdown. Returns JSON with url, title, and content."""
     import re
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+        resp = await fetch_validated(url, timeout=30, allowlist=await _url_fetch_allowlist())
+        resp.raise_for_status()
 
         html_content = resp.text
 
@@ -1226,6 +1247,8 @@ async def read_url(url: str, max_length: int = 50000) -> str:
             content = content[:max_length]
 
         return json.dumps({"url": url, "title": title, "content": content})
+    except UrlNotPermitted as e:
+        return json.dumps({"error": f"Refused to fetch {url}: {e}"})
     except httpx.TimeoutException:
         return json.dumps({"error": f"Timeout fetching {url}"})
     except Exception as e:
@@ -1245,9 +1268,10 @@ async def read_rss_feed(url: str, max_items: int = 20, since: str | None = None)
     from datetime import datetime, timezone
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+        resp = await fetch_validated(url, timeout=30, allowlist=await _url_fetch_allowlist())
+        resp.raise_for_status()
+    except UrlNotPermitted as e:
+        return json.dumps({"error": f"Refused to fetch feed from {url}: {e}"})
     except httpx.TimeoutException:
         return json.dumps({"error": f"Timeout fetching feed from {url}"})
     except Exception as e:

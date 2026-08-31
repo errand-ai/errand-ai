@@ -21,6 +21,8 @@ from typing import Any
 
 import requests
 
+from ssh_known_hosts import known_hosts_content, unpinned_hosts
+
 logger = logging.getLogger(__name__)
 
 
@@ -605,18 +607,30 @@ class KubernetesRuntime(ContainerRuntime):
                 f" && cp /ssh-secret/config {ssh_mount_path}/config"
                 f" && chmod 600 {ssh_mount_path}/id_rsa.agent"
             )
-            # Pre-populate known_hosts via ssh-keyscan so git clone doesn't
-            # need to write to it (and if it does, the mount is writable).
-            if ssh_hosts:
-                hosts_str = " ".join(ssh_hosts)
-                init_cmd += f" && ssh-keyscan {hosts_str} > {ssh_mount_path}/known_hosts 2>/dev/null"
+            # Seed known_hosts with the keys errand pins, then ssh-keyscan
+            # only the hosts it ships no key for. Keyscanning a pinned host
+            # would re-introduce trust-on-first-use for exactly the hosts
+            # whose keys are published — the thing the pinning removes.
+            init_cmd += (
+                f" && printf '%s' '{known_hosts_content()}' > {ssh_mount_path}/known_hosts"
+            )
+            unpinned = unpinned_hosts(ssh_hosts or [])
+            if unpinned:
+                hosts_str = " ".join(unpinned)
+                init_cmd += (
+                    f" && ssh-keyscan {hosts_str} >> {ssh_mount_path}/known_hosts 2>/dev/null"
+                )
             volume_mounts.append(
                 client.V1VolumeMount(name="ssh-credentials", mount_path=ssh_mount_path)
             )
-            ssh_cmd = f"ssh -i {ssh_mount_path}/id_rsa.agent"
-            if ssh_hosts:
-                ssh_cmd += f" -o UserKnownHostsFile={ssh_mount_path}/known_hosts"
-            ssh_cmd += " -o StrictHostKeyChecking=accept-new"
+            # accept-new against a seeded known_hosts verifies the pinned
+            # hosts (a changed key is refused) while leaving a user-supplied
+            # remote clonable on first contact.
+            ssh_cmd = (
+                f"ssh -i {ssh_mount_path}/id_rsa.agent"
+                f" -o UserKnownHostsFile={ssh_mount_path}/known_hosts"
+                f" -o StrictHostKeyChecking=accept-new"
+            )
             env_list.append(
                 client.V1EnvVar(name="GIT_SSH_COMMAND", value=ssh_cmd)
             )

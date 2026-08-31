@@ -1,10 +1,24 @@
+import logging
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import auth as auth_module
+from database import get_session
+from models import Setting
+from oauth_state import (
+    STATE_COOKIE_NAME,
+    STATE_TTL_SECONDS,
+    StateValidationError,
+    issue_state,
+    validate_state,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -14,29 +28,78 @@ def _require_oidc():
         raise HTTPException(status_code=503, detail="OIDC authentication is not configured")
 
 
+async def _state_secret(session: AsyncSession) -> str:
+    """The secret the OAuth `state` is signed with.
+
+    Reuses `jwt_signing_secret`, which `main.py` seeds on startup. If it is
+    missing we fail rather than fall back to an unsigned flow.
+    """
+    result = await session.execute(
+        select(Setting.value).where(Setting.key == "jwt_signing_secret")
+    )
+    secret = result.scalar_one_or_none()
+    # Settings values are JSON, so a mis-seeded row could hold a dict or a
+    # number. `str()` would happily stringify it into a different signing key
+    # on each read shape, breaking login with no clue why — fail loudly.
+    if not isinstance(secret, str) or not secret:
+        raise HTTPException(status_code=500, detail="JWT signing secret not configured")
+    return secret
+
+
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, session: AsyncSession = Depends(get_session)):
     _require_oidc()
     base_url = str(request.base_url).rstrip("/")
+    state, nonce = issue_state(await _state_secret(session))
     params = {
         "client_id": auth_module.oidc.client_id,
         "redirect_uri": f"{base_url}/auth/callback",
         "response_type": "code",
         "scope": "openid offline_access",
+        "state": state,
     }
-    return RedirectResponse(
+    response = RedirectResponse(
         url=f"{auth_module.oidc.authorization_endpoint}?{urlencode(params)}"
     )
+    # SameSite=lax so the cookie survives the provider's top-level redirect
+    # back to /auth/callback, which strict would drop.
+    response.set_cookie(
+        STATE_COOKIE_NAME,
+        nonce,
+        max_age=STATE_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        path="/auth",
+    )
+    return response
 
 
 @router.get("/callback")
-async def callback(request: Request, code: str = "", error: str = "", error_description: str = ""):
+async def callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    session: AsyncSession = Depends(get_session),
+):
     _require_oidc()
     if error:
         raise HTTPException(status_code=401, detail=error_description or error)
 
     if not code:
         raise HTTPException(status_code=401, detail="Missing authorization code")
+
+    # Validated before the token exchange: a callback we cannot tie to a login
+    # this browser started must not reach the provider at all.
+    try:
+        validate_state(
+            state, request.cookies.get(STATE_COOKIE_NAME, ""), await _state_secret(session)
+        )
+    except StateValidationError as exc:
+        logger.warning("Rejected OIDC callback: %s", exc)
+        raise HTTPException(status_code=401, detail=f"Invalid authorization state: {exc}")
 
     base_url = str(request.base_url).rstrip("/")
 
@@ -69,7 +132,9 @@ async def callback(request: Request, code: str = "", error: str = "", error_desc
     if refresh_token:
         fragment += f"&refresh_token={refresh_token}"
 
-    return RedirectResponse(url=f"/#{fragment}")
+    response = RedirectResponse(url=f"/#{fragment}")
+    response.delete_cookie(STATE_COOKIE_NAME, path="/auth")
+    return response
 
 
 @router.post("/refresh")

@@ -2168,9 +2168,45 @@ class TestRefreshGitClone:
 
         assert "GIT_SSH_COMMAND" in captured_env
         assert "-o StrictHostKeyChecking=accept-new" in captured_env["GIT_SSH_COMMAND"]
+        # Pinned known_hosts is what turns accept-new from trust-on-first-use
+        # into verification for the hosts errand ships keys for.
+        assert "-o UserKnownHostsFile=" in captured_env["GIT_SSH_COMMAND"]
+        known_hosts_path = captured_env["GIT_SSH_COMMAND"].split(
+            "-o UserKnownHostsFile=", 1
+        )[1].split(" ", 1)[0]
+        assert not os.path.exists(known_hosts_path), "known_hosts temp file was not cleaned up"
 
         if os.path.exists(clone_dir):
             shutil.rmtree(clone_dir)
+
+    def test_host_key_mismatch_is_explained(self, tmp_path, monkeypatch):
+        """A host-key refusal must not read as a generic git failure."""
+        repo_url = "git@github.com:org/skills-mismatch.git"
+        url_hash = __import__("hashlib").sha256(repo_url.encode()).hexdigest()[:12]
+        clone_dir = f"/tmp/errand-skills-{url_hash}"
+
+        import shutil
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+
+        def mock_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(
+                128,
+                args[0],
+                output="",
+                stderr=(
+                    "@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\n"
+                    "Host key for github.com has changed and you have requested strict checking.\n"
+                    "Host key verification failed.\n"
+                ),
+            )
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        with pytest.raises(GitSkillsError) as exc:
+            refresh_git_clone(repo_url, None, "fake-ssh-key-content")
+
+        assert "verification failed for 'github.com'" in str(exc.value)
+        assert "not a network fault" in str(exc.value)
 
     def test_branch_checkout(self, tmp_path, monkeypatch):
         """Branch is passed to git clone when specified."""

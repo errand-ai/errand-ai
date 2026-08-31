@@ -335,3 +335,33 @@ async def test_sync_marketplace_auth_failure_preserves_status_code(session, monk
     assert mp.last_sync_status == "error"
     assert "401" in mp.last_sync_error
     assert "secret.example.com" not in mp.last_sync_error
+
+
+# --- SSH host key pinning ---
+
+
+def test_ssh_env_pins_known_hosts_and_keeps_accept_new():
+    """The marketplace clone path uses the same host-key policy as the others."""
+    import os
+    import pathlib
+
+    from plugin_marketplace import _ssh_env
+
+    env, key_file, known_hosts = _ssh_env("fake-key")
+    try:
+        assert "-o UserKnownHostsFile=" in env["GIT_SSH_COMMAND"]
+        assert "-o StrictHostKeyChecking=accept-new" in env["GIT_SSH_COMMAND"]
+        seeded = pathlib.Path(known_hosts).read_text()
+        assert "github.com ssh-ed25519 " in seeded
+    finally:
+        for path in (key_file, known_hosts):
+            if path and os.path.exists(path):
+                os.unlink(path)
+
+
+def test_ssh_env_without_a_key_creates_no_files():
+    from plugin_marketplace import _ssh_env
+
+    env, key_file, known_hosts = _ssh_env(None)
+    assert key_file is None and known_hosts is None
+    assert "GIT_SSH_COMMAND" not in env or "UserKnownHostsFile" not in env.get("GIT_SSH_COMMAND", "")

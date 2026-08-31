@@ -67,7 +67,7 @@ CORS has no owning spec today. Its requirement goes in `frontend-auth`, which al
 ## Impact
 
 - **Code**: `errand/auth_routes.py`, `errand/mcp_server.py`, `errand/settings_registry.py`, `errand/main.py`, `errand/container_runtime.py`, `errand/task_manager.py`, `errand/plugin_marketplace.py`.
-- **Breaking**: restricting CORS will break any client on an origin not in the allowlist; the default must be chosen so a standard single-origin deployment is unaffected. Masking DB-sourced secrets changes `GET /api/settings` responses — any UI that reads a secret's value back will now receive a mask, which is the point, but wants checking against the settings cards.
+- **Breaking**: restricting CORS will break any client on an origin not in the allowlist; the default must be chosen so a standard single-origin deployment is unaffected. (An earlier draft also listed masking DB-sourced secrets here. That finding was withdrawn — see "Withdrawn on further checking" above — so `GET /api/settings` responses are unchanged by this proposal.)
 - **Risk of the SSRF fix**: over-tight validation breaks legitimate fetches. `read_url` is used by real tasks against real sites, so the private-range block must not catch ordinary public hosts, and a deployment fetching an internal wiki will need an explicit allowlist escape hatch.
 - **Not addressed**: findings rejected above. `M9` (file-tool path allowlist for `/shared`) is worth its own change.
 - **Provenance**: the source report is the output of task `639cc280`. Treat it as a lead generator, not an authority — a 5-of-30 hit rate, with fabricated entries among the rest.

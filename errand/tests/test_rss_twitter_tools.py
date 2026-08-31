@@ -9,6 +9,27 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # 11.1 read_rss_feed tests
+
+
+@pytest.fixture(autouse=True)
+def _public_dns():
+    """Resolve every host to a public address for this module.
+
+    The URL-fetching tools now validate resolved addresses, so without this
+    the suite would make real DNS queries for `example.com`. SSRF refusal
+    itself is covered in test_url_guard.py and in the tool tests below, which
+    stub the resolver themselves.
+
+    Note for anyone "fixing" the `patch("mcp_server.httpx.AsyncClient")` calls
+    below: they still work. `mcp_server.httpx` resolves to the httpx *module*,
+    the same object `url_guard` imported, so patching that attribute swaps the
+    client for both. Verified by running this file with `socket.connect` and
+    `getaddrinfo` blocked — no test reaches the network. It would stop working
+    if url_guard switched to `from httpx import AsyncClient`.
+    """
+    with patch("url_guard._resolve", AsyncMock(return_value=["93.184.216.34"])):
+        yield
+
 # ---------------------------------------------------------------------------
 
 VALID_RSS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -808,3 +829,25 @@ async def test_twitter_platform_search():
     assert result["query"] == "query"
     assert len(result["results"]) == 1
     assert result["results"][0]["author_username"] == "author1"
+
+
+# --- read_rss_feed SSRF refusals (same guard as read_url) ---
+
+
+async def test_read_rss_feed_refuses_private_address():
+    from mcp_server import read_rss_feed
+
+    with patch("url_guard._resolve", AsyncMock(return_value=["10.0.0.5"])):
+        result = json.loads(await read_rss_feed("http://internal.example/feed"))
+
+    assert "Refused to fetch feed" in result["error"]
+    assert "items" not in result
+
+
+async def test_read_rss_feed_refuses_non_http_scheme():
+    from mcp_server import read_rss_feed
+
+    result = json.loads(await read_rss_feed("file:///etc/passwd"))
+
+    assert "Refused to fetch feed" in result["error"]
+    assert "items" not in result

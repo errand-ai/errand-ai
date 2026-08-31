@@ -423,12 +423,49 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def cors_origins() -> list[str]:
+    """Origins permitted to make cross-origin API requests.
+
+    Empty by default, and deliberately so: every supported deployment is
+    same-origin, and same-origin requests need no CORS headers at all. The
+    server serves its own frontend in production; `npm run dev` reaches the
+    API through Vite's proxy; errand-cloud reaches it over the WebSocket the
+    server itself opens outbound. None of those is a cross-origin browser
+    request.
+
+    Set `CORS_ALLOWED_ORIGINS` to a comma-separated list for a split-origin
+    deployment. `*` is refused rather than silently honoured — errand is
+    Bearer-only today so a wildcard is not exploitable, but it becomes so the
+    moment cookie auth is introduced, and that is the hazard being removed.
+    """
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if "*" in origins:
+        logger.warning(
+            "CORS_ALLOWED_ORIGINS contains '*'; ignoring it and using the "
+            "explicitly listed origins only"
+        )
+        origins = [o for o in origins if o != "*"]
+    return origins
+
+
+def configure_cors(target: FastAPI) -> None:
+    """Attach CORS with an explicit origin allowlist.
+
+    `allow_credentials` is left unset on purpose. It is what keeps a loose
+    origin policy harmless, and enabling it alongside an origin list would be
+    worse than the wildcard it replaces.
+    """
+    target.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins(),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+configure_cors(app)
 
 
 @app.middleware("http")

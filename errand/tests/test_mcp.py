@@ -1404,6 +1404,27 @@ async def test_web_search_error_handling(db_session):
 # --- read_url MCP tool ---
 
 
+@pytest.fixture(autouse=True)
+def _public_dns():
+    """Resolve every host to a public address for this module.
+
+    The URL-fetching tools now validate resolved addresses, so without this
+    the suite would make real DNS queries for `example.com`. SSRF refusal
+    itself is covered in test_url_guard.py and in the tool tests below, which
+    stub the resolver themselves.
+
+    Note for anyone "fixing" the `patch("mcp_server.httpx.AsyncClient")` calls
+    below: they still work. `mcp_server.httpx` resolves to the httpx *module*,
+    the same object `url_guard` imported, so patching that attribute swaps the
+    client for both. Verified by running this file with `socket.connect` and
+    `getaddrinfo` blocked — no test reaches the network. It would stop working
+    if url_guard switched to `from httpx import AsyncClient`.
+    """
+    with patch("url_guard._resolve", AsyncMock(return_value=["93.184.216.34"])):
+        yield
+
+
+
 async def test_read_url_success(db_session):
     """read_url fetches URL and returns JSON with title and markdown content."""
     html = "<html><head><title>Test Page</title></head><body><h1>Hello</h1><p>World</p></body></html>"
@@ -1952,3 +1973,118 @@ async def test_upsert_skill_consecutive_hyphens(db_session):
         skill_result = await session.execute(select(Skill).where(Skill.name == "code-review--abc123"))
         skill = skill_result.scalar_one()
         assert skill.name == "code-review--abc123"
+
+
+# --- read_url SSRF refusals ---
+
+from mcp_server import read_url as read_url_tool  # noqa: E402
+
+
+async def test_read_url_refuses_loopback(db_session):
+    with patch("url_guard._resolve", AsyncMock(return_value=["127.0.0.1"])):
+        data = json.loads(await read_url_tool("http://127.0.0.1:9090/metrics"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data
+
+
+async def test_read_url_refuses_cloud_metadata(db_session):
+    with patch("url_guard._resolve", AsyncMock(return_value=["169.254.169.254"])):
+        data = json.loads(await read_url_tool("http://169.254.169.254/latest/meta-data/"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data
+
+
+async def test_read_url_refuses_file_scheme(db_session):
+    data = json.loads(await read_url_tool("file:///etc/passwd"))
+    assert "Refused to fetch" in data["error"]
+    assert "content" not in data
+
+
+# --- url_fetch_allowlist: the DB wiring, not just the guard's own logic ---
+
+
+async def _set_url_allowlist(session_factory, value):
+    from models import Setting
+
+    async with session_factory() as session:
+        session.add(Setting(key="url_fetch_allowlist", value=value))
+        await session.commit()
+
+
+async def test_url_fetch_allowlist_defaults_to_empty_when_unset(db_session):
+    from mcp_server import _url_fetch_allowlist
+
+    assert await _url_fetch_allowlist() == []
+
+
+async def test_url_fetch_allowlist_is_read_from_the_database(db_session):
+    _, session_factory = db_session
+    from mcp_server import _url_fetch_allowlist
+
+    await _set_url_allowlist(session_factory, ["wiki.internal", 7, "feeds.corp"])
+
+    # Non-string entries are dropped rather than reaching the guard.
+    assert await _url_fetch_allowlist() == ["wiki.internal", "feeds.corp"]
+
+
+async def test_read_url_forwards_the_stored_allowlist_to_the_guard(db_session):
+    """Guards the seam: a stored allowlist that never reaches `fetch_validated`
+    would leave every internal host refused with the setting apparently set."""
+    _, session_factory = db_session
+    await _set_url_allowlist(session_factory, ["wiki.internal"])
+
+    response = MagicMock(status_code=200, text="<html><title>T</title></html>")
+    response.raise_for_status = MagicMock()
+    with patch("mcp_server.fetch_validated", AsyncMock(return_value=response)) as fetch:
+        await read_url_tool("http://wiki.internal/page")
+
+    assert fetch.await_args.kwargs["allowlist"] == ["wiki.internal"]
+
+
+async def test_read_rss_feed_forwards_the_stored_allowlist_to_the_guard(db_session):
+    _, session_factory = db_session
+    await _set_url_allowlist(session_factory, ["feeds.corp"])
+
+    response = MagicMock(status_code=200, text="<rss><channel><title>T</title></channel></rss>")
+    response.raise_for_status = MagicMock()
+    with patch("mcp_server.fetch_validated", AsyncMock(return_value=response)) as fetch:
+        from mcp_server import read_rss_feed
+
+        await read_rss_feed("http://feeds.corp/feed")
+
+    assert fetch.await_args.kwargs["allowlist"] == ["feeds.corp"]
+
+
+async def test_allowlisted_private_host_is_fetched_end_to_end(db_session):
+    """Full path: DB setting -> guard -> fetch, against a host that resolves private."""
+    _, session_factory = db_session
+    html = "<html><head><title>Internal Wiki</title></head><body>secret plans</body></html>"
+
+    async def resolve(host, port):
+        return ["10.0.0.5"]
+
+    def make_client(html):
+        mock_client = AsyncMock()
+        mock_response = MagicMock(status_code=200, text=html)
+        mock_response.raise_for_status = MagicMock()
+        mock_client.get.return_value = mock_response
+        return mock_client
+
+    with patch("url_guard._resolve", resolve):
+        # Not allowlisted yet.
+        with patch("mcp_server.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=make_client(html))
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            refused = json.loads(await read_url_tool("http://wiki.internal/page"))
+        assert "Refused to fetch" in refused["error"]
+        assert "secret plans" not in json.dumps(refused)
+
+        await _set_url_allowlist(session_factory, ["wiki.internal"])
+
+        with patch("mcp_server.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=make_client(html))
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            allowed = json.loads(await read_url_tool("http://wiki.internal/page"))
+
+    assert allowed["title"] == "Internal Wiki"
+    assert "secret plans" in allowed["content"]

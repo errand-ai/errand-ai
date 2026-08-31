@@ -34,6 +34,11 @@ from container_runtime import ContainerRuntime, DockerRuntime, KubernetesRuntime
 from database import async_session, engine
 from events import get_valkey, publish_event, VALKEY_URL
 from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, task_tags
+from ssh_known_hosts import (
+    explain_host_key_failure,
+    git_ssh_command,
+    write_known_hosts,
+)
 from utils import _next_position
 
 logger = logging.getLogger(__name__)
@@ -329,15 +334,19 @@ def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | 
     clone_dir = f"/tmp/errand-skills-{url_hash}"
 
     env = os.environ.copy()
+    known_hosts_file = None
     if ssh_private_key:
         key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False)
         try:
             key_file.write(ssh_private_key)
             key_file.close()
             os.chmod(key_file.name, 0o600)
-            env["GIT_SSH_COMMAND"] = f"ssh -i {key_file.name} -o StrictHostKeyChecking=accept-new"
+            known_hosts_file = write_known_hosts()
+            env["GIT_SSH_COMMAND"] = git_ssh_command(key_file.name, known_hosts_file)
         except Exception:
             os.unlink(key_file.name)
+            if known_hosts_file:
+                os.unlink(known_hosts_file)
             raise
     else:
         key_file = None
@@ -368,6 +377,9 @@ def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | 
             logger.info("Cloned skills repo %s to %s", repo_url, clone_dir)
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.strip() or e.stdout.strip() or str(e)
+        host_key_hint = explain_host_key_failure(e.stderr or "")
+        if host_key_hint:
+            error_msg = f"{host_key_hint} Original error: {error_msg}"
         raise GitSkillsError(f"Git operation failed: {error_msg}") from e
     except OSError as e:
         raise GitSkillsError(f"Git not available: {e}") from e
@@ -377,6 +389,11 @@ def refresh_git_clone(repo_url: str, branch: str | None, ssh_private_key: str | 
                 os.unlink(key_file.name)
             except OSError:
                 logger.warning("Failed to delete temporary SSH key file %s", key_file.name, exc_info=True)
+        if known_hosts_file is not None:
+            try:
+                os.unlink(known_hosts_file)
+            except OSError:
+                logger.warning("Failed to delete temporary known_hosts file %s", known_hosts_file, exc_info=True)
 
     return clone_dir
 
@@ -625,7 +642,12 @@ def build_skill_manifest(skills: list[dict]) -> str:
 
 
 def generate_ssh_config(hosts: list[str]) -> str:
-    """Generate an SSH config file with per-host entries for git SSH authentication."""
+    """Generate an SSH config file with per-host entries for git SSH authentication.
+
+    `accept-new` is retained deliberately: paired with the pinned known_hosts
+    the runtime seeds, it verifies hosts errand ships keys for while still
+    letting a user-supplied remote be cloned on first contact.
+    """
     entries = []
     for host in hosts:
         entries.append(
