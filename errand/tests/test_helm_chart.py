@@ -30,7 +30,12 @@ def render_server_deployment(*set_values: str) -> str:
     ]
     for value in set_values:
         cmd += ["--set", value]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"`helm template` did not finish within {exc.timeout}s: {' '.join(cmd)}"
+        ) from exc
     assert result.returncode == 0, result.stderr
     return result.stdout
 

@@ -27,7 +27,7 @@
 
 ## 4. Verify end to end
 
-- [x] 4.1 Bump `VERSION` (patch)
+- [x] 4.1 Bump `VERSION` — planned as a patch, taken as a minor (0.146.1 → 0.147.0) once the scope grew to removing `keycloak.discoveryUrl`, which requires operator action on deploy rather than being drop-in
 - [x] 4.2 `docker compose -f testing/docker-compose.yml up --build` — compose sets no `MAX_CONCURRENT_TASKS`, so confirm the field saves and persists across a page reload
 - [x] 4.3 Push, open PR, confirm CI builds images + chart
 - [x] 4.4 Deploy the PR build to Kubernetes and confirm `GET /api/settings` reports `max_concurrent_tasks` with `source: "database"` (or `"default"`) and `readonly: false`
