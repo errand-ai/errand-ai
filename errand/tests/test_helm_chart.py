@@ -72,10 +72,12 @@ def literal_env_names(rendered: str) -> set[str]:
 def test_no_registry_backed_env_var_is_defaulted():
     """No registry-backed env var may be pinned by a literal in the chart.
 
-    Such a default emits the env var on every deployment; env beats database in
+    Such a pin emits the env var on every deployment; env beats database in
     `resolve_setting_value`, so the setting is readonly in the admin API for the
-    life of the deployment. This is the general form of the max_concurrent_tasks
-    defect — keep it from recurring under a different key.
+    life of the deployment. That holds whether the literal comes from a
+    values.yaml default or straight from the template. This is the general form
+    of the max_concurrent_tasks defect — keep it from recurring under a
+    different key.
     """
     from settings_registry import SETTINGS_REGISTRY
 
@@ -86,6 +88,7 @@ def test_no_registry_backed_env_var_is_defaulted():
         if meta.get("env_var") and meta["env_var"] in emitted
     )
     assert not shadowed, (
-        "values.yaml defaults these settings into readonly on every deployment: "
-        + ", ".join(shadowed)
+        "these settings are pinned readonly on every deployment by a literal "
+        "env var in the rendered chart (from a values.yaml default or a "
+        "hardcoded template value — check both): " + ", ".join(shadowed)
     )
