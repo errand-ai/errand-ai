@@ -4,6 +4,9 @@
 - [x] 1.2 Confirm `helm/errand/templates/server-deployment.yaml` still guards the env var with `{{- if .Values.server.maxConcurrentTasks }}` and emits nothing when unset
 - [x] 1.3 Document the value in the chart README / values comments as an optional operator override that makes the setting readonly in the UI
 - [x] 1.4 Verify no values file in `~/github/argocd` (`errand-rancher`, `errand-cloud`, `errand-sh`) sets `server.maxConcurrentTasks`; if any does, decide with the operator whether to keep the pin
+- [x] 1.5 Remove the other `values.yaml` defaults that shadow registry keys — `keycloak.discoveryUrl`, `keycloak.rolesClaim`, `hindsight.bankId` — as required by the `Helm values defaults` requirement
+- [x] 1.6 Guard `OIDC_DISCOVERY_URL` / `OIDC_ROLES_CLAIM` with `{{- if }}` (they were emitted unconditionally, so blanking the values alone would emit an empty env var)
+- [x] 1.7 Pin `keycloak.discoveryUrl` in `~/github/argocd/errand-rancher-values.yaml` so the live deployment's auth wiring is unchanged (`OIDCConfig.from_env` needs it alongside the client id/secret, or OIDC silently deactivates)
 
 ## 2. Make the refusal observable in the API
 
@@ -19,6 +22,8 @@
 - [x] 3.4 API test: a request mixing an editable key and an env-shadowed key returns 200, persists the editable key, and refuses the other
 - [x] 3.5 API test: the WARNING is emitted once per refused key (assert via `caplog`)
 - [x] 3.6 Run the errand suite: `DATABASE_URL="sqlite+aiosqlite:///:memory:" errand/.venv/bin/python -m pytest errand/tests/ -q`
+- [x] 3.7 Chart test: no registry-backed env var is emitted from a `values.yaml` default (the general form of the requirement, not just `MAX_CONCURRENT_TASKS`)
+- [x] 3.8 API test: `max_concurrent_tasks` reports `readonly: false` and is writable when the env var is unset
 
 ## 4. Verify end to end
 
@@ -35,6 +40,14 @@
 
 ## Post-merge notes
 
+- **Commit and push `~/github/argocd/errand-rancher-values.yaml` before the new
+  chart reaches the cluster.** Ordering is safe in either direction on the old
+  chart (which reads the same key unconditionally, so an explicit value simply
+  restates the default), but the new chart emits no `OIDC_DISCOVERY_URL` without
+  it and Keycloak login would stop working.
+- `errand-cloud-values.yaml` / `errand-sh-values.yaml` carry no `keycloak:`
+  block. Confirm neither deployment relies on the removed chart default for OIDC
+  before rolling the new chart out to them.
 - Merge the PR once the post-archive build is verified.
 - The settings card still renders an editable input for keys the API reports as
   `readonly: true`. That is tracked as `surface-readonly-settings` in

@@ -228,3 +228,27 @@ async def test_put_settings_logs_warning_per_refused_key(
     assert not [
         r for r in caplog.records if "archive_after_days" in r.getMessage()
     ]
+
+
+async def test_max_concurrent_tasks_is_editable_when_env_unset(
+    admin_client_with_session,
+):
+    """The default-install half of the helm-deployment scenario.
+
+    With no MAX_CONCURRENT_TASKS in the environment — which is what a default
+    chart render now produces — the key must be writable and report itself as
+    such, so the settings UI renders it editable.
+    """
+    client, _ = admin_client_with_session
+    env = {k: v for k, v in os.environ.items() if k != "MAX_CONCURRENT_TASKS"}
+    with patch.dict(os.environ, env, clear=True):
+        before = (await client.get("/api/settings")).json()["max_concurrent_tasks"]
+        assert before["readonly"] is False, before
+
+        resp = await client.put("/api/settings", json={"max_concurrent_tasks": 7})
+        assert resp.status_code == 200
+        after = resp.json()["max_concurrent_tasks"]
+
+    assert after["value"] == 7
+    assert after["source"] == "database"
+    assert after["readonly"] is False

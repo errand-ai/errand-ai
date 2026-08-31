@@ -172,8 +172,17 @@ keycloak:
   existingSecret: content-manager-keycloak
   secretKeyClientId: OIDC_CLIENT_ID
   secretKeyClientSecret: OIDC_CLIENT_SECRET
-  discoveryUrl: https://id.devops-consultants.net/auth/realms/devops-consultants/.well-known/openid-configuration
-  rolesClaim: resource_access.errand.roles
+  # Both bind to SETTINGS_REGISTRY keys with an env_var, so a non-empty default
+  # here emits the env var on every deployment and makes the setting readonly in
+  # the admin settings UI. Leave empty and they resolve from the database (or
+  # the registry default), editable at runtime. Set them to deliberately pin.
+  #
+  # NOTE: OIDCConfig.from_env() needs discoveryUrl AND the client id/secret
+  # together before OIDC auth activates. An operator who relies on this chart
+  # for Keycloak login must set discoveryUrl explicitly here or in the settings
+  # UI — leaving it empty disables OIDC rather than defaulting it.
+  discoveryUrl: ""
+  rolesClaim: ""
 
 # Cloud-trusted JWT validation. When the server receives an X-Cloud-JWT header
 # (relayed from errand-cloud), it validates the token's `iss` claim against
@@ -229,7 +238,9 @@ onedrive:
 
 hindsight:
   url: ""
-  bankId: "errand-tasks"
+  # Empty by default for the same reason as keycloak.discoveryUrl above; the
+  # registry default is "errand-tasks", so behaviour is unchanged when unset.
+  bankId: ""
   # Optional bearer token for authenticated Hindsight deployments. When
   # `apiKey.secret` and `apiKey.key` are both set, the server Deployment
   # injects HINDSIGHT_TOKEN from `secretKeyRef`.
