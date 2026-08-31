@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import events as events_module
-from main import app
+import main
 from database import get_session
 
 _SETTINGS_TABLE_SQL = """
@@ -123,14 +123,14 @@ async def cloud_client() -> AsyncGenerator[tuple[AsyncClient, async_sessionmaker
     redis = FakeRedis(decode_responses=True)
     events_module._valkey = redis
 
-    app.dependency_overrides[get_session] = override_get_session
+    main.app.dependency_overrides[get_session] = override_get_session
 
     with patch.dict("os.environ", {"CREDENTIAL_ENCRYPTION_KEY": FERNET_KEY}):
-        transport = ASGITransport(app=app)
+        transport = ASGITransport(app=main.app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac, test_session
 
-    app.dependency_overrides.clear()
+    main.app.dependency_overrides.clear()
     events_module._valkey = None
     await redis.aclose()
     await engine.dispose()
@@ -143,17 +143,15 @@ def _admin_headers():
 
 def _mock_admin_user():
     """Mock the require_admin dependency."""
-    from main import require_admin
-
     async def override():
         return {"sub": "admin", "_roles": ["admin"]}
-    app.dependency_overrides[require_admin] = override
+    main.app.dependency_overrides[main.require_admin] = override
 
 
 @pytest.fixture()
 def device_grant_state():
     """Reset the in-memory device grant around each test that touches it."""
-    import main as main_module
+    main_module = main
 
     main_module._cloud_device_grant = None
     main_module._cloud_device_task = None
