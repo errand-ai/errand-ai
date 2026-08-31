@@ -1,7 +1,7 @@
 ## Context
 
 `SETTINGS_REGISTRY` resolves every registered setting env → DB → default
-(`errand/settings_registry.py:126`). An env var that is set and non-empty wins
+(`resolve_setting_value` in `errand/settings_registry.py`). An env var that is set and non-empty wins
 outright and stamps the key `source: "env"`, `readonly: true`. `PUT
 /api/settings` mirrors that precedence by skipping such keys:
 
@@ -10,7 +10,7 @@ meta = SETTINGS_REGISTRY.get(key)
 if meta and meta["env_var"]:
     env_val = os.environ.get(meta["env_var"])
     if env_val is not None and env_val != "":
-        continue          # errand/main.py:1331
+        continue          # update_settings(), errand/main.py
 ```
 
 This is deliberate and specified — `admin-settings-api` currently says readonly
@@ -20,7 +20,7 @@ precedence (we do) but how a refusal should be communicated.
 Of the settings the chart can shadow, only `MAX_CONCURRENT_TASKS`,
 `HINDSIGHT_*` and `OIDC_*` are emitted at all, and only `MAX_CONCURRENT_TASKS`
 is emitted unconditionally from a chart default. The OIDC keys are already
-handled correctly by the consumer: `UserManagementPage.vue:45` reads
+handled correctly by the consumer: `isReadonly()` in `UserManagementPage.vue` reads
 `settingsMetadata[key].readonly` and disables the field.
 
 ## Goals / Non-Goals
@@ -92,7 +92,7 @@ nothing asserted its absence. A rendered-template assertion that a default
   unchanged until someone edits it in the UI — which is the intended capability.
 - **The DB value now takes effect without a restart.** `_update_concurrency_setting()`
   re-resolves and rebuilds the semaphore every poll cycle
-  (`task_manager.py:1309`), clamped to `>= 1`. A pathological value cannot
+  (`TaskManager._update_concurrency_setting`), clamped to `>= 1`. A pathological value cannot
   deadlock the manager, but a large one raises concurrency immediately. Acceptable:
   that is the point of the setting.
 - **The refusal is still only visible to a client that diffs.** Until the

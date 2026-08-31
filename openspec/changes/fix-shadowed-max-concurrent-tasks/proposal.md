@@ -7,7 +7,7 @@ The cause is a chart default, not a UI bug. `helm/errand/values.yaml` sets
 `server.maxConcurrentTasks: 3`, so the server Deployment always carries
 `MAX_CONCURRENT_TASKS=3`. `resolve_setting_value` resolves env → DB → default,
 so the env value wins and `PUT /api/settings` skips the key entirely
-(`errand/main.py:1331`), returning HTTP 200 with the unchanged value. Nobody
+(`update_settings` in `errand/main.py`), returning HTTP 200 with the unchanged value. Nobody
 chose to pin this tunable — it is boilerplate that makes an operator-facing
 setting permanently readonly on every deployment (no values file overrides it:
 rancher, cloud, and sh all inherit the chart default).
