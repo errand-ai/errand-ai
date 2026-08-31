@@ -1918,10 +1918,17 @@ async def _run_device_grant(cloud_url: str, device_code: str, interval: int, exp
         _set_device_grant_status("error", str(exc))
         return
 
-    _set_device_grant_status("connected")
+    # Start the WebSocket client before reporting success, so the page's
+    # follow-up /api/cloud/status call does not race it and read "disconnected".
+    # A failure here does not undo a good credential: the status endpoint
+    # reports the connection state on its own.
+    try:
+        from cloud_client import start_cloud_client
+        await start_cloud_client()
+    except Exception:
+        logger.exception("Cloud WebSocket client failed to start after device authorization")
 
-    from cloud_client import start_cloud_client
-    await start_cloud_client()
+    _set_device_grant_status("connected")
 
     # Register cloud endpoints if Slack credentials are already configured.
     # Best-effort: a registration failure is surfaced through /api/cloud/status,
