@@ -5,30 +5,30 @@ errand-cloud's endpoints are already deployed at `https://errand.cloud`, so ever
 - `POST /auth/tenant/device/code` → `{device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval}`
 - `POST /auth/tenant/device/token` with `{"device_code": "…"}` → 200 with `{access_token, refresh_token, expires_in, token_type}`, or 400 with `{"error": "authorization_pending" | "slow_down" | "expired_token" | "access_denied"}`
 
-- [ ] 1.1 Write failing tests for `cloud_auth.py`: initiation returns the display fields; polling maps each of the four error codes to a distinct outcome; a 200 yields tokens
-- [ ] 1.2 Add `request_device_code(cloud_url)` and `poll_device_token(cloud_url, device_code)` to `errand/cloud_auth.py`
-- [ ] 1.3 Write failing tests for the poller: it waits the advertised interval, backs off further on `slow_down`, stops on `access_denied` and `expired_token`, and stops when the grant's own expiry passes
-- [ ] 1.4 Implement the polling task, bounded by `expires_in` so it cannot outlive the grant
-- [ ] 1.5 Surface an HTTP 429 from the cloud as an error rather than tightening the loop — the cloud rate limits these endpoints (initiation 10/min, polling 60/min per IP)
+- [x] 1.1 Write failing tests for `cloud_auth.py`: initiation returns the display fields; polling maps each of the four error codes to a distinct outcome; a 200 yields tokens
+- [x] 1.2 Add `request_device_code(cloud_url)` and `poll_device_token(cloud_url, device_code)` to `errand/cloud_auth.py`
+- [x] 1.3 Write failing tests for the poller: it waits the advertised interval, backs off further on `slow_down`, stops on `access_denied` and `expired_token`, and stops when the grant's own expiry passes
+- [x] 1.4 Implement the polling task, bounded by `expires_in` so it cannot outlive the grant
+- [x] 1.5 Surface an HTTP 429 from the cloud as an error rather than tightening the loop — the cloud rate limits these endpoints (initiation 10/min, polling 60/min per IP)
 
 ## 2. Backend — endpoints
 
-- [ ] 2.1 Write failing tests: `POST /api/cloud/auth/device` requires the `admin` role, returns the verification fields, and never returns the device code
-- [ ] 2.2 Replace `cloud_auth_login` with `POST /api/cloud/auth/device`, dropping the `cloud_auth_state` nonce
-- [ ] 2.3 Write failing tests for `GET /api/cloud/auth/device/status` covering pending, connected, denied, expired, error, and none-in-progress
-- [ ] 2.4 Implement the status endpoint
-- [ ] 2.5 Write a failing test that a second initiation abandons the first pending grant rather than refusing
-- [ ] 2.6 On success, reuse the existing credential path unchanged — `sub` as tenant_id, encrypted `PlatformCredential`, WebSocket client start, endpoint registration. Assert against the existing tests rather than writing new ones for behaviour that has not changed
-- [ ] 2.7 Remove `GET /api/cloud/auth/callback` and the now-unused `exchange_code` in `cloud_auth.py`
-- [ ] 2.8 Confirm no remaining reference to `cloud_auth_state`, and that a stale row is inert if one exists
+- [x] 2.1 Write failing tests: `POST /api/cloud/auth/device` requires the `admin` role, returns the verification fields, and never returns the device code
+- [x] 2.2 Replace `cloud_auth_login` with `POST /api/cloud/auth/device`, dropping the `cloud_auth_state` nonce
+- [x] 2.3 Write failing tests for `GET /api/cloud/auth/device/status` covering pending, connected, denied, expired, error, and none-in-progress
+- [x] 2.4 Implement the status endpoint
+- [x] 2.5 Write a failing test that a second initiation abandons the first pending grant rather than refusing
+- [x] 2.6 On success, reuse the existing credential path unchanged — `sub` as tenant_id, encrypted `PlatformCredential`, WebSocket client start, endpoint registration. Assert against the existing tests rather than writing new ones for behaviour that has not changed
+- [x] 2.7 Remove `GET /api/cloud/auth/callback` and the now-unused `exchange_code` in `cloud_auth.py`
+- [x] 2.8 Confirm no remaining reference to `cloud_auth_state`, and that a stale row is inert if one exists
 
 ## 3. Frontend
 
-- [ ] 3.1 Replace the popup in `frontend/src/pages/settings/CloudServicePage.vue` with an in-page panel showing the verification code in large type and the verification URI as a link
-- [ ] 3.2 Use `verification_uri_complete` for the link so a click on the same machine needs no retyping, while still showing the bare code for a different device
-- [ ] 3.3 Poll `GET /api/cloud/auth/device/status` and reflect connected, denied and expired distinctly
-- [ ] 3.4 Restore the pending state on reload from the status endpoint, so a refresh does not lose an in-flight grant
-- [ ] 3.5 Confirm the disconnect path and the connected-state UI are untouched
+- [x] 3.1 Replace the popup in `frontend/src/pages/settings/CloudServicePage.vue` with an in-page panel showing the verification code in large type and the verification URI as a link
+- [x] 3.2 Use `verification_uri_complete` for the link so a click on the same machine needs no retyping, while still showing the bare code for a different device
+- [x] 3.3 Poll `GET /api/cloud/auth/device/status` and reflect connected, denied and expired distinctly
+- [x] 3.4 Restore the pending state on reload from the status endpoint, so a refresh does not lose an in-flight grant
+- [x] 3.5 Confirm the disconnect path and the connected-state UI are untouched
 
 ## 4. Verify against the live service
 

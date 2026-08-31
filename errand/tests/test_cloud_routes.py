@@ -1,4 +1,5 @@
-"""Tests for cloud auth routes (login, callback, disconnect, status)."""
+"""Tests for cloud auth routes (device grant, disconnect, status)."""
+import asyncio
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
@@ -149,115 +150,195 @@ def _mock_admin_user():
     app.dependency_overrides[require_admin] = override
 
 
-class TestCloudAuthLogin:
+@pytest.fixture()
+def device_grant_state():
+    """Reset the in-memory device grant around each test that touches it."""
+    import main as main_module
+
+    main_module._cloud_device_grant = None
+    main_module._cloud_device_task = None
+    yield main_module
+    task = main_module._cloud_device_task
+    if task is not None and not task.done():
+        task.cancel()
+    main_module._cloud_device_grant = None
+    main_module._cloud_device_task = None
+
+
+_GRANT = {
+    "device_code": "dc-secret",
+    "user_code": "JHBW-PMHF",
+    "verification_uri": "https://cloud.test/auth/tenant/device",
+    "verification_uri_complete": "https://cloud.test/auth/tenant/device?user_code=JHBW-PMHF",
+    "expires_in": 600,
+    "interval": 5,
+}
+
+
+class TestCloudAuthDeviceStart:
     @pytest.mark.asyncio
-    async def test_login_redirects_to_cloud_tenant_auth(self, cloud_client):
+    async def test_requires_admin(self, cloud_client, device_grant_state):
+        client, _ = cloud_client
+        # Deliberately no _mock_admin_user()
+        resp = await client.post("/api/cloud/auth/device")
+        assert resp.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_returns_verification_fields(self, cloud_client, device_grant_state):
         client, _ = cloud_client
         _mock_admin_user()
 
-        resp = await client.get("/api/cloud/auth/login")
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=dict(_GRANT)), \
+             patch("main._run_device_grant", new_callable=AsyncMock):
+            resp = await client.post("/api/cloud/auth/device")
+
         assert resp.status_code == 200
         data = resp.json()
-        assert "redirect_url" in data
-        assert "/auth/tenant/login" in data["redirect_url"]
-        assert "redirect_uri=" in data["redirect_url"]
-        assert "state=" in data["redirect_url"]
+        assert data["user_code"] == "JHBW-PMHF"
+        assert data["verification_uri"] == "https://cloud.test/auth/tenant/device"
+        assert data["verification_uri_complete"].endswith("user_code=JHBW-PMHF")
+        assert data["expires_in"] == 600
 
     @pytest.mark.asyncio
-    async def test_login_returns_503_when_not_configured(self, cloud_client):
-        client, session_maker = cloud_client
+    async def test_never_returns_the_device_code(self, cloud_client, device_grant_state):
+        """The device code is a bearer credential — it must not reach the browser."""
+        client, _ = cloud_client
+        _mock_admin_user()
+
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=dict(_GRANT)), \
+             patch("main._run_device_grant", new_callable=AsyncMock):
+            resp = await client.post("/api/cloud/auth/device")
+
+        assert "dc-secret" not in resp.text
+        assert "device_code" not in resp.json()
+
+        status_resp = await client.get("/api/cloud/auth/device/status")
+        assert "dc-secret" not in status_resp.text
+        assert "device_code" not in status_resp.json()
+
+    @pytest.mark.asyncio
+    async def test_returns_503_when_not_configured(self, cloud_client, device_grant_state):
+        client, _ = cloud_client
         _mock_admin_user()
 
         with patch("main._get_cloud_url", new_callable=AsyncMock, return_value=None):
-            resp = await client.get("/api/cloud/auth/login", follow_redirects=False)
-            assert resp.status_code == 503
-            assert "not configured" in resp.json()["detail"]
+            resp = await client.post("/api/cloud/auth/device")
+        assert resp.status_code == 503
+        assert "not configured" in resp.json()["detail"]
 
-
-class TestCloudAuthCallback:
     @pytest.mark.asyncio
-    async def test_callback_error_closes_popup(self, cloud_client):
+    async def test_returns_502_when_the_cloud_rejects_initiation(self, cloud_client, device_grant_state):
         client, _ = cloud_client
-
-        resp = await client.get(
-            "/api/cloud/auth/callback?error=access_denied",
-            follow_redirects=False,
-        )
-        assert resp.status_code == 200
-        body = resp.text
-        assert "window.close()" in body
-        assert "access_denied" in body
-
-    @pytest.mark.asyncio
-    async def test_callback_missing_code(self, cloud_client):
-        client, _ = cloud_client
-
-        resp = await client.get(
-            "/api/cloud/auth/callback",
-            follow_redirects=False,
-        )
-        assert resp.status_code == 400
-        assert "Missing code" in resp.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_callback_missing_state_returns_error(self, cloud_client):
-        client, _ = cloud_client
-
-        resp = await client.get(
-            "/api/cloud/auth/callback?code=test-code",
-            follow_redirects=False,
-        )
-        assert resp.status_code == 200
-        assert "window.close()" in resp.text
-        assert "Invalid or missing state" in resp.text
-
-    @pytest.mark.asyncio
-    async def test_callback_invalid_state_returns_error(self, cloud_client):
-        client, session_maker = cloud_client
         _mock_admin_user()
 
-        # Generate a valid state via login
-        resp = await client.get("/api/cloud/auth/login")
-        assert resp.status_code == 200
-
-        # Use a wrong state
-        resp = await client.get(
-            "/api/cloud/auth/callback?code=test-code&state=wrong-state",
-            follow_redirects=False,
-        )
-        assert resp.status_code == 200
-        assert "Invalid or missing state" in resp.text
+        with patch("main.request_device_code", new_callable=AsyncMock, side_effect=Exception("429")):
+            resp = await client.post("/api/cloud/auth/device")
+        assert resp.status_code == 502
 
     @pytest.mark.asyncio
-    async def test_callback_success_stores_credentials(self, cloud_client):
-        client, session_maker = cloud_client
+    async def test_second_initiation_abandons_the_first(self, cloud_client, device_grant_state):
+        """A user who closed the tab must be able to restart, not wait out the grant."""
+        client, _ = cloud_client
+        main_module = device_grant_state
         _mock_admin_user()
 
-        # Generate a valid state via login
-        login_resp = await client.get("/api/cloud/auth/login")
-        redirect_url = login_resp.json()["redirect_url"]
-        from urllib.parse import urlparse, parse_qs
-        state = parse_qs(urlparse(redirect_url).query)["state"][0]
+        async def _never_finishes(*args, **kwargs):
+            await asyncio.sleep(3600)
 
-        mock_tokens = {
-            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZW5hbnQtMTIzIiwiZXhwIjo5OTk5OTk5OTk5fQ.",
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=dict(_GRANT)), \
+             patch("main._run_device_grant", _never_finishes):
+            first = await client.post("/api/cloud/auth/device")
+            assert first.status_code == 200
+            first_task = main_module._cloud_device_task
+            assert first_task is not None
+
+            second = await client.post("/api/cloud/auth/device")
+            assert second.status_code == 200
+
+        await asyncio.sleep(0)
+        assert first_task.cancelled() or first_task.done()
+        assert main_module._cloud_device_task is not first_task
+
+
+class TestCloudAuthDeviceStatus:
+    @pytest.mark.asyncio
+    async def test_requires_admin(self, cloud_client, device_grant_state):
+        client, _ = cloud_client
+        resp = await client.get("/api/cloud/auth/device/status")
+        assert resp.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_none_in_progress(self, cloud_client, device_grant_state):
+        client, _ = cloud_client
+        _mock_admin_user()
+
+        resp = await client.get("/api/cloud/auth/device/status")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_pending_includes_the_code_and_uri(self, cloud_client, device_grant_state):
+        """A page reload must not lose an in-flight grant."""
+        client, _ = cloud_client
+        _mock_admin_user()
+
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=dict(_GRANT)), \
+             patch("main._run_device_grant", new_callable=AsyncMock):
+            await client.post("/api/cloud/auth/device")
+
+        resp = await client.get("/api/cloud/auth/device/status")
+        data = resp.json()
+        assert data["status"] == "pending"
+        assert data["user_code"] == "JHBW-PMHF"
+        assert data["verification_uri"] == "https://cloud.test/auth/tenant/device"
+        assert data["verification_uri_complete"].endswith("user_code=JHBW-PMHF")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["connected", "denied", "expired", "error"])
+    async def test_terminal_outcomes_are_distinct_from_pending(
+        self, cloud_client, device_grant_state, status
+    ):
+        client, _ = cloud_client
+        main_module = device_grant_state
+        _mock_admin_user()
+
+        main_module._cloud_device_grant = {"status": status}
+
+        resp = await client.get("/api/cloud/auth/device/status")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == status
+
+
+class TestRunDeviceGrant:
+    """The completion path — what the retired callback used to do."""
+
+    @pytest.mark.asyncio
+    async def test_success_stores_credentials_and_starts_the_client(
+        self, cloud_client, device_grant_state, monkeypatch
+    ):
+        _, session_maker = cloud_client
+        main_module = device_grant_state
+        monkeypatch.setattr(main_module, "async_session", session_maker)
+
+        from cloud_auth import DEVICE_TOKENS, DeviceTokenResult
+        tokens = {
+            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZW5hbnQtMTIzIiwiZW1haWwiOiJ1QGUuY29tIiwiZXhwIjo5OTk5OTk5OTk5fQ.",
             "refresh_token": "refresh-token-123",
             "expires_in": 300,
         }
 
-        with patch("main.exchange_code", new_callable=AsyncMock, return_value=mock_tokens), \
-             patch("cloud_client.start_cloud_client", new_callable=AsyncMock), \
-             patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock):
-            resp = await client.get(
-                f"/api/cloud/auth/callback?code=test-code&state={state}",
-                follow_redirects=False,
-            )
+        with patch("main.poll_until_complete", new_callable=AsyncMock,
+                   return_value=DeviceTokenResult(outcome=DEVICE_TOKENS, tokens=tokens)), \
+             patch("cloud_client.start_cloud_client", new_callable=AsyncMock) as start_ws, \
+             patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock) as register:
+            await main_module._run_device_grant("https://cloud.test", "dc", 5, 600)
 
-        assert resp.status_code == 200
-        assert "window.close()" in resp.text
+        assert main_module._cloud_device_grant["status"] == "connected"
+        start_ws.assert_awaited_once()
+        register.assert_awaited_once()
 
-        # Verify credentials were stored
         from models import PlatformCredential
+        from platforms.credentials import decrypt
         from sqlalchemy import select
         async with session_maker() as session:
             result = await session.execute(
@@ -266,6 +347,54 @@ class TestCloudAuthCallback:
             cred = result.scalar_one_or_none()
             assert cred is not None
             assert cred.status == "connected"
+            data = decrypt(cred.encrypted_data)
+            assert data["tenant_id"] == "tenant-123"
+            assert data["refresh_token"] == "refresh-token-123"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome,expected", [
+        ("access_denied", "denied"),
+        ("expired_token", "expired"),
+        ("error", "error"),
+    ])
+    async def test_failure_leaves_credentials_untouched(
+        self, cloud_client, device_grant_state, monkeypatch, outcome, expected
+    ):
+        _, session_maker = cloud_client
+        main_module = device_grant_state
+        monkeypatch.setattr(main_module, "async_session", session_maker)
+
+        from cloud_auth import DeviceTokenResult
+        with patch("main.poll_until_complete", new_callable=AsyncMock,
+                   return_value=DeviceTokenResult(outcome=outcome, detail="d")), \
+             patch("cloud_client.start_cloud_client", new_callable=AsyncMock) as start_ws:
+            await main_module._run_device_grant("https://cloud.test", "dc", 5, 600)
+
+        assert main_module._cloud_device_grant["status"] == expected
+        start_ws.assert_not_awaited()
+
+        from models import PlatformCredential
+        from sqlalchemy import select
+        async with session_maker() as session:
+            result = await session.execute(
+                select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+            )
+            assert result.scalar_one_or_none() is None
+
+
+class TestRetiredRedirectFlow:
+    @pytest.mark.asyncio
+    async def test_callback_is_gone(self, cloud_client):
+        client, _ = cloud_client
+        resp = await client.get("/api/cloud/auth/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_login_redirect_endpoint_is_gone(self, cloud_client):
+        client, _ = cloud_client
+        _mock_admin_user()
+        resp = await client.get("/api/cloud/auth/login", follow_redirects=False)
+        assert resp.status_code == 404
 
 
 class TestCloudDisconnect:
