@@ -99,13 +99,28 @@ RUN --mount=type=secret,id=github_token \
     fi; \
     mkdir -p /tmp/gws-src /gws-skills; \
     tar xzf /tmp/gws-src.tar.gz -C /tmp/gws-src; \
-    # The archive's top-level directory is derived from the tag (cli-0.22.5/).
-    # Glob it rather than reconstructing the name, so an upstream change to that
-    # convention surfaces as the explicit failure below, not a silent miss.
-    GWS_SRC_DIR="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d | head -n1)"; \
-    cp -r "${GWS_SRC_DIR}"/skills/gws-* /gws-skills/ 2>/dev/null || true; \
-    if [ -z "$(find /gws-skills -mindepth 2 -name SKILL.md -print -quit)" ]; then \
-      echo "ERROR: no gws-* skill directory containing a SKILL.md was extracted from ${GWS_SRC_URL}" >&2; \
+    # The archive's top-level directory is derived from the tag (cli-0.22.5/), so
+    # discover it rather than reconstructing the name. Require exactly one: if
+    # upstream ever ships a second top-level entry, picking one arbitrarily would
+    # be a silent coin-flip, so fail and make a human look.
+    GWS_ROOTS="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d | wc -l)"; \
+    if [ "${GWS_ROOTS}" -ne 1 ]; then \
+      echo "ERROR: expected exactly one top-level directory in the archive from ${GWS_SRC_URL}, found ${GWS_ROOTS}" >&2; \
+      exit 1; \
+    fi; \
+    GWS_SRC_DIR="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d)"; \
+    GWS_EXPECTED="$(find "${GWS_SRC_DIR}/skills" -mindepth 1 -maxdepth 1 -type d -name 'gws-*' | wc -l)"; \
+    if [ "${GWS_EXPECTED}" -eq 0 ]; then \
+      echo "ERROR: no gws-* skill directories in the archive from ${GWS_SRC_URL}" >&2; \
+      exit 1; \
+    fi; \
+    # No `|| true` here: a partial copy must fail the build, not be rounded up to
+    # success by a later "at least one skill landed" check.
+    cp -r "${GWS_SRC_DIR}"/skills/gws-* /gws-skills/; \
+    GWS_COPIED="$(find /gws-skills -mindepth 1 -maxdepth 1 -type d -name 'gws-*' | wc -l)"; \
+    GWS_WITH_SKILL="$(find /gws-skills -mindepth 2 -name SKILL.md | wc -l)"; \
+    if [ "${GWS_COPIED}" -ne "${GWS_EXPECTED}" ] || [ "${GWS_WITH_SKILL}" -ne "${GWS_EXPECTED}" ]; then \
+      echo "ERROR: expected ${GWS_EXPECTED} gws-* skills from ${GWS_SRC_URL}, copied ${GWS_COPIED} of which ${GWS_WITH_SKILL} have a SKILL.md" >&2; \
       exit 1; \
     fi; \
     rm -rf /tmp/gws-src /tmp/gws-src.tar.gz
