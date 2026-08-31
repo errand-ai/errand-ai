@@ -1,9 +1,9 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Cloud OAuth login initiation
+### Requirement: Cloud device authorization initiation
 The backend SHALL expose `POST /api/cloud/auth/device` requiring the `admin` role. The endpoint SHALL begin an OAuth 2.0 device authorization grant (RFC 8628) against errand-cloud and SHALL NOT send errand-cloud a callback URL of any kind.
 
-The previous requirement described a PKCE authorization-code flow conducted directly against Keycloak. That was never what the implementation did — it generated no PKCE parameters and redirected to errand-cloud's `/auth/tenant/login`, passing this instance's own callback as `redirect_uri`. errand-cloud now refuses a `redirect_uri` outside its own origin, because a caller-supplied one meant the authorization code could be delivered to an attacker. The device grant has no such parameter.
+This replaces the removed `Cloud OAuth login initiation`. errand-cloud refuses a `redirect_uri` outside its own origin, because a caller-supplied one meant the authorization code could be delivered to an attacker. The device grant has no such parameter.
 
 #### Scenario: Grant initiated
 - **WHEN** an admin sends `POST /api/cloud/auth/device`
@@ -19,20 +19,23 @@ The previous requirement described a PKCE authorization-code flow conducted dire
 - **WHEN** an admin sends `POST /api/cloud/auth/device` and the cloud service URL is not available
 - **THEN** the backend SHALL return HTTP 503 with detail "Cloud service not configured"
 
+#### Scenario: Malformed device authorization
+- **WHEN** errand-cloud's response omits the device code, the user code or the verification URI, or carries an unusable expiry
+- **THEN** the backend SHALL return HTTP 502 and SHALL NOT start polling
+
 #### Scenario: A second grant supersedes the first
 - **WHEN** an admin begins a device authorization while another is pending
 - **THEN** the backend SHALL abandon the pending grant and begin a new one
+- **AND** the abandoned grant SHALL NOT store credentials or report an outcome afterwards
 
-### Requirement: Cloud OAuth callback
-The backend SHALL NOT expose a redirect callback for cloud authentication. `GET /api/cloud/auth/callback` and the `cloud_auth_state` nonce SHALL be removed.
+### Requirement: No cloud redirect callback
+The backend SHALL NOT expose a redirect callback for cloud authentication.
 
 Nothing redirects to this instance once the device grant is in use, so a callback endpoint and its CSRF nonce protect nothing and only enlarge the authenticated-adjacent surface.
 
 #### Scenario: The callback is gone
 - **WHEN** a request is made to `GET /api/cloud/auth/callback`
 - **THEN** the backend SHALL NOT process an authorization code
-
-## ADDED Requirements
 
 ### Requirement: Device grant completion
 The backend SHALL poll errand-cloud for the outcome of a pending device authorization and SHALL store credentials on success exactly as the previous flow did.
@@ -55,6 +58,10 @@ Polling happens server-side. The device code is a bearer credential — whoever 
 - **WHEN** errand-cloud advertises a minimum polling interval
 - **THEN** the backend SHALL wait at least that interval between polls
 - **AND** on being told to slow down it SHALL increase its interval rather than retry at the same rate
+
+#### Scenario: Rate limiting is not retried harder
+- **WHEN** errand-cloud answers a poll with HTTP 429
+- **THEN** the backend SHALL treat it as an error and stop, rather than tightening its polling loop
 
 #### Scenario: User refuses
 - **WHEN** a poll reports that the user refused the request
@@ -102,3 +109,25 @@ A popup carried the redirect flow's browser round trip. The device grant has no 
 #### Scenario: Outcome is reflected
 - **WHEN** the grant completes, is refused, or expires
 - **THEN** the page SHALL show the outcome without a manual reload
+
+#### Scenario: A stale status response is ignored
+- **WHEN** a status poll completes after a later one has already reported an outcome
+- **THEN** the page SHALL ignore the stale response
+
+#### Scenario: The session dies mid-grant
+- **WHEN** a status poll is rejected as unauthorized
+- **THEN** the page SHALL stop polling and report the failure rather than remain pending indefinitely
+
+## REMOVED Requirements
+
+### Requirement: Cloud OAuth login initiation
+**Reason**: errand-cloud removed the `redirect_uri` parameter this requirement depended on: it accepted a callback on any origin and appended the freshly minted authorization code to it, which is account takeover. Replaced by `Cloud device authorization initiation`, which sends no callback at all.
+
+Note that this requirement was **already inaccurate** before removal. It described a PKCE flow conducted directly against Keycloak — "SHALL generate a PKCE code_verifier and code_challenge", "SHALL redirect to the Keycloak authorization endpoint". The implementation did neither: it generated no PKCE parameters and redirected to errand-cloud's `/auth/tenant/login`. It appears to describe an earlier design superseded when the tenant-auth intermediary was introduced, and was never updated. It is removed rather than corrected, since the flow it half-described is gone.
+
+**Migration**: Call `POST /api/cloud/auth/device` and display the returned verification code and URI. No client change is needed beyond the settings page, which is updated in this change.
+
+### Requirement: Cloud OAuth callback
+**Reason**: Nothing redirects to this instance once the device grant is in use, so the callback endpoint and its `cloud_auth_state` nonce protect nothing and only enlarge the authenticated-adjacent surface. Replaced by `No cloud redirect callback`, which states the absence.
+
+**Migration**: None. Credentials obtained through the old callback remain valid and are refreshed unchanged; only the way new ones are obtained has changed.

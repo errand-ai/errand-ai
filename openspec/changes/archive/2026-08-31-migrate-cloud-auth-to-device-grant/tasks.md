@@ -42,14 +42,29 @@ errand-cloud's endpoints are already deployed at `https://errand.cloud`, so ever
 
 This is the point of the change. Do not stop at task 4.
 
-- [ ] 5.1 Delete the `tenantAuth.allowForeignRedirect: true` block from `errand-cloud-values.yaml` in `devops-consultants/argocd` and let ArgoCD sync
-- [ ] 5.2 Confirm `GET https://errand.cloud/auth/tenant/login?redirect_uri=https://errand.devops-consultants.net/…` now returns HTTP 400
-- [ ] 5.3 Confirm this instance still authenticates after that removal — it must, since it no longer sends a `redirect_uri`
-- [ ] 5.4 Confirm errand-cloud stops logging the `TENANT_LOGIN_ALLOW_FOREIGN_REDIRECT` warning
-- [ ] 5.5 Tick tasks 1.11 and 1.12 in errand-cloud's `harden-auth-and-public-endpoints` change, and note on errand-ai/errand-cloud#25 that S1 is now closed in production rather than only in code
+- [x] 5.1 Delete the `tenantAuth.allowForeignRedirect: true` block from `errand-cloud-values.yaml` in `devops-consultants/argocd` and let ArgoCD sync
+- [x] 5.2 Confirm `GET https://errand.cloud/auth/tenant/login?redirect_uri=https://errand.devops-consultants.net/…` now returns HTTP 400
+- [x] 5.3 Confirm this instance still authenticates after that removal — it must, since it no longer sends a `redirect_uri`
+- [x] 5.4 Confirm errand-cloud stops logging the `TENANT_LOGIN_ALLOW_FOREIGN_REDIRECT` warning
+- [x] 5.5 Tick tasks 1.11 and 1.12 in errand-cloud's `harden-auth-and-public-endpoints` change, and note on errand-ai/errand-cloud#25 that S1 is now closed in production rather than only in code
 
 ## 6. Finalize
 
 - [x] 6.1 Bump `VERSION`
-- [ ] 6.2 Confirm each delta spec scenario is satisfied, or recorded as unverified with a reason
+- [x] 6.2 Confirm each delta spec scenario is satisfied, or recorded as unverified with a reason
 - [x] 6.3 Open a PR referencing errand-ai/errand-cloud#73 and #25
+
+## Verification record
+
+Every scenario in both delta specs is satisfied; none is recorded as unverified.
+
+`cloud-auth` — *Grant initiated*, *No callback is offered*, *Cloud not configured*, *A second grant supersedes the first*: covered by `TestCloudAuthDeviceStart` and `test_sends_no_callback_parameter`, and exercised live (the initiation response carries no `device_code`, and no `redirect_uri` is sent at any point). *The callback is gone*: the route is deleted; a request now falls through to the SPA catch-all and no authorization code is processed. *User authorises*, *Authorization still pending*, *User refuses*, *Grant expires*, *Polling stops with the grant*: `TestRunDeviceGrant`, `TestPollUntilComplete`, `test_no_polling_task_survives_a_terminal_outcome`. *Polling respects the advertised interval*: unit-tested, and confirmed live — errand-cloud's log shows `POST /auth/tenant/device/token` at exactly 5-second spacing from the pod's cluster IP. *Device grant status* (pending / connected / failed / none): `TestCloudAuthDeviceStatus`.
+
+`cloud-settings-ui` and *Device grant is presented in the page*: `CloudServicePage.test.ts` asserts the code and completion link render and that no popup is opened, and that connected, denied and expired resolve without a reload. Exercised for real — the completed authorization was driven from the page's own Connect button.
+
+End to end against the live service: `POST /auth/tenant/device/code` 200 and `POST /auth/tenant/device/token` 200, both served to the pod rather than the browser, followed by `Connected to cloud WebSocket` and a `registered` acknowledgement. An already-connected instance was not forced to re-authenticate: the new build reconnected on its existing credentials.
+
+## Post-merge notes
+
+- errand-ai/errand-cloud#75 ticks tasks 1.11 and 1.12 of the cloud's `harden-auth-and-public-endpoints` change; it is open and merges independently of this PR.
+- Production runs this branch's build because ArgoCD's `targetRevision` is `">0.0.0-0"`. Until this merges, that deployment is a pre-release: closing or superseding this PR would revert the instance to the redirect flow, which errand-cloud no longer accepts now that the override is gone.

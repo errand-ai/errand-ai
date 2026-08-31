@@ -9,7 +9,8 @@ The frontend SHALL provide a "Cloud Service" settings subpage at `/settings/clou
 - **WHEN** the user navigates to `/settings/cloud` and no cloud credentials exist
 - **THEN** the page SHALL display a description of the cloud service: "Connect your instance to Errand Cloud to receive webhooks without configuring port forwarding"
 - **THEN** the page SHALL display a "Connect to Errand Cloud" button
-- **THEN** clicking the button SHALL navigate to `/api/cloud/auth/login` (initiating the OAuth flow)
+- **THEN** clicking the button SHALL send `POST /api/cloud/auth/device`, beginning a device authorization grant
+- **THEN** the page SHALL NOT open a popup window
 
 #### Scenario: Connected state
 - **WHEN** the user navigates to `/settings/cloud` and cloud credentials exist with status "connected"
