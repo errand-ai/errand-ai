@@ -78,6 +78,12 @@ jobs:
         with:
           python-version: '3.13'
 
+      # The errand suite includes rendered-template assertions over the Helm
+      # chart (tests/test_helm_chart.py); without helm on PATH they skip
+      # silently and guard nothing.
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+
       - name: Run application tests
         working-directory: errand
         env:

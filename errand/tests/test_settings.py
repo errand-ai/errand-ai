@@ -1,6 +1,12 @@
+import logging
+import os
+from unittest.mock import patch
+
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from main import generate_ssh_keypair
+from models import Setting
 
 
 # --- GET /api/settings ---
@@ -150,3 +156,99 @@ async def test_regenerate_ssh_key_non_admin(client: AsyncClient):
     resp = await client.post("/api/settings/regenerate-ssh-key")
     assert resp.status_code == 403
     assert resp.json()["detail"] == "Admin role required"
+
+
+# --- PUT /api/settings: env-shadowed (readonly) keys ---
+
+
+async def test_put_settings_env_shadowed_key_is_refused(admin_client_with_session):
+    """An env-sourced key is neither persisted nor reported as accepted."""
+    client, session_maker = admin_client_with_session
+    with patch.dict(os.environ, {"MAX_CONCURRENT_TASKS": "3"}):
+        resp = await client.put("/api/settings", json={"max_concurrent_tasks": 9})
+
+    assert resp.status_code == 200
+    entry = resp.json()["max_concurrent_tasks"]
+    assert entry["readonly"] is True
+    assert entry["source"] == "env"
+    assert entry["value"] == 3
+
+    # No settings row was written, so unsetting the env var must not reveal a 9.
+    async with session_maker() as session:
+        result = await session.execute(
+            select(Setting).where(Setting.key == "max_concurrent_tasks")
+        )
+        assert result.scalar_one_or_none() is None
+
+
+async def test_put_settings_saves_editable_key_alongside_refused_key(
+    admin_client_with_session,
+):
+    """A mixed body must not fail wholesale — cards PUT several keys at once."""
+    client, session_maker = admin_client_with_session
+    with patch.dict(os.environ, {"MAX_CONCURRENT_TASKS": "3"}):
+        resp = await client.put(
+            "/api/settings",
+            json={"archive_after_days": 14, "max_concurrent_tasks": 9},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["archive_after_days"]["value"] == 14
+    assert data["archive_after_days"]["source"] == "database"
+    assert data["max_concurrent_tasks"]["readonly"] is True
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(Setting).where(Setting.key == "archive_after_days")
+        )
+        assert result.scalar_one().value == 14
+
+
+async def test_put_settings_logs_warning_per_refused_key(
+    admin_client_with_session, caplog
+):
+    """The refusal must be findable in the logs, naming key and env var."""
+    client, _ = admin_client_with_session
+    with caplog.at_level(logging.WARNING, logger="main"):
+        with patch.dict(os.environ, {"MAX_CONCURRENT_TASKS": "3"}):
+            await client.put(
+                "/api/settings",
+                json={"archive_after_days": 14, "max_concurrent_tasks": 9},
+            )
+
+    refusals = [
+        r for r in caplog.records
+        if "max_concurrent_tasks" in r.getMessage()
+        and "MAX_CONCURRENT_TASKS" in r.getMessage()
+    ]
+    assert len(refusals) == 1
+    assert refusals[0].levelno == logging.WARNING
+    # The editable key in the same body must not be reported as refused.
+    assert not [
+        r for r in caplog.records if "archive_after_days" in r.getMessage()
+    ]
+
+
+async def test_max_concurrent_tasks_is_editable_when_env_unset(
+    admin_client_with_session,
+):
+    """The default-install half of the helm-deployment scenario.
+
+    With no MAX_CONCURRENT_TASKS in the environment — which is what a default
+    chart render now produces — the key must be writable and report itself as
+    such, so the settings UI renders it editable.
+    """
+    client, _ = admin_client_with_session
+    env = {k: v for k, v in os.environ.items() if k != "MAX_CONCURRENT_TASKS"}
+    with patch.dict(os.environ, env, clear=True):
+        before = (await client.get("/api/settings")).json()["max_concurrent_tasks"]
+        assert before["readonly"] is False, before
+
+        resp = await client.put("/api/settings", json={"max_concurrent_tasks": 7})
+        assert resp.status_code == 200
+        after = resp.json()["max_concurrent_tasks"]
+
+    assert after["value"] == 7
+    assert after["source"] == "database"
+    assert after["readonly"] is False

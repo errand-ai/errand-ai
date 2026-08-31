@@ -30,10 +30,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.secretKey }}
+            {{- if .Values.keycloak.discoveryUrl }}
             - name: OIDC_DISCOVERY_URL
               value: {{ .Values.keycloak.discoveryUrl | quote }}
+            {{- end }}
+            {{- if .Values.keycloak.rolesClaim }}
             - name: OIDC_ROLES_CLAIM
               value: {{ .Values.keycloak.rolesClaim | quote }}
+            {{- end }}
             {{- if .Values.cloudKeycloak.url }}
             - name: CLOUD_KEYCLOAK_URL
               value: {{ .Values.cloudKeycloak.url | quote }}

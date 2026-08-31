@@ -1371,7 +1371,18 @@ async def update_settings(
         if meta and meta["env_var"]:
             env_val = os.environ.get(meta["env_var"])
             if env_val is not None and env_val != "":
-                continue  # Skip readonly env-sourced keys
+                # Refused, not accepted-and-ignored: env wins over the database
+                # for this key. Say so, or an operator debugging "my setting
+                # won't save" has nothing to find in the logs. The response's
+                # per-key `readonly: true` / `source: "env"` is the
+                # machine-readable half of the same signal.
+                logger.warning(
+                    "Refusing to persist setting %r: it is sourced from the "
+                    "environment variable %s, which takes precedence over the "
+                    "database. Unset %s on the deployment to make it editable.",
+                    key, meta["env_var"], meta["env_var"],
+                )
+                continue
         # The shared LlmModelCard saves `{provider_id, model_id}`; keep `model`
         # (the field the backend resolves against) in sync so task/model
         # resolution finds the selection.
