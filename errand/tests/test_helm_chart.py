@@ -49,10 +49,16 @@ def test_explicit_max_concurrent_tasks_is_emitted():
 
 
 def literal_env_names(rendered: str) -> set[str]:
-    """Env var names given a literal `value:` — i.e. defaulted from values.yaml.
+    """Env var names emitted with a literal `value:` in the rendered output.
+
+    That covers both values.yaml defaults and constants hardcoded in the
+    template (e.g. CONTAINER_RUNTIME), which is deliberate: either kind pins the
+    variable on every deployment, and it is the pin — not its origin — that
+    makes a settings key readonly.
 
     Excludes `valueFrom:` entries (secretKeyRef and friends): those are emitted
-    because a secret is wired up, not because values.yaml carries a default.
+    because a secret is wired up, and whether they actually shadow anything
+    depends on the referenced secret existing.
     """
     names = set()
     lines = rendered.splitlines()
@@ -64,7 +70,7 @@ def literal_env_names(rendered: str) -> set[str]:
 
 
 def test_no_registry_backed_env_var_is_defaulted():
-    """values.yaml must not default any key that binds to a registry env_var.
+    """No registry-backed env var may be pinned by a literal in the chart.
 
     Such a default emits the env var on every deployment; env beats database in
     `resolve_setting_value`, so the setting is readonly in the admin API for the
