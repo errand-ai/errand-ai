@@ -1,7 +1,9 @@
 ## Purpose
 
 Multi-stage Dockerfile for the task-runner container with Python, git, Node.js, gh CLI, and openspec tooling.
+
 ## Requirements
+
 ### Requirement: Task runner Dockerfile
 
 The repository SHALL include a `task-runner/Dockerfile` that produces a minimal, hardened container image for executing tasks inside DinD. The Dockerfile SHALL use a multi-stage build with the following stages:
@@ -9,7 +11,7 @@ The repository SHALL include a `task-runner/Dockerfile` that produces a minimal,
 1. **python builder** (`python:3.13-slim-trixie`): Install Python dependencies via pip into a target directory. Additionally, install pip itself into a separate staging directory (`/pip-staging`) for use by the entrypoint script. The build stage SHALL use the same Debian release (trixie) as the distroless final base so that compiled wheels are ABI-compatible.
 2. **git-builder** (`debian:bookworm-slim`): Install `git`, `openssh-client`, `ca-certificates`, `busybox`, `curl`, and `jq` system packages. Download the `gh` CLI binary from the GitHub releases tarball for the target architecture (`TARGETARCH`) and place it at `/usr/local/bin/gh`. Stage shared libraries needed by git, ssh, busybox, curl, and jq. Create the `.ssh` directory at `/home/nonroot/.ssh` with permissions 700.
 3. **node-builder** (`node:24-bookworm-slim`): Run `npm install -g @fission-ai/openspec@latest` to install the openspec CLI globally. Stage npm itself into a separate directory (`/npm-staging`) for use by the entrypoint script. The node binary, global node_modules, openspec entry point, and staged npm SHALL be available for copying to the final stage.
-4. **gws-builder** (`debian:bookworm-slim`): Download the Google Workspace CLI (`gws`) `*-unknown-linux-musl` release tarball from `github.com/googleworkspace/cli/releases` (matching `${GWS_VERSION}` and `TARGETARCH`), and separately fetch the upstream source archive over HTTPS at the same version tag to obtain the bundled agent skills (`skills/gws-*`). The skills fetch SHALL NOT depend on anonymous git. It SHALL send an `Authorization` header when a `github_token` build secret is mounted, and SHALL succeed without one so a credential-free `docker build` keeps working. The stage SHALL fail the build if the fetch yields no `gws-*` directory containing a `SKILL.md`, so an empty copy cannot silently produce an image with no Google Workspace skills. The musl-static target is used so the `gws` binary is independent of the distroless final base's glibc version. The `gws` binary and skill directories SHALL be available for copying to the final stage.
+4. **gws-builder** (`debian:bookworm-slim`): Download the Google Workspace CLI (`gws`) `*-unknown-linux-musl` release tarball from `github.com/googleworkspace/cli/releases` (matching `${GWS_VERSION}` and `TARGETARCH`) and clone the repository at the matching version tag to obtain the bundled agent skills (`skills/gws-*`). The musl-static target is used so the `gws` binary is independent of the distroless final base's glibc version. The `gws` binary and skill directories SHALL be available for copying to the final stage.
 5. **final** (`gcr.io/distroless/python3-debian13:nonroot`, providing Python 3.13): Copy Python packages from the python builder, staged pip to `/opt/pip-bootstrap/`, staged npm to `/opt/npm-bootstrap/`, staged binaries and libraries from git-builder (git, ssh, curl, jq, busybox, gh), node binary plus openspec from node-builder, and `gws` binary plus bundled skills from gws-builder. The skills SHALL be placed at `/opt/system-skills/gws/`. Copy `entrypoint.sh` to `/app/entrypoint.sh`. The working directory SHALL be `/workspace`. The entrypoint SHALL be `["/bin/sh", "/app/entrypoint.sh"]`. The Python version of the final runtime SHALL match the python builder stage so that installed packages (including compiled wheels) are ABI-compatible.
 
 The `gh` version, `openspec` version, and `gws` version SHALL be configurable via Docker build args with sensible defaults.
@@ -95,22 +97,3 @@ The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh
 
 - **WHEN** the container starts
 - **THEN** `/opt/system-skills/gws/` contains SKILL.md files for Google Workspace services (sourced from the upstream `googleworkspace/cli` repository)
-
-#### Scenario: Skills are fetched without anonymous git
-
-- **WHEN** the `gws-builder` stage runs
-- **THEN** the agent skills SHALL be obtained by an HTTPS archive fetch at the tag named by `${GWS_VERSION}`
-- **AND** the build SHALL NOT perform a `git clone` of `googleworkspace/cli`
-
-#### Scenario: Build succeeds without a credential
-
-- **WHEN** `docker build` is run with no `github_token` secret mounted
-- **THEN** the skills fetch SHALL still succeed against the public endpoint
-- **AND** the image SHALL contain the same skills as an authenticated build
-
-#### Scenario: Empty skills fetch fails the build
-
-- **WHEN** the skills fetch or extraction yields no `gws-*` directory containing a `SKILL.md`
-- **THEN** the build SHALL fail with a message naming the attempted source
-- **AND** SHALL NOT produce an image whose `/opt/system-skills/gws/` is empty
-

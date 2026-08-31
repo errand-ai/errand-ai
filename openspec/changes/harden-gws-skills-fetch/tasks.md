@@ -5,11 +5,15 @@
 - [x] 1.3 Mount a `github_token` build secret and add `-H "Authorization: Bearer …"` only when `/run/secrets/github_token` exists, mirroring the `npm_token` pattern in the root `Dockerfile:5-9`
 - [x] 1.4 Fail the stage if no `gws-*` directory containing a `SKILL.md` was extracted, with a message naming the URL attempted
 - [x] 1.5 Confirm `git` is still needed in the `gws-builder` stage's `apt-get install`; drop it from that stage if nothing else uses it (it is installed separately in `git-builder` for the final image)
+- [x] 1.6 Apply the identical fetch to the root `Dockerfile` `gws-skills` stage (lines 13-20), which clones the same repo at the same tag for `/app/system-skills/gws/` in the server image
+- [x] 1.7 Keep that stage `--platform=$BUILDPLATFORM` — SKILL.md files are architecture-independent and it builds once rather than per-arch
+- [x] 1.8 Drop `git` from that stage's `apt-get` too, if the clone was its only user
 
 ## 2. Pass the token in CI
 
 - [x] 2.1 Add `secrets: github_token=${{ secrets.GITHUB_TOKEN }}` to the `build-task-runner` job's `docker/build-push-action` step in `.github/workflows/build.yml` (that job currently passes no secrets)
-- [x] 2.2 Leave every other job untouched — no other build consumes the gws skills
+- [x] 2.2 Leave jobs that do not consume gws skills untouched
+- [x] 2.3 Add `github_token` to the `build-errand` job's existing `secrets:` block (it already passes `npm_token`, so this is an added line, not new plumbing)
 
 ## 3. Verify locally before pushing
 
@@ -18,17 +22,20 @@
 - [x] 3.3 Build again passing a `github_token` secret and confirm the image contents are identical to 3.1
 - [x] 3.4 Force the failure path (e.g. build with a bogus `GWS_VERSION`) and confirm the build fails loudly rather than producing an image with an empty `/opt/system-skills/gws/`
 - [x] 3.5 Confirm `gws --version` still works in the built image (the binary fetch is untouched, but the stage was edited)
+- [x] 3.6 Build the root `Dockerfile` `gws-skills` stage with **no** secret and confirm 44 `gws-*` directories with a file set identical to upstream
+- [x] 3.7 Guard verified by textual identity: the server stage's `RUN` block is byte-identical to the task-runner's, which was tested against a skill-less archive and failed with the attempted URL
 
 ## 4. Ship
 
 - [x] 4.1 Bump `VERSION` (patch — build-only change, no runtime behaviour difference)
-- [x] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
-- [x] 4.3 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
-- [x] 4.4 Verify the CI-built artifact rather than a live task run: pulled `errand-task-runner:0.147.1-pr252.1185` for `linux/arm64` (the previously failing leg) and confirmed `/opt/system-skills/gws/` holds 44 directories / 44 `SKILL.md` with a file listing identical to upstream's `gws-*` subset, plus working `gws` and `git`. This tests the actual published image and the guard's intent — a silently empty skills directory — more directly than a task run, which only exercises whichever skills that task happens to use
+- [ ] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
+- [ ] 4.3 Confirm `build-errand` passes with its skills stage on the new fetch
+- [ ] 4.4 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
+- [ ] 4.5 Verify the published task-runner and server images both carry the expected skills
 
 ## 5. Archive
 
-- [x] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
+- [ ] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
 
 ## Post-merge notes
 

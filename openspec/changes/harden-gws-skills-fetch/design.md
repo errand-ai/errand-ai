@@ -8,8 +8,16 @@ CLI in two steps:
 2. `git clone --depth=1 --branch="v${GWS_VERSION}"` the whole repository, purely
    to copy `skills/gws-*` (line 79).
 
-Step 2 is the only unauthenticated git operation in any build in this repo, and
-it runs once per architecture on every task-runner build.
+Step 2 runs once per architecture on every task-runner build. The repo root
+`Dockerfile` has a near-identical `gws-skills` stage (lines 13-20) doing the same
+unauthenticated clone of the same repository at the same tag, to populate
+`/app/system-skills/gws/` in the server image via `COPY --from=gws-skills`
+(line 69). Both are in scope.
+
+An earlier draft of this document claimed the task-runner clone was the *only*
+unauthenticated git operation in the repo's builds. That was wrong — the server
+image does the same thing, and only chance spared `build-errand` during the
+outage. Both `build-task-runner` and `build-errand` are required jobs.
 
 Evidence gathered while diagnosing the PR #251 outage:
 
@@ -34,7 +42,7 @@ Evidence gathered while diagnosing the PR #251 outage:
 ## Goals / Non-Goals
 
 **Goals**
-- Remove the dependency on anonymous git from the image build.
+- Remove the dependency on anonymous git from **both** image builds.
 - Keep `GWS_VERSION` the single source of truth for both the binary and its
   skills, so the two cannot drift apart.
 - Keep a credential-free `docker build` working for contributors.
@@ -50,9 +58,9 @@ Evidence gathered while diagnosing the PR #251 outage:
 
 ## Decisions
 
-### Decision 1: Fetch the source archive with `curl`, not git
+### Decision 1: Fetch the source archive with `curl`, not git — in both images
 
-Replace the clone with a `curl` of
+Replace each clone with a `curl` of
 `https://codeload.github.com/googleworkspace/cli/tar.gz/refs/tags/v${GWS_VERSION}`,
 extract, and copy `skills/gws-*` out.
 
@@ -74,7 +82,27 @@ Alternatives rejected:
   the upstream tag. That is a larger, separate change; revisit it if fetching
   proves unreliable again.
 
-### Decision 2: Send a token when one is present, never require it
+### Decision 2: Apply the identical mechanism to both images
+
+The two stages differ only in their output path (`/gws-skills` copied to
+`/opt/system-skills/gws/` in the task-runner, `/app/system-skills/gws/` in the
+server) and in platform pinning — the server's stage is
+`--platform=$BUILDPLATFORM` because SKILL.md files are architecture-independent,
+which is worth preserving. Everything else — URL, token handling, glob, guard —
+is the same text.
+
+Keeping them identical is deliberate: two subtly different fetches of the same
+artefact is how one gets fixed and the other rots. The duplication is accepted
+rather than factored into a shared stage, because the two Dockerfiles have
+separate build contexts and no shared base, and a shared stage would couple the
+server image's build to the task-runner's for no benefit.
+
+Alternative rejected: *fix only the task-runner and follow up on the server.*
+The exposure is identical and the fix is the same text; deferring it leaves a
+required job carrying a known intermittent failure, and would make this change's
+own claim to have removed the dependency untrue.
+
+### Decision 3: Send a token when one is present, never require it
 
 Mount a `github_token` build secret and add an `Authorization: Bearer` header
 only when the secret file exists, mirroring the `npm_token` handling already in
@@ -85,9 +113,10 @@ RUN --mount=type=secret,id=npm_token \
     if [ -f /run/secrets/npm_token ]; then ... fi && npm ci
 ```
 
-CI passes `secrets: github_token=${{ secrets.GITHUB_TOKEN }}` on the
-`build-task-runner` job (which currently passes no secrets at all), so CI gets
-authenticated limits. A contributor running `docker build` with no secret still
+CI passes `secrets: github_token=${{ secrets.GITHUB_TOKEN }}` on both the
+`build-task-runner` job (which currently passes no secrets at all) and
+`build-errand` (which already passes `npm_token`), so CI gets authenticated
+limits for both. A contributor running `docker build` with no secret still
 succeeds against the public endpoint — the same property the npm_token pattern
 gives today.
 
@@ -98,7 +127,7 @@ Alternatives rejected:
 - *Bake a token into a build arg.* Build args are recorded in image history;
   `--mount=type=secret` is not. Not a real option.
 
-### Decision 3: Sanity-check the extraction; do not pin an archive checksum
+### Decision 4: Sanity-check the extraction; do not pin an archive checksum
 
 After extraction, assert that `skills/gws-*` yielded at least one directory
 containing a `SKILL.md`, and fail the build loudly otherwise. Do not pin a
@@ -128,16 +157,16 @@ Alternatives rejected:
 ## Risks / Trade-offs
 
 - **codeload is rate-limited too, and could fail the same way.** → Mitigated by
-  Decision 2 (authenticated in CI). Not eliminated: this remains a build-time
+  Decision 3 (authenticated in CI). Not eliminated: this remains a build-time
   network dependency. If it recurs, vendoring (Decision 1's rejected
   alternative) is the escalation.
 - **The archive's top-level directory name is derived from the tag**
   (`cli-0.22.5/`). A tag naming change upstream would break the copy path. →
   Mitigated by globbing the extracted root rather than hardcoding
-  `cli-${GWS_VERSION}`, and by the Decision 3 sanity check turning a silent
+  `cli-${GWS_VERSION}`, and by the Decision 4 sanity check turning a silent
   miss into a build failure.
 - **No integrity verification of skill content.** → Accepted, and no worse than
-  today: the current clone verifies nothing either. Decision 3 states why
+  today: the current clone verifies nothing either. Decision 4 states why
   byte-pinning is not the right answer at this level.
 - **A token in CI slightly widens what the build can reach.** → `GITHUB_TOKEN`
   is already available to the job and used for ghcr login; scope is unchanged.

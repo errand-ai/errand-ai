@@ -164,6 +164,7 @@ jobs:
           build-args: APP_VERSION=${{ needs.version.outputs.tag }}
           secrets: |
             npm_token=${{ secrets.GITHUB_TOKEN }}
+            github_token=${{ secrets.GITHUB_TOKEN }}
 
   build-task-runner:
     needs: [version, test]
