@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Multi-stage Dockerfile for the task-runner container with Python, git, Node.js, gh CLI, and openspec tooling.
-## Requirements
 ### Requirement: Task runner Dockerfile
 
 The repository SHALL include a `task-runner/Dockerfile` that produces a minimal, hardened container image for executing tasks inside DinD. The Dockerfile SHALL use a multi-stage build with the following stages:
@@ -113,4 +111,3 @@ The following binaries SHALL be available in the final image: `git`, `ssh`, `ssh
 - **WHEN** the skills fetch or extraction yields no `gws-*` directory containing a `SKILL.md`
 - **THEN** the build SHALL fail with a message naming the attempted source
 - **AND** SHALL NOT produce an image whose `/opt/system-skills/gws/` is empty
-

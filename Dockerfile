@@ -13,11 +13,50 @@ RUN npm run build
 # Stage 1b: Fetch bundled gws agent skills (platform-independent SKILL.md files)
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS gws-skills
 ARG GWS_VERSION=0.22.5
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googleworkspace/cli.git /tmp/gws-cli && \
-    mkdir -p /gws-skills && \
-    cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
+# Deliberately not `git clone`. This is the same fetch as the task-runner image's
+# gws-builder stage and must stay identical to it — two subtly different fetches
+# of the same upstream artefact is how one gets fixed and the other rots. An
+# unauthenticated clone of this public repo failed four consecutive task-runner
+# builds on 2026-08-31 with `could not read Username for 'https://github.com'`;
+# build-errand carried the same exposure and was spared only by chance.
+RUN --mount=type=secret,id=github_token \
+    set -eu; \
+    GWS_SRC_URL="https://codeload.github.com/googleworkspace/cli/tar.gz/refs/tags/v${GWS_VERSION}"; \
+    if [ -f /run/secrets/github_token ]; then \
+      curl -fsSL -H "Authorization: Bearer $(cat /run/secrets/github_token)" \
+        -o /tmp/gws-src.tar.gz "${GWS_SRC_URL}"; \
+    else \
+      curl -fsSL -o /tmp/gws-src.tar.gz "${GWS_SRC_URL}"; \
+    fi; \
+    mkdir -p /tmp/gws-src /gws-skills; \
+    tar xzf /tmp/gws-src.tar.gz -C /tmp/gws-src; \
+    # The archive's top-level directory is derived from the tag (cli-0.22.5/), so
+    # discover it rather than reconstructing the name. Require exactly one: if
+    # upstream ever ships a second top-level entry, picking one arbitrarily would
+    # be a silent coin-flip, so fail and make a human look.
+    GWS_ROOTS="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d | wc -l)"; \
+    if [ "${GWS_ROOTS}" -ne 1 ]; then \
+      echo "ERROR: expected exactly one top-level directory in the archive from ${GWS_SRC_URL}, found ${GWS_ROOTS}" >&2; \
+      exit 1; \
+    fi; \
+    GWS_SRC_DIR="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d)"; \
+    GWS_EXPECTED="$(find "${GWS_SRC_DIR}/skills" -mindepth 1 -maxdepth 1 -type d -name 'gws-*' | wc -l)"; \
+    if [ "${GWS_EXPECTED}" -eq 0 ]; then \
+      echo "ERROR: no gws-* skill directories in the archive from ${GWS_SRC_URL}" >&2; \
+      exit 1; \
+    fi; \
+    # No `|| true` here: a partial copy must fail the build, not be rounded up to
+    # success by a later "at least one skill landed" check.
+    cp -r "${GWS_SRC_DIR}"/skills/gws-* /gws-skills/; \
+    GWS_COPIED="$(find /gws-skills -mindepth 1 -maxdepth 1 -type d -name 'gws-*' | wc -l)"; \
+    GWS_WITH_SKILL="$(find /gws-skills -mindepth 2 -name SKILL.md | wc -l)"; \
+    if [ "${GWS_COPIED}" -ne "${GWS_EXPECTED}" ] || [ "${GWS_WITH_SKILL}" -ne "${GWS_EXPECTED}" ]; then \
+      echo "ERROR: expected ${GWS_EXPECTED} gws-* skills from ${GWS_SRC_URL}, copied ${GWS_COPIED} of which ${GWS_WITH_SKILL} have a SKILL.md" >&2; \
+      exit 1; \
+    fi; \
+    rm -rf /tmp/gws-src /tmp/gws-src.tar.gz
 
 # Stage 2: Download Python wheels (runs natively, downloads wheels for target platform)
 FROM --platform=$BUILDPLATFORM python:3.13 AS build

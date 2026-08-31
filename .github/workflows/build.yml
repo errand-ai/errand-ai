@@ -164,6 +164,7 @@ jobs:
           build-args: APP_VERSION=${{ needs.version.outputs.tag }}
           secrets: |
             npm_token=${{ secrets.GITHUB_TOKEN }}
+            github_token=${{ secrets.GITHUB_TOKEN }}
 
   build-task-runner:
     needs: [version, test]
@@ -199,6 +200,11 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/errand-task-runner:${{ needs.version.outputs.tag }}
             ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/errand-task-runner:latest', github.repository_owner) || '' }}
+          # Gives the gws-builder stage's skills fetch authenticated rate limits.
+          # Optional by design: the Dockerfile falls back to the public endpoint,
+          # so a contributor's credential-free `docker build` still works.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
 
   build-workspace-gateway:
     needs: [version, test]
