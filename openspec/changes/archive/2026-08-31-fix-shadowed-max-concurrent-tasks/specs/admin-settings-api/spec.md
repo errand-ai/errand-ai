@@ -7,7 +7,7 @@ The backend SHALL expose `PUT /api/settings` requiring the `admin` role. The end
 - **WHEN** an admin sends `PUT /api/settings` with `{"system_prompt": "New prompt"}`
 - **THEN** the backend updates the setting and returns the full settings object with metadata
 
-#### Scenario: Readonly setting refused observably
+#### Scenario: Readonly setting ignored
 - **WHEN** an admin sends `PUT /api/settings` with `{"openai_api_key": "sk-new"}` and the key is env-sourced
 - **THEN** the value SHALL NOT be written to the settings table
 - **AND** the backend SHALL log a WARNING naming the key and its environment variable

@@ -29,17 +29,21 @@
 
 - [x] 4.1 Bump `VERSION` (patch)
 - [x] 4.2 `docker compose -f testing/docker-compose.yml up --build` — compose sets no `MAX_CONCURRENT_TASKS`, so confirm the field saves and persists across a page reload
-- [ ] 4.3 Push, open PR, confirm CI builds images + chart
-- [ ] 4.4 Deploy the PR build to Kubernetes and confirm `GET /api/settings` reports `max_concurrent_tasks` with `source: "database"` (or `"default"`) and `readonly: false`
-- [ ] 4.5 Change the value in the UI and confirm the task manager picks it up on the next poll cycle without a restart (look for `Updating max_concurrent_tasks: 3 -> N (source=database)` in the server log)
+- [x] 4.3 Push, open PR, confirm CI builds images + chart
+- [x] 4.4 Deploy the PR build to Kubernetes and confirm `GET /api/settings` reports `max_concurrent_tasks` with `source: "database"` (or `"default"`) and `readonly: false`
+- [x] 4.5 Change the value in the UI and confirm the task manager picks it up on the next poll cycle without a restart (look for `Updating max_concurrent_tasks: 3 -> N (source=database)` in the server log)
 
 ## 5. Archive
 
-- [ ] 5.1 `openspec archive fix-shadowed-max-concurrent-tasks -y` and commit the flattened specs in this PR
-- [ ] 5.2 Re-verify the post-archive build deploys cleanly (archiving produces a new image tag)
+- [x] 5.1 `openspec archive fix-shadowed-max-concurrent-tasks -y` and commit the flattened specs in this PR
 
 ## Post-merge notes
 
+- No post-archive re-verification was needed. `build.yml` carries
+  `paths-ignore: openspec/**`, so an archive commit touching only `openspec/`
+  produces no new image tag and the build verified in 4.4/4.5
+  (`0.147.0-pr251.1178`) remains the deployed artifact. Re-verify only if the
+  archive commit is amended to touch code as well.
 - **Commit and push `~/github/argocd/errand-rancher-values.yaml` before the new
   chart reaches the cluster.** Ordering is safe in either direction on the old
   chart (which reads the same key unconditionally, so an explicit value simply

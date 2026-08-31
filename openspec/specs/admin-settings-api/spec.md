@@ -1,9 +1,7 @@
 ## Purpose
 
 Backend API for managing application settings via a key-value store with admin role protection.
-
 ## Requirements
-
 ### Requirement: Settings database table
 The backend SHALL have a `settings` table with columns: `key` (text, primary key), `value` (JSONB, not null), and `updated_at` (timestamptz, not null, auto-updated). An Alembic migration SHALL create this table.
 
@@ -54,15 +52,23 @@ The backend SHALL expose `GET /api/settings` requiring the `admin` role. The end
 - **THEN** the response includes registry-defined settings with `source: "default"` and their default values
 
 ### Requirement: Update settings
-The backend SHALL expose `PUT /api/settings` requiring the `admin` role. The endpoint SHALL accept a JSON object where each key-value pair is upserted into the settings table. Keys whose values are sourced from environment variables (readonly) SHALL be silently ignored. Keys not included in the request body SHALL remain unchanged. The endpoint SHALL return the full settings object (in the new metadata format) after the update.
+The backend SHALL expose `PUT /api/settings` requiring the `admin` role. The endpoint SHALL accept a JSON object where each key-value pair is upserted into the settings table. Keys whose values are sourced from environment variables (readonly) SHALL NOT be persisted; the endpoint SHALL log a WARNING naming the setting key and the environment variable that shadows it, and SHALL still return HTTP 200 so that editable keys sent in the same request are saved. Keys not included in the request body SHALL remain unchanged. The endpoint SHALL return the full settings object (in the metadata format), in which every refused key carries `source: "env"` and `readonly: true` — the signal a client diffs against the keys it sent to determine which writes were refused.
 
 #### Scenario: Update editable setting
 - **WHEN** an admin sends `PUT /api/settings` with `{"system_prompt": "New prompt"}`
 - **THEN** the backend updates the setting and returns the full settings object with metadata
 
-#### Scenario: Readonly setting ignored
+#### Scenario: Readonly setting refused observably
 - **WHEN** an admin sends `PUT /api/settings` with `{"openai_api_key": "sk-new"}` and the key is env-sourced
-- **THEN** the write is silently ignored and the response shows the env-sourced value unchanged
+- **THEN** the value SHALL NOT be written to the settings table
+- **AND** the backend SHALL log a WARNING naming the key and its environment variable
+- **AND** the response SHALL show the env-sourced value unchanged with `source: "env"` and `readonly: true`
+
+#### Scenario: Editable key saved alongside a refused key
+- **WHEN** an admin sends `PUT /api/settings` with both an editable key and an env-shadowed key in one request
+- **THEN** the request SHALL succeed with HTTP 200
+- **AND** the editable key SHALL be persisted
+- **AND** the env-shadowed key SHALL be refused as above
 
 #### Scenario: OIDC settings trigger hot-reload
 - **WHEN** an admin sends `PUT /api/settings` with `{"oidc_discovery_url": "...", "oidc_client_id": "...", "oidc_client_secret": "..."}`
@@ -131,3 +137,4 @@ The existing task events WebSocket channel SHALL support a new `cloud_status` ev
 - **THEN** a `cloud_status` event SHALL be published to the `task_events` Valkey channel
 - **THEN** the event SHALL have the format: `{"event": "cloud_status", "status": "<connected|disconnected|error>", "detail": "<optional>"}`
 - **THEN** all connected frontend WebSocket clients SHALL receive the event
+
