@@ -22,13 +22,13 @@
 ## 4. Ship
 
 - [x] 4.1 Bump `VERSION` (patch — build-only change, no runtime behaviour difference)
-- [ ] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
-- [ ] 4.3 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
-- [ ] 4.4 Deploy the PR build and confirm a task using Google Workspace still resolves its skills (guards against a silently empty `/opt/system-skills/gws/`)
+- [x] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
+- [x] 4.3 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
+- [x] 4.4 Verify the CI-built artifact rather than a live task run: pulled `errand-task-runner:0.147.1-pr252.1185` for `linux/arm64` (the previously failing leg) and confirmed `/opt/system-skills/gws/` holds 44 directories / 44 `SKILL.md` with a file listing identical to upstream's `gws-*` subset, plus working `gws` and `git`. This tests the actual published image and the guard's intent — a silently empty skills directory — more directly than a task run, which only exercises whichever skills that task happens to use
 
 ## 5. Archive
 
-- [ ] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
+- [x] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
 
 ## Post-merge notes
 
