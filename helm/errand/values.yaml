@@ -6,7 +6,13 @@ server:
     pullPolicy: IfNotPresent
   service:
     port: 8000
-  maxConcurrentTasks: 3
+  # Optional operator override for the number of tasks the task manager runs
+  # concurrently. Leave unset: the setting is then managed from the admin
+  # settings UI (database, falling back to the registry default of 3) and can be
+  # changed without a redeploy. Setting it here emits MAX_CONCURRENT_TASKS on
+  # the server Deployment, which takes precedence over the database and makes
+  # the field readonly in the UI for the life of the deployment.
+  # maxConcurrentTasks: 3
   maxTurns: "200"
   # Comma-separated origins permitted to call the API cross-origin. Empty is
   # correct for a standard deployment: the server serves its own frontend, so
