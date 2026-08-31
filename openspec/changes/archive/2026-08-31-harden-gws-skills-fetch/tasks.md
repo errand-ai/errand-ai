@@ -28,14 +28,14 @@
 ## 4. Ship
 
 - [x] 4.1 Bump `VERSION` (patch — build-only change, no runtime behaviour difference)
-- [ ] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
-- [ ] 4.3 Confirm `build-errand` passes with its skills stage on the new fetch
-- [ ] 4.4 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
-- [ ] 4.5 Verify the published task-runner and server images both carry the expected skills
+- [x] 4.2 Push, open PR, confirm `build-task-runner` passes on **both** `linux/amd64` and `linux/arm64` (the arm64 QEMU leg is where the clone failed)
+- [x] 4.3 Confirm `build-errand` passes with its skills stage on the new fetch
+- [x] 4.4 Confirm the `helm` job runs — it was skipped whenever `build-task-runner` failed
+- [x] 4.5 Verified against the published artifacts rather than a live task run: pulled both `errand:0.147.2-pr252.1187` and `errand-task-runner:0.147.2-pr252.1187` for `linux/arm64` and confirmed 44 directories / 44 `SKILL.md` in each, with file listings identical to upstream's `gws-*` subset and to each other. This exercises the guard's real intent — a silently empty skills directory — on both images
 
 ## 5. Archive
 
-- [ ] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
+- [x] 5.1 `openspec archive harden-gws-skills-fetch -y` and commit the flattened specs in this PR
 
 ## Post-merge notes
 
