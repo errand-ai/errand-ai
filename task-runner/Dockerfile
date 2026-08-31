@@ -50,7 +50,7 @@ FROM debian:bookworm-slim AS gws-builder
 ARG GWS_VERSION=0.22.5
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 # Map Docker's TARGETARCH to the gws release tarball target triple.
 # We use the *-unknown-linux-musl* targets because they ship a statically
@@ -74,11 +74,41 @@ RUN case "${TARGETARCH}" in \
     tar xzf "${GWS_TARBALL}" && \
     install -m 0755 /tmp/gws /usr/local/bin/gws && \
     rm -f "${GWS_TARBALL}" "${GWS_TARBALL}.sha256"
-# Clone the repo at the matching tag to obtain the bundled SKILL.md files
-# (skills are pre-authored under skills/gws-*, versioned alongside the binary).
-RUN git clone --depth=1 --branch="v${GWS_VERSION}" https://github.com/googleworkspace/cli.git /tmp/gws-cli && \
-    mkdir -p /gws-skills && \
-    cp -r /tmp/gws-cli/skills/gws-* /gws-skills/
+# Fetch the bundled SKILL.md files from the source archive at the same tag
+# (skills are pre-authored under skills/gws-*, versioned alongside the binary,
+# and are not published as a release asset — only the binaries are).
+#
+# This deliberately does NOT use `git clone`. An unauthenticated clone of this
+# public repo failed four consecutive builds on 2026-08-31 with
+# `fatal: could not read Username for 'https://github.com'`, on the arm64 QEMU
+# leg, blocking CI for hours before succeeding again untouched. The curl of the
+# release tarball above kept working throughout the same builds, in this same
+# stage — so the fault was specific to anonymous git, not to reachability.
+#
+# The token is optional by design: CI passes one for authenticated rate limits,
+# while a credential-free `docker build` still resolves against the public
+# endpoint. Same conditional-secret shape as npm_token in the root Dockerfile.
+RUN --mount=type=secret,id=github_token \
+    set -eu; \
+    GWS_SRC_URL="https://codeload.github.com/googleworkspace/cli/tar.gz/refs/tags/v${GWS_VERSION}"; \
+    if [ -f /run/secrets/github_token ]; then \
+      curl -fsSL -H "Authorization: Bearer $(cat /run/secrets/github_token)" \
+        -o /tmp/gws-src.tar.gz "${GWS_SRC_URL}"; \
+    else \
+      curl -fsSL -o /tmp/gws-src.tar.gz "${GWS_SRC_URL}"; \
+    fi; \
+    mkdir -p /tmp/gws-src /gws-skills; \
+    tar xzf /tmp/gws-src.tar.gz -C /tmp/gws-src; \
+    # The archive's top-level directory is derived from the tag (cli-0.22.5/).
+    # Glob it rather than reconstructing the name, so an upstream change to that
+    # convention surfaces as the explicit failure below, not a silent miss.
+    GWS_SRC_DIR="$(find /tmp/gws-src -mindepth 1 -maxdepth 1 -type d | head -n1)"; \
+    cp -r "${GWS_SRC_DIR}"/skills/gws-* /gws-skills/ 2>/dev/null || true; \
+    if [ -z "$(find /gws-skills -mindepth 2 -name SKILL.md -print -quit)" ]; then \
+      echo "ERROR: no gws-* skill directory containing a SKILL.md was extracted from ${GWS_SRC_URL}" >&2; \
+      exit 1; \
+    fi; \
+    rm -rf /tmp/gws-src /tmp/gws-src.tar.gz
 
 FROM node:24-bookworm-slim AS node-builder
 RUN npm install -g @fission-ai/openspec@latest
