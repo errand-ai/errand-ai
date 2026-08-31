@@ -157,6 +157,7 @@ def device_grant_state():
 
     main_module._cloud_device_grant = None
     main_module._cloud_device_task = None
+    main_module._cloud_device_generation = 0
     yield main_module
     task = main_module._cloud_device_task
     if task is not None and not task.done():
@@ -404,6 +405,66 @@ class TestRunDeviceGrant:
         assert task.done()
         status = await client.get("/api/cloud/auth/device/status")
         assert status.json()["status"] == "denied"
+
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_poller_writes_nothing(
+        self, cloud_client, device_grant_state, monkeypatch
+    ):
+        """A slow loser must not overwrite the grant that replaced it."""
+        _, session_maker = cloud_client
+        main_module = device_grant_state
+        monkeypatch.setattr(main_module, "async_session", session_maker)
+
+        main_module._cloud_device_generation = 2
+        main_module._cloud_device_grant = {"status": "pending", "user_code": "NEW-CODE"}
+
+        from cloud_auth import DEVICE_TOKENS, DeviceTokenResult
+        tokens = {
+            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZW5hbnQtOTk5In0.",
+            "refresh_token": "stale-rt",
+            "expires_in": 300,
+        }
+
+        with patch("main.poll_until_complete", new_callable=AsyncMock,
+                   return_value=DeviceTokenResult(outcome=DEVICE_TOKENS, tokens=tokens)), \
+             patch("cloud_client.start_cloud_client", new_callable=AsyncMock) as start_ws:
+            await main_module._run_device_grant("https://cloud.test", "dc", 5, 600, 1)
+
+        assert main_module._cloud_device_grant == {"status": "pending", "user_code": "NEW-CODE"}
+        start_ws.assert_not_awaited()
+
+        from models import PlatformCredential
+        from sqlalchemy import select
+        async with session_maker() as session:
+            result = await session.execute(
+                select(PlatformCredential).where(PlatformCredential.platform_id == "cloud")
+            )
+            assert result.scalar_one_or_none() is None
+
+
+class TestMalformedCloudResponse:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("grant", [
+        {"user_code": "AAAA-BBBB", "expires_in": 600, "interval": 5},          # no device code
+        {"device_code": "dc", "expires_in": 600, "interval": 5},               # no user code
+        {"device_code": "dc", "user_code": "A", "expires_in": "soon"},         # unusable expiry
+        {"device_code": "dc", "user_code": "A", "expires_in": -1},             # already expired
+    ])
+    async def test_returns_502_rather_than_starting_a_doomed_poller(
+        self, cloud_client, device_grant_state, grant
+    ):
+        client, _ = cloud_client
+        main_module = device_grant_state
+        _mock_admin_user()
+
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=grant), \
+             patch("main._run_device_grant", new_callable=AsyncMock) as run:
+            resp = await client.post("/api/cloud/auth/device")
+
+        assert resp.status_code == 502
+        run.assert_not_called()
+        assert main_module._cloud_device_task is None
 
 
 class TestRetiredRedirectFlow:

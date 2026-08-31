@@ -1830,6 +1830,14 @@ async def _get_cloud_url(session: AsyncSession) -> str | None:
 # single replica, so a status poll always reaches the pod holding the grant.)
 _cloud_device_grant: dict | None = None
 _cloud_device_task: "asyncio.Task | None" = None
+# Incremented per initiation. A poller carries the generation it was started
+# for and writes nothing once it is stale — cancellation alone is not enough,
+# because a superseded task can be past its last await when the cancel lands.
+_cloud_device_generation = 0
+# Serialises initiation: without it two concurrent POSTs both observe no
+# running task across the `await request_device_code(...)` and start two
+# pollers, either of which could store credentials.
+_cloud_device_lock = asyncio.Lock()
 
 _DEVICE_OUTCOME_STATUS = {
     DEVICE_DENIED: "denied",
@@ -1838,14 +1846,15 @@ _DEVICE_OUTCOME_STATUS = {
 }
 
 
-def _set_device_grant_status(status: str, detail: str | None = None) -> None:
+def _set_device_grant_status(generation: int, status: str, detail: str | None = None) -> None:
     """Move the grant to a terminal state, dropping the now-spent display fields.
 
-    Only the task owning the current grant reaches here: a superseded task is
-    cancelled before a new grant is started, and cancellation lands on one of
-    the poller's awaits, so it cannot write over a newer grant's state.
+    A stale generation means this poller was superseded; it must not overwrite
+    the newer grant's state.
     """
     global _cloud_device_grant
+    if generation != _cloud_device_generation:
+        return
     _cloud_device_grant = {"status": status, **({"detail": detail} if detail else {})}
 
 
@@ -1893,20 +1902,35 @@ async def _store_cloud_credentials(session: AsyncSession, tokens: dict) -> None:
     await session.commit()
 
 
-async def _run_device_grant(cloud_url: str, device_code: str, interval: int, expires_in: int) -> None:
-    """Poll to completion, then take the same path the OAuth callback took."""
+async def _run_device_grant(
+    cloud_url: str,
+    device_code: str,
+    interval: int,
+    expires_in: int,
+    generation: int = 0,
+) -> None:
+    """Poll to completion, then take the same path the OAuth callback took.
+
+    `generation` identifies the initiation this poller belongs to. A superseded
+    poller stores nothing and reports nothing, so a slow loser cannot overwrite
+    the credentials or the status of the grant that replaced it.
+    """
     try:
         result = await poll_until_complete(cloud_url, device_code, interval, expires_in)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.exception("Cloud device authorization polling failed")
-        _set_device_grant_status("error", str(exc))
+        _set_device_grant_status(generation, "error", str(exc))
+        return
+
+    if generation != _cloud_device_generation:
+        logger.info("Discarding the result of a superseded device authorization")
         return
 
     if result.outcome != DEVICE_TOKENS:
         _set_device_grant_status(
-            _DEVICE_OUTCOME_STATUS.get(result.outcome, "error"), result.detail
+            generation, _DEVICE_OUTCOME_STATUS.get(result.outcome, "error"), result.detail
         )
         return
 
@@ -1915,7 +1939,7 @@ async def _run_device_grant(cloud_url: str, device_code: str, interval: int, exp
             await _store_cloud_credentials(session, result.tokens or {})
     except Exception as exc:
         logger.exception("Storing cloud credentials failed after device authorization")
-        _set_device_grant_status("error", str(exc))
+        _set_device_grant_status(generation, "error", str(exc))
         return
 
     # Start the WebSocket client before reporting success, so the page's
@@ -1928,7 +1952,7 @@ async def _run_device_grant(cloud_url: str, device_code: str, interval: int, exp
     except Exception:
         logger.exception("Cloud WebSocket client failed to start after device authorization")
 
-    _set_device_grant_status("connected")
+    _set_device_grant_status(generation, "connected")
 
     # Register cloud endpoints if Slack credentials are already configured.
     # Best-effort: a registration failure is surfaced through /api/cloud/status,
@@ -1947,39 +1971,53 @@ async def cloud_auth_device_start(
     _user: dict = Depends(require_admin),
 ):
     """Begin a device authorization grant against errand-cloud."""
-    global _cloud_device_grant, _cloud_device_task
+    global _cloud_device_grant, _cloud_device_task, _cloud_device_generation
 
     cloud_url = await _get_cloud_url(session)
     if not cloud_url:
         raise HTTPException(status_code=503, detail="Cloud service not configured")
 
-    # A second initiation abandons the first. Refusing while one is in flight
-    # would strand a user who closed the tab until the grant expired.
-    if _cloud_device_task is not None and not _cloud_device_task.done():
-        _cloud_device_task.cancel()
-    _cloud_device_task = None
-    _cloud_device_grant = None
+    async with _cloud_device_lock:
+        # A second initiation abandons the first. Refusing while one is in
+        # flight would strand a user who closed the tab until the grant expired.
+        if _cloud_device_task is not None and not _cloud_device_task.done():
+            _cloud_device_task.cancel()
+        _cloud_device_task = None
+        _cloud_device_grant = None
+        _cloud_device_generation += 1
+        generation = _cloud_device_generation
 
-    try:
-        grant = await request_device_code(cloud_url)
-    except Exception:
-        logger.exception("Cloud device authorization request failed")
-        raise HTTPException(status_code=502, detail="Failed to start device authorization")
+        try:
+            grant = await request_device_code(cloud_url)
+        except Exception:
+            logger.exception("Cloud device authorization request failed")
+            raise HTTPException(status_code=502, detail="Failed to start device authorization")
 
-    device_code = grant.get("device_code", "")
-    expires_in = int(grant.get("expires_in", 600) or 600)
-    interval = int(grant.get("interval", 0) or 0)
+        # Trust nothing about the shape of the cloud's reply: a missing device
+        # code would leave the poller asking for tokens with an empty bearer,
+        # and a non-numeric interval would surface as a 500 here.
+        device_code = grant.get("device_code") or ""
+        user_code = grant.get("user_code") or ""
+        try:
+            expires_in = int(grant.get("expires_in") or 600)
+            interval = int(grant.get("interval") or 0)
+        except (TypeError, ValueError):
+            logger.error("Cloud returned a malformed device authorization: %r", grant)
+            raise HTTPException(status_code=502, detail="Malformed device authorization response")
+        if not device_code or not user_code or expires_in <= 0:
+            logger.error("Cloud returned a malformed device authorization: %r", grant)
+            raise HTTPException(status_code=502, detail="Malformed device authorization response")
 
-    display = {
-        "user_code": grant.get("user_code", ""),
-        "verification_uri": grant.get("verification_uri", ""),
-        "verification_uri_complete": grant.get("verification_uri_complete", ""),
-        "expires_in": expires_in,
-    }
-    _cloud_device_grant = {"status": "pending", **display}
-    _cloud_device_task = asyncio.create_task(
-        _run_device_grant(cloud_url, device_code, interval, expires_in)
-    )
+        display = {
+            "user_code": user_code,
+            "verification_uri": grant.get("verification_uri", ""),
+            "verification_uri_complete": grant.get("verification_uri_complete", ""),
+            "expires_in": expires_in,
+        }
+        _cloud_device_grant = {"status": "pending", **display}
+        _cloud_device_task = asyncio.create_task(
+            _run_device_grant(cloud_url, device_code, interval, expires_in, generation)
+        )
 
     return display
 
