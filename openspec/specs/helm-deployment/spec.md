@@ -37,7 +37,7 @@ The server deployment template SHALL include Kubernetes liveness and readiness p
 <!-- Removed: Worker deployment template — Worker functionality merged into the server's TaskManager. -->
 
 ### Requirement: Helm values defaults
-The values.yaml SHALL include default probe configuration for the server. The values.yaml SHALL NOT default any key that binds to a `SETTINGS_REGISTRY` entry with an `env_var`, because such a default silently makes that setting readonly in the admin settings API on every deployment.
+The values.yaml SHALL include default probe configuration for the server. The values.yaml SHALL NOT provide a non-empty default for any key that binds to a `SETTINGS_REGISTRY` entry with an `env_var`, because such a default emits that env var on every deployment and silently makes the setting readonly in the admin settings API. An empty default paired with an `{{- if }}` guard in the template is the supported way to expose the key as an operator override without pinning it.
 
 #### Scenario: Default health values present
 - **WHEN** values.yaml is read
