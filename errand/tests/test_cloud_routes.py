@@ -1,5 +1,6 @@
 """Tests for cloud auth routes (device grant, disconnect, status)."""
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
@@ -149,7 +150,7 @@ def _mock_admin_user():
 
 
 @pytest.fixture()
-def device_grant_state():
+async def device_grant_state():
     """Reset the in-memory device grant around each test that touches it."""
     main_module = main
 
@@ -160,6 +161,10 @@ def device_grant_state():
     task = main_module._cloud_device_task
     if task is not None and not task.done():
         task.cancel()
+        # Await the cancellation, or the poller can leak into the next test and
+        # raise "Task was destroyed but it is pending!" out of the event loop.
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     main_module._cloud_device_grant = None
     main_module._cloud_device_task = None
 
