@@ -39,11 +39,11 @@
 
 ## Post-merge notes
 
-- No post-archive re-verification was needed. `build.yml` carries
-  `paths-ignore: openspec/**`, so an archive commit touching only `openspec/`
-  produces no new image tag and the build verified in 4.4/4.5
-  (`0.147.0-pr251.1178`) remains the deployed artifact. Re-verify only if the
-  archive commit is amended to touch code as well.
+- Re-verify the post-archive build deploys cleanly. `build.yml` carries
+  `paths-ignore: openspec/**`, but on a `pull_request` event that is evaluated
+  against the PR's whole diff, not the pushed commit — this PR touches code, so
+  the archive push rebuilds and supersedes the tag verified in 4.4/4.5. An
+  openspec-only commit skips the build only in a PR that changes nothing else.
 - **Commit and push `~/github/argocd/errand-rancher-values.yaml` before the new
   chart reaches the cluster.** Ordering is safe in either direction on the old
   chart (which reads the same key unconditionally, so an explicit value simply
