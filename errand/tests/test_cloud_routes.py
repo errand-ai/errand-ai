@@ -382,6 +382,30 @@ class TestRunDeviceGrant:
             assert result.scalar_one_or_none() is None
 
 
+    @pytest.mark.asyncio
+    async def test_no_polling_task_survives_a_terminal_outcome(
+        self, cloud_client, device_grant_state, monkeypatch
+    ):
+        """The poller must not outlive the grant it polls for."""
+        client, session_maker = cloud_client
+        main_module = device_grant_state
+        monkeypatch.setattr(main_module, "async_session", session_maker)
+        _mock_admin_user()
+
+        from cloud_auth import DEVICE_DENIED, DeviceTokenResult
+        with patch("main.request_device_code", new_callable=AsyncMock, return_value=dict(_GRANT)), \
+             patch("main.poll_until_complete", new_callable=AsyncMock,
+                   return_value=DeviceTokenResult(outcome=DEVICE_DENIED)):
+            resp = await client.post("/api/cloud/auth/device")
+            assert resp.status_code == 200
+            task = main_module._cloud_device_task
+            await task
+
+        assert task.done()
+        status = await client.get("/api/cloud/auth/device/status")
+        assert status.json()["status"] == "denied"
+
+
 class TestRetiredRedirectFlow:
     @pytest.mark.asyncio
     async def test_callback_is_gone(self, cloud_client):

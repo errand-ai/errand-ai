@@ -32,7 +32,7 @@ errand-cloud's endpoints are already deployed at `https://errand.cloud`, so ever
 
 ## 4. Verify against the live service
 
-- [ ] 4.1 `uv run pytest` passes
+- [x] 4.1 `uv run pytest` passes
 - [ ] 4.2 Complete a real device grant against `https://errand.cloud` from this instance and confirm it reaches `status = "connected"`
 - [ ] 4.3 Confirm the cloud served `POST /auth/tenant/device/code` and `POST /auth/tenant/device/token` for it — check the request log, not just the UI. **A working UI is not evidence the new flow ran**: during the cloud-side verification an instance appeared connected while actually coasting on a pre-existing refresh token, with neither endpoint ever having been called
 - [ ] 4.4 Confirm the WebSocket client connects and cloud endpoints register, as they did under the redirect flow
@@ -50,6 +50,6 @@ This is the point of the change. Do not stop at task 4.
 
 ## 6. Finalize
 
-- [ ] 6.1 Bump `VERSION`
+- [x] 6.1 Bump `VERSION`
 - [ ] 6.2 Confirm each delta spec scenario is satisfied, or recorded as unverified with a reason
-- [ ] 6.3 Open a PR referencing errand-ai/errand-cloud#73 and #25
+- [x] 6.3 Open a PR referencing errand-ai/errand-cloud#73 and #25
