@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { toast } from 'vue-sonner'
 import { useAuthStore } from '../../stores/auth'
 import { useTaskStore } from '../../stores/tasks'
@@ -8,7 +7,6 @@ import { fetchWebhookTriggers, type WebhookTrigger } from '../../composables/use
 
 const auth = useAuthStore()
 const taskStore = useTaskStore()
-const route = useRoute()
 
 interface CloudEndpoint {
   integration: string
@@ -39,10 +37,35 @@ interface CloudStatus {
   subscription?: { active?: boolean; expires_at?: string | null; payment_warning?: PaymentWarning }
 }
 
+interface DeviceGrant {
+  user_code: string
+  verification_uri: string
+  verification_uri_complete: string
+  expires_in?: number
+}
+
+type DeviceGrantStatus = 'none' | 'pending' | 'connected' | 'denied' | 'expired' | 'error'
+
 const cloudStatus = ref<CloudStatus>({ status: 'not_configured' })
 const loading = ref(true)
 const disconnecting = ref(false)
+const connecting = ref(false)
 const triggers = ref<WebhookTrigger[]>([])
+
+// Device authorization grant (RFC 8628). The backend holds the device code and
+// polls the cloud for us; the page only ever sees the user-facing code and URL,
+// neither of which is a credential.
+const deviceGrant = ref<DeviceGrant | null>(null)
+const deviceStatus = ref<DeviceGrantStatus>('none')
+const deviceDetail = ref<string | null>(null)
+const DEVICE_POLL_MS = 3000
+const MAX_POLL_FAILURES = 3
+let devicePoll: ReturnType<typeof setInterval> | null = null
+// Polls are async and overlapping: a slow response can land after a newer one.
+// Only the newest poll may touch state, or a stale "pending" could overwrite
+// "connected" and leave the panel wrong with polling already stopped.
+let pollSeq = 0
+let pollFailures = 0
 
 const isConnected = computed(() => cloudStatus.value.status === 'connected' || cloudStatus.value.status === 'disconnected')
 const isError = computed(() => cloudStatus.value.status === 'error')
@@ -54,6 +77,21 @@ const hasEndpoints = computed(
   () => (cloudStatus.value.endpoints?.length ?? 0) > 0 || webhookTriggers.value.length > 0,
 )
 const hasEndpointError = computed(() => !!cloudStatus.value.endpoint_error?.detail)
+const isPendingGrant = computed(() => deviceStatus.value === 'pending' && !!deviceGrant.value)
+const deviceFailureMessage = computed(() => {
+  switch (deviceStatus.value) {
+    case 'denied':
+      return 'The request was refused. Start again to retry.'
+    case 'expired':
+      return 'The code expired before it was approved. Start again to retry.'
+    case 'error':
+      return deviceDetail.value
+        ? `Connection failed: ${deviceDetail.value}`
+        : 'Connection failed. Start again to retry.'
+    default:
+      return null
+  }
+})
 function formatDate(iso: string): string | null {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return null
@@ -104,36 +142,129 @@ async function fetchStatus() {
   }
 }
 
-async function handleConnect() {
+function stopDevicePolling() {
+  if (devicePoll !== null) {
+    clearInterval(devicePoll)
+    devicePoll = null
+  }
+}
+
+function failDeviceGrant(detail: string) {
+  stopDevicePolling()
+  deviceGrant.value = null
+  deviceStatus.value = 'error'
+  deviceDetail.value = detail
+}
+
+/** A failed status check. Transient ones are tolerated; a dead session is not. */
+function noteDevicePollFailure(status: number | null) {
+  if (status === 401 || status === 403) {
+    // This will not fix itself, and polling on would leave the panel pending
+    // forever while the grant expires unseen.
+    failDeviceGrant('Your session expired. Sign in again, then start over.')
+    return
+  }
+  if (++pollFailures >= MAX_POLL_FAILURES) {
+    failDeviceGrant(
+      status === null
+        ? 'Lost contact with the server while waiting for authorization.'
+        : `Checking the authorization status failed (HTTP ${status}).`,
+    )
+  }
+}
+
+async function pollDeviceStatus() {
+  const seq = ++pollSeq
+  let resp: Response
   try {
-    const resp = await apiFetch('/api/cloud/auth/login')
-    if (resp.ok) {
-      const data = await resp.json()
-      // Open OAuth flow in a popup so the SPA stays loaded
-      const w = 500, h = 600
-      const left = window.screenX + (window.outerWidth - w) / 2
-      const top = window.screenY + (window.outerHeight - h) / 2
-      const popup = window.open(
-        data.redirect_url,
-        'cloud-auth',
-        `width=${w},height=${h},left=${left},top=${top}`,
-      )
-      if (!popup) {
-        toast.error('Popup blocked — please allow popups for this site')
-        return
-      }
-      // Poll until the popup closes (callback redirects it to /settings/cloud which auto-closes)
-      const poll = setInterval(async () => {
-        if (popup.closed) {
-          clearInterval(poll)
-          await fetchStatus()
-        }
-      }, 500)
-    } else {
-      toast.error('Failed to start cloud connection')
+    resp = await apiFetch('/api/cloud/auth/device/status')
+  } catch {
+    if (seq === pollSeq) noteDevicePollFailure(null)
+    return
+  }
+  if (seq !== pollSeq) return
+
+  if (!resp.ok) {
+    noteDevicePollFailure(resp.status)
+    return
+  }
+
+  let data: { status: DeviceGrantStatus; detail?: string } & Partial<DeviceGrant>
+  try {
+    data = await resp.json()
+  } catch {
+    noteDevicePollFailure(null)
+    return
+  }
+  if (seq !== pollSeq) return
+  pollFailures = 0
+
+  deviceStatus.value = data.status
+  if (data.status === 'pending') {
+    deviceGrant.value = {
+      user_code: data.user_code ?? '',
+      verification_uri: data.verification_uri ?? '',
+      verification_uri_complete: data.verification_uri_complete ?? '',
+      expires_in: data.expires_in,
     }
+    return
+  }
+
+  stopDevicePolling()
+  deviceGrant.value = null
+  deviceDetail.value = data.detail ?? null
+  if (data.status === 'connected') {
+    toast.success('Connected to Errand Cloud')
+    await fetchStatus()
+  }
+}
+
+function startDevicePolling() {
+  stopDevicePolling()
+  pollFailures = 0
+  devicePoll = setInterval(pollDeviceStatus, DEVICE_POLL_MS)
+}
+
+async function restoreDeviceGrant() {
+  // A reload must not lose an in-flight grant: the backend still holds it.
+  // Shares the poll sequence, so a slow restore cannot revive a grant the
+  // user has already superseded or that has since completed.
+  const seq = ++pollSeq
+  try {
+    const resp = await apiFetch('/api/cloud/auth/device/status')
+    if (!resp.ok || seq !== pollSeq) return
+    const data = await resp.json()
+    if (seq !== pollSeq || data.status !== 'pending') return
+    deviceGrant.value = {
+      user_code: data.user_code ?? '',
+      verification_uri: data.verification_uri ?? '',
+      verification_uri_complete: data.verification_uri_complete ?? '',
+      expires_in: data.expires_in,
+    }
+    deviceStatus.value = 'pending'
+    startDevicePolling()
+  } catch {
+    // Best-effort restore
+  }
+}
+
+async function handleConnect() {
+  connecting.value = true
+  deviceDetail.value = null
+  deviceStatus.value = 'none'
+  try {
+    const resp = await apiFetch('/api/cloud/auth/device', { method: 'POST' })
+    if (!resp.ok) {
+      toast.error('Failed to start cloud connection')
+      return
+    }
+    deviceGrant.value = await resp.json()
+    deviceStatus.value = 'pending'
+    startDevicePolling()
   } catch {
     toast.error('Failed to start cloud connection')
+  } finally {
+    connecting.value = false
   }
 }
 
@@ -168,18 +299,16 @@ async function copyUrl(url: string) {
 }
 
 onMounted(async () => {
-  // Handle error from OAuth callback redirect
-  const error = route.query.error as string | undefined
-  if (error) {
-    toast.error(error)
-  }
   await fetchStatus()
+  await restoreDeviceGrant()
 
   // Toast endpoint registration errors so the user knows about failures
   if (cloudStatus.value.endpoint_error?.detail) {
     toast.error('Endpoint registration failed: ' + cloudStatus.value.endpoint_error.detail)
   }
 })
+
+onBeforeUnmount(stopDevicePolling)
 </script>
 
 <template>
@@ -196,14 +325,60 @@ onMounted(async () => {
         <div class="h-4 w-32 rounded-sm bg-gray-200 animate-pulse"></div>
       </div>
 
+      <!-- Device authorization pending -->
+      <div v-else-if="isPendingGrant" data-testid="cloud-device-grant">
+        <p class="text-sm text-gray-600 mb-4">
+          Open the verification page and enter this code to connect this instance:
+        </p>
+        <p
+          class="font-mono text-3xl font-semibold tracking-widest text-gray-900 mb-4"
+          data-testid="cloud-device-code"
+        >
+          {{ deviceGrant?.user_code }}
+        </p>
+        <p class="text-sm text-gray-600 mb-4">
+          <a
+            :href="deviceGrant?.verification_uri_complete || deviceGrant?.verification_uri"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-medium text-blue-600 hover:text-blue-700 underline"
+            data-testid="cloud-device-link"
+          >
+            {{ deviceGrant?.verification_uri }}
+          </a>
+          <span class="text-gray-500"> — opens on this machine with the code already filled in.</span>
+        </p>
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-gray-500" data-testid="cloud-device-waiting">
+            Waiting for approval...
+          </span>
+          <button
+            class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-200"
+            data-testid="cloud-device-restart"
+            :disabled="connecting"
+            @click="handleConnect"
+          >
+            Start again
+          </button>
+        </div>
+      </div>
+
       <!-- Not configured -->
       <div v-else-if="isNotConfigured" data-testid="cloud-not-connected">
+        <p
+          v-if="deviceFailureMessage"
+          class="text-sm text-amber-600 mb-3"
+          data-testid="cloud-device-failure"
+        >
+          {{ deviceFailureMessage }}
+        </p>
         <button
           class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           data-testid="cloud-connect-btn"
+          :disabled="connecting"
           @click="handleConnect"
         >
-          Connect to Errand Cloud
+          {{ connecting ? 'Starting...' : 'Connect to Errand Cloud' }}
         </button>
       </div>
 
@@ -268,6 +443,13 @@ onMounted(async () => {
           <span class="text-sm font-medium text-red-700">Error</span>
         </div>
         <p v-if="cloudStatus.detail" class="text-sm text-red-600 mb-4">{{ cloudStatus.detail }}</p>
+        <p
+          v-if="deviceFailureMessage"
+          class="text-sm text-amber-600 mb-4"
+          data-testid="cloud-device-failure"
+        >
+          {{ deviceFailureMessage }}
+        </p>
         <button
           class="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
           data-testid="cloud-reconnect-btn"

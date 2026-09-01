@@ -20,13 +20,14 @@ That override is not scoped to this instance. While it is set, errand-cloud acce
 ### Modified Capabilities
 
 - `cloud-auth`: replace the authorization-code-via-redirect requirements with device-grant requirements. Note the existing spec is **already inaccurate** — it describes a PKCE flow conducted directly against Keycloak, while the implementation has always gone through errand-cloud's `/auth/tenant/login`. That drift is corrected as part of this change rather than carried forward.
+- `cloud-settings-ui`: the not-connected scenario says the Connect button navigates to `/api/cloud/auth/login`. That endpoint is removed here, so the scenario is restated in terms of `POST /api/cloud/auth/device`. Archiving `cloud-auth` alone would leave this one contradicting the implementation.
 
 ## Impact
 
 - `errand/cloud_auth.py` — add device-code initiation and polling; `exchange_code` becomes unused.
 - `errand/main.py` — replace `cloud_auth_login`, retire `cloud_auth_callback`, drop the `cloud_auth_state` setting.
 - `frontend/src/pages/settings/CloudServicePage.vue` — replace the popup with the verification-code panel.
-- `openspec/specs/cloud-auth/spec.md` — via the delta.
+- `openspec/specs/cloud-auth/spec.md` and `openspec/specs/cloud-settings-ui/spec.md` — via the deltas.
 
 **Coordination.** errand-cloud's device endpoints are already deployed, so this side can be built and tested against the live service immediately. Once this instance authenticates by device grant, the `tenantAuth.allowForeignRedirect: true` block must be deleted from `errand-cloud-values.yaml` in `devops-consultants/argocd` — that deletion is task 1.12 of the cloud's change and is what finally closes S1.
 

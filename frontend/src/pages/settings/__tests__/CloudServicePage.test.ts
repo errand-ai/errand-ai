@@ -233,23 +233,6 @@ describe('CloudServicePage', () => {
     expect(wrapper.text()).toContain('Endpoints are being registered')
   })
 
-  it('shows error toast when OAuth error query param is present', async () => {
-    vi.stubGlobal('fetch', stubFetch({ status: 'not_configured' }))
-    const router = createRouter({
-      history: createMemoryHistory(),
-      routes: [
-        { path: '/settings/cloud', component: CloudServicePage },
-      ],
-    })
-    await router.push('/settings/cloud?error=access_denied')
-    await router.isReady()
-
-    mount(CloudServicePage, { global: { plugins: [router] } })
-    await flushPromises()
-
-    expect(toastMock.error).toHaveBeenCalledWith('access_denied')
-  })
-
   it('shows endpoint error instead of registering message', async () => {
     vi.stubGlobal('fetch', stubFetch({
       status: 'connected',
@@ -487,26 +470,23 @@ describe('CloudServicePage', () => {
   })
 
   it('calls disconnect API and refreshes status', async () => {
-    const fetchMock = vi.fn()
-      // First call: initial status fetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          status: 'connected',
-          tenant_id: 'tenant-abc',
-          endpoints: [],
-        }),
-      })
-      // Second call: disconnect POST
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ ok: true }),
-      })
-      // Third call: status refresh after disconnect
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ status: 'not_configured' }),
-      })
+    let cloudStatus = 'connected'
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/cloud/status') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ status: cloudStatus, tenant_id: 'tenant-abc', endpoints: [] }),
+        })
+      }
+      if (url === '/api/cloud/auth/device/status') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'none' }) })
+      }
+      if (url === '/api/cloud/auth/disconnect') {
+        cloudStatus = 'not_configured'
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const router = makeRouter()
@@ -520,12 +500,231 @@ describe('CloudServicePage', () => {
     await disconnectBtn.trigger('click')
     await flushPromises()
 
-    // Verify disconnect was called
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    const disconnectCall = fetchMock.mock.calls[1]
-    expect(disconnectCall[0]).toBe('/api/cloud/auth/disconnect')
-    expect(disconnectCall[1].method).toBe('POST')
-
+    const disconnectCall = fetchMock.mock.calls.find(
+      (c: any[]) => c[0] === '/api/cloud/auth/disconnect',
+    )
+    expect(disconnectCall).toBeDefined()
+    expect(disconnectCall![1].method).toBe('POST')
     expect(toastMock.success).toHaveBeenCalledWith('Disconnected from Errand Cloud')
+    expect(wrapper.find('[data-testid="cloud-not-connected"]').exists()).toBe(true)
+  })
+
+  describe('device authorization grant', () => {
+    const GRANT = {
+      user_code: 'JHBW-PMHF',
+      verification_uri: 'https://errand.cloud/auth/tenant/device',
+      verification_uri_complete: 'https://errand.cloud/auth/tenant/device?user_code=JHBW-PMHF',
+      expires_in: 600,
+    }
+
+    /** Routes by URL so device status can be advanced independently of cloud status. */
+    function routedFetch(opts: {
+      cloud?: object
+      deviceStatuses?: object[]
+      startResponse?: { ok: boolean; body?: object }
+    }) {
+      const deviceStatuses = [...(opts.deviceStatuses ?? [{ status: 'none' }])]
+      return vi.fn().mockImplementation((url: string) => {
+        if (url === '/api/cloud/status') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(opts.cloud ?? { status: 'not_configured' }),
+          })
+        }
+        if (url === '/api/cloud/auth/device/status') {
+          const next = deviceStatuses.length > 1 ? deviceStatuses.shift() : deviceStatuses[0]
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(next) })
+        }
+        if (url === '/api/cloud/auth/device') {
+          const r = opts.startResponse ?? { ok: true, body: GRANT }
+          return Promise.resolve({ ok: r.ok, json: () => Promise.resolve(r.body ?? {}) })
+        }
+        throw new Error(`unexpected fetch: ${url}`)
+      })
+    }
+
+    async function mountPage() {
+      const router = makeRouter()
+      await router.push('/settings/cloud')
+      await router.isReady()
+      const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+      await flushPromises()
+      return wrapper
+    }
+
+    it('shows the verification code and link instead of opening a popup', async () => {
+      const openSpy = vi.fn()
+      vi.stubGlobal('open', openSpy)
+      const fetchMock = routedFetch({})
+      vi.stubGlobal('fetch', fetchMock)
+
+      const wrapper = await mountPage()
+      await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+      await flushPromises()
+
+      expect(openSpy).not.toHaveBeenCalled()
+      const startCall = fetchMock.mock.calls.find((c: any[]) => c[0] === '/api/cloud/auth/device')
+      expect(startCall![1].method).toBe('POST')
+
+      expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="cloud-device-code"]').text()).toBe('JHBW-PMHF')
+
+      const link = wrapper.find('[data-testid="cloud-device-link"]')
+      // The completion URI carries the code, so a click on this machine needs no retyping,
+      // while the bare code stays visible for a different device.
+      expect(link.attributes('href')).toBe(GRANT.verification_uri_complete)
+      expect(link.text()).toBe(GRANT.verification_uri)
+    })
+
+    it('reflects completion without a manual reload', async () => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = routedFetch({
+          deviceStatuses: [{ status: 'none' }, { status: 'connected' }],
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(true)
+
+        await vi.advanceTimersByTimeAsync(3100)
+        await flushPromises()
+
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+        expect(toastMock.success).toHaveBeenCalledWith('Connected to Errand Cloud')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each([
+      ['denied', 'refused'],
+      ['expired', 'expired'],
+      ['error', 'failed'],
+    ])('reflects a %s outcome distinctly', async (status, phrase) => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = routedFetch({
+          deviceStatuses: [{ status: 'none' }, { status }],
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+
+        await vi.advanceTimersByTimeAsync(3100)
+        await flushPromises()
+
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+        const failure = wrapper.find('[data-testid="cloud-device-failure"]')
+        expect(failure.exists()).toBe(true)
+        expect(failure.text().toLowerCase()).toContain(phrase)
+        expect(wrapper.find('[data-testid="cloud-connect-btn"]').exists()).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('stops polling and surfaces an error when the status check is unauthorized', async () => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+          if (url === '/api/cloud/status') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'not_configured' }) })
+          }
+          if (url === '/api/cloud/auth/device') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(GRANT) })
+          }
+          // The session died mid-grant: polling on would leave the panel
+          // pending forever while the grant quietly expires.
+          return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) })
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(true)
+
+        await vi.advanceTimersByTimeAsync(3100)
+        await flushPromises()
+
+        expect(wrapper.find('[data-testid="cloud-device-failure"]').text()).toContain('session expired')
+        const callsAfterFailure = fetchMock.mock.calls.length
+
+        await vi.advanceTimersByTimeAsync(9300)
+        await flushPromises()
+        expect(fetchMock.mock.calls.length).toBe(callsAfterFailure)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ignores a stale poll response that lands after a newer one', async () => {
+      vi.useFakeTimers()
+      try {
+        const pendingBody = { status: 'pending', ...GRANT }
+        let call = 0
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+          if (url === '/api/cloud/status') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'not_configured' }) })
+          }
+          if (url === '/api/cloud/auth/device') {
+            return Promise.resolve({ ok: true, json: () => Promise.resolve(GRANT) })
+          }
+          call += 1
+          // First status poll is slow and stale; the second overtakes it.
+          if (call === 1) {
+            return new Promise((resolve) =>
+              setTimeout(() => resolve({ ok: true, json: () => Promise.resolve(pendingBody) }), 5000),
+            )
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'connected' }) })
+        })
+        vi.stubGlobal('fetch', fetchMock)
+
+        const wrapper = await mountPage()
+        await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+        await flushPromises()
+
+        await vi.advanceTimersByTimeAsync(3100)   // poll 1 issued, still in flight
+        await vi.advanceTimersByTimeAsync(3100)   // poll 2 issued and resolves: connected
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(5000)   // the stale "pending" finally lands
+        await flushPromises()
+        expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('restores a pending grant on reload', async () => {
+      const fetchMock = routedFetch({
+        deviceStatuses: [{ status: 'pending', ...GRANT }],
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const wrapper = await mountPage()
+
+      expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="cloud-device-code"]').text()).toBe('JHBW-PMHF')
+    })
+
+    it('reports a failure to start the grant', async () => {
+      const fetchMock = routedFetch({ startResponse: { ok: false } })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const wrapper = await mountPage()
+      await wrapper.find('[data-testid="cloud-connect-btn"]').trigger('click')
+      await flushPromises()
+
+      expect(toastMock.error).toHaveBeenCalledWith('Failed to start cloud connection')
+      expect(wrapper.find('[data-testid="cloud-device-grant"]').exists()).toBe(false)
+    })
   })
 })
