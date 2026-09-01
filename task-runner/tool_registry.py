@@ -155,6 +155,10 @@ def _normalise_questions(value: Any) -> list[str]:
     A string that fails to decode, or decodes to something other than an array,
     is preserved as a single question: a slightly malformed follow-up is better
     than a silently dropped one.
+
+    Tuples are treated as lists so that swapping the parameter's ``[]`` default
+    for an immutable ``()`` — the change a B006 mutable-default lint would
+    suggest — cannot silently turn an omitted ``questions`` into ``["()"]``.
     """
     if value is None:
         return []
@@ -166,7 +170,7 @@ def _normalise_questions(value: Any) -> list[str]:
         if isinstance(decoded, list):
             return [str(item) for item in decoded]
         return [value]
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
     return [str(value)]
 

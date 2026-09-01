@@ -556,6 +556,23 @@ def test_submit_result_questions_omitted():
     assert ctx.submitted_result["questions"] == []
 
 
+def test_submit_result_questions_tuple_treated_as_list():
+    """A tuple normalises like a list, not into a stringified single element.
+
+    Guards the parameter's `[]` default against being swapped for an immutable
+    `()` — the change a B006 mutable-default lint would suggest — which would
+    otherwise store `["()"]` for an omitted `questions`.
+    """
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Done", questions=())
+    assert ctx.submitted_result["questions"] == []
+
+    submit_result(wrapper, result="Partial", status="needs_input", questions=("q1", "q2"))
+    assert ctx.submitted_result["questions"] == ["q1", "q2"]
+
+
 # --- scan_installed_skills() ---
 
 
