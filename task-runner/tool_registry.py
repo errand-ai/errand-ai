@@ -210,7 +210,7 @@ def submit_result(ctx: RunContextWrapper[ToolVisibilityContext], result: str, st
     Args:
         result: The full task output with markdown formatting.
         status: Either "completed" or "needs_input". Defaults to "completed".
-        questions: Follow-up questions when status is "needs_input". A list of strings, or a JSON-encoded array string. Defaults to [].
+        questions: Follow-up questions when status is "needs_input". Defaults to [].
     """
     if status not in ("completed", "needs_input"):
         return f"Invalid status '{status}'. Must be 'completed' or 'needs_input'."

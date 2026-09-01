@@ -8,7 +8,7 @@
 - [x] 2.2 Accept a string without widening the emitted schema: a bare `list[str] | str` union re-adds `anyOf` (forbidden by 3.1), and the agents SDK strips `Annotated` metadata so `BeforeValidator`/`WithJsonSchema` are discarded. Instead declare `questions: QuestionList`, a `list` subclass whose `__get_pydantic_core_schema__` coerces via `_normalise_questions` and whose `__get_pydantic_json_schema__` emits a plain string array — so a JSON-encoded array reaches the tool body while the model still sees a bare array
 - [x] 2.3 Add a `_normalise_questions` helper that returns `[]` for `None`, decodes a string via `json.loads`, stringifies the elements of a decoded array, and wraps a non-decoding or non-array string as a single-element list
 - [x] 2.4 Call the helper when building `ctx.context.submitted_result` so the stored `questions` is always a list of strings
-- [x] 2.5 Update the `questions` docstring line to state that a JSON-encoded array string is accepted, keeping the generated tool description accurate
+- [x] 2.5 Leave the `questions` docstring line describing the array shape only. Stating that a JSON-encoded array string is accepted would be the same mistake in prose that the schema avoids: the Args line becomes the model-facing `description` in the emitted tool schema, so advertising the stringified form there re-legitimises the very shape this change exists to stop the model sending. The tolerance is a server-side safety net, not an input option, and is documented where the model cannot see it — the `_normalise_questions` and `QuestionList` docstrings (raised in PR review by Copilot; reverses this task as originally written)
 
 ## 3. Tests
 

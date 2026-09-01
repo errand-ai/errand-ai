@@ -461,12 +461,16 @@ def _questions_schema() -> dict:
 
     conftest replaces `@function_tool` with an identity decorator, so the real
     `params_json_schema` is unavailable here. The SDK builds it by feeding each
-    parameter's annotation to `pydantic.create_model` and calling
+    parameter's annotation and default to `pydantic.create_model` and calling
     `model_json_schema()`; this reproduces that step for `questions` alone. Its
     strict-schema pass does not alter an array property.
+
+    Both the annotation and the default are read from the live signature: a
+    hard-coded default would let the guard pass while the real schema grew a
+    `"default": null` the assertions are meant to catch.
     """
-    annotation = signature(submit_result).parameters["questions"].annotation
-    model = create_model("SubmitResultArgs", questions=(annotation, []))
+    param = signature(submit_result).parameters["questions"]
+    model = create_model("SubmitResultArgs", questions=(param.annotation, param.default))
     return model.model_json_schema()["properties"]["questions"]
 
 
@@ -487,8 +491,8 @@ def test_submit_result_questions_schema_is_plain_array():
 
 def test_submit_result_questions_validation_accepts_json_encoded_string():
     """SDK-level validation coerces a stringified array instead of rejecting it."""
-    annotation = signature(submit_result).parameters["questions"].annotation
-    model = create_model("SubmitResultArgs", questions=(annotation, []))
+    param = signature(submit_result).parameters["questions"]
+    model = create_model("SubmitResultArgs", questions=(param.annotation, param.default))
 
     assert model.model_validate_json('{"questions": "[]"}').questions == []
     assert model.model_validate_json('{"questions": "[\\"a\\", \\"b\\"]"}').questions == ["a", "b"]
