@@ -1,4 +1,4 @@
 # Eval driver dependencies. Deliberately minimal — the driver is a pure MCP
 # client and shells out to the `claude` CLI for judging (no LLM SDK here).
-mcp==1.28.1
+mcp==2.1.1
 PyYAML==6.0.2
