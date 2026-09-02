@@ -33,7 +33,7 @@
 ## 6. Archive
 
 - [x] 6.1 Run `openspec archive "harden-submit-result-args" -y` and commit the flattened spec plus the archive move as part of this PR
-- [ ] 6.2 Re-verify the redeployed post-archive build, since archiving produces a new image tag
+- [x] 6.2 Re-verify the redeployed post-archive build, since archiving produces a new image tag. Archive commit `1015875` built run 1203 (green, 14/14) and ArgoCD synced `0.148.1-pr254.1203` at 2026-09-02T00:35:07Z: `errand-server`, `errand-workspace-gateway` (2/2) and the migrate job all on that tag, app `Synced`/`Healthy`, both deployments rolled out, `/api/health` 200 and `/` 200 from inside the pod, and the build stayed up 5h15m with zero restarts. This tick is the change's final, documentation-only commit — it alters no runtime artifact, so the build it verifies remains the one described here
 
 ## Post-merge notes
 
