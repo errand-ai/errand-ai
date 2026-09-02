@@ -1,12 +1,16 @@
 """Lazy MCP tool loading — catalog generation, hot list, tool visibility, discover_tools."""
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
 from agents import function_tool
 from agents.run_context import RunContextWrapper
+from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
+from pydantic_core import core_schema
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +147,64 @@ async def build_tool_catalog(servers: list, hot_list: set[str]) -> tuple[str, se
     return catalog, all_known_tools
 
 
+def _normalise_questions(value: Any) -> list[str]:
+    """Coerce whatever arrived for ``questions`` into a list of strings.
+
+    Some inference servers serialise an array argument as a JSON-encoded string
+    (``"questions": "[]"``), so decode a string rather than rejecting the call.
+    A string that fails to decode, or decodes to something other than an array,
+    is preserved as a single question: a slightly malformed follow-up is better
+    than a silently dropped one.
+
+    Tuples are treated as lists so that swapping the parameter's ``[]`` default
+    for an immutable ``()`` — the change a B006 mutable-default lint would
+    suggest — cannot silently turn an omitted ``questions`` into ``["()"]``.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return [value]
+        if isinstance(decoded, list):
+            return [str(item) for item in decoded]
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+class QuestionList(list):
+    """Annotation for ``submit_result``'s ``questions`` parameter.
+
+    Emits a plain ``{"type": "array", "items": {"type": "string"}}`` schema — no
+    ``anyOf`` branch, no ``"null"`` type — while tolerating a JSON-encoded array
+    string at validation time. The nullable union ``list[str] | None`` produces
+    exactly the ``anyOf: [array, null]`` shape that at least one production
+    inference server mis-serialises as a string, failing every call; the schema
+    the model sees must therefore stay a bare array, with the tolerance living in
+    the validator instead. This cannot be expressed with ``Annotated`` metadata:
+    the agents SDK strips ``Annotated`` down to the bare type (keeping only a
+    description or ``FieldInfo``) before building its pydantic model, so a
+    ``BeforeValidator`` or ``WithJsonSchema`` placed there is discarded.
+    """
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        return core_schema.no_info_plain_validator_function(_normalise_questions)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> dict[str, Any]:
+        return {"type": "array", "items": {"type": "string"}}
+
+
 @function_tool
-def submit_result(ctx: RunContextWrapper[ToolVisibilityContext], result: str, status: str = "completed", questions: list[str] | None = None) -> str:
+def submit_result(ctx: RunContextWrapper[ToolVisibilityContext], result: str, status: str = "completed", questions: QuestionList = []) -> str:
     """Submit the task result to the user. Call this when you have completed your work.
 
     This is the primary way to deliver your output. The result field is the ONLY output
@@ -161,7 +221,7 @@ def submit_result(ctx: RunContextWrapper[ToolVisibilityContext], result: str, st
     ctx.context.submitted_result = {
         "status": status,
         "result": result,
-        "questions": questions or [],
+        "questions": _normalise_questions(questions),
     }
     return "Result submitted successfully. You may now stop."
 

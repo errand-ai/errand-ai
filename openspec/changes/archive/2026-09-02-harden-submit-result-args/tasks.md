@@ -1,0 +1,43 @@
+## 1. Setup
+
+- [x] 1.1 Bump `VERSION` from `0.148.0` to `0.148.1` (patch — bug fix, no API change)
+
+## 2. Implementation
+
+- [x] 2.1 Flatten the `questions` parameter in `task-runner/tool_registry.py`: change `questions: list[str] | None = None` to a non-nullable array annotation so the generated schema has no `anyOf` and no `"null"` type
+- [x] 2.2 Accept a string without widening the emitted schema: a bare `list[str] | str` union re-adds `anyOf` (forbidden by 3.1), and the agents SDK strips `Annotated` metadata so `BeforeValidator`/`WithJsonSchema` are discarded. Instead declare `questions: QuestionList`, a `list` subclass whose `__get_pydantic_core_schema__` coerces via `_normalise_questions` and whose `__get_pydantic_json_schema__` emits a plain string array — so a JSON-encoded array reaches the tool body while the model still sees a bare array
+- [x] 2.3 Add a `_normalise_questions` helper that returns `[]` for `None`, decodes a string via `json.loads`, stringifies the elements of a decoded array, and wraps a non-decoding or non-array string as a single-element list
+- [x] 2.4 Call the helper when building `ctx.context.submitted_result` so the stored `questions` is always a list of strings
+- [x] 2.5 Leave the `questions` docstring line describing the array shape only. Stating that a JSON-encoded array string is accepted would be the same mistake in prose that the schema avoids: the Args line becomes the model-facing `description` in the emitted tool schema, so advertising the stringified form there re-legitimises the very shape this change exists to stop the model sending. The tolerance is a server-side safety net, not an input option, and is documented where the model cannot see it — the `_normalise_questions` and `QuestionList` docstrings (raised in PR review by Copilot; reverses this task as originally written)
+
+## 3. Tests
+
+- [x] 3.1 Add `test_submit_result_questions_schema_is_plain_array` asserting the generated `params_json_schema` for `questions` has `type == "array"` with string items and contains neither `anyOf` nor a `"null"` type
+- [x] 3.2 Add coercion tests for each spec scenario: JSON-encoded empty array, JSON-encoded populated array, non-JSON string, JSON-encoded non-array, and `questions` omitted
+- [x] 3.3 Confirm the existing `submit_result` tests still pass unchanged (`test_submit_result_stores_in_context`, `test_submit_result_needs_input`, `test_submit_result_defaults`, `test_submit_result_last_call_wins`, `test_submit_result_rejects_invalid_status`)
+
+## 4. Local verification
+
+- [x] 4.1 Run the task-runner suite: `task-runner/.venv/bin/python -m pytest task-runner/ -v` — all tests pass
+- [x] 4.2 Run the errand suite to confirm no cross-impact: `DATABASE_URL="sqlite+aiosqlite:///:memory:" errand/.venv/bin/python -m pytest errand/tests/ -q`
+- [x] 4.3 Bring up the stack with `docker compose -f testing/docker-compose.yml up --build` and confirm it starts clean
+
+## 5. PR and deployment verification
+
+- [x] 5.1 Push the branch and open a PR
+- [x] 5.2 Confirm the GitHub Actions build completes (images + Helm chart pushed to GHCR)
+- [x] 5.3 Confirm the built artifacts deploy cleanly on Kubernetes (ArgoCD sync) and the deployment is healthy
+- [x] 5.4 Run a task end-to-end on the deployed build and confirm `submit_result` succeeds on the first call — check the transcript for absence of `Invalid JSON input for tool submit_result`. Verified on `task-runner-2b0030cc-xplst` (image `0.148.1-pr254.1202`, model `Qwen3.8-27B-MLX-4bit`, the oMLX stack that triggered the bug): one `submit_result` call, `Result submitted successfully`, zero `Invalid JSON input`, task completed. Note the transcript logs the model's raw `arguments` before validation (`main.py:2803`), and `questions` arrived as a genuine JSON array `[]`, not `"[]"` — so this run validates the *flattening* half of the fix (oMLX now serialises the parameter correctly) and did not exercise the coercion path, which remains covered by unit tests only
+- [x] 5.5 Confirm in Loki that `Invalid JSON input for tool submit_result` falls to zero while `submit_result` `tool_call` volume stays flat (a drop in both would mean tasks stopped running, not that the bug was fixed). Confirmed, with a correction to the metric: raw `tool_call` volume is *inflated* pre-fix, because each rejected call was retried, so it legitimately falls once the bug is gone. Normalising by completed task (`agent_end`) separates the two readings — pre-deploy 6 tasks / 29 calls / 24 errors = 4.8 calls per task at 83% failure; post-deploy 2 tasks / 2 calls / 0 errors = 1.0 calls per task. `agent_end` held at ~1/hour across the deploy, so work continued. Post-deploy sample is small (n=2); the wider series dates the regression to 2026-08-28, matching the LM Studio to oMLX switch
+
+## 6. Archive
+
+- [x] 6.1 Run `openspec archive "harden-submit-result-args" -y` and commit the flattened spec plus the archive move as part of this PR
+- [x] 6.2 Re-verify the redeployed post-archive build, since archiving produces a new image tag. Archive commit `1015875` built run 1203 (green, 14/14) and ArgoCD synced `0.148.1-pr254.1203` at 2026-09-02T00:35:07Z: `errand-server`, `errand-workspace-gateway` (2/2) and the migrate job all on that tag, app `Synced`/`Healthy`, both deployments rolled out, `/api/health` 200 and `/` 200 from inside the pod, and the build stayed up 5h15m with zero restarts. This tick is the change's final, documentation-only commit — it alters no runtime artifact, so the build it verifies remains the one described here
+
+## Post-merge notes
+
+- Merge the PR once the post-archive build is verified.
+- Delete the local branch: `git branch -d harden-submit-result-args`.
+- File the oMLX upstream report separately: nullable-array tool parameters (`anyOf: [array, null]`) are serialised as JSON-encoded strings. It does not gate this fix.
+- Watch the `Invalid JSON input for tool submit_result` count on `main` for a few days to confirm the fix holds across serving-stack changes.

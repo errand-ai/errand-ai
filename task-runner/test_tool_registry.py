@@ -2,12 +2,16 @@
 
 # Mocks are set up in conftest.py (shared with test_main.py)
 
+import json
 import os
+from inspect import signature
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from conftest import MockRunContextWrapper as _MockRunContextWrapper
+
+from pydantic import create_model
 
 from tool_registry import (
     ToolVisibilityContext,
@@ -450,6 +454,123 @@ def test_submit_result_last_call_wins():
     submit_result(wrapper, result="Final version")
 
     assert ctx.submitted_result["result"] == "Final version"
+
+
+def _questions_schema() -> dict:
+    """The JSON Schema the agents SDK emits for submit_result's `questions`.
+
+    conftest replaces `@function_tool` with an identity decorator, so the real
+    `params_json_schema` is unavailable here. The SDK builds it by feeding each
+    parameter's annotation and default to `pydantic.create_model` and calling
+    `model_json_schema()`; this reproduces that step for `questions` alone. Its
+    strict-schema pass does not alter an array property.
+
+    Both the annotation and the default are read from the live signature: a
+    hard-coded default would let the guard pass while the real schema grew a
+    `"default": null` the assertions are meant to catch.
+    """
+    param = signature(submit_result).parameters["questions"]
+    model = create_model("SubmitResultArgs", questions=(param.annotation, param.default))
+    return model.model_json_schema()["properties"]["questions"]
+
+
+def test_submit_result_questions_schema_is_plain_array():
+    """`questions` emits a bare string array — no anyOf, no "null" branch.
+
+    A nullable union (`list[str] | None` → `anyOf: [array, null]`) is serialised
+    as a JSON-encoded string by at least one production inference server, failing
+    every call. This guard turns reintroducing that union into a test failure.
+    """
+    schema = _questions_schema()
+
+    assert schema["type"] == "array"
+    assert schema["items"] == {"type": "string"}
+    assert "anyOf" not in schema
+    assert "null" not in json.dumps(schema)
+
+
+def test_submit_result_questions_validation_accepts_json_encoded_string():
+    """SDK-level validation coerces a stringified array instead of rejecting it."""
+    param = signature(submit_result).parameters["questions"]
+    model = create_model("SubmitResultArgs", questions=(param.annotation, param.default))
+
+    assert model.model_validate_json('{"questions": "[]"}').questions == []
+    assert model.model_validate_json('{"questions": "[\\"a\\", \\"b\\"]"}').questions == ["a", "b"]
+    assert model.model_validate_json('{"questions": ["x"]}').questions == ["x"]
+    assert model.model_validate_json('{"questions": null}').questions == []
+    assert model.model_validate_json("{}").questions == []
+
+
+def test_submit_result_questions_json_encoded_empty_array():
+    """A stringified empty array is decoded, not stored as a question."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Done", questions="[]")
+
+    assert ctx.submitted_result["questions"] == []
+
+
+def test_submit_result_questions_json_encoded_populated_array():
+    """A stringified populated array is decoded into its elements."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(
+        wrapper,
+        result="Partial findings",
+        status="needs_input",
+        questions='["What date range?", "Which department?"]',
+    )
+
+    assert ctx.submitted_result["questions"] == ["What date range?", "Which department?"]
+
+
+def test_submit_result_questions_non_json_string_preserved():
+    """A string that is not JSON is kept as a single question, not discarded."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Partial", status="needs_input", questions="What date range?")
+
+    assert ctx.submitted_result["questions"] == ["What date range?"]
+
+
+def test_submit_result_questions_json_encoded_non_array_preserved():
+    """A string decoding to a non-array is kept verbatim as a single element."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Partial", status="needs_input", questions='{"a": 1}')
+
+    assert ctx.submitted_result["questions"] == ['{"a": 1}']
+
+
+def test_submit_result_questions_omitted():
+    """Omitting `questions` still stores an empty list."""
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Done")
+
+    assert ctx.submitted_result["questions"] == []
+
+
+def test_submit_result_questions_tuple_treated_as_list():
+    """A tuple normalises like a list, not into a stringified single element.
+
+    Guards the parameter's `[]` default against being swapped for an immutable
+    `()` — the change a B006 mutable-default lint would suggest — which would
+    otherwise store `["()"]` for an omitted `questions`.
+    """
+    ctx = ToolVisibilityContext(enabled_tools=set(), all_known_tools=set())
+    wrapper = _MockRunContextWrapper(ctx)
+
+    submit_result(wrapper, result="Done", questions=())
+    assert ctx.submitted_result["questions"] == []
+
+    submit_result(wrapper, result="Partial", status="needs_input", questions=("q1", "q2"))
+    assert ctx.submitted_result["questions"] == ["q1", "q2"]
 
 
 # --- scan_installed_skills() ---
