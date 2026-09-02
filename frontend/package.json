@@ -13,7 +13,7 @@
     "@errand-ai/ui-components": "^0.18.0",
     "dompurify": "^3.3.1",
     "marked": "^18.0.0",
-    "pinia": "^3.0.0",
+    "pinia": "^4.0.0",
     "vue": "^3.5.0",
     "vue-router": "^5.0.0",
     "vue-sonner": "^2.0.9"
