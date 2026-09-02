@@ -24,15 +24,15 @@
 
 ## 5. PR and deployment verification
 
-- [ ] 5.1 Push the branch and open a PR
-- [ ] 5.2 Confirm the GitHub Actions build completes (images + Helm chart pushed to GHCR)
-- [ ] 5.3 Confirm the built artifacts deploy cleanly on Kubernetes (ArgoCD sync) and the deployment is healthy
-- [ ] 5.4 Run a task end-to-end on the deployed build and confirm `submit_result` succeeds on the first call — check the transcript for absence of `Invalid JSON input for tool submit_result`
-- [ ] 5.5 Confirm in Loki that `Invalid JSON input for tool submit_result` falls to zero while `submit_result` `tool_call` volume stays flat (a drop in both would mean tasks stopped running, not that the bug was fixed)
+- [x] 5.1 Push the branch and open a PR
+- [x] 5.2 Confirm the GitHub Actions build completes (images + Helm chart pushed to GHCR)
+- [x] 5.3 Confirm the built artifacts deploy cleanly on Kubernetes (ArgoCD sync) and the deployment is healthy
+- [x] 5.4 Run a task end-to-end on the deployed build and confirm `submit_result` succeeds on the first call — check the transcript for absence of `Invalid JSON input for tool submit_result`. Verified on `task-runner-2b0030cc-xplst` (image `0.148.1-pr254.1202`, model `Qwen3.8-27B-MLX-4bit`, the oMLX stack that triggered the bug): one `submit_result` call, `Result submitted successfully`, zero `Invalid JSON input`, task completed. Note the transcript logs the model's raw `arguments` before validation (`main.py:2803`), and `questions` arrived as a genuine JSON array `[]`, not `"[]"` — so this run validates the *flattening* half of the fix (oMLX now serialises the parameter correctly) and did not exercise the coercion path, which remains covered by unit tests only
+- [x] 5.5 Confirm in Loki that `Invalid JSON input for tool submit_result` falls to zero while `submit_result` `tool_call` volume stays flat (a drop in both would mean tasks stopped running, not that the bug was fixed). Confirmed, with a correction to the metric: raw `tool_call` volume is *inflated* pre-fix, because each rejected call was retried, so it legitimately falls once the bug is gone. Normalising by completed task (`agent_end`) separates the two readings — pre-deploy 6 tasks / 29 calls / 24 errors = 4.8 calls per task at 83% failure; post-deploy 2 tasks / 2 calls / 0 errors = 1.0 calls per task. `agent_end` held at ~1/hour across the deploy, so work continued. Post-deploy sample is small (n=2); the wider series dates the regression to 2026-08-28, matching the LM Studio to oMLX switch
 
 ## 6. Archive
 
-- [ ] 6.1 Run `openspec archive "harden-submit-result-args" -y` and commit the flattened spec plus the archive move as part of this PR
+- [x] 6.1 Run `openspec archive "harden-submit-result-args" -y` and commit the flattened spec plus the archive move as part of this PR
 - [ ] 6.2 Re-verify the redeployed post-archive build, since archiving produces a new image tag
 
 ## Post-merge notes
