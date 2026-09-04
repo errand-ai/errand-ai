@@ -14,6 +14,7 @@ where generation must *not* happen.
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from models import Setting
@@ -116,6 +117,62 @@ class TestNeverOverwrites:
 
         assert first == second == third
         assert await stored_token(session) == first
+
+
+class TestConcurrentFirstBoot:
+    """Two replicas booting into an empty database must not fight over the token."""
+
+    async def test_the_losing_replica_adopts_the_winners_token(self, session, no_hindsight_env):
+        """`settings.key` is a primary key, so exactly one concurrent INSERT wins.
+
+        The loser must adopt the winner's value rather than crash or overwrite:
+        replicas disagreeing about the bearer would make memory work on some
+        pods and 401 on others, depending on which served the request.
+        """
+        session.add(Setting(key="hindsight_url", value="http://hindsight:8888"))
+        await session.commit()
+
+        winner = "w" * 64
+        real_commit = session.commit
+        calls = {"n": 0}
+
+        async def racing_commit():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Stand in for the other replica winning the insert between our
+                # SELECT and our INSERT, then report the conflict we would get.
+                await session.rollback()
+                session.add(Setting(key="hindsight_token", value=winner))
+                await real_commit()
+                raise IntegrityError("INSERT INTO settings", {}, Exception("duplicate key"))
+            await real_commit()
+
+        session.commit = racing_commit
+        try:
+            token = await ensure_hindsight_token(session)
+        finally:
+            session.commit = real_commit
+
+        assert token == winner, "the loser must return the token that actually persisted"
+        assert await stored_token(session) == winner, "and must not overwrite it"
+
+    async def test_a_conflict_with_no_persisted_token_is_not_swallowed(self, session, no_hindsight_env):
+        """An IntegrityError that is not this race must still surface."""
+        session.add(Setting(key="hindsight_url", value="http://hindsight:8888"))
+        await session.commit()
+
+        real_commit = session.commit
+
+        async def always_conflicts():
+            await session.rollback()
+            raise IntegrityError("INSERT INTO settings", {}, Exception("some other constraint"))
+
+        session.commit = always_conflicts
+        try:
+            with pytest.raises(IntegrityError):
+                await ensure_hindsight_token(session)
+        finally:
+            session.commit = real_commit
 
 
 class TestOnlyWhenThereIsSomethingToAuthenticateTo:

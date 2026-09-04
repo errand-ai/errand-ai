@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Setting
@@ -290,7 +291,28 @@ async def ensure_hindsight_token(session: AsyncSession) -> str | None:
         existing.value = generated
     else:
         session.add(Setting(key="hindsight_token", value=generated))
-    await session.commit()
+
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Two replicas booting into an empty database both read no token and both
+        # insert. `settings.key` is the primary key, so exactly one wins and the
+        # loser lands here.
+        #
+        # Losing is the ordinary outcome, not an error: adopt the winner's value.
+        # Crashing would take a replica down on first boot, and retrying the
+        # write would be worse still — the replicas would disagree about the
+        # bearer while Hindsight accepts only one of them, so memory would work
+        # on some pods and 401 on others depending on which served the request.
+        await session.rollback()
+        token, _ = await resolve_setting_value(session, "hindsight_token")
+        if not token:
+            # The row is genuinely absent, so the conflict was not the race this
+            # handler is for. Do not swallow it.
+            raise
+        logger.info("Another replica generated the Hindsight API bearer first; using it")
+        return token
+
     # Deliberately does not log the value, at any level. Says "API" rather than
     # "MCP": the API-key tenant extension this token feeds authenticates every
     # Hindsight endpoint, REST included, not just /mcp.

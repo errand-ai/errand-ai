@@ -9,7 +9,7 @@ make the image worth deriving are asserted rather than assumed:
     entire reason this image exists);
   * the ONNX embeddings provider still exists and still initialises;
   * the baked graph is the 384-dimension model, and actually embeds;
-  * FlashRank initialises from the baked cache directory;
+  * the FlashRank model is actually on disk, and initialises from there;
   * the shipped defaults select onnx + flashrank, and never `rrf`;
   * no torch and no sentence-transformers were pulled in transitively.
 
@@ -18,6 +18,7 @@ failure names the unsatisfied condition in the build log.
 """
 
 import asyncio
+import glob
 import importlib.util
 import os
 import sys
@@ -86,6 +87,17 @@ async def main() -> None:
             f"FATAL: encode() returned {len(vectors)} vector(s) of width "
             f"{len(vectors[0]) if vectors else 'n/a'}, expected 1 x {EXPECTED_DIMENSION}"
         )
+
+    # Checked before initialising, not after. `Ranker()` *downloads* a missing
+    # model from FlashRank's CDN, and the build has network — so initialising
+    # alone would happily pass on an image whose reranker was never baked,
+    # which is precisely the "first run needs no network" guarantee this file
+    # exists to defend. Assert the artefacts are on disk first.
+    flashrank_model_dir = os.path.join(flashrank_cache, EXPECTED_FLASHRANK_MODEL)
+    if not os.path.isdir(flashrank_model_dir):
+        sys.exit(f"FATAL: baked FlashRank model missing at {flashrank_model_dir}")
+    if not glob.glob(os.path.join(flashrank_model_dir, "*.onnx")):
+        sys.exit(f"FATAL: no ONNX graph inside {flashrank_model_dir}; the model did not bake")
 
     reranker = FlashRankCrossEncoder(
         model_name=EXPECTED_FLASHRANK_MODEL,
