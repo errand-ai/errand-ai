@@ -52,6 +52,7 @@ from settings_registry import (
     EXCLUDED_KEYS,
     MODEL_SETTING_KEYS,
     SETTINGS_REGISTRY,
+    ensure_hindsight_token,
     normalize_model_setting_value,
     resolve_settings,
 )
@@ -246,6 +247,13 @@ async def lifespan(app: FastAPI):
             session.add(Setting(key="git_ssh_hosts", value=["github.com", "bitbucket.org"]))
             await session.commit()
             logger.info("Created default git SSH hosts")
+
+        # Mint the Hindsight bearer when the operator has not supplied one, so
+        # that a deployment which configures a Hindsight URL and nothing else
+        # still gets an authenticated memory service rather than an open one.
+        # No-op when HINDSIGHT_TOKEN is set, when the setting already holds a
+        # value, or when no Hindsight URL is configured at all.
+        await ensure_hindsight_token(session)
 
         # Auto-generate JWT signing secret
         result = await session.execute(select(Setting).where(Setting.key == "jwt_signing_secret"))

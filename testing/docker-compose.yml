@@ -1,6 +1,10 @@
 services:
+  # pgvector rather than plain postgres: Hindsight now shares this database
+  # (schema `hindsight`) and needs the `vector` extension, which init-db.sh
+  # installs on first start. Switching image family invalidates an existing
+  # postgres-data volume — `docker compose down -v` if an old one is present.
   postgres:
-    image: postgres:18-alpine
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_DB: content_manager
       POSTGRES_USER: postgres
@@ -10,6 +14,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -80,6 +85,9 @@ services:
       TASK_RUNNER_NETWORK: errand-net
       ERRAND_MCP_URL: http://errand:8000/mcp/
       HINDSIGHT_URL: http://hindsight:8888
+      # Must match HINDSIGHT_API_TENANT_API_KEY on the hindsight service, or
+      # every memory call comes back 401.
+      HINDSIGHT_TOKEN: ${HINDSIGHT_TOKEN:-errand-local-dev-token}
       PLAYWRIGHT_MCP_URL: http://playwright:3000/mcp
       LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-}
       LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-}
@@ -143,29 +151,69 @@ services:
     networks:
       - errand-net
 
+  # --- Agent memory (Hindsight) ---
+  # errand's own build: upstream's slim API image plus the packages the local
+  # ONNX embedding path needs, with the embedding and reranker models baked in.
+  # Built from source here so a compose run tests the Dockerfile in this repo
+  # rather than whatever was last published.
+  #
+  # This replaces the standalone `hindsight` image, which ran its own embedded
+  # PostgreSQL in /home/hindsight/.pg0. Memory now lives in the `hindsight`
+  # schema of the same database errand uses, so there is no second database and
+  # no embedded one — hence no hindsight-data volume.
+  hindsight-build:
+    build:
+      context: ..
+      dockerfile: Dockerfile.hindsight
+    image: errand-hindsight:latest
+    entrypoint: ["true"]
+
   hindsight-init:
-    image: ghcr.io/vectorize-io/hindsight:latest
+    image: errand-hindsight:latest
     user: root
     volumes:
-      - hindsight-data:/home/hindsight/.pg0
       - hindsight-models:/home/hindsight/.cache
-    command: chown -R hindsight:hindsight /home/hindsight/.pg0 /home/hindsight/.cache
+    # Docker creates an empty named volume owned by root when the image has no
+    # directory at the mount point, and Hindsight runs as uid 1000 — so without
+    # this, first run dies on `PermissionError: /home/hindsight/.cache/huggingface`.
+    command: chown -R hindsight:hindsight /home/hindsight/.cache
+    depends_on:
+      hindsight-build:
+        condition: service_completed_successfully
     networks:
       - errand-net
 
   hindsight:
-    image: ghcr.io/vectorize-io/hindsight:latest
+    image: errand-hindsight:latest
     ports:
       - "8888:8888"
-      - "9999:9999"
     environment:
+      # Same database as errand, different schema. Alembic owns `public` and
+      # never touches `hindsight` (errand/tests/test_alembic_schema_boundary.py).
+      HINDSIGHT_API_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/content_manager
+      HINDSIGHT_API_DATABASE_SCHEMA: hindsight
+      # Without a tenant extension the API and the MCP endpoint are both open.
+      # The built-in API-key extension authenticates every endpoint except
+      # /health, so the healthcheck below still works unauthenticated. The same
+      # value reaches the errand server as HINDSIGHT_TOKEN.
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_TENANT_API_KEY: ${HINDSIGHT_TOKEN:-errand-local-dev-token}
+      # Upstream warns at start-up that a worker id defaulting to the container
+      # hostname changes on every recreate and can leave claimed work stuck.
+      HINDSIGHT_API_WORKER_ID: hindsight
       HINDSIGHT_API_LLM_API_KEY: ${OPENAI_API_KEY}
       HINDSIGHT_API_LLM_BASE_URL: ${OPENAI_BASE_URL:-}
-      HINDSIGHT_API_LLM_MODEL: claude-sonnet-4-5-20250929
+      # Overridable, and defaulted to a model that actually answers. The previous
+      # hard-coded `claude-sonnet-4-5-20250929` fails on this proxy with
+      # `BedrockException Invalid Authentication`, which surfaces only as a
+      # fact-extraction error deep inside a retain. `minimax-m2.5:free` carries a
+      # fallback chain, so it degrades to another free model rather than erroring.
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_API_LLM_MODEL:-minimax-m2.5:free}
     volumes:
-      - hindsight-data:/home/hindsight/.pg0
       - hindsight-models:/home/hindsight/.cache
     depends_on:
+      postgres:
+        condition: service_healthy
       hindsight-init:
         condition: service_completed_successfully
     healthcheck:
@@ -173,6 +221,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - errand-net
+
+  # The Hindsight Control Plane: graph exploration, per-memory editing,
+  # directives, webhooks. An expert debugging tool, so it is off by default and
+  # publishes no port. Start it with:
+  #   docker compose -f testing/docker-compose.yml --profile memory-ui up
+  hindsight-control-plane:
+    profiles: ["memory-ui"]
+    image: ghcr.io/vectorize-io/hindsight-control-plane:0.9.2
+    ports:
+      - "9999:9999"
+    environment:
+      HINDSIGHT_CP_DATAPLANE_API_URL: http://hindsight:8888
+      # The tenant extension closes the REST API too, not only /mcp, so the
+      # Control Plane authenticates like any other client.
+      HINDSIGHT_CP_DATAPLANE_API_KEY: ${HINDSIGHT_TOKEN:-errand-local-dev-token}
+      # Its own login. Unset would mean no login at all on a UI with full
+      # read/write access to every memory.
+      HINDSIGHT_CP_ACCESS_KEY: ${HINDSIGHT_CP_ACCESS_KEY:-${HINDSIGHT_TOKEN:-errand-local-dev-token}}
+    depends_on:
+      hindsight:
+        condition: service_healthy
     networks:
       - errand-net
 
@@ -266,7 +337,6 @@ secrets:
 
 volumes:
   postgres-data:
-  hindsight-data:
   hindsight-models:
   # NFS-backed volume task containers mount at /shared (set WORKSPACE_VOLUME to
   # this name). The Docker host needs an NFS client (mount.nfs) available.

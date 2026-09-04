@@ -3,9 +3,8 @@ set -e
 
 # Runs once, on an empty data directory, before anything connects.
 #
-# LiteLLM keeps its own database. Hindsight does not: it shares errand's, in a
-# `hindsight` schema, so there is no `CREATE DATABASE hindsight` here. Hindsight
-# creates and migrates the tables in that schema itself.
+# Hindsight shares this database and keeps its tables in a `hindsight` schema,
+# which it creates and migrates itself.
 #
 # Both extensions are created here, as superuser, in the **default (public)
 # schema** — and for `pg_trgm` that placement is a fix, not a convenience.
@@ -29,7 +28,6 @@ set -e
 # mis-placed create becomes a no-op. That same rule is why getting the schema
 # wrong here would be worse than doing nothing.
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    CREATE DATABASE litellm;
     CREATE EXTENSION IF NOT EXISTS vector;
     CREATE EXTENSION IF NOT EXISTS pg_trgm;
 EOSQL

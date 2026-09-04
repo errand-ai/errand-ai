@@ -31,7 +31,14 @@ SETTINGS_REGISTRY = {
     "litellm_mcp_servers": {"env_var": None, "sensitive": False, "default": []},
     "hindsight_url": {"env_var": "HINDSIGHT_URL", "sensitive": False, "default": ""},
     "hindsight_bank_id": {"env_var": "HINDSIGHT_BANK_ID", "sensitive": False, "default": "errand-tasks"},
-    "hindsight_token": {"env_var": "HINDSIGHT_TOKEN", "sensitive": True, "default": ""},
+    # `mask_always` because errand mints this one itself when the operator does
+    # not supply it (see `ensure_hindsight_token`). A generated secret has no
+    # reader — nobody needs to copy it anywhere, since the deployment already
+    # hands the same value to Hindsight — so there is no reason to return it in
+    # clear, and a masked value is one fewer secret in a browser tab and in the
+    # response body. Contrast `mcp_api_key`, which the settings UI exists to
+    # display so the operator can paste it into a client.
+    "hindsight_token": {"env_var": "HINDSIGHT_TOKEN", "sensitive": True, "default": "", "mask_always": True},
     "title_generation_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "task_processing_timeout": {"env_var": None, "sensitive": False, "default": 30},
     "transcription_timeout": {"env_var": None, "sensitive": False, "default": 30},
@@ -216,7 +223,10 @@ async def resolve_settings(session: AsyncSession) -> dict:
         sensitive = meta["sensitive"]
         value, source = await resolve_setting_value(session, key, db_rows=db_rows)
 
-        if sensitive and source == "env":
+        # Sensitive env-sourced values are masked because they are readonly and
+        # already known to whoever set them. `mask_always` extends that to a key
+        # whose database value is equally not meant to be read back.
+        if sensitive and (source == "env" or meta.get("mask_always")):
             value = mask_sensitive_value(value)
 
         if key in MODEL_SETTING_KEYS:
@@ -230,3 +240,52 @@ async def resolve_settings(session: AsyncSession) -> dict:
         }
 
     return resolved
+
+
+async def ensure_hindsight_token(session: AsyncSession) -> str | None:
+    """Mint and persist the Hindsight bearer when nothing else supplies one.
+
+    Hindsight's API — REST and MCP alike — is open unless it is started with the
+    API-key tenant extension, and that extension needs a shared secret. errand
+    already mints `mcp_api_key`, the workspace bearer and the JWT signing
+    secret; asking the operator to invent this one as well is the difference
+    between a memory service that is authenticated by default and one that is
+    not, because the person who has to invent it is exactly the person least
+    equipped to decide it matters.
+
+    Precedence is the ordinary env -> database order, so nothing already
+    configured changes behaviour:
+
+      * `HINDSIGHT_TOKEN` set          -> used, nothing written to the database
+      * `hindsight_token` row non-empty -> used unchanged (this is what makes
+                                           generation idempotent across restarts)
+      * neither                         -> generated once and persisted
+
+    Returns the resolved token, or None when no Hindsight URL is configured —
+    there is nothing to authenticate to, so there is no reason to create a
+    secret and no reason to log about one.
+    """
+    import secrets
+
+    url, _ = await resolve_setting_value(session, "hindsight_url")
+    if not url:
+        return None
+
+    token, source = await resolve_setting_value(session, "hindsight_token")
+    if token:
+        logger.debug("Hindsight token resolved from %s", source)
+        return token
+
+    generated = secrets.token_hex(32)
+    result = await session.execute(select(Setting).where(Setting.key == "hindsight_token"))
+    existing = result.scalars().first()
+    if existing is not None:
+        # A row that resolved empty: present but unset. Fill it rather than
+        # adding a second row for the same key.
+        existing.value = generated
+    else:
+        session.add(Setting(key="hindsight_token", value=generated))
+    await session.commit()
+    # Deliberately does not log the value, at any level.
+    logger.info("Generated Hindsight MCP bearer token")
+    return generated

@@ -1,0 +1,113 @@
+# syntax=docker/dockerfile:1
+#
+# errand-hindsight — the Hindsight runtime errand ships.
+#
+# Two packages over upstream's slim API image, and the two models baked in.
+# Nothing is patched, forked or vendored: `transformers` and `flashrank` are
+# installed into the base image's own virtual environment, and the rest of this
+# file only places model files and sets defaults.
+#
+# Why this image exists: `slim` already carries `onnxruntime`, `tokenizers`,
+# `huggingface_hub` and the `OnnxEmbeddings` provider, but not `transformers` —
+# so `OnnxEmbeddings.initialize()` raises ImportError and slim cannot embed
+# locally at all. See design.md D1, and https://github.com/vectorize-io/hindsight/issues/4116
+# for the report filed upstream against that gap.
+
+# Pinned deliberately, never `latest-slim`. At the time of pinning the two are
+# the same digest (sha256:7635a157…); the pin is what stops an upstream release
+# silently changing what errand publishes. Renovate tracks this line.
+ARG HINDSIGHT_BASE_TAG=0.9.2-slim
+FROM ghcr.io/vectorize-io/hindsight-api:${HINDSIGHT_BASE_TAG}
+
+# Model artefacts live at /opt/hindsight-models, outside $HOME. Deployments mount
+# a volume over /home/hindsight/.cache, which would shadow anything baked
+# underneath it — and the whole point of baking is that a first run with an empty
+# cache volume and no network still works. The path is written out literally
+# below rather than held in an ENV: an ENV would also reach the running
+# container, where nothing reads it.
+
+# Installing into the venv and writing under /opt both need root; the runtime
+# USER is restored below. The base image's venv has no `pip` binary, so this
+# uses `uv` (on PATH at /usr/local/bin/uv) with VIRTUAL_ENV pointing at it.
+USER root
+
+# Guard first: if a future base moves or drops the virtual environment, fail
+# here rather than installing the packages somewhere the runtime never loads.
+#
+# Versions are pinned for the same reason the base tag is: a rebuild months from
+# now must produce the same runtime, and Renovate can only offer a reviewable
+# bump for a version it can see.
+#
+# transformers 5.x rather than 4.x, despite 5.x bumping the base's `tokenizers`
+# from 0.22.2 to 0.23.2. `transformers<5` was measured and is worse: it
+# *downgrades* huggingface-hub 1.6.0 -> 0.36.2, and the base itself uses
+# huggingface_hub. A forward-compatible bump of a tokenizer beats a downgrade of
+# a library the base depends on.
+RUN test -x /app/api/.venv/bin/python \
+      || { echo "FATAL: no virtual environment at /app/api/.venv — the base image layout changed" >&2; exit 1; } \
+    && VIRTUAL_ENV=/app/api/.venv uv pip install --no-cache \
+         "transformers==5.16.1" \
+         "flashrank==0.2.10"
+
+# Create the model directory owned by the runtime user *before* it has any
+# content, then drop to that user for the downloads. Chowning afterwards would
+# rewrite every model file into a second layer — measured at +549 MB, an exact
+# duplicate of the models themselves.
+RUN mkdir -p /opt/hindsight-models && chown hindsight:hindsight /opt/hindsight-models
+
+USER hindsight
+
+# Bake the embedding graph and its tokenizer. An explicit local_dir gives a
+# stable layout that does not depend on the Hugging Face cache key format;
+# HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH and ..._TOKENIZER_NAME_OR_PATH below
+# point the runtime straight at it, so no lookup happens at start-up.
+# `allow_patterns` is exact rather than glob-by-extension. The repo carries a
+# second copy of the tokenizer inside onnx/ (tokenizer.json alone is 17 MB), and
+# sentence-transformers metadata this image never reads; a `*.json` glob pulls
+# all of it. Only the graph and the files AutoTokenizer needs are kept, and the
+# .cache directory snapshot_download leaves behind is removed in the same layer
+# so it does not become one.
+RUN /app/api/.venv/bin/python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download( \
+    repo_id='intfloat/multilingual-e5-small', \
+    local_dir='/opt/hindsight-models/multilingual-e5-small', \
+    allow_patterns=[ \
+        'onnx/model.onnx', \
+        'onnx/model.onnx_data', \
+        'config.json', \
+        'tokenizer.json', \
+        'tokenizer_config.json', \
+        'special_tokens_map.json', \
+    ], \
+)" \
+    && rm -rf /opt/hindsight-models/multilingual-e5-small/.cache
+
+# Bake the reranker. FlashRank fetches a zip from its own CDN on first use and
+# extracts it to <cache_dir>/<model_name>; doing it here means the runtime finds
+# it already extracted. flashrank is not optional — dropping the neural reranker
+# halved recall@1 in the measurements behind design.md D3.
+RUN /app/api/.venv/bin/python -c "\
+from flashrank import Ranker; \
+Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/opt/hindsight-models/flashrank')"
+
+# The defaults that make the image usable with nothing but a database URL and an
+# LLM endpoint. `rrf` is deliberately not among them: it is rank-fusion
+# passthrough with neural reranking off, and belongs only as the terminator of a
+# fallback chain.
+ENV HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx \
+    HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID=intfloat/multilingual-e5-small \
+    HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH=/opt/hindsight-models/multilingual-e5-small/onnx/model.onnx \
+    HINDSIGHT_API_EMBEDDINGS_ONNX_TOKENIZER_NAME_OR_PATH=/opt/hindsight-models/multilingual-e5-small \
+    HINDSIGHT_API_RERANKER_PROVIDER=flashrank \
+    HINDSIGHT_API_RERANKER_FLASHRANK_MODEL=ms-marco-MiniLM-L-12-v2 \
+    HINDSIGHT_API_RERANKER_FLASHRANK_CACHE_DIR=/opt/hindsight-models/flashrank
+
+# The assertion that makes this image trustworthy. It runs the real providers
+# against the baked artefacts, offline, as the runtime user — so the build fails
+# on any of: transformers missing, the ONNX provider gone, the tokenizer import
+# changed, a model that did not bake, or a graph whose dimension is not 384.
+# HF_HUB_OFFLINE proves the baked paths are what actually load, rather than a
+# silent re-download masking a bad bake.
+COPY --chown=hindsight:hindsight deploy/hindsight-image-selftest.py /opt/hindsight-selftest.py
+RUN HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /app/api/.venv/bin/python /opt/hindsight-selftest.py
