@@ -215,7 +215,7 @@ class TestMasking:
         assert entry["value"] == mask_sensitive_value("operator-chose-this")
 
     async def test_an_unset_token_reads_back_empty_not_masked(self, session, no_hindsight_env):
-        """"Not configured" must stay distinguishable from "configured but hidden".
+        """Keep "not configured" distinguishable from "configured but hidden".
 
         `mask_sensitive_value("")` returns "****", so masking unconditionally
         would make an unset key look exactly like a set one — to an operator
