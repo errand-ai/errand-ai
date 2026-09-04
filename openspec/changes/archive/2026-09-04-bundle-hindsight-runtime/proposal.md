@@ -1,3 +1,11 @@
+> **Read with design.md's corrections.** This proposal is kept as written, but
+> implementation contradicted three of its claims. The bearer is configured
+> through the API-key *tenant extension*, not `HINDSIGHT_API_MCP_AUTH_TOKEN`,
+> which does not exist (D5). The finished image measures **3.85 GB**, not the
+> 2.98 GB in the table below — that figure covered the two added packages, not
+> the ~530 MB of baked models (D2). And the install resolves to four package
+> changes rather than two (D1). The measured *quality* results are unaffected.
+
 ## Why
 
 Hindsight is currently an external dependency in name only. `testing/docker-compose.yml` and `deploy/docker-compose.yml` already start it, and errand-desktop already manages its container lifecycle. What is *not* shipped is a defensible set of defaults: today the compose files pull `ghcr.io/vectorize-io/hindsight:latest` (the full image), give it its own database, expose the Control Plane unconditionally, and require the operator to invent a bearer token.
@@ -31,7 +39,7 @@ Bundling Hindsight into errand's own image was rejected outright: `hindsight-api
 - Default the runtime to `EMBEDDINGS_PROVIDER=onnx` and `RERANKER_PROVIDER=flashrank`, with `rrf` only as a fallback-chain terminator.
 - Collapse to one database using `HINDSIGHT_API_DATABASE_SCHEMA=hindsight` inside errand's existing database. Drop `CREATE DATABASE hindsight` from `deploy/init-databases.sh`.
 - Move the Control Plane behind a compose profile, **off by default**, and stop publishing `9999:9999` unconditionally.
-- Generate the Hindsight MCP bearer server-side when none is configured, and pass it to Hindsight as `HINDSIGHT_API_MCP_AUTH_TOKEN`, so `hindsight_token` stops being something a user must invent.
+- Generate the Hindsight MCP bearer server-side when none is configured, and pass it to Hindsight so that `hindsight_token` stops being something a user must invent. (This bullet originally named `HINDSIGHT_API_MCP_AUTH_TOKEN`; **no such variable exists** — see the correction under D5.)
 - Fix the missing chown of the `.cache` volume in `deploy/docker-compose.yml`, which fails first run with `PermissionError: /home/hindsight/.cache/huggingface`.
 
 ## Capabilities

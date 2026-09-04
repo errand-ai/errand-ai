@@ -1,7 +1,12 @@
 # hindsight-runtime-image Specification
 
 ## Purpose
-TBD - created by archiving change bundle-hindsight-runtime. Update Purpose after archive.
+
+The Hindsight runtime errand publishes and ships: upstream's slim API image at a pinned
+tag, plus the two packages its local ONNX embedding path needs, with the embedding and
+reranker models baked in so a first run needs no network. Covers what the image must
+contain, the defaults it ships, and the assertions its build must make before the image
+is allowed to publish.
 
 ## Requirements
 

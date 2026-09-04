@@ -210,6 +210,6 @@ A `docker compose -f testing/docker-compose.yml --profile memory-ui up -d` again
 
 Two things had to be corrected before that last item passed, both recorded above: `HINDSIGHT_API_LLM_MODEL` in `testing/` pointed at a model this proxy rejects (D7), and `pg_trgm` was being created where Hindsight could not resolve `%` (D4a). Neither was visible without running the stack.
 
-## Note on the environment used for measurement## Note on the environment used for measurement
+## Note on the environment used for measurement
 
 The original test design used real LLM extraction and had to be abandoned: on `litellm.devops-consultants.net` every Claude model returns `BedrockException Invalid Authentication`, every Ollama-backed model returns `503 No server is available`, and `gpt-oss:20b` took **166 s** for one 2,811-token extraction, tripping Hindsight's own `[STUCK_STACK] age=625s threshold=600s` poller warning. Two 16-document retains ingested 4 and 6 documents in 51 minutes. This is an infrastructure fault unrelated to errand, but it is why the comparison uses `chunks` mode and why the open question above is still open.
