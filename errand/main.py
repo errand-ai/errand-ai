@@ -53,6 +53,7 @@ from settings_registry import (
     MODEL_SETTING_KEYS,
     SETTINGS_REGISTRY,
     ensure_hindsight_token,
+    mask_sensitive_value,
     normalize_model_setting_value,
     resolve_settings,
 )
@@ -1398,6 +1399,33 @@ async def update_settings(
                     key, meta["env_var"], meta["env_var"],
                 )
                 continue
+        # A key that reads back masked can be round-tripped by any client doing
+        # read-modify-write of the whole settings payload: it would GET
+        # `erra****`, PUT it back unchanged, and silently replace the real secret
+        # with the placeholder — breaking Hindsight auth with no error anywhere.
+        #
+        # Ignoring a write whose value is exactly the mask of what is already
+        # stored fixes that without lying about what is editable. Reporting the
+        # key as `readonly` instead would be the wrong shape: `readonly` means
+        # "env-sourced, and PUT refuses it", and a database-sourced token *is*
+        # writable — an operator has to be able to set one.
+        if meta and meta.get("mask_always") and isinstance(value, str):
+            current = (
+                await session.execute(select(Setting).where(Setting.key == key))
+            ).scalar_one_or_none()
+            if (
+                current is not None
+                and isinstance(current.value, str)
+                and current.value
+                and value == mask_sensitive_value(current.value)
+            ):
+                logger.info(
+                    "Ignoring write of the masked placeholder for %r; the stored "
+                    "value is unchanged. Send a real value to replace it.",
+                    key,
+                )
+                continue
+
         # The shared LlmModelCard saves `{provider_id, model_id}`; keep `model`
         # (the field the backend resolves against) in sync so task/model
         # resolution finds the selection.

@@ -258,3 +258,45 @@ class TestGeneratedTokenIsNotLogged:
         assert ours, "generation should say that it happened"
         assert all(token not in r.getMessage() for r in ours)
         assert all(token not in str(r.args or ()) for r in ours)
+
+
+class TestMaskedValueCannotBeWrittenBack:
+    """`PUT /api/settings` must not accept the placeholder it just served.
+
+    `hindsight_token` reads back masked from the database, so any client doing a
+    read-modify-write of the whole payload — or a UI pre-filling a form with the
+    returned value — would send `erra****` straight back and overwrite the real
+    secret with the placeholder. Hindsight would then 401 every memory call, with
+    nothing in the logs to say why.
+    """
+
+    async def test_writing_the_mask_back_leaves_the_stored_token_intact(
+        self, admin_client_with_session
+    ):
+        client, session_maker = admin_client_with_session
+        real = "s" * 64
+        async with session_maker() as s:
+            s.add(Setting(key="hindsight_token", value=real))
+            await s.commit()
+
+        served = (await client.get("/api/settings")).json()["hindsight_token"]["value"]
+        assert served != real, "precondition: the API serves a masked value"
+
+        assert (await client.put("/api/settings", json={"hindsight_token": served})).status_code == 200
+
+        async with session_maker() as s:
+            assert await stored_token(s) == real, "the masked placeholder overwrote the real token"
+
+    async def test_a_real_value_still_replaces_the_token(self, admin_client_with_session):
+        client, session_maker = admin_client_with_session
+        async with session_maker() as s:
+            s.add(Setting(key="hindsight_token", value="o" * 64))
+            await s.commit()
+
+        replacement = "n" * 64
+        assert (
+            await client.put("/api/settings", json={"hindsight_token": replacement})
+        ).status_code == 200
+
+        async with session_maker() as s:
+            assert await stored_token(s) == replacement, "the guard must not block a genuine update"
