@@ -291,6 +291,8 @@ async def ensure_hindsight_token(session: AsyncSession) -> str | None:
     else:
         session.add(Setting(key="hindsight_token", value=generated))
     await session.commit()
-    # Deliberately does not log the value, at any level.
-    logger.info("Generated Hindsight MCP bearer token")
+    # Deliberately does not log the value, at any level. Says "API" rather than
+    # "MCP": the API-key tenant extension this token feeds authenticates every
+    # Hindsight endpoint, REST included, not just /mcp.
+    logger.info("Generated Hindsight API bearer token")
     return generated
