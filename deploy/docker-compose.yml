@@ -98,10 +98,16 @@ services:
       # healthcheck below still works unauthenticated.
       #
       # The same value goes to the errand server as HINDSIGHT_TOKEN, which sends
-      # it as the Authorization header on the memory MCP entry. Change it here
-      # and it changes in both places; set HINDSIGHT_TOKEN in .env to override.
+      # it as the Authorization header on the memory MCP entry.
+      #
+      # Required, with no default. A shipped default would be published in this
+      # repository and this file publishes Hindsight on a host port, so a known
+      # bearer is barely different from no bearer at all — it would leave the
+      # tenant extension looking like authentication without being any. `:?`
+      # makes compose refuse to start and say so, which is a better failure than
+      # a memory service that silently accepts a guessable token.
       HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
-      HINDSIGHT_API_TENANT_API_KEY: ${HINDSIGHT_TOKEN:-errand-hindsight-changeme}
+      HINDSIGHT_API_TENANT_API_KEY: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
       # Hindsight claims work under a worker id and expects it to be stable
       # across restarts; the default is the container hostname, which changes on
       # every recreate and can leave claimed operations stuck. Pin it to the
@@ -138,11 +144,11 @@ services:
       HINDSIGHT_CP_DATAPLANE_API_URL: http://hindsight:8888
       # Enabling the tenant extension closes the REST API too, not only /mcp, so
       # the Control Plane is a client that has to authenticate like any other.
-      HINDSIGHT_CP_DATAPLANE_API_KEY: ${HINDSIGHT_TOKEN:-errand-hindsight-changeme}
+      HINDSIGHT_CP_DATAPLANE_API_KEY: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
       # Its own login. Defaulted to the same value rather than left unset,
       # because unset means no login at all on a UI with full read/write access
       # to every memory.
-      HINDSIGHT_CP_ACCESS_KEY: ${HINDSIGHT_CP_ACCESS_KEY:-${HINDSIGHT_TOKEN:-errand-hindsight-changeme}}
+      HINDSIGHT_CP_ACCESS_KEY: "${HINDSIGHT_CP_ACCESS_KEY:-${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}}"
     depends_on:
       hindsight:
         condition: service_healthy
@@ -181,8 +187,8 @@ services:
       ERRAND_MCP_URL: http://errand:8000/mcp/
       HINDSIGHT_URL: http://hindsight:8888
       # Must match HINDSIGHT_API_TENANT_API_KEY on the hindsight service, or
-      # every memory call comes back 401.
-      HINDSIGHT_TOKEN: ${HINDSIGHT_TOKEN:-errand-hindsight-changeme}
+      # every memory call comes back 401. Required — see that service.
+      HINDSIGHT_TOKEN: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
       PLAYWRIGHT_MCP_URL: http://playwright:3000/mcp
       LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-litellm}
       LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-http://litellm:4000}

@@ -27,8 +27,9 @@ EXPECTED_MODEL_ID = "intfloat/multilingual-e5-small"
 EXPECTED_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
 
 # The two packages the image must not have acquired. The ONNX path avoids them,
-# and avoiding them is what keeps this image 2.98 GB rather than 5.47 GB, so a
-# transitive pull is a silent regression of the change's whole premise.
+# and avoiding them is what keeps this image at a measured 3.85 GB rather than
+# the full image's 5.47 GB, so a transitive pull is a silent regression of the
+# change's whole premise.
 FORBIDDEN_MODULES = ("torch", "sentence_transformers")
 
 

@@ -188,6 +188,34 @@ class TestBearerWiring:
             "raises ValueError on an empty key, so Hindsight would not start"
         )
 
+    def test_the_deployment_file_refuses_to_start_without_a_token(self, path: Path):
+        """`deploy/` must require the token; `testing/` may default it.
+
+        The two files are read differently on purpose. `deploy/` is what someone
+        actually deploys, and it publishes Hindsight on a host port — so a
+        default shipped in this repository would be a *published* bearer, making
+        the tenant extension look like authentication without being any. It uses
+        compose's `:?` form, which refuses to start and prints why.
+
+        `testing/` is the local development harness, alongside
+        `ADMIN_PASSWORD: changeme` and postgres/postgres on 5432. Requiring a
+        variable there would cost every contributor a setup step to protect a
+        stack that is already deliberately open, so it keeps a visible default.
+        """
+        key = env_of(hindsight_service(path))["HINDSIGHT_API_TENANT_API_KEY"]
+        if path.parent.name == "deploy":
+            assert ":?" in key, (
+                f"{compose_id(path)}: {key!r} carries a default. A bearer committed "
+                "to this repository is a known bearer, and this file publishes "
+                "Hindsight on a host port. Use ${HINDSIGHT_TOKEN:?...} so compose "
+                "refuses to start instead."
+            )
+        else:
+            assert ":-" in key and not key.endswith(":-}"), (
+                f"{compose_id(path)}: the local dev stack should keep a working "
+                f"default so `docker compose up` needs no setup; got {key!r}"
+            )
+
     def test_control_plane_authenticates_to_the_api(self, path: Path):
         """Enabling the extension closes REST too, so the Control Plane needs the bearer."""
         cp = env_of(services(path)["hindsight-control-plane"])

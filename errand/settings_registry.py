@@ -226,7 +226,12 @@ async def resolve_settings(session: AsyncSession) -> dict:
         # Sensitive env-sourced values are masked because they are readonly and
         # already known to whoever set them. `mask_always` extends that to a key
         # whose database value is equally not meant to be read back.
-        if sensitive and (source == "env" or meta.get("mask_always")):
+        #
+        # `and value` matters: `mask_sensitive_value("")` returns "****", so
+        # without it an *unset* key reads back identically to a configured one.
+        # An operator — or a UI branching on emptiness — could not tell "no token
+        # configured" from "token configured, hidden".
+        if sensitive and value and (source == "env" or meta.get("mask_always")):
             value = mask_sensitive_value(value)
 
         if key in MODEL_SETTING_KEYS:
