@@ -56,11 +56,11 @@ Dockerfile             # Multi-stage: node (frontend build) + python (errand)
 Dockerfile.hindsight   # errand-hindsight: upstream slim + transformers/flashrank + baked models
 deploy/
   docker-compose.yml   # Reference deployment (published images)
-  init-databases.sh    # Postgres first-run: litellm database + the vector extension
+  init-databases.sh    # Postgres first-run: litellm database + the vector and pg_trgm extensions
   hindsight-image-selftest.py  # Build-time assertion for Dockerfile.hindsight
 testing/
   docker-compose.yml   # Local dev environment (Docker Compose)
-  init-db.sh           # Postgres first-run: the vector extension
+  init-db.sh           # Postgres first-run: the vector and pg_trgm extensions
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)

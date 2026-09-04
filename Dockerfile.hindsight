@@ -41,6 +41,12 @@ FROM --platform=$BUILDPLATFORM ghcr.io/vectorize-io/hindsight-api:${HINDSIGHT_BA
 USER root
 RUN VIRTUAL_ENV=/app/api/.venv uv pip install --no-cache "flashrank==0.2.10"
 
+# Pinned to a commit, not just a repo id — for the same reason the base tag and
+# the two package versions are pinned, and with a sharper edge: a model repo can
+# replace its files in place, and a rebuild that silently picked up different
+# weights would produce embeddings incomparable with every vector already stored.
+# Recall would degrade with nothing in the diff to explain it.
+#
 # `allow_patterns` is exact rather than glob-by-extension. The repo carries a
 # second copy of the tokenizer inside onnx/ (tokenizer.json alone is 17 MB), and
 # sentence-transformers metadata this image never reads; a `*.json` glob pulls
@@ -51,6 +57,7 @@ RUN /app/api/.venv/bin/python -c "\
 from huggingface_hub import snapshot_download; \
 snapshot_download( \
     repo_id='intfloat/multilingual-e5-small', \
+    revision='614241f622f53c4eeff9890bdc4f31cfecc418b3', \
     local_dir='/opt/hindsight-models/multilingual-e5-small', \
     allow_patterns=[ \
         'onnx/model.onnx', \
