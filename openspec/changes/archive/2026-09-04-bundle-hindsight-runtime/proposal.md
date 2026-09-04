@@ -1,0 +1,60 @@
+> **Read with design.md's corrections.** This proposal is kept as written, but
+> implementation contradicted three of its claims. The bearer is configured
+> through the API-key *tenant extension*, not `HINDSIGHT_API_MCP_AUTH_TOKEN`,
+> which does not exist (D5). The finished image measures **3.85 GB**, not the
+> 2.98 GB in the table below — that figure covered the two added packages, not
+> the ~530 MB of baked models (D2). And the install resolves to four package
+> changes rather than two (D1). The measured *quality* results are unaffected.
+
+## Why
+
+Hindsight is currently an external dependency in name only. `testing/docker-compose.yml` and `deploy/docker-compose.yml` already start it, and errand-desktop already manages its container lifecycle. What is *not* shipped is a defensible set of defaults: today the compose files pull `ghcr.io/vectorize-io/hindsight:latest` (the full image), give it its own database, expose the Control Plane unconditionally, and require the operator to invent a bearer token.
+
+For a user who does not want a degree in computer science, each of those is a place to get stuck:
+
+- **The image.** The full image is 5.47 GB on arm64 (measured; the docs claim 3.7 GB). The published `slim` image is 2.90 GB but cannot embed locally — it ships `onnxruntime 1.20.1`, `tokenizers`, `huggingface_hub` and the `OnnxEmbeddings` provider, then fails at `initialize()` because `transformers` is absent. Configuring `slim` therefore means supplying an external embeddings provider, which is exactly the question a novice cannot answer.
+- **The database.** Two databases means `init-databases.sh` on compose and, on Kubernetes, a second database that errand's own chart cannot create.
+- **The Control Plane.** Both compose files publish `9999:9999` unconditionally. It is an expert tool — graph exploration, per-memory editing, directives, webhooks — presented by default to users who will never open it.
+- **The token.** `hindsight_token` is an admin setting the operator must think of. errand already mints `mcp_api_key` and the workspace bearer; there is no reason this one is different.
+
+### Why a derived image rather than the full image or a sidecar
+
+Measured on this repository's corpus (24 documents with deliberate near-miss distractors, 15 paraphrased queries, `retain_extraction_mode: chunks` so both arms index identical text):
+
+| arm | image | recall@1 | recall@3 | recall@5 | MRR | p50 |
+|---|---|---|---|---|---|---|
+| onnx `e5-small` + `flashrank` | 2.98 GB | 0.87 | 0.87 | 0.93 | 0.887 | 0.32 s |
+| full: local BGE + torch cross-encoder | 5.47 GB | 0.80 | 0.87 | 0.93 | 0.842 | 0.30 s |
+| onnx `e5-small` + `rrf` (no reranker) | 2.98 GB | 0.40 | 0.60 | 0.60 | 0.547 | 0.03 s |
+
+The first two are indistinguishable — identical recall@3 and recall@5, identical latency, and they miss the *same two queries*. The third is the load-bearing result: dropping the cross-encoder halves recall@1 on the same bank with the same vectors. **`flashrank` is not optional, and it costs 56 KB.**
+
+A sidecar cannot serve this. `HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx` builds an `ort.InferenceSession` in-process; there is no remote form of it. Delegating embeddings to a sidecar means switching to a *different* provider (`tei`, or an OpenAI-compatible endpoint) and adding a permanent second container to every install, to reach quality the derived image already matches for two pip packages.
+
+Bundling Hindsight into errand's own image was rejected outright: `hindsight-api-slim` pulls `fastmcp>=3.2.0` against errand's `mcp[http]>=1.23.2,<2` pin, plus `litellm` (75 MB), `claude-agent-sdk`, `markitdown` extras and a SQLAlchemy range; errand's `pip download --only-binary=:all:` stage cannot absorb that tree; and Hindsight's worker identity model (`HINDSIGHT_API_WORKER_ID`, stable across restarts) would sit alongside errand's advisory-lock leader election in one process.
+
+## What Changes
+
+- Publish `errand-hindsight`: `FROM ghcr.io/vectorize-io/hindsight-api:<pinned>-slim` plus `transformers` and `flashrank` (+80 MB measured), with the `intfloat/multilingual-e5-small` ONNX graph and the `ms-marco-MiniLM-L-12-v2` reranker **baked in** so first run needs no network. Cold start was 135 s with a download and 40 s warm; baking removes the 135 s case.
+- Default the runtime to `EMBEDDINGS_PROVIDER=onnx` and `RERANKER_PROVIDER=flashrank`, with `rrf` only as a fallback-chain terminator.
+- Collapse to one database using `HINDSIGHT_API_DATABASE_SCHEMA=hindsight` inside errand's existing database. Drop `CREATE DATABASE hindsight` from `deploy/init-databases.sh`.
+- Move the Control Plane behind a compose profile, **off by default**, and stop publishing `9999:9999` unconditionally.
+- Generate the Hindsight MCP bearer server-side when none is configured, and pass it to Hindsight so that `hindsight_token` stops being something a user must invent. (This bullet originally named `HINDSIGHT_API_MCP_AUTH_TOKEN`; **no such variable exists** — see the correction under D5.)
+- Fix the missing chown of the `.cache` volume in `deploy/docker-compose.yml`, which fails first run with `PermissionError: /home/hindsight/.cache/huggingface`.
+
+## Capabilities
+
+### New Capabilities
+
+- `hindsight-runtime-image` — the derived image: its base pin, the two added packages, the baked models, and the defaults it ships.
+
+### Modified Capabilities
+
+- `local-dev-environment` — single database via schema, Control Plane behind an opt-in profile, cache volume ownership.
+- `task-runner-memory` — the bearer token is generated by errand when unset, rather than required from the operator.
+
+## Non-goals
+
+- The Helm chart. Kubernetes keeps pointing `hindsight.url` at an externally-installed instance; bundling it there is deferred (it depends on an unresolved CloudNativePG `Database` CR question).
+- Any change to how the agent uses memory. `system-skill-hindsight` is untouched.
+- Replacing the Control Plane's expert features with errand UI. That is `memory-status-panel`.

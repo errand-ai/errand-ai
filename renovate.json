@@ -2,5 +2,32 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>errand-ai/.github:renovate"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the pinned upstream Hindsight slim base image in Dockerfile.hindsight. A custom manager rather than the built-in Dockerfile manager because the tag lives in an ARG default, and because the `-slim` suffix needs its own versioning scheme \u2014 plain semver treats it as a prerelease and would never offer a bump.",
+      "fileMatch": [
+        "^Dockerfile\\.hindsight$"
+      ],
+      "matchStrings": [
+        "ARG HINDSIGHT_BASE_TAG=(?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "ghcr.io/vectorize-io/hindsight-api",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-slim$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "A base bump changes the runtime errand ships to every user, and the derived image's build-time self-test is the only thing standing between a bad base and a published image. Never group it with anything else, and label it so the reviewer knows to check the build log rather than just the diff.",
+      "matchDepNames": [
+        "ghcr.io/vectorize-io/hindsight-api"
+      ],
+      "groupName": null,
+      "labels": [
+        "hindsight-base"
+      ]
+    }
   ]
 }

@@ -52,6 +52,8 @@ from settings_registry import (
     EXCLUDED_KEYS,
     MODEL_SETTING_KEYS,
     SETTINGS_REGISTRY,
+    ensure_hindsight_token,
+    mask_sensitive_value,
     normalize_model_setting_value,
     resolve_settings,
 )
@@ -246,6 +248,13 @@ async def lifespan(app: FastAPI):
             session.add(Setting(key="git_ssh_hosts", value=["github.com", "bitbucket.org"]))
             await session.commit()
             logger.info("Created default git SSH hosts")
+
+        # Mint the Hindsight bearer when the operator has not supplied one, so
+        # that a deployment which configures a Hindsight URL and nothing else
+        # still gets an authenticated memory service rather than an open one.
+        # No-op when HINDSIGHT_TOKEN is set, when the setting already holds a
+        # value, or when no Hindsight URL is configured at all.
+        await ensure_hindsight_token(session)
 
         # Auto-generate JWT signing secret
         result = await session.execute(select(Setting).where(Setting.key == "jwt_signing_secret"))
@@ -1390,6 +1399,33 @@ async def update_settings(
                     key, meta["env_var"], meta["env_var"],
                 )
                 continue
+        # A key that reads back masked can be round-tripped by any client doing
+        # read-modify-write of the whole settings payload: it would GET
+        # `erra****`, PUT it back unchanged, and silently replace the real secret
+        # with the placeholder — breaking Hindsight auth with no error anywhere.
+        #
+        # Ignoring a write whose value is exactly the mask of what is already
+        # stored fixes that without lying about what is editable. Reporting the
+        # key as `readonly` instead would be the wrong shape: `readonly` means
+        # "env-sourced, and PUT refuses it", and a database-sourced token *is*
+        # writable — an operator has to be able to set one.
+        if meta and meta.get("mask_always") and isinstance(value, str):
+            current = (
+                await session.execute(select(Setting).where(Setting.key == key))
+            ).scalar_one_or_none()
+            if (
+                current is not None
+                and isinstance(current.value, str)
+                and current.value
+                and value == mask_sensitive_value(current.value)
+            ):
+                logger.info(
+                    "Ignoring write of the masked placeholder for %r; the stored "
+                    "value is unchanged. Send a real value to replace it.",
+                    key,
+                )
+                continue
+
         # The shared LlmModelCard saves `{provider_id, model_id}`; keep `model`
         # (the field the backend resolves against) in sync so task/model
         # resolution finds the selection.

@@ -1,7 +1,9 @@
 services:
   # Using pgvector's official image with PostgreSQL 16 for vector search capabilities
-  # You may want to use an existing PostgreSQL service , but ensure it has the pgvector
-  # extension installed and configured for the hindsight and litellm databases.
+  # You may want to use an existing PostgreSQL service, but ensure it has the pgvector
+  # extension available: init-databases.sh installs `vector` into the errand
+  # database, which is where Hindsight keeps its vectors (in a `hindsight`
+  # schema alongside errand's own `public` tables).
   #
   postgres:
     image: pgvector/pgvector:pg16
@@ -62,16 +64,55 @@ services:
     networks:
       - errand-net
 
-# Hindsight is an open-source vector database and vector search engine built on top of
-# PostgreSQL and pgvector. It is used in Errand to store and search conversation history
-#  and other vector data.
+# Hindsight is the agent-memory service: it stores and searches what tasks learn.
+# This is errand's own build of it — upstream's slim API image plus the two
+# packages the local ONNX embedding path needs, with the embedding and reranker
+# models baked in, so first run needs no model download. See Dockerfile.hindsight.
+#
+# It shares errand's PostgreSQL database and keeps its tables in a `hindsight`
+# schema; alembic owns `public` and never touches the other (enforced by
+# errand/tests/test_alembic_schema_boundary.py).
+  hindsight-init:
+    image: ghcr.io/errand-ai/errand-hindsight:latest
+    user: root
+    volumes:
+      - hindsight-models:/home/hindsight/.cache
+    # Docker creates an empty named volume owned by root when the image has no
+    # directory at the mount point, and Hindsight runs as uid 1000 — so without
+    # this, first run dies on `PermissionError: /home/hindsight/.cache/huggingface`.
+    command: chown -R hindsight:hindsight /home/hindsight/.cache
+    networks:
+      - errand-net
+
   hindsight:
-    image: ghcr.io/vectorize-io/hindsight:latest
+    image: ghcr.io/errand-ai/errand-hindsight:latest
     ports:
       - "8888:8888"
-      - "9999:9999"
     environment:
-      HINDSIGHT_API_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hindsight
+      # Same database as errand, different schema.
+      HINDSIGHT_API_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/errand
+      HINDSIGHT_API_DATABASE_SCHEMA: hindsight
+      # Without a tenant extension the API and the MCP endpoint are both open to
+      # anything that can reach the container. This is the built-in API-key
+      # extension: it authenticates every endpoint except /health, so the
+      # healthcheck below still works unauthenticated.
+      #
+      # The same value goes to the errand server as HINDSIGHT_TOKEN, which sends
+      # it as the Authorization header on the memory MCP entry.
+      #
+      # Required, with no default. A shipped default would be published in this
+      # repository and this file publishes Hindsight on a host port, so a known
+      # bearer is barely different from no bearer at all — it would leave the
+      # tenant extension looking like authentication without being any. `:?`
+      # makes compose refuse to start and say so, which is a better failure than
+      # a memory service that silently accepts a guessable token.
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_TENANT_API_KEY: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
+      # Hindsight claims work under a worker id and expects it to be stable
+      # across restarts; the default is the container hostname, which changes on
+      # every recreate and can leave claimed operations stuck. Pin it to the
+      # service name, as upstream's own start-up warning recommends.
+      HINDSIGHT_API_WORKER_ID: hindsight
       HINDSIGHT_API_LLM_BASE_URL: ${OPENAI_BASE_URL:-http://litellm:4000}
       HINDSIGHT_API_LLM_API_KEY: ${OPENAI_API_KEY:-${LITELLM_MASTER_KEY:-sk-1234}}
       HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_API_LLM_MODEL:-gemini-2.5-flash}
@@ -80,11 +121,37 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      hindsight-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - errand-net
+
+# The Hindsight Control Plane: graph exploration, per-memory editing, directives,
+# webhooks. An expert debugging tool, not part of the everyday product, so it is
+# off by default and publishes no port — start it with
+# `docker compose --profile memory-ui up`.
+  hindsight-control-plane:
+    profiles: ["memory-ui"]
+    image: ghcr.io/vectorize-io/hindsight-control-plane:0.9.2
+    ports:
+      - "9999:9999"
+    environment:
+      HINDSIGHT_CP_DATAPLANE_API_URL: http://hindsight:8888
+      # Enabling the tenant extension closes the REST API too, not only /mcp, so
+      # the Control Plane is a client that has to authenticate like any other.
+      HINDSIGHT_CP_DATAPLANE_API_KEY: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
+      # Its own login. Defaulted to the same value rather than left unset,
+      # because unset means no login at all on a UI with full read/write access
+      # to every memory.
+      HINDSIGHT_CP_ACCESS_KEY: "${HINDSIGHT_CP_ACCESS_KEY:-${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}}"
+    depends_on:
+      hindsight:
+        condition: service_healthy
     networks:
       - errand-net
 
@@ -119,6 +186,9 @@ services:
       TASK_RUNNER_NETWORK: errand-net
       ERRAND_MCP_URL: http://errand:8000/mcp/
       HINDSIGHT_URL: http://hindsight:8888
+      # Must match HINDSIGHT_API_TENANT_API_KEY on the hindsight service, or
+      # every memory call comes back 401. Required — see that service.
+      HINDSIGHT_TOKEN: "${HINDSIGHT_TOKEN:?set HINDSIGHT_TOKEN in .env - generate one with `openssl rand -hex 32`}"
       PLAYWRIGHT_MCP_URL: http://playwright:3000/mcp
       LLM_PROVIDER_0_NAME: ${LLM_PROVIDER_0_NAME:-litellm}
       LLM_PROVIDER_0_BASE_URL: ${LLM_PROVIDER_0_BASE_URL:-http://litellm:4000}

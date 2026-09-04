@@ -58,7 +58,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          for IMAGE in "ghcr.io/${{ github.repository_owner }}/errand" "ghcr.io/${{ github.repository_owner }}/errand-task-runner" "ghcr.io/${{ github.repository_owner }}/errand-workspace-gateway" "ghcr.io/${{ github.repository_owner }}/errand-workspace-refresher"; do
+          for IMAGE in "ghcr.io/${{ github.repository_owner }}/errand" "ghcr.io/${{ github.repository_owner }}/errand-task-runner" "ghcr.io/${{ github.repository_owner }}/errand-workspace-gateway" "ghcr.io/${{ github.repository_owner }}/errand-workspace-refresher" "ghcr.io/${{ github.repository_owner }}/errand-hindsight"; do
             if docker manifest inspect "${IMAGE}:${TAG}" > /dev/null 2>&1; then
               echo "::error::Image tag ${TAG} already exists for ${IMAGE}. Bump the VERSION file."
               exit 1
@@ -276,8 +276,52 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/errand-workspace-refresher:${{ needs.version.outputs.tag }}
             ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/errand-workspace-refresher:latest', github.repository_owner) || '' }}
 
+  # The Hindsight runtime errand ships: upstream's pinned slim API image plus
+  # `transformers` and `flashrank`, with the embedding and reranker models baked
+  # in. The Dockerfile's last layer is a self-test that initialises both
+  # providers offline; if it fails the job fails here and nothing is pushed,
+  # which is the point of running it in the build rather than at start-up.
+  #
+  # Longer timeout than the other image jobs: ~530 MB of model artefacts are
+  # fetched from Hugging Face and FlashRank's CDN on a cold cache, for two
+  # platforms.
+  build-hindsight:
+    needs: [version, test]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: errand-ai-runner
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push hindsight runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.hindsight
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/errand-hindsight:${{ needs.version.outputs.tag }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/errand-hindsight:latest', github.repository_owner) || '' }}
+
   helm:
-    needs: [version, build-errand, build-task-runner, build-workspace-gateway, build-workspace-refresher]
+    needs: [version, build-errand, build-task-runner, build-workspace-gateway, build-workspace-refresher, build-hindsight]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: errand-ai-runner
     permissions:

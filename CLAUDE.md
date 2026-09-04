@@ -53,8 +53,14 @@ openspec schemas --json                   # List available workflow schemas
 
 ```
 Dockerfile             # Multi-stage: node (frontend build) + python (errand)
+Dockerfile.hindsight   # errand-hindsight: upstream slim + transformers/flashrank + baked models
+deploy/
+  docker-compose.yml   # Reference deployment (published images)
+  init-databases.sh    # Postgres first-run: litellm database + the vector and pg_trgm extensions
+  hindsight-image-selftest.py  # Build-time assertion for Dockerfile.hindsight
 testing/
   docker-compose.yml   # Local dev environment (Docker Compose)
+  init-db.sh           # Postgres first-run: the vector and pg_trgm extensions
 openspec/
   config.yaml          # OpenSpec config (schema: spec-driven)
   changes/             # Active changes (created by openspec new)
@@ -171,7 +177,9 @@ This project uses a Serena MCP server for semantic code navigation. Config: `.se
 - After changing `.serena/project.yml`, restart Serena via `/mcp` in Claude Code, then `activate_project`
 - Verify Python LSP: `get_symbols_overview` on a `.py` file should return Python symbols, not `{"Module": ["script setup"]}`
 
-## Memory (Hindsight)
+## Memory (Hindsight) — for Claude Code itself
+
+This section is about *your* memory as a coding agent, not about the Hindsight errand ships to its own users. For the latter see **Agent Memory Runtime (errand-hindsight)** below; the two are unrelated deployments that happen to run the same software.
 
 This project uses a [Hindsight](https://hindsight.vectorize.io) MCP server for persistent memory across conversations. The server is configured as `hindsight` in Claude Code's MCP settings, connected to the `claude-code` memory bank at `https://hindsight.coward.cloud/mcp/claude-code/`.
 
@@ -235,6 +243,55 @@ The `TaskManager` (`errand/task_manager.py`) runs as an asyncio background task 
 - **Known defect — the compaction estimator undercounts**: `_estimate_tokens` serialises only the message list, while the real prompt also carries the instructions and tool schemas. Measured on a real run: estimate 501 tokens against a provider-reported 5,925, a roughly fixed ~5,400-token blind spot. It shrinks proportionally as messages grow (~4% on a 145k history), so compaction fires late rather than never. Do not treat `_estimate_tokens` as comparable to `input_tokens`.
 - **Reading a `context_snapshot`**: its `estimated_tokens` is measured on the SDK's *full, uncompacted* message list, so within one task it climbs monotonically and can run several times the ceiling — one production task reached 589,171 against a 150,000 limit across 39 compaction triggers. That is not compaction failing to reclaim: the SDK discards `call_model_input_filter` output and rebuilds history from the run loop's own items each turn (see the `_compaction_summary` comment in `task-runner/main.py`), so `_compact_context` is handed the whole history every turn and `estimated_tokens` is its *input*, never its result. The same task's measured prompt peaked at 126,149. Only `input_tokens` describes what reached the model, and only it is a statement about context pressure; the compaction sawtooth is visible in that series alone.
 - **LLM request timeout**: The task manager resolves the per-task LLM timeout (`profile.llm_timeout` → `task_processing_timeout` setting → `30`s default) and passes it to the runner via the `LLM_REQUEST_TIMEOUT` env var. The runner constructs `AsyncOpenAI(..., timeout=...)` with the value. Compaction has a separate `COMPACTION_TIMEOUT_SECONDS` env var that does NOT inherit from `LLM_REQUEST_TIMEOUT`.
+
+## Agent Memory Runtime (errand-hindsight)
+
+The memory service errand ships to its users. Built from `Dockerfile.hindsight`, published as `ghcr.io/errand-ai/errand-hindsight` alongside the other four images.
+
+**What it is.** `FROM ghcr.io/vectorize-io/hindsight-api:0.9.2-slim` plus exactly two named packages, `transformers` and `flashrank`, installed into the base image's venv at `/app/api/.venv` with `uv` (that venv has no `pip`). Nothing is patched or vendored. The base tag is pinned, never `latest-slim`, and Renovate tracks the `ARG HINDSIGHT_BASE_TAG` line via a custom manager in `renovate.json`.
+
+**Why it exists.** Upstream's slim image already carries `onnxruntime`, `tokenizers`, `huggingface_hub` and the `OnnxEmbeddings` provider, but not `transformers` — so `OnnxEmbeddings.initialize()` raises `ImportError` and slim cannot embed locally at all. One pure-Python package away from working. Reported upstream as [vectorize-io/hindsight#4116](https://github.com/vectorize-io/hindsight/issues/4116); if it is accepted this image reduces to stock slim plus `flashrank` and the baked models.
+
+**Measured sizes** (arm64, `docker images`). The proposal's "2.98 GB" was an underestimate; these are the built figures:
+
+| image | size |
+|---|---|
+| upstream `0.9.2-slim` | 2.90 GB |
+| **`errand-hindsight`** | **3.85 GB** |
+| upstream full | 5.47 GB |
+
+The gap is models, not code: `multilingual-e5-small`'s `onnx/model.onnx` is a 470 MB fp32 export (small in parameters, but multilingual, so the token-embedding matrix dominates), plus 37 MB of FlashRank. **RAM does not follow disk** — under identical load, full measured 892 MiB and slim+onnx 1.35 GiB. slim+onnx uses *more*, most likely ONNX Runtime's CPU memory arena. The win is disk and download size only.
+
+**Models are baked in** at `/opt/hindsight-models/`, deliberately outside `$HOME`: deployments mount a volume over `/home/hindsight/.cache`, which would shadow anything baked underneath it. First run needs no network.
+
+Two non-obvious build rules, both worth several hundred MB:
+- Never `chown -R` the model directory after populating it — chown rewrites every file into a duplicate layer (+549 MB measured). Create the directory owned by uid 1000 while empty, then download as that user.
+- Never fetch the model with `*.json` globs — the HF repo carries a second copy of the tokenizer inside `onnx/` (17 MB for `tokenizer.json` alone).
+
+**The build self-tests.** `deploy/hindsight-image-selftest.py` runs as the last layer, offline, as the runtime user: it initialises both providers against the baked artefacts, asserts the graph reports 384 dimensions and actually embeds, and asserts `torch` and `sentence_transformers` are absent. A failure fails the build, so nothing is published. Verified by construction against three broken bases (transformers removed, venv relocated, wrong dimension).
+
+**`flashrank` is not optional.** Dropping the neural reranker for `rrf` halved recall@1 (0.87 → 0.40) on the same bank with the same vectors. `rrf` is rank-fusion passthrough; it belongs only as the terminator of a fallback chain.
+
+### Configuration in compose
+
+- **One database, two schemas.** Hindsight shares errand's PostgreSQL database with `HINDSIGHT_API_DATABASE_SCHEMA=hindsight`. There is no `CREATE DATABASE hindsight` any more. Alembic owns `public` and never touches the other — enforced by `errand/tests/test_alembic_schema_boundary.py`, which scans migration *source* so it constrains future migrations too. **Both `vector` and `pg_trgm` are installed by the postgres init script, in `public`, and the `pg_trgm` line is load-bearing** — left to itself Hindsight creates that one in its own tenant schema, where its runtime cannot resolve the `%` operator, and every `retain` then fails in entity resolution and retries forever. Nothing surfaces it: the container is healthy, `/health` returns 200, and the MCP `retain` call still returns `accepted`, so the only symptom is that memory never appears. The init script wins because `CREATE EXTENSION IF NOT EXISTS` matches on the *database*, not the schema, making Hindsight's misplaced create a no-op — which is also why a wrong schema there would be worse than omitting the line. Upstream: [#4118](https://github.com/vectorize-io/hindsight/issues/4118). Do not remove or 'tidy' either line.
+- **Authentication.** `HINDSIGHT_API_MCP_AUTH_TOKEN` **does not exist** — do not look for it. Auth is a tenant extension: `HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension` plus `HINDSIGHT_API_TENANT_API_KEY`. It closes the **whole HTTP surface**, REST included, not just `/mcp`; `/health` stays open, so healthchecks are unaffected. Any future server-side REST call from errand (e.g. `memory-status-panel`) must carry the bearer.
+- **errand mints the bearer.** `ensure_hindsight_token()` (in `settings_registry.py`, called from the lifespan) generates and persists `hindsight_token` when a Hindsight URL is configured and neither `HINDSIGHT_TOKEN` nor the setting supplies one. It never overwrites a configured value, and is idempotent across restarts. The key carries `mask_always: True` in `SETTINGS_REGISTRY`, so `GET /api/settings` masks it whatever its source — unlike `mcp_api_key`, which the settings UI exists to display.
+- **`HINDSIGHT_API_WORKER_ID` is pinned to the service name.** The default is the container hostname, which changes on every recreate; upstream warns at start-up that this can strand claimed operations.
+- **Volume ownership.** Docker creates a root-owned empty volume when the image has no directory at the mount point, and Hindsight runs as uid 1000 — hence the `hindsight-init` service. `errand/tests/test_compose_hindsight.py` asserts every mount into Hindsight is covered, in both compose files, because they previously drifted.
+
+### The Control Plane is opt-in
+
+Graph exploration, per-memory editing, directives and webhooks: an expert debugging tool, not part of the product. It used to be published on `9999` unconditionally in both compose files. It now sits behind the `memory-ui` profile and starts only on request:
+
+```bash
+docker compose -f testing/docker-compose.yml --profile memory-ui up   # local dev
+docker compose --profile memory-ui up                                 # from deploy/
+```
+
+A default `docker compose up` starts no Control Plane and publishes no port for it. When started, it authenticates to the API with the same bearer (`HINDSIGHT_CP_DATAPLANE_API_KEY`) and has its own login (`HINDSIGHT_CP_ACCESS_KEY`, defaulted to the same value — unset would mean no login at all on a UI with full read/write access to every memory).
+
+**Kubernetes is out of scope.** The Helm chart still points `hindsight.url` at an externally-installed instance.
 
 ## LLM Timeouts
 
@@ -335,5 +392,5 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Version: tracked in the `VERSION` file (single source of truth — do not hard-code it here) — bump per semver for main/release commits (CI enforces immutable tags on `main`; PR builds auto-version via the `github.run_number` suffix, so no per-commit bump is needed on a PR branch)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
-- Tests: 1966 errand + 404 task-runner + 38 evals (pytest) + 267 frontend (vitest) — CI `test` job gates both build jobs
+- Tests: 2106 errand + 412 task-runner + 38 evals (pytest) + 275 frontend (vitest) — CI `test` job gates all five build jobs
 - 181 component specs in `openspec/specs/`
