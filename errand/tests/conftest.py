@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS model_metadata_cache (
     normalized_name TEXT NOT NULL UNIQUE,
     supports_reasoning BOOLEAN NOT NULL,
     max_output_tokens INTEGER,
+    mode TEXT,
     source_keys TEXT NOT NULL DEFAULT '[]',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )

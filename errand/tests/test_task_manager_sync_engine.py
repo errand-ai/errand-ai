@@ -70,7 +70,7 @@ def test_resolve_provider_sync_reuses_cached_engine(monkeypatch):
     # Fake engine whose .connect() returns a context manager yielding a conn
     # whose execute().fetchone() returns a provider row.
     conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = ("https://llm.example", b"encrypted")
+    conn.execute.return_value.fetchone.return_value = ("https://llm.example", b"encrypted", "database")
     engine = MagicMock()
     engine.connect.return_value.__enter__.return_value = conn
     engine.connect.return_value.__exit__.return_value = False
@@ -80,6 +80,6 @@ def test_resolve_provider_sync_reuses_cached_engine(monkeypatch):
             first = task_manager._resolve_provider_sync("provider-a")
             second = task_manager._resolve_provider_sync("provider-b")
 
-    assert first == {"base_url": "https://llm.example", "api_key": "plaintext"}
+    assert first == {"base_url": "https://llm.example", "api_key": "plaintext", "source": "database"}
     assert second == first
     assert mock_create.call_count == 1

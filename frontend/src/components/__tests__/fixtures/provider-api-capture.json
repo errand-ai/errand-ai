@@ -1,0 +1,270 @@
+{
+  "catalog": [
+    {
+      "id": "openrouter",
+      "display_name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://openrouter.ai/keys",
+      "note": "Aggregator covering many providers behind one key. Chat completions only \u2014 it exposes no embeddings endpoint."
+    },
+    {
+      "id": "openai",
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://platform.openai.com/api-keys",
+      "note": null
+    },
+    {
+      "id": "anthropic",
+      "display_name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://console.anthropic.com/settings/keys",
+      "note": "OpenAI compatibility layer."
+    },
+    {
+      "id": "google-gemini",
+      "display_name": "Google Gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "supports_model_listing": false,
+      "requires_base_url": false,
+      "api_key_url": "https://aistudio.google.com/apikey",
+      "note": "The OpenAI-compatible surface does not list models \u2014 enter a model name directly."
+    },
+    {
+      "id": "groq",
+      "display_name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://console.groq.com/keys",
+      "note": null
+    },
+    {
+      "id": "mistral",
+      "display_name": "Mistral",
+      "base_url": "https://api.mistral.ai/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://console.mistral.ai/api-keys",
+      "note": null
+    },
+    {
+      "id": "deepseek",
+      "display_name": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://platform.deepseek.com/api_keys",
+      "note": null
+    },
+    {
+      "id": "xai",
+      "display_name": "xAI",
+      "base_url": "https://api.x.ai/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://console.x.ai",
+      "note": null
+    },
+    {
+      "id": "cerebras",
+      "display_name": "Cerebras",
+      "base_url": "https://api.cerebras.ai/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://cloud.cerebras.ai",
+      "note": null
+    },
+    {
+      "id": "together",
+      "display_name": "Together AI",
+      "base_url": "https://api.together.xyz/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://api.together.xyz/settings/api-keys",
+      "note": null
+    },
+    {
+      "id": "fireworks",
+      "display_name": "Fireworks AI",
+      "base_url": "https://api.fireworks.ai/inference/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://fireworks.ai/account/api-keys",
+      "note": null
+    },
+    {
+      "id": "deepinfra",
+      "display_name": "DeepInfra",
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://deepinfra.com/dash/api_keys",
+      "note": null
+    },
+    {
+      "id": "perplexity",
+      "display_name": "Perplexity",
+      "base_url": "https://api.perplexity.ai/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://www.perplexity.ai/settings/api",
+      "note": null
+    },
+    {
+      "id": "huggingface",
+      "display_name": "Hugging Face",
+      "base_url": "https://router.huggingface.co/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://huggingface.co/settings/tokens",
+      "note": null
+    },
+    {
+      "id": "nebius",
+      "display_name": "Nebius AI Studio",
+      "base_url": "https://api.studio.nebius.com/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://studio.nebius.com/settings/api-keys",
+      "note": null
+    },
+    {
+      "id": "novita",
+      "display_name": "Novita AI",
+      "base_url": "https://api.novita.ai/v3/openai",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://novita.ai/settings/key-management",
+      "note": null
+    },
+    {
+      "id": "hyperbolic",
+      "display_name": "Hyperbolic",
+      "base_url": "https://api.hyperbolic.xyz/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://app.hyperbolic.xyz/settings",
+      "note": null
+    },
+    {
+      "id": "siliconflow",
+      "display_name": "SiliconFlow",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "supports_model_listing": true,
+      "requires_base_url": false,
+      "api_key_url": "https://cloud.siliconflow.cn/account/ak",
+      "note": null
+    },
+    {
+      "id": "litellm",
+      "display_name": "LiteLLM proxy",
+      "base_url": null,
+      "supports_model_listing": true,
+      "requires_base_url": true,
+      "api_key_url": null,
+      "note": "A self-hosted proxy you run. Adds virtual keys, cost governance and an MCP gateway; needs standing up first."
+    },
+    {
+      "id": "other",
+      "display_name": "Other (OpenAI-compatible)",
+      "base_url": null,
+      "supports_model_listing": true,
+      "requires_base_url": true,
+      "api_key_url": null,
+      "note": "Anything exposing an OpenAI-compatible API. Supply its base URL and key."
+    }
+  ],
+  "scan_found": {
+    "available": true,
+    "detected": [
+      {
+        "name": "ollama",
+        "base_url": "http://host.docker.internal:11434/v1",
+        "provider_type": "openai_compatible"
+      }
+    ],
+    "message": null
+  },
+  "scan_unavailable": {
+    "available": false,
+    "detected": [],
+    "message": "Local AI detection is not available for this deployment, because there is no container host to probe."
+  },
+  "providers": [
+    {
+      "id": "fb9e95a5-4576-45a7-b087-70b355f0a937",
+      "name": "my-proxy",
+      "base_url": "https://proxy.example/v1",
+      "api_key": "sk-r****",
+      "provider_type": "litellm",
+      "is_default": true,
+      "source": "database",
+      "created_at": "2026-09-05T14:27:06.403808",
+      "updated_at": "2026-09-05T14:27:06.403811"
+    },
+    {
+      "id": "bbd95e24-0c68-44c2-9eeb-df518ad7b9b1",
+      "name": "ollama",
+      "base_url": "http://host.docker.internal:11434/v1",
+      "api_key": "sk-n****",
+      "provider_type": "openai_compatible",
+      "is_default": false,
+      "source": "detected",
+      "created_at": "2026-09-05T14:27:06.407091",
+      "updated_at": "2026-09-05T14:27:06.407092"
+    }
+  ],
+  "reachability_down": {
+    "id": "fb9e95a5-4576-45a7-b087-70b355f0a937",
+    "reachable": false,
+    "provider_type": "unknown",
+    "checked_at": "2026-09-05T14:27:06.410086+00:00"
+  },
+  "reachability_up": {
+    "id": "fb9e95a5-4576-45a7-b087-70b355f0a937",
+    "reachable": true,
+    "provider_type": "litellm",
+    "checked_at": "2026-09-05T14:27:06.411014+00:00"
+  },
+  "models": [
+    {
+      "id": "bge-m3",
+      "supports_reasoning": false,
+      "max_output_tokens": null,
+      "mode": "embedding"
+    },
+    {
+      "id": "mystery-7b",
+      "supports_reasoning": null,
+      "max_output_tokens": null,
+      "mode": null
+    },
+    {
+      "id": "qwen3:8b",
+      "supports_reasoning": false,
+      "max_output_tokens": 8192,
+      "mode": "chat"
+    }
+  ],
+  "models_chat_filtered": [
+    {
+      "id": "mystery-7b",
+      "supports_reasoning": null,
+      "max_output_tokens": null,
+      "mode": null
+    },
+    {
+      "id": "qwen3:8b",
+      "supports_reasoning": false,
+      "max_output_tokens": 8192,
+      "mode": "chat"
+    }
+  ]
+}

@@ -21,6 +21,7 @@ from typing import Any
 
 import requests
 
+from host_gateway import get_host_gateway_address
 from ssh_known_hosts import known_hosts_content, unpinned_hosts
 
 logger = logging.getLogger(__name__)
@@ -254,6 +255,14 @@ class DockerRuntime(ContainerRuntime):
         net_kwargs: dict[str, Any] = {}
         if task_runner_network:
             net_kwargs["network"] = task_runner_network
+            # On a named network the container has its own namespace, so a
+            # host-run service (e.g. a local AI runtime) is only reachable
+            # through an explicit host entry. Under host networking the
+            # namespace is already shared and the entry would be meaningless,
+            # which is why detected providers are refused there instead.
+            gateway_address = get_host_gateway_address()
+            if gateway_address:
+                net_kwargs["extra_hosts"] = {gateway_address: "host-gateway"}
         else:
             net_kwargs["network_mode"] = "host"
 
@@ -1391,6 +1400,19 @@ class AppleContainerRuntime(ContainerRuntime):
                 logger.info("Removed container %s via bridge API", container_id)
             except Exception:
                 logger.debug("Failed to remove container via bridge API", exc_info=True)
+
+
+def task_containers_use_host_networking() -> bool:
+    """Whether task containers will share the container host's network namespace.
+
+    Only the Docker runtime does this, and only when no named network is
+    configured. It is the one mode in which a host gateway name resolves
+    differently inside the container than it did when the provider was probed,
+    so it is the one mode in which a detected provider's stored URL is wrong.
+    """
+    if os.environ.get("CONTAINER_RUNTIME", "docker") != "docker":
+        return False
+    return not os.environ.get("TASK_RUNNER_NETWORK", "").strip()
 
 
 def create_runtime(runtime_type: str | None = None) -> ContainerRuntime:
