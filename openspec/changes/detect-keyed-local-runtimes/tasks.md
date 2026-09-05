@@ -15,8 +15,10 @@
 - [ ] 3.1 Write failing tests: adopting with an accepted key creates a `source="detected"` provider carrying that key; a rejected key creates nothing and says so; an unreachable endpoint creates nothing and says so; the adopted endpoint stops being reported as needing a key
 - [ ] 3.2 Implement the adopt operation — probe with the supplied key, and create only on acceptance
 - [ ] 3.3 Take the provider name from the probe response obtained with the key (D2), not from the candidate table
-- [ ] 3.4 Expose it through the API
-- [ ] 3.5 Confirm the adopted provider gets the raised detected-provider timeout, since that is the reason `source` matters here
+- [ ] 3.4 Expose it through the API as `POST /api/llm/providers/adopt-local`, returning 200 with `adopted` and a machine-readable `reason` (`key_rejected` / `unreachable` / `name_conflict`) rather than a status code the caller has to interpret — matching the reachability check, which already reports a finding as 200
+- [ ] 3.5 Carry `conflicting_name` on a `name_conflict` refusal, and accept an optional `name` so the caller can re-submit without renaming the other provider first
+- [ ] 3.6 Confirm adoption performs no scan and removes nothing — the constraint belongs where the deletion lives, not in the caller's restraint
+- [ ] 3.7 Confirm the adopted provider gets the raised detected-provider timeout, since that is the reason `source` matters here
 
 ## 4. Reconciliation with stored keys
 
