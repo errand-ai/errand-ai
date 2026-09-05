@@ -1082,10 +1082,23 @@ async def list_providers(
     return [provider_to_dict(p) for p in providers]
 
 
+@app.get("/api/llm/provider-catalog")
+async def list_provider_catalog(
+    _user: dict = Depends(require_admin),
+):
+    """Known hosted providers, so adding one is a selection rather than a URL."""
+    from provider_catalog import PROVIDER_CATALOG, catalog_to_dict
+
+    return [catalog_to_dict(entry) for entry in PROVIDER_CATALOG]
+
+
 class ProviderCreate(BaseModel):
-    name: str
-    base_url: str
+    # `name` and `base_url` are optional only so that a catalog selection can
+    # supply them. Without a catalog_id both are still required.
+    name: str | None = None
+    base_url: str | None = None
     api_key: str
+    catalog_id: str | None = None
 
 
 @app.post("/api/llm/providers", status_code=201)
@@ -1094,22 +1107,44 @@ async def create_provider(
     session: AsyncSession = Depends(get_session),
     _user: dict = Depends(require_admin),
 ):
+    from provider_catalog import catalog_entry
+
+    name = body.name
+    base_url = body.base_url
+
+    if body.catalog_id:
+        entry = catalog_entry(body.catalog_id)
+        if entry is None:
+            raise HTTPException(status_code=422, detail="Unknown catalog entry")
+        if entry.requires_base_url:
+            if not base_url:
+                raise HTTPException(
+                    status_code=422,
+                    detail="base_url is required for this catalog entry",
+                )
+        else:
+            base_url = entry.base_url
+        name = name or entry.display_name
+
+    if not name or not base_url:
+        raise HTTPException(status_code=422, detail="name and base_url are required")
+
     # Check for duplicate name
     result = await session.execute(
-        select(LlmProvider).where(LlmProvider.name == body.name)
+        select(LlmProvider).where(LlmProvider.name == name)
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Provider name already exists")
 
-    provider_type = await probe_provider_type(body.base_url, body.api_key)
+    provider_type = await probe_provider_type(base_url, body.api_key)
 
     # If no providers exist yet, make this the default
     count_result = await session.execute(select(func.count()).select_from(LlmProvider))
     is_first = count_result.scalar() == 0
 
     provider = LlmProvider(
-        name=body.name,
-        base_url=body.base_url,
+        name=name,
+        base_url=base_url,
         api_key_encrypted=encrypt_api_key(body.api_key),
         provider_type=provider_type,
         is_default=is_first,
@@ -1119,6 +1154,22 @@ async def create_provider(
     await session.commit()
     await session.refresh(provider)
     return provider_to_dict(provider)
+
+
+@app.post("/api/llm/providers/scan-local")
+async def scan_local_ai_providers(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Probe well-known local AI endpoints and reconcile detected providers.
+
+    Where there is no container host to probe — Kubernetes, or an explicitly
+    empty gateway address — this reports itself unavailable rather than
+    failing, so the UI can say why instead of showing an error.
+    """
+    from local_ai_detection import scan_local_ai
+
+    return await scan_local_ai(session)
 
 
 class ProviderUpdate(BaseModel):
@@ -1215,6 +1266,39 @@ async def set_default_provider(
     return provider_to_dict(provider)
 
 
+@app.get("/api/llm/providers/{provider_id}/reachability")
+async def check_provider_reachability(
+    provider_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Report whether a provider is answering right now.
+
+    Deliberately read-only. A detected runtime that has been stopped would
+    otherwise surface only as a task failure, but re-probing it into the stored
+    row would also mean a transient outage silently rewriting a provider's type
+    — so this reports what it saw and changes nothing.
+    """
+    result = await session.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    from llm_providers import decrypt_api_key
+
+    observed_type = await probe_provider_type(
+        provider.base_url, decrypt_api_key(provider.api_key_encrypted)
+    )
+    return {
+        "id": str(provider.id),
+        "reachable": observed_type != "unknown",
+        "provider_type": observed_type,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.get("/api/llm/providers/{provider_id}/models")
 async def list_provider_models(
     provider_id: uuid.UUID,
@@ -1236,18 +1320,40 @@ async def list_provider_models(
 
     client = get_client_for_provider_sync(provider)
 
-    # If mode filter requested and provider is litellm, use /model/info.
-    # The shared settings card (`LlmModelCard`) sends role-based mode names
-    # (`title`, `task_processing`, `transcription`); translate these to the
-    # LiteLLM `model_info.mode` vocabulary. Unrecognised values (e.g. a raw
-    # LiteLLM mode like `chat`) pass through unchanged for backward compatibility.
-    if mode and provider.provider_type == "litellm":
-        role_mode_to_litellm = {
-            "title": "chat",
-            "task_processing": "chat",
-            "transcription": "audio_transcription",
-        }
-        effective_mode = role_mode_to_litellm.get(mode, mode)
+    # The shared settings card (`LlmModelCard`) sends role-based mode names;
+    # translate them to the vocabulary both LiteLLM's `model_info.mode` and the
+    # metadata registry use. Unrecognised values (e.g. a raw `chat`) pass
+    # through unchanged for backward compatibility.
+    role_mode_to_registry = {
+        "title": "chat",
+        "task_processing": "chat",
+        "transcription": "audio_transcription",
+    }
+    effective_mode = role_mode_to_registry.get(mode, mode) if mode else None
+
+    # Modes the provider reports itself, which take precedence over the
+    # registry. Only LiteLLM exposes them, and only via /model/info.
+    provider_modes: dict[str, str | None] = {}
+
+    # The model list itself always comes from /v1/models, for every provider
+    # type. LiteLLM's /model/info is consulted *in addition*, for the modes it
+    # reports — it is not the source of the list. Making it the source would
+    # mean a proxy that restricts /model/info to admin keys (LiteLLM does this
+    # for virtual keys) has no browsable models at all, where /v1/models would
+    # have served them.
+    try:
+        models_resp = await client.models.list()
+        model_names = sorted([m.id for m in models_resp.data])
+        # A few OpenAI-compatible providers report a mode on the listing
+        # itself; take it when it is there rather than going to the registry.
+        for m in models_resp.data:
+            reported = getattr(m, "mode", None)
+            if isinstance(reported, str) and reported:
+                provider_modes[m.id] = reported
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+
+    if provider.provider_type == "litellm":
         from llm_providers import decrypt_api_key
         api_key = decrypt_api_key(provider.api_key_encrypted)
         stripped_url = provider.base_url.rstrip("/")
@@ -1262,34 +1368,17 @@ async def list_provider_models(
                 )
                 resp.raise_for_status()
                 data = resp.json()
-
-            def _mode_matches(model_mode: str | None) -> bool:
-                if model_mode == effective_mode:
-                    return True
-                # LiteLLM leaves `model_info.mode` unset/null for many chat
-                # models, so a strict equality check drops valid chat selections
-                # (e.g. the user's saved title/task model). Treat unknown-mode
-                # models as chat-capable. Non-chat roles (audio_transcription)
-                # stay strict so an embedding/whisper model can't leak into the
-                # chat dropdowns.
-                if effective_mode == "chat" and not model_mode:
-                    return True
-                return False
-
-            model_names = sorted([
-                entry["model_name"]
-                for entry in data.get("data", [])
-                if _mode_matches(entry.get("model_info", {}).get("mode"))
-            ])
+            for entry in data.get("data", []):
+                name = entry.get("model_name")
+                if name:
+                    provider_modes[name] = entry.get("model_info", {}).get("mode")
         except Exception:
-            raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
-    else:
-        # Standard models.list() for litellm and openai_compatible
-        try:
-            models_resp = await client.models.list()
-            model_names = sorted([m.id for m in models_resp.data])
-        except Exception:
-            raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+            # Enrichment, not a dependency. Without it the registry resolves
+            # the modes, exactly as it does for every non-LiteLLM provider.
+            logger.warning(
+                "Could not read /model/info for provider %s; falling back to "
+                "registry modes", provider.id, exc_info=True,
+            )
 
     # Enrich with metadata from cache (single query for all models)
     metadata_map = await batch_lookup_model_metadata(model_names, session)
@@ -1299,10 +1388,19 @@ async def list_provider_models(
         meta = metadata_map[name]
         if meta.supports_reasoning is None and meta.max_output_tokens is None:
             has_unmatched = True
+        # The provider's own answer wins; the registry fills the silence.
+        resolved_mode = provider_modes.get(name) or meta.mode
+        if effective_mode and resolved_mode and resolved_mode != effective_mode:
+            # Positively identified as something else — filter it out. A model
+            # whose mode nobody knows stays in the list, reported with a null
+            # mode, because dropping it would leave a user of a provider that
+            # publishes no modes with nothing to select.
+            continue
         enriched.append({
             "id": name,
             "supports_reasoning": meta.supports_reasoning,
             "max_output_tokens": meta.max_output_tokens,
+            "mode": resolved_mode,
         })
 
     # Trigger background refresh if unmatched models and cache is stale (>1h)

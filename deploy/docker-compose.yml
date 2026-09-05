@@ -86,6 +86,12 @@ services:
 
   hindsight:
     image: ghcr.io/errand-ai/errand-hindsight:latest
+    # A locally detected AI runtime is stored with the base URL that answered
+    # the probe (http://host.docker.internal:11434/v1). The engine resolves
+    # `host-gateway` to the real host on Docker Desktop and on Linux alike, so
+    # one mapping serves both audiences.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8888:8888"
     environment:
@@ -174,6 +180,12 @@ services:
 # interacting with the Errand agent.
   errand:
     image: ghcr.io/errand-ai/errand:latest
+    # A locally detected AI runtime is stored with the base URL that answered
+    # the probe (http://host.docker.internal:11434/v1). The engine resolves
+    # `host-gateway` to the real host on Docker Desktop and on Linux alike, so
+    # one mapping serves both audiences.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:

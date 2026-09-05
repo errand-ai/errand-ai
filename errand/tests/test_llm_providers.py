@@ -196,6 +196,104 @@ async def test_set_default_provider(admin_client: AsyncClient):
     assert first["is_default"] is False
 
 
+# --- Reachability ---
+
+
+async def test_reachability_reports_a_working_provider(admin_client: AsyncClient):
+    provider = await _create_test_provider(admin_client, "reachable-prov")
+
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="openai_compatible"):
+        resp = await admin_client.get(f"/api/llm/providers/{provider['id']}/reachability")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reachable"] is True
+    assert body["provider_type"] == "openai_compatible"
+    assert body["checked_at"]
+
+
+async def test_reachability_reports_a_stopped_provider(admin_client: AsyncClient):
+    """A detected runtime that has since stopped must be distinguishable from a working one."""
+    provider = await _create_test_provider(admin_client, "stopped-prov")
+
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="unknown"):
+        resp = await admin_client.get(f"/api/llm/providers/{provider['id']}/reachability")
+
+    assert resp.status_code == 200
+    assert resp.json()["reachable"] is False
+
+
+async def test_reachability_does_not_mutate_stored_configuration(admin_client: AsyncClient):
+    """Checking is not re-probing: a provider whose service is down keeps its type."""
+    provider = await _create_test_provider(admin_client, "unchanged-prov")
+    assert provider["provider_type"] == "openai_compatible"
+
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="unknown"):
+        await admin_client.get(f"/api/llm/providers/{provider['id']}/reachability")
+
+    after = next(
+        p for p in (await admin_client.get("/api/llm/providers")).json()
+        if p["id"] == provider["id"]
+    )
+    assert after["provider_type"] == "openai_compatible"
+    assert after["base_url"] == provider["base_url"]
+    assert after["api_key"] == provider["api_key"]
+    assert after["is_default"] == provider["is_default"]
+
+
+async def test_reachability_unknown_provider_is_404(admin_client: AsyncClient):
+    resp = await admin_client.get(f"/api/llm/providers/{uuid.uuid4()}/reachability")
+    assert resp.status_code == 404
+
+
+async def test_reachability_requires_admin(client: AsyncClient):
+    resp = await client.get(f"/api/llm/providers/{uuid.uuid4()}/reachability")
+    assert resp.status_code == 403
+
+
+# --- Local AI scan endpoint ---
+
+
+async def test_scan_local_reports_what_was_detected(admin_client: AsyncClient):
+    scan_result = {
+        "available": True,
+        "detected": [{"name": "ollama", "base_url": "http://host.docker.internal:11434/v1",
+                      "provider_type": "openai_compatible"}],
+        "message": None,
+    }
+    with patch("local_ai_detection.scan_local_ai", new_callable=AsyncMock, return_value=scan_result):
+        resp = await admin_client.post("/api/llm/providers/scan-local")
+
+    assert resp.status_code == 200
+    assert resp.json() == scan_result
+
+
+async def test_scan_local_reports_nothing_found_without_erroring(admin_client: AsyncClient):
+    with patch("local_ai_detection.scan_local_ai", new_callable=AsyncMock,
+               return_value={"available": True, "detected": [], "message": None}):
+        resp = await admin_client.post("/api/llm/providers/scan-local")
+
+    assert resp.status_code == 200
+    assert resp.json()["detected"] == []
+
+
+async def test_scan_local_reports_unavailability_rather_than_failing(admin_client: AsyncClient):
+    """No host to probe is a fact to report, not a server error."""
+    with patch("local_ai_detection.scan_local_ai", new_callable=AsyncMock,
+               return_value={"available": False, "detected": [], "message": "no container host"}):
+        resp = await admin_client.post("/api/llm/providers/scan-local")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["message"]
+
+
+async def test_scan_local_requires_admin(client: AsyncClient):
+    resp = await client.post("/api/llm/providers/scan-local")
+    assert resp.status_code == 403
+
+
 async def test_non_admin_rejected(client: AsyncClient):
     resp = await client.get("/api/llm/providers")
     assert resp.status_code == 403
@@ -470,10 +568,14 @@ async def test_resolve_model_setting_missing_provider():
 
 async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
     """The settings card's role-based mode names (`title`, `task_processing`,
-    `transcription`) are mapped to LiteLLM's `model_info.mode` vocabulary
-    (`chat`, `chat`, `audio_transcription`). The chat filter is lenient — it also
-    includes models LiteLLM leaves with an unset/null `mode` (many valid chat
-    models) — while non-chat roles stay strict."""
+    `transcription`) are mapped to the `chat`/`audio_transcription` vocabulary
+    shared by LiteLLM's `model_info.mode` and the metadata registry.
+
+    Every filter is lenient about *unknown* mode and strict about *known-other*
+    mode: a model LiteLLM leaves unset and the registry does not recognise is
+    returned with `mode: null`, whichever role was asked for. Dropping those
+    would leave anyone whose provider publishes no modes — every local runtime —
+    staring at an empty dropdown."""
     with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
         resp = await admin_client.post("/api/llm/providers", json={
             "name": "lite", "base_url": "https://litellm.example.com", "api_key": "sk-key",
@@ -498,17 +600,206 @@ async def test_list_provider_models_role_mode_alias(admin_client: AsyncClient):
         instance.get = AsyncMock(return_value=mock_resp)
         return instance
 
-    with patch("main.httpx.AsyncClient", side_effect=make_client):
+    # The names come from /v1/models for every provider type; /model/info is
+    # consulted only for the modes it reports.
+    listing = _model_listing([e["model_name"] for e in model_info["data"]])
+
+    with patch("main.httpx.AsyncClient", side_effect=make_client), \
+            patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        oa = AsyncMock()
+        oa.models.list = AsyncMock(return_value=listing)
+        MockOpenAI.return_value = oa
+        _clients.clear()
         r_title = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=title")
+        _clients.clear()
         r_task = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=task_processing")
+        _clients.clear()
         r_trans = await admin_client.get(f"/api/llm/providers/{provider['id']}/models?mode=transcription")
+    _clients.clear()
 
     assert r_title.status_code == 200
-    # title/task -> chat, lenient: chat-mode + unset-mode; excludes embedding + audio_transcription
+    # title/task -> chat: chat-mode + unknown-mode; excludes embedding + audio_transcription
     assert {m["id"] for m in r_title.json()} == {"claude-x", "untagged-chat", "no-mode-field"}
     assert {m["id"] for m in r_task.json()} == {"claude-x", "untagged-chat", "no-mode-field"}
-    # transcription -> audio_transcription, strict: only the whisper model
-    assert {m["id"] for m in r_trans.json()} == {"whisper-z"}
+    # transcription -> audio_transcription: the whisper model, plus the two the
+    # provider did not classify, which are marked so the UI can tell them apart
+    # from a positive match.
+    assert {m["id"] for m in r_trans.json()} == {"whisper-z", "untagged-chat", "no-mode-field"}
+    by_id = {m["id"]: m for m in r_trans.json()}
+    assert by_id["whisper-z"]["mode"] == "audio_transcription"
+    assert by_id["untagged-chat"]["mode"] is None
+
+
+async def test_openai_compatible_mode_filter_uses_the_registry(admin_client: AsyncClient):
+    """A provider whose listing carries no mode is filterable all the same."""
+    provider = await _create_test_provider(admin_client, "local-ollama")
+
+    models = MagicMock()
+    models.data = [_bare_model("qwen3:8b"), _bare_model("bge-m3"), _bare_model("mystery-7b")]
+
+    from database import get_session
+    from main import app
+    from models import ModelMetadataCache
+    async for session in app.dependency_overrides[get_session]():
+        session.add(ModelMetadataCache(
+            normalized_name="qwen3", supports_reasoning=False,
+            max_output_tokens=None, mode="chat", source_keys=["qwen3"],
+        ))
+        session.add(ModelMetadataCache(
+            normalized_name="bge-m3", supports_reasoning=False,
+            max_output_tokens=None, mode="embedding", source_keys=["bge-m3"],
+        ))
+        await session.commit()
+
+    with patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        mock_client = AsyncMock()
+        mock_client.models.list = AsyncMock(return_value=models)
+        MockOpenAI.return_value = mock_client
+        _clients.clear()
+        resp = await admin_client.get(
+            f"/api/llm/providers/{provider['id']}/models?mode=task_processing"
+        )
+
+    assert resp.status_code == 200
+    by_id = {m["id"]: m for m in resp.json()}
+    # The embedding model is positively something else, so it goes.
+    assert "bge-m3" not in by_id
+    assert by_id["qwen3:8b"]["mode"] == "chat"
+    # Unknown to the registry — kept, and marked as unknown.
+    assert by_id["mystery-7b"]["mode"] is None
+
+
+async def test_provider_reported_mode_wins_over_the_registry(admin_client: AsyncClient):
+    provider = await _create_test_provider(admin_client, "reports-mode")
+
+    reporting = MagicMock()
+    reporting.id = "surprise-1"
+    reporting.mode = "embedding"
+    models = MagicMock()
+    models.data = [reporting]
+
+    from database import get_session
+    from main import app
+    from models import ModelMetadataCache
+    async for session in app.dependency_overrides[get_session]():
+        session.add(ModelMetadataCache(
+            normalized_name="surprise-1", supports_reasoning=False,
+            max_output_tokens=None, mode="chat", source_keys=["surprise-1"],
+        ))
+        await session.commit()
+
+    with patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        mock_client = AsyncMock()
+        mock_client.models.list = AsyncMock(return_value=models)
+        MockOpenAI.return_value = mock_client
+        _clients.clear()
+        unfiltered = await admin_client.get(f"/api/llm/providers/{provider['id']}/models")
+        _clients.clear()
+        filtered = await admin_client.get(
+            f"/api/llm/providers/{provider['id']}/models?mode=task_processing"
+        )
+
+    # The registry says chat; the provider says embedding and is believed.
+    assert unfiltered.json()[0]["mode"] == "embedding"
+    assert filtered.json() == []
+
+
+async def test_litellm_listing_does_not_depend_on_model_info(admin_client: AsyncClient):
+    """A LiteLLM proxy that restricts /model/info still has browsable models.
+
+    LiteLLM serves /model/info to admin keys and can refuse it to a virtual
+    key. Sourcing the list from there rather than /v1/models left such a
+    deployment with no models at all, where the plain listing would have
+    served them.
+    """
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
+        resp = await admin_client.post("/api/llm/providers", json={
+            "name": "restricted-proxy", "base_url": "https://litellm.example.com", "api_key": "sk-virtual",
+        })
+    provider = resp.json()
+
+    def failing_http(*_a, **_k):
+        instance = AsyncMock()
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        instance.get = AsyncMock(side_effect=Exception("403 Forbidden"))
+        return instance
+
+    listing = _model_listing(["claude-x", "gpt-y"])
+    with patch("main.httpx.AsyncClient", side_effect=failing_http), \
+            patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        oa = AsyncMock()
+        oa.models.list = AsyncMock(return_value=listing)
+        MockOpenAI.return_value = oa
+        _clients.clear()
+        unfiltered = await admin_client.get(f"/api/llm/providers/{provider['id']}/models")
+        _clients.clear()
+        filtered = await admin_client.get(
+            f"/api/llm/providers/{provider['id']}/models?mode=task_processing"
+        )
+    _clients.clear()
+
+    assert unfiltered.status_code == 200
+    assert {m["id"] for m in unfiltered.json()} == {"claude-x", "gpt-y"}
+    # Modes are unknown without /model/info, so nothing is positively excluded.
+    assert filtered.status_code == 200
+    assert {m["id"] for m in filtered.json()} == {"claude-x", "gpt-y"}
+
+
+async def test_litellm_unfiltered_listing_uses_the_model_list(admin_client: AsyncClient):
+    """With no mode filter, a LiteLLM provider lists exactly what /v1/models returns."""
+    with patch("main.probe_provider_type", new_callable=AsyncMock, return_value="litellm"):
+        resp = await admin_client.post("/api/llm/providers", json={
+            "name": "plain-proxy", "base_url": "https://litellm.example.com", "api_key": "sk-key",
+        })
+    provider = resp.json()
+
+    model_info = {"data": [{"model_name": "claude-x", "model_info": {"mode": "chat"}}]}
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = model_info
+
+    def make_client(*_a, **_k):
+        instance = AsyncMock()
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        instance.get = AsyncMock(return_value=mock_resp)
+        return instance
+
+    # /v1/models knows about a model /model/info does not describe.
+    listing = _model_listing(["claude-x", "undocumented-z"])
+    with patch("main.httpx.AsyncClient", side_effect=make_client), \
+            patch("llm_providers.AsyncOpenAI") as MockOpenAI:
+        oa = AsyncMock()
+        oa.models.list = AsyncMock(return_value=listing)
+        MockOpenAI.return_value = oa
+        _clients.clear()
+        r = await admin_client.get(f"/api/llm/providers/{provider['id']}/models")
+    _clients.clear()
+
+    assert r.status_code == 200
+    by_id = {m["id"]: m for m in r.json()}
+    assert set(by_id) == {"claude-x", "undocumented-z"}
+    assert by_id["claude-x"]["mode"] == "chat"
+    assert by_id["undocumented-z"]["mode"] is None
+
+
+def _model_listing(ids: list[str]):
+    """An OpenAI-compatible /v1/models response carrying no mode of its own."""
+    listing = MagicMock()
+    listing.data = []
+    for model_id in ids:
+        m = MagicMock(spec=["id"])
+        m.id = model_id
+        listing.data.append(m)
+    return listing
+
+
+def _bare_model(model_id: str):
+    """An OpenAI-compatible model entry that reports no mode of its own."""
+    m = MagicMock(spec=["id"])
+    m.id = model_id
+    return m
 
 
 def test_normalize_model_setting_value_mirrors_model_and_model_id():

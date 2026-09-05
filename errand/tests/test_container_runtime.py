@@ -189,6 +189,61 @@ class TestDockerRuntime:
         kwargs = client.containers.create.call_args.kwargs
         assert kwargs["volumes"] == {"workspace-nfs": {"bind": "/shared", "mode": "rw"}}
 
+    # --- Host gateway -----------------------------------------------------
+
+    def test_prepare_adds_host_gateway_entry_on_named_network(self):
+        """On a named network the container gets a host entry for the default gateway name."""
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        with patch.dict("os.environ", {"TASK_RUNNER_NETWORK": "errand-net"}, clear=True):
+            runtime.prepare(image="img:latest", env={}, files={"f.txt": "c"})
+
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+        assert kwargs["network"] == "errand-net"
+
+    def test_prepare_uses_configured_gateway_address(self):
+        """An explicitly configured gateway name is the one mapped into the container."""
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        with patch.dict(
+            "os.environ",
+            {"TASK_RUNNER_NETWORK": "errand-net", "HOST_GATEWAY_ADDRESS": "errand-host"},
+            clear=True,
+        ):
+            runtime.prepare(image="img:latest", env={}, files={"f.txt": "c"})
+
+        kwargs = client.containers.create.call_args.kwargs
+        assert kwargs["extra_hosts"] == {"errand-host": "host-gateway"}
+
+    def test_prepare_no_host_entry_when_gateway_disabled(self):
+        """An explicitly empty gateway address means no host entry is added."""
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        with patch.dict(
+            "os.environ",
+            {"TASK_RUNNER_NETWORK": "errand-net", "HOST_GATEWAY_ADDRESS": ""},
+            clear=True,
+        ):
+            runtime.prepare(image="img:latest", env={}, files={"f.txt": "c"})
+
+        assert "extra_hosts" not in client.containers.create.call_args.kwargs
+
+    def test_prepare_no_host_entry_under_host_networking(self):
+        """Host networking already shares the host namespace; container creation is unchanged."""
+        runtime, client = self._make_runtime()
+        client.images.get.return_value = MagicMock()
+
+        with patch.dict("os.environ", {}, clear=True):
+            runtime.prepare(image="img:latest", env={}, files={"f.txt": "c"})
+
+        kwargs = client.containers.create.call_args.kwargs
+        assert "extra_hosts" not in kwargs
+        assert kwargs["network_mode"] == "host"
+
     def test_run_yields_log_lines(self):
         """run() streams container logs and yields individual lines."""
         runtime, client = self._make_runtime()
@@ -448,6 +503,19 @@ class TestKubernetesRuntime:
         assert handle.runtime_data["task_id"] == "42"
         assert "job_name" in handle.runtime_data
         assert "configmap_name" in handle.runtime_data
+
+    @patch("uuid.uuid4", return_value=MagicMock(
+        __str__=MagicMock(return_value="abcd1234-5678")
+    ))
+    @patch.dict("os.environ", {"HOST_GATEWAY_ADDRESS": "host.docker.internal"}, clear=False)
+    def test_prepare_adds_no_host_aliases(self, mock_uuid):
+        """No host is addressable from a pod, so no host gateway entry is added."""
+        runtime = self._make_runtime()
+
+        runtime.prepare(image="task-runner:v1", env={}, files={"prompt.txt": "x"})
+
+        job = runtime.batch_v1.create_namespaced_job.call_args[0][1]
+        assert getattr(job.spec.template.spec, "host_aliases", None) is None
 
     @patch("uuid.uuid4", return_value=MagicMock(
         __str__=MagicMock(return_value="abcd1234-5678")

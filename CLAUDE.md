@@ -293,6 +293,20 @@ A default `docker compose up` starts no Control Plane and publishes no port for 
 
 **Kubernetes is out of scope.** The Helm chart still points `hindsight.url` at an externally-installed instance.
 
+## LLM Providers
+
+`llm_providers` is a multi-row table with one default; the inference path is `AsyncOpenAI(base_url=provider.base_url, api_key=...)`. **`litellm` is one value of `provider_type`**, alongside `openai_compatible` and `unknown` — a proxy is an option, not the architecture. `source` distinguishes `database` (hand-configured), `env` (`LLM_PROVIDER_{N}_*`, read-only in the UI), and `detected` (found by scanning).
+
+**The vantage-point rule: probe from the consumer's vantage point and store the URL that answered.** errand-server, the memory service and every task container all reach the container host by the same gateway name, so the URL that worked at probe time is the URL that works at use time. There are no placeholder tokens and no per-consumer rewriting — which is only true because the vantage points were made to agree.
+
+- **`HOST_GATEWAY_ADDRESS`** (`errand/host_gateway.py`) — the address by which the server reaches the container host, defaulting to `host.docker.internal`. Injected, never inferred: Docker resolves the host by that name, Apple Containerization uses a vmnet gateway address (errand-desktop computes it), and a Kubernetes pod has no host at all. An explicitly empty value, or `CONTAINER_RUNTIME=kubernetes`, means local detection is unavailable — which is reported, not raised. Both compose files map the name with `extra_hosts: ["host.docker.internal:host-gateway"]` on the **errand** and **hindsight** services; `errand/tests/test_compose_host_gateway.py` guards that, because the two files have drifted before.
+- **`DockerRuntime` adds the same host entry to task containers**, but *only on a named network*. Under `network_mode="host"` the container already shares the host namespace and the alias is meaningless — which is why a `source="detected"` provider is **refused** under host networking (`task_containers_use_host_networking()`), failing before the task starts with an error naming `TASK_RUNNER_NETWORK`. Carrying two URL forms was the alternative and is worse.
+- **Local AI detection** (`errand/local_ai_detection.py`, `POST /api/llm/providers/scan-local`) probes a **fixed candidate table**, never a port range: ollama 11434, lm-studio 1234, llama.cpp 8080, jan 1337, vllm 8000, localai 8080, gpt4all 4891, mlx 10240. llama.cpp and LocalAI share 8080, so **what answered is identified from its `/v1/models` response** (`owned_by` markers), never from the port; an unrecognised response on a shared port is named `local-ai-<port>` rather than guessed at. Reconciliation mirrors `scan_env_providers`: upsert by name, delete stale `detected` rows, clear model settings that referenced them. A name already held by another `source` is **skipped, not taken over**. A scan claims the default only on a genuinely empty install. Detection stores `sk-no-key-required` as the API key — `api_key_encrypted` is NOT NULL and local runtimes ignore `Authorization`, but an empty string sends a bare `Bearer` header some servers reject.
+- **Unavailable is not "nothing found".** When detection is unavailable the scan probes nothing *and reconciles nothing* — deleting healthy providers because we could not look would be worse than saying so.
+- **Provider catalog** (`errand/provider_catalog.py`, `GET /api/llm/provider-catalog`) — 18 hosted providers plus a LiteLLM entry and **Other (OpenAI-compatible)**, both of which take a caller-supplied base URL. `POST /api/llm/providers` accepts an optional `catalog_id`; without one, `name` and `base_url` stay required, so the pre-existing contract is unchanged. Each entry carries `supports_model_listing` — Gemini's OpenAI-compat surface 404s on `/models` while `/chat/completions` answers, so it is marked rather than dropped. **Re-verify base URLs when editing**: 200/401/403 from an unauthenticated `GET {base_url}/models` proves the endpoint exists; 404 or DNS failure proves the entry wrong.
+- **Reachability** — `GET /api/llm/providers/{id}/reachability` re-probes and reports, deliberately **without writing**. A transient outage must not silently rewrite a provider's stored type.
+- **Model mode** — `ModelMetadataCache.mode` (migration `032`, nullable) carries the registry's `mode` per model. A provider's own reported mode wins; the registry fills the silence. Mode filtering now applies to **every** provider type, not just LiteLLM. Models whose mode neither source knows are **returned with `mode: null` rather than dropped** — this changed the previous behaviour, where a non-chat filter was strict; strictness would show an empty dropdown to anyone whose provider publishes no modes, which is every local runtime. A name heuristic is not a substitute: a substring check for `embed` misses `bge-m3`.
+
 ## LLM Timeouts
 
 There are three independent timeout settings, each scoped to one call site, plus a per-profile override:
@@ -303,7 +317,9 @@ There are three independent timeout settings, each scoped to one call site, plus
 | `task_processing_timeout` | task-runner agent loop (via `LLM_REQUEST_TIMEOUT` env) | 30s |
 | `transcription_timeout` | `errand/llm.py:transcribe_audio()` | 30s |
 
-Per-profile override: `task_profiles.llm_timeout` (nullable integer). When non-null on the profile attached to a task, it supersedes `task_processing_timeout` for that task only. The renamed `title_generation_timeout` was previously called `llm_timeout`; migration `026` renames the row in place.
+Per-profile override: `task_profiles.llm_timeout` (nullable integer). When non-null on the profile attached to a task, it supersedes `task_processing_timeout` for that task only.
+
+The built-in default behind `task_processing_timeout` is 30s, except for a provider with `source="detected"`, which gets `DETECTED_PROVIDER_LLM_TIMEOUT` (300s) — a local runtime's first request loads model weights from disk before producing a token, measured at ~7s for a 13GB model on fast storage and proportionally longer on slower disks. This raises a *default* only: an explicit profile or setting value still wins. The renamed `title_generation_timeout` was previously called `llm_timeout`; migration `026` renames the row in place.
 
 ## Kubernetes Deployment
 
@@ -392,5 +408,5 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Version: tracked in the `VERSION` file (single source of truth — do not hard-code it here) — bump per semver for main/release commits (CI enforces immutable tags on `main`; PR builds auto-version via the `github.run_number` suffix, so no per-commit bump is needed on a PR branch)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
-- Tests: 2106 errand + 412 task-runner + 38 evals (pytest) + 275 frontend (vitest) — CI `test` job gates all five build jobs
+- Tests: 2218 errand + 165 task-runner + 38 evals (pytest) + 275 frontend (vitest) — CI `test` job gates all five build jobs. Run each Python suite from its own directory (`cd task-runner && pytest tests`); collected from the repo root, `task-runner/tests` comes up short.
 - 181 component specs in `openspec/specs/`

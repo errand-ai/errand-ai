@@ -30,7 +30,13 @@ from sqlalchemy import create_engine as create_sync_engine, func, select, text a
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from container_runtime import ContainerRuntime, DockerRuntime, KubernetesRuntime, create_runtime
+from container_runtime import (
+    ContainerRuntime,
+    DockerRuntime,
+    KubernetesRuntime,
+    create_runtime,
+    task_containers_use_host_networking,
+)
 from database import async_session, engine
 from events import get_valkey, publish_event, VALKEY_URL
 from models import PlatformCredential, Setting, Skill, Tag, Task, TaskProfile, task_tags
@@ -65,6 +71,14 @@ LEADER_LOCK_CONNECT_ARGS = {
 }
 
 DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
+
+# Default LLM request timeout for a locally detected provider, in seconds. A
+# local runtime answers a warm request in milliseconds but can spend far longer
+# on the first one, loading model weights from disk before generating a token;
+# measured at ~7s for a 13GB model on fast storage, and proportionally longer on
+# slower disks and larger weights. The standard 30s default turns that into a
+# task failure that looks like a hang. Only a default — see D9.
+DETECTED_PROVIDER_LLM_TIMEOUT = 300
 MAX_GIT_RETRIES = 5
 
 # Retry storm guardrails — see openspec/changes/cap-runner-retry-storm.
@@ -1031,7 +1045,7 @@ def _resolve_provider_sync(provider_id_str: str) -> dict | None:
         eng = _get_sync_engine()
         with eng.connect() as conn:
             row = conn.execute(
-                sa_text("SELECT base_url, api_key_encrypted FROM llm_providers WHERE id = :id"),
+                sa_text("SELECT base_url, api_key_encrypted, source FROM llm_providers WHERE id = :id"),
                 {"id": provider_id_str},
             ).fetchone()
             if row is None:
@@ -1039,6 +1053,7 @@ def _resolve_provider_sync(provider_id_str: str) -> dict | None:
             return {
                 "base_url": row[0],
                 "api_key": decrypt_api_key(row[1]),
+                "source": row[2],
             }
     except Exception:
         logger.warning("Failed to resolve provider %s", provider_id_str, exc_info=True)
@@ -1649,6 +1664,7 @@ class TaskManager:
         # Resolve LLM provider credentials
         openai_base_url = ""
         openai_api_key = ""
+        provider_source = None
         if isinstance(task_processing_model, str):
             task_processing_model = {"provider_id": None, "model": task_processing_model}
         if isinstance(task_processing_model, dict):
@@ -1665,6 +1681,21 @@ class TaskManager:
                 )
                 if provider_creds is None:
                     _err = "LLM provider not configured"
+                    logger.error("Task %s: %s", task.id, _err)
+                    return (-1, json.dumps({"error": _err}), _err)
+                provider_source = provider_creds.get("source")
+                # A detected provider's base_url is the address that answered
+                # the probe through the host gateway. Under host networking the
+                # task container shares the host's namespace, where that name
+                # does not resolve — so fail here with the fix in the message,
+                # rather than deep inside the runner as a connection error.
+                if provider_source == "detected" and task_containers_use_host_networking():
+                    _err = (
+                        "This provider was created by local AI detection, and its address "
+                        "is only reachable from a task container on a named network. Set "
+                        "TASK_RUNNER_NETWORK so task containers stop using host networking, "
+                        "or select a provider that was configured manually."
+                    )
                     logger.error("Task %s: %s", task.id, _err)
                     return (-1, json.dumps({"error": _err}), _err)
                 openai_base_url = provider_creds["base_url"]
@@ -1702,12 +1733,18 @@ class TaskManager:
         if profile_reasoning:
             env_vars["REASONING_EFFORT"] = profile_reasoning
 
-        # LLM request timeout: profile override > global setting > built-in default (30s)
+        # LLM request timeout: profile override > global setting > built-in default.
+        # The default is larger for a detected provider, because a local runtime's
+        # first request can spend a long time loading model weights before it
+        # produces anything. Configuration at either level still wins — this
+        # raises a default, it never overrides a value the operator set.
         effective_llm_timeout = settings.get("_profile_llm_timeout")
         if effective_llm_timeout is None:
             effective_llm_timeout = settings.get("task_processing_timeout")
         if effective_llm_timeout is None:
-            effective_llm_timeout = 30
+            effective_llm_timeout = (
+                DETECTED_PROVIDER_LLM_TIMEOUT if provider_source == "detected" else 30
+            )
         env_vars["LLM_REQUEST_TIMEOUT"] = str(effective_llm_timeout)
 
         # Context compaction: server env > stored setting > the runner's own

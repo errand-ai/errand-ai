@@ -452,6 +452,9 @@ class ModelMetadataCache(Base):
     normalized_name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     supports_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False)
     max_output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # "chat", "embedding", "audio_transcription", ... — or NULL where the
+    # registry does not say, which is a real answer and not an error.
+    mode: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source_keys: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

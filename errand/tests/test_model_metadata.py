@@ -22,6 +22,7 @@ CREATE TABLE model_metadata_cache (
     normalized_name TEXT NOT NULL UNIQUE,
     supports_reasoning BOOLEAN NOT NULL,
     max_output_tokens INTEGER,
+    mode TEXT,
     source_keys TEXT NOT NULL DEFAULT '[]',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )

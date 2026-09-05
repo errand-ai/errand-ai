@@ -28,6 +28,10 @@ REFRESH_DEBOUNCE_SECONDS = 3600  # 1 hour
 class ModelMetadata:
     supports_reasoning: bool | None
     max_output_tokens: int | None
+    # "chat", "embedding", "audio_transcription", ... None means the registry
+    # does not know this model, which must stay distinguishable from knowing it
+    # is something else — an unknown-mode model is still selectable.
+    mode: str | None = None
 
 
 def normalize_model_name(name: str) -> str:
@@ -85,6 +89,20 @@ async def lookup_model_metadata(
     return ModelMetadata(supports_reasoning=None, max_output_tokens=None)
 
 
+def _majority_mode(modes: list[str | None]) -> str | None:
+    """The most common non-null mode among matches, or None if there is none.
+
+    Several registry keys collapse onto one normalized name, and a handful
+    disagree (the same model listed as both `chat` and `completion`). Taking the
+    majority keeps the common case right without inventing a resolution rule for
+    genuinely ambiguous entries.
+    """
+    present = [m for m in modes if m]
+    if not present:
+        return None
+    return max(sorted(set(present)), key=present.count)
+
+
 async def _lookup_with_name(
     normalized: str, session: AsyncSession
 ) -> ModelMetadata | None:
@@ -100,6 +118,7 @@ async def _lookup_with_name(
         return ModelMetadata(
             supports_reasoning=exact.supports_reasoning,
             max_output_tokens=exact.max_output_tokens,
+            mode=exact.mode,
         )
 
     # Prefix match
@@ -120,6 +139,7 @@ async def _lookup_with_name(
         return ModelMetadata(
             supports_reasoning=any_reasoning,
             max_output_tokens=min(output_tokens) if output_tokens else None,
+            mode=_majority_mode([m.mode for m in prefix_matches]),
         )
 
     return None
@@ -148,7 +168,7 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
 
     # Aggregate by normalized name
     aggregated: dict[str, dict] = defaultdict(
-        lambda: {"reasoning_votes": 0, "max_outputs": [], "source_keys": []}
+        lambda: {"reasoning_votes": 0, "max_outputs": [], "source_keys": [], "modes": []}
     )
     for key, value in data.items():
         if key == "sample_spec" or not isinstance(value, dict):
@@ -161,6 +181,9 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
         max_out = value.get("max_output_tokens")
         if isinstance(max_out, int) and max_out > 0:
             entry["max_outputs"].append(max_out)
+        model_mode = value.get("mode")
+        if isinstance(model_mode, str) and model_mode:
+            entry["modes"].append(model_mode)
 
     # Upsert into DB
     now = datetime.now(timezone.utc)
@@ -168,6 +191,7 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
     for normalized, agg in aggregated.items():
         supports_reasoning = agg["reasoning_votes"] > 0
         max_output = min(agg["max_outputs"]) if agg["max_outputs"] else None
+        mode = _majority_mode(agg["modes"])
 
         result = await session.execute(
             select(ModelMetadataCache).where(
@@ -178,6 +202,7 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
         if existing:
             existing.supports_reasoning = supports_reasoning
             existing.max_output_tokens = max_output
+            existing.mode = mode
             existing.source_keys = agg["source_keys"]
             existing.updated_at = now
         else:
@@ -187,6 +212,7 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
                         normalized_name=normalized,
                         supports_reasoning=supports_reasoning,
                         max_output_tokens=max_output,
+                        mode=mode,
                         source_keys=agg["source_keys"],
                         updated_at=now,
                     )
@@ -204,6 +230,7 @@ async def refresh_model_metadata_cache(session: AsyncSession) -> int:
                 if existing:
                     existing.supports_reasoning = supports_reasoning
                     existing.max_output_tokens = max_output
+                    existing.mode = mode
                     existing.source_keys = agg["source_keys"]
                     existing.updated_at = now
         count += 1
@@ -255,6 +282,7 @@ async def batch_lookup_model_metadata(
             return ModelMetadata(
                 supports_reasoning=exact.supports_reasoning,
                 max_output_tokens=exact.max_output_tokens,
+                mode=exact.mode,
             )
         # Prefix match
         prefix_matches = [
@@ -270,6 +298,7 @@ async def batch_lookup_model_metadata(
             return ModelMetadata(
                 supports_reasoning=any_reasoning,
                 max_output_tokens=min(output_tokens) if output_tokens else None,
+                mode=_majority_mode([m.mode for m in prefix_matches]),
             )
         return None
 
@@ -282,7 +311,7 @@ async def batch_lookup_model_metadata(
             if alt is not None:
                 meta = _match(alt)
         if meta is None:
-            meta = ModelMetadata(supports_reasoning=None, max_output_tokens=None)
+            meta = ModelMetadata(supports_reasoning=None, max_output_tokens=None, mode=None)
         results[model_name] = meta
 
     return results

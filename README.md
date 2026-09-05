@@ -77,6 +77,47 @@ kubectl create secret generic errand-credential-key \
   -n errand
 ```
 
+## Connecting an LLM
+
+Errand talks to any OpenAI-compatible endpoint, and can hold several at once with one marked as the default. There are three ways to give it one, in rough order of how much work they are.
+
+### An aggregator (least setup)
+
+One key, many models, no infrastructure. Add a provider in **Settings → Task Management → LLM Providers**, pick a provider from the list, and paste a key — the base URL comes from the catalog, and the model list is fetched for you.
+
+[OpenRouter](https://openrouter.ai) is the usual starting point because a single key reaches models from most of the major labs. Note that it serves chat completions only and exposes no embeddings endpoint; that is fine for Errand, whose memory service embeds in-process.
+
+The catalog also carries OpenAI, Anthropic, Google Gemini, Groq, Mistral, DeepSeek, xAI, Cerebras, Together, Fireworks, DeepInfra, Perplexity, Hugging Face, Nebius, Novita, Hyperbolic and SiliconFlow. Anything not listed is reachable through **Other (OpenAI-compatible)**, which takes a base URL and a key.
+
+### A local AI runtime (no key, no cloud)
+
+If you run [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), llama.cpp, Jan, vLLM, LocalAI, GPT4All or an MLX server on the same machine, press **Scan for local AI** and Errand will find it. Each of these exposes an OpenAI-compatible API, so nothing else is needed — no key, no configuration.
+
+Two things to know:
+
+- **Task containers must run on a named network.** Errand reaches a host-run runtime through a host gateway alias, which does not resolve inside a container that shares the host's network namespace. Both shipped compose files already set `TASK_RUNNER_NETWORK`, so this only affects hand-rolled setups; a task using a detected provider without it fails immediately and says so.
+- **The first request is slow.** A local runtime loads model weights from disk before generating anything, so Errand allows detected providers a longer default request timeout. Override it per profile or globally if your machine needs more.
+
+Detection is unavailable on Kubernetes, where there is no host to probe; the scan says so rather than appearing broken.
+
+### A self-hosted proxy (most control)
+
+[LiteLLM](https://litellm.ai) remains fully supported and is what `deploy/docker-compose.yml` ships by default. It is worth running when you want what a proxy uniquely provides — virtual keys, spend limits and cost reporting across teams, and the MCP gateway Errand can consume tool definitions from. It is not a prerequisite: everything above works without it.
+
+Errand detects a LiteLLM endpoint automatically and unlocks the extra behaviour when it finds one. Existing deployments need no change.
+
+### Environment-configured providers
+
+Providers can also be supplied by environment variable, which is how the shipped compose files wire up LiteLLM:
+
+```bash
+LLM_PROVIDER_0_NAME=litellm
+LLM_PROVIDER_0_BASE_URL=http://litellm:4000
+LLM_PROVIDER_0_API_KEY=sk-1234
+```
+
+Numbered upwards from zero; index 0 becomes the default. These are reconciled at start-up and are read-only in the UI.
+
 ## Platform Integrations
 
 Platform credentials are configured via **Settings > Platforms** in the web UI. Credentials are encrypted at rest and verified against the platform API before saving.
