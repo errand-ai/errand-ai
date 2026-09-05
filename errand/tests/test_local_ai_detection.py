@@ -252,10 +252,74 @@ class TestReconciliation:
 
         await _scan(session_maker, {11434: _ollama_models()})
 
+        by_name = {p.name: p for p in await _providers(session_maker)}
+        # Theirs is untouched...
+        assert by_name["ollama"].source == "database"
+        assert by_name["ollama"].base_url == "https://remote-ollama.example/v1"
+        assert by_name["ollama"].is_default is True
+        # ...and the real local runtime is still detected, under a name that
+        # does not collide. Refusing to register it would mean a user whose own
+        # provider happens to be called "ollama" can never detect their Ollama.
+        assert by_name["ollama-11434"].source == "detected"
+        assert by_name["ollama-11434"].base_url == "http://host.docker.internal:11434/v1"
+        assert by_name["ollama-11434"].is_default is False
+
+    async def test_a_renamed_detected_provider_survives_a_rescan(self, session_maker):
+        """The endpoint is the identity; the name is the user's to change.
+
+        Reconciling by name meant a renamed provider matched nothing on the next
+        scan, so it was deleted as departed — clearing any model settings that
+        pointed at it — and re-created as a duplicate under the original name.
+        """
+        await _scan(session_maker, {11434: _ollama_models()})
+        original = (await _providers(session_maker))[0]
+
+        async with session_maker() as session:
+            row = await session.get(LlmProvider, original.id)
+            row.name = "my-local-box"
+            await session.commit()
+
+        await _scan(session_maker, {11434: _ollama_models()})
+
         providers = await _providers(session_maker)
-        assert len(providers) == 1
-        assert providers[0].source == "database"
-        assert providers[0].base_url == "https://remote-ollama.example/v1"
+        assert len(providers) == 1, "the renamed provider was duplicated or replaced"
+        assert providers[0].id == original.id
+        assert providers[0].name == "my-local-box", "the scan overwrote the user's name"
+        assert providers[0].source == "detected"
+
+    async def test_a_renamed_provider_keeps_its_model_settings(self, session_maker):
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider_id = (await _providers(session_maker))[0].id
+
+        async with session_maker() as session:
+            row = await session.get(LlmProvider, provider_id)
+            row.name = "my-local-box"
+            session.add(Setting(
+                key="task_processing_model",
+                value={"provider_id": str(provider_id), "model": "qwen3:8b"},
+            ))
+            await session.commit()
+
+        await _scan(session_maker, {11434: _ollama_models()})
+
+        async with session_maker() as session:
+            setting = (await session.execute(
+                select(Setting).where(Setting.key == "task_processing_model")
+            )).scalar_one()
+            assert setting.value["provider_id"] == str(provider_id)
+
+    async def test_two_endpoints_identifying_as_the_same_runtime(self, session_maker):
+        """Keying by endpoint makes this possible; keying by name hid it."""
+        vllm = {"object": "list", "data": [{"id": "m", "owned_by": "vllm"}]}
+        await _scan(session_maker, {8000: vllm, 8080: vllm})
+
+        providers = await _providers(session_maker)
+        assert len(providers) == 2
+        assert {p.base_url for p in providers} == {
+            "http://host.docker.internal:8000/v1",
+            "http://host.docker.internal:8080/v1",
+        }
+        assert len({p.name for p in providers}) == 2, "names must not collide"
 
     async def test_departed_runtime_clears_model_settings_pointing_at_it(self, session_maker):
         await _scan(session_maker, {11434: _ollama_models()})

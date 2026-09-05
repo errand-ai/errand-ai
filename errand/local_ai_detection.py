@@ -124,6 +124,25 @@ async def _fetch_models(base_url: str) -> dict | None:
     return None
 
 
+async def _available_name(session: AsyncSession, name: str, port: int) -> str | None:
+    """A provider name not already taken, or None if none can be found.
+
+    A name already held belongs to whoever holds it — detection never renames
+    or repoints another provider. But refusing to register the runtime at all
+    would mean a user whose own provider happens to be called `ollama` can
+    never detect their actual Ollama, so the endpoint's port disambiguates.
+    The port is also what separates two endpoints that identify as the same
+    runtime, which keying by endpoint makes possible and keying by name hid.
+    """
+    for candidate in (name, f"{name}-{port}"):
+        taken = (await session.execute(
+            select(LlmProvider).where(LlmProvider.name == candidate)
+        )).scalar_one_or_none()
+        if taken is None:
+            return candidate
+    return None
+
+
 async def scan_local_ai(session: AsyncSession) -> dict:
     """Probe the candidate endpoints and reconcile ``source="detected"`` providers.
 
@@ -144,6 +163,11 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         }
 
     gateway = get_host_gateway_address()
+    # Keyed by base_url, not by name. The endpoint is the stable identity of a
+    # runtime; the name is a label the user is free to change. Keying by name
+    # meant a renamed detected provider matched nothing on the next scan, so it
+    # was reconciled away as departed — taking its model settings with it — and
+    # re-created as a duplicate under the original name.
     detected: dict[str, dict] = {}
 
     for port in candidate_ports():
@@ -152,10 +176,11 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         if provider_type == "unknown":
             continue
         name = identify_runtime(await _fetch_models(base_url), port)
-        detected[name] = {
+        detected[base_url] = {
             "name": name,
             "base_url": base_url,
             "provider_type": provider_type,
+            "port": port,
         }
 
     # An empty installation is the only one where the scan may choose what
@@ -167,47 +192,52 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     now = datetime.now(timezone.utc)
     registered: list[dict] = []
 
-    for name, info in detected.items():
+    for base_url, info in detected.items():
         existing = (await session.execute(
-            select(LlmProvider).where(LlmProvider.name == name)
+            select(LlmProvider).where(
+                LlmProvider.base_url == base_url,
+                LlmProvider.source == "detected",
+            )
         )).scalar_one_or_none()
 
-        if existing is not None and existing.source != "detected":
-            # The name is already an operator's. Detection does not own it and
-            # must not silently repoint their provider at a local runtime.
-            logger.info(
-                "Skipping detected runtime %s: a %s-sourced provider already has that name",
-                name, existing.source,
-            )
-            continue
-
         if existing is not None:
-            existing.base_url = info["base_url"]
+            # Its name is the user's to keep — they may have renamed it, and a
+            # scan reconciles the endpoint, not the label.
             existing.api_key_encrypted = encrypt_api_key(DETECTED_API_KEY)
             existing.provider_type = info["provider_type"]
             existing.updated_at = now
             evict_client(existing.id)
-        else:
-            session.add(LlmProvider(
-                name=name,
-                base_url=info["base_url"],
-                api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
-                provider_type=info["provider_type"],
-                is_default=claim_default,
-                source="detected",
-            ))
-            # Only the first one — two runtimes found on an empty install must
-            # not both claim the default.
-            claim_default = False
+            registered.append({**info, "name": existing.name})
+            continue
 
-        registered.append(info)
+        name = await _available_name(session, info["name"], info["port"])
+        if name is None:
+            logger.info(
+                "Skipping detected runtime at %s: no available name for %r",
+                base_url, info["name"],
+            )
+            continue
+
+        session.add(LlmProvider(
+            name=name,
+            base_url=base_url,
+            api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+            provider_type=info["provider_type"],
+            is_default=claim_default,
+            source="detected",
+        ))
+        await session.flush()
+        # Only the first one — two runtimes found on an empty install must
+        # not both claim the default.
+        claim_default = False
+        registered.append({**info, "name": name})
 
     # Reconcile: a runtime that has gone away should not leave a row behind.
     stale = (await session.execute(
         select(LlmProvider).where(LlmProvider.source == "detected")
     )).scalars().all()
     for provider in stale:
-        if provider.name in detected:
+        if provider.base_url in detected:
             continue
         evict_client(provider.id)
         await _clear_model_settings_for_provider(session, provider.id)
@@ -215,4 +245,10 @@ async def scan_local_ai(session: AsyncSession) -> dict:
 
     await session.commit()
 
-    return {"available": True, "detected": registered, "message": None}
+    return {
+        "available": True,
+        "detected": [
+            {k: v for k, v in info.items() if k != "port"} for info in registered
+        ],
+        "message": None,
+    }
