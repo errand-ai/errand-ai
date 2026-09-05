@@ -3,8 +3,8 @@
 Every base URL here was verified against the live endpoint: an unauthenticated
 ``GET {base_url}/models`` answering 200, 401 or 403 proves the endpoint exists;
 404 or a DNS failure proves the entry wrong. Re-verify when editing this file —
-`openspec/changes/local-ai-provider-detection/design.md` records the method and
-the codes observed.
+`openspec/changes/archive/2026-09-05-local-ai-provider-detection/design.md`
+records the method and the codes observed.
 
 The catalog is a convenience, never a gate: the final entry takes a
 caller-supplied base URL, so a provider absent from this list is one form field

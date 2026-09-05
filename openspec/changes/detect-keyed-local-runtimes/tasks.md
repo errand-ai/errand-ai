@@ -10,6 +10,8 @@
 - [ ] 2.3 Add the key-requiring runtimes to the scan result, alongside `detected` rather than inside it
 - [ ] 2.4 Confirm an empty scan still reports nothing found rather than failing, and that "detection unavailable" still probes nothing at all
 
+Expect one benign divergence during manual testing, raised by the library side and not worth designing around: `needs_key` exclusion is computed server-side against configured providers, while the card holds scan results in local state and drops an entry when it adopts one. The two agree until a provider is *deleted* while a scan panel is open — the card's stale list still shows that endpoint as adopted, and the next scan correctly offers it again. Self-correcting, and a symptom of two sources of truth for a transient list rather than a fault in the exclusion rule.
+
 ## 3. Adoption
 
 - [ ] 3.1 Write failing tests: adopting with an accepted key creates a `source="detected"` provider carrying that key; a rejected key creates nothing and says so; an unreachable endpoint creates nothing and says so; the adopted endpoint stops being reported as needing a key

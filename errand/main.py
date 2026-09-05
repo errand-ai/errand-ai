@@ -1335,6 +1335,24 @@ async def list_provider_models(
     # registry. Only LiteLLM exposes them, and only via /model/info.
     provider_modes: dict[str, str | None] = {}
 
+    # The model list itself always comes from /v1/models, for every provider
+    # type. LiteLLM's /model/info is consulted *in addition*, for the modes it
+    # reports — it is not the source of the list. Making it the source would
+    # mean a proxy that restricts /model/info to admin keys (LiteLLM does this
+    # for virtual keys) has no browsable models at all, where /v1/models would
+    # have served them.
+    try:
+        models_resp = await client.models.list()
+        model_names = sorted([m.id for m in models_resp.data])
+        # A few OpenAI-compatible providers report a mode on the listing
+        # itself; take it when it is there rather than going to the registry.
+        for m in models_resp.data:
+            reported = getattr(m, "mode", None)
+            if isinstance(reported, str) and reported:
+                provider_modes[m.id] = reported
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+
     if provider.provider_type == "litellm":
         from llm_providers import decrypt_api_key
         api_key = decrypt_api_key(provider.api_key_encrypted)
@@ -1354,21 +1372,13 @@ async def list_provider_models(
                 name = entry.get("model_name")
                 if name:
                     provider_modes[name] = entry.get("model_info", {}).get("mode")
-            model_names = sorted(provider_modes)
         except Exception:
-            raise HTTPException(status_code=502, detail="Failed to fetch model info from LLM provider")
-    else:
-        try:
-            models_resp = await client.models.list()
-            model_names = sorted([m.id for m in models_resp.data])
-            # A few OpenAI-compatible providers do report a mode on the listing
-            # itself; take it when it is there rather than going to the registry.
-            for m in models_resp.data:
-                reported = getattr(m, "mode", None)
-                if isinstance(reported, str) and reported:
-                    provider_modes[m.id] = reported
-        except Exception:
-            raise HTTPException(status_code=502, detail="Failed to fetch models from LLM provider")
+            # Enrichment, not a dependency. Without it the registry resolves
+            # the modes, exactly as it does for every non-LiteLLM provider.
+            logger.warning(
+                "Could not read /model/info for provider %s; falling back to "
+                "registry modes", provider.id, exc_info=True,
+            )
 
     # Enrich with metadata from cache (single query for all models)
     metadata_map = await batch_lookup_model_metadata(model_names, session)
