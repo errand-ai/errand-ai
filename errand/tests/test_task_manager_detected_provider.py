@@ -13,11 +13,8 @@ ever overriding a timeout the operator configured.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-from container_runtime import RuntimeHandle
 from task_manager import DETECTED_PROVIDER_LLM_TIMEOUT, TaskManager
 
 from tests.test_task_manager import _make_mock_runtime, _make_mock_task

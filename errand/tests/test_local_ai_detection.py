@@ -8,7 +8,7 @@ removes rows for runtimes that have gone away.
 
 import os
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
