@@ -23,7 +23,7 @@
     "@tailwindcss/typography": "^0.5.19",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vue/test-utils": "^2.4.6",
-    "jsdom": "^29.0.0",
+    "jsdom": "^30.0.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^4.3.2",
     "typescript": "~6.0.0",
