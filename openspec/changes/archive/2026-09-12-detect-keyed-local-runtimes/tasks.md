@@ -117,7 +117,7 @@ Requires a `@errand-ai/ui-components` release and a consumer bump; everything ab
 
 ## 9. Archive
 
-- [ ] 9.1 `openspec archive detect-keyed-local-runtimes -y` and commit the result in this PR
+- [x] 9.1 `openspec archive detect-keyed-local-runtimes -y` and commit the result in this PR
 
 ## Post-merge notes
 
