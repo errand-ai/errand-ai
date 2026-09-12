@@ -15,6 +15,7 @@ tokens, no per-consumer rewriting.
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import func, select
@@ -23,9 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from host_gateway import get_host_gateway_address, is_local_detection_available
 from llm_providers import (
     _clear_model_settings_for_provider,
+    decrypt_api_key,
     encrypt_api_key,
     evict_client,
     probe_provider_type,
+    provider_to_dict,
 )
 from models import LlmProvider
 
@@ -38,6 +41,22 @@ PROBE_TIMEOUT = 5.0
 # own documentation, so it is the one an operator is most likely to recognise
 # as a placeholder rather than mistake for a credential.
 DETECTED_API_KEY = "sk-no-key-required"
+
+# What a candidate endpoint said, from detection's point of view. This is a
+# different question from `probe_provider_type()`'s — that one answers "what
+# type is this provider", and for an endpoint that will not talk to us
+# `unknown` remains the right answer, which four other call sites rely on.
+# Detection needs to know whether something is *there*, which a 401 proves as
+# firmly as a 200 does.
+ENDPOINT_ANSWERED = "answered"
+ENDPOINT_UNAUTHORIZED = "unauthorized"
+# Answered, but with a status we cannot use — 500, 503, 429. Something is
+# listening, which is the only question reconciliation asks. Treating a
+# momentary upstream error as departure would delete the provider and clear the
+# model settings that referenced it, which is the same mistake as treating a
+# 401 as absence.
+ENDPOINT_ERROR = "error"
+ENDPOINT_NO_ANSWER = "no_answer"
 
 
 @dataclass(frozen=True)
@@ -63,9 +82,8 @@ LOCAL_AI_CANDIDATES: tuple[LocalAiCandidate, ...] = (
     LocalAiCandidate("mlx", 10240),
 )
 
-# `owned_by` values that name their runtime. Where a marker is absent or
-# unrecognised the endpoint is named after itself rather than guessed at, so a
-# wrong or missing signature costs a display name, never a working provider.
+# `owned_by` values that name their runtime. A missing signature costs a display
+# name, never a working provider.
 OWNED_BY_SIGNATURES: dict[str, str] = {
     "library": "ollama",
     "organization_owner": "lm-studio",
@@ -73,6 +91,7 @@ OWNED_BY_SIGNATURES: dict[str, str] = {
     "llama.cpp": "llama.cpp",
     "vllm": "vllm",
     "localai": "localai",
+    "omlx": "omlx",
 }
 
 
@@ -85,43 +104,132 @@ def candidate_ports() -> list[int]:
     return seen
 
 
-def identify_runtime(models_payload: dict | None, port: int) -> str:
+def identify_runtime(models_payload: dict | None, port: int | None) -> str:
     """Name the runtime that produced a /v1/models response.
 
     The response is the authority. Only when it carries no recognisable marker
     does the port contribute, and then only when exactly one candidate claims
     it — a shared port names the endpoint instead, because asserting either
     runtime would be a guess presented as a fact.
+
+    A payload of ``None`` means no body was read at all, which is not the same
+    as a body carrying no marker; and a body carrying a marker we do not
+    recognise is different again — that is the response telling us it is not
+    the port's usual occupant. Falling back to the port's single claimant is
+    a fair inference from a listing that simply did not say; it is a guess
+    presented as a fact when nothing was read, and it would name an oMLX server
+    on 8000 `vllm` for no better reason than the candidate table.
     """
-    for entry in (models_payload or {}).get("data", []) or []:
-        if not isinstance(entry, dict):
-            continue
-        owner = str(entry.get("owned_by", "")).strip().lower()
-        if owner in OWNED_BY_SIGNATURES:
-            return OWNED_BY_SIGNATURES[owner]
+    claimed_by_response = False
+    if models_payload is not None:
+        for entry in models_payload.get("data", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            owner = str(entry.get("owned_by", "")).strip().lower()
+            if not owner:
+                continue
+            if owner in OWNED_BY_SIGNATURES:
+                return OWNED_BY_SIGNATURES[owner]
+            # It said something, and it was not a runtime we know. That is a
+            # statement, not a silence: an oMLX server on 8000 says `omlx`, and
+            # answering `vllm` because the candidate table calls 8000 vLLM
+            # contradicts the response we just read.
+            claimed_by_response = True
 
-    claimants = [c.name for c in LOCAL_AI_CANDIDATES if c.port == port]
-    if len(claimants) == 1:
-        return claimants[0]
-    return f"local-ai-{port}"
+        if not claimed_by_response:
+            claimants = [c.name for c in LOCAL_AI_CANDIDATES if c.port == port]
+            if len(claimants) == 1:
+                return claimants[0]
+
+    return f"local-ai-{port}" if port is not None else "local-ai"
 
 
-async def _fetch_models(base_url: str) -> dict | None:
-    """GET {base_url}/models, for identification only. None on any failure."""
+def canonical_base_url(base_url: str) -> str:
+    """The form a scan constructs, for comparing against what is stored.
+
+    Detection builds `http://<gateway>:<port>/v1`, but a stored row may differ
+    by a trailing separator — the update route accepted one on every release
+    before the endpoint became server-enforced. Comparing raw strings would
+    leave such a row unmatched, probed with the sentinel, and deleted as
+    departed.
+    """
+    return base_url.rstrip("/")
+
+
+def adoptable_endpoints() -> set[str]:
+    """The endpoints a scan will probe, and therefore the only ones adoptable.
+
+    Reconciliation visits the candidate table and nothing else, so a detected
+    provider recorded anywhere else is deleted by the next scan along with the
+    model settings that referenced it. Restricting adoption to these also keeps
+    a caller-supplied key from being sent to any host a caller cares to name.
+    """
+    if not is_local_detection_available():
+        return set()
+    gateway = get_host_gateway_address()
+    return {f"http://{gateway}:{port}/v1" for port in candidate_ports()}
+
+
+def port_of(base_url: str) -> int | None:
+    """The port a base URL names, or None if it names none."""
+    try:
+        return urlparse(base_url).port
+    except ValueError:
+        return None
+
+
+async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict | None]:
+    """Ask a candidate endpoint whether it is there, and what it is.
+
+    One request answers both questions, so there is no window in which the two
+    can disagree: a 200 carrying a listing is an answer and the listing is the
+    identification; a 401 or 403 proves a service that wants credentials we do
+    not have; anything else is nothing we can use.
+
+    The same rule `local-ai-provider-detection` used to verify the eighteen
+    catalog base URLs — 401/403 proves the endpoint exists, 404 or a DNS
+    failure proves it does not — applied where it was originally missing.
+
+    Only silence and a 404 mean absence. Every other reply, however useless,
+    proves something is serving the endpoint, and reconciliation deletes a
+    provider only for a runtime that has gone.
+    """
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{base_url.rstrip('/')}/models",
-                headers={"Authorization": f"Bearer {DETECTED_API_KEY}"},
+                headers={"Authorization": f"Bearer {api_key}"},
                 timeout=PROBE_TIMEOUT,
             )
-            if resp.status_code == 200:
-                payload = resp.json()
-                if isinstance(payload, dict):
-                    return payload
     except Exception:
-        logger.debug("Model listing failed for %s", base_url, exc_info=True)
-    return None
+        logger.debug("Endpoint probe failed for %s", base_url, exc_info=True)
+        return ENDPOINT_NO_ANSWER, None
+
+    if resp.status_code in (401, 403):
+        return ENDPOINT_UNAUTHORIZED, None
+    if resp.status_code == 404:
+        # The original rule, unchanged: 404 proves the endpoint is not there.
+        return ENDPOINT_NO_ANSWER, None
+    if resp.status_code != 200:
+        return ENDPOINT_ERROR, None
+    if resp.status_code == 200:
+        try:
+            payload = resp.json()
+        except Exception:
+            logger.debug("Unreadable listing from %s", base_url, exc_info=True)
+            return ENDPOINT_ERROR, None
+        # The same bar `probe_provider_type()` sets, and for the same reason:
+        # 200 carrying JSON is not proof of an OpenAI-compatible service. Any
+        # JSON object would let whatever happens to be listening on a candidate
+        # port register as a provider whose type resolves to `unknown` — a row
+        # the model-list route then refuses, so it could never be used. An
+        # empty `data` list is still a listing: a runtime with nothing loaded
+        # is present.
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return ENDPOINT_ANSWERED, payload
+    # It answered, so the endpoint is occupied even though the reply is no use
+    # to us — not registrable, not adoptable, but not departed either.
+    return ENDPOINT_ERROR, None
 
 
 async def _available_name(session: AsyncSession, name: str, port: int) -> str | None:
@@ -143,19 +251,36 @@ async def _available_name(session: AsyncSession, name: str, port: int) -> str | 
     return None
 
 
+async def _claim_default(session: AsyncSession) -> bool:
+    """Whether a provider created now may become the default.
+
+    An empty installation is the only one where detection may choose what
+    inference runs against; anywhere else, adopting a provider is the user's
+    decision to make explicitly.
+    """
+    total = (await session.execute(select(func.count()).select_from(LlmProvider))).scalar() or 0
+    return total == 0
+
+
 async def scan_local_ai(session: AsyncSession) -> dict:
     """Probe the candidate endpoints and reconcile ``source="detected"`` providers.
 
-    Returns ``{"available", "detected", "message"}``. When detection is
-    unavailable — no gateway address, or Kubernetes, where there is no host —
-    nothing is probed and nothing is reconciled: "cannot tell" is not the same
-    statement as "nothing is running", and reconciling on it would delete
-    providers that are perfectly healthy.
+    Returns ``{"available", "detected", "needs_key", "message"}``. When
+    detection is unavailable — no gateway address, or Kubernetes, where there
+    is no host — nothing is probed and nothing is reconciled: "cannot tell" is
+    not the same statement as "nothing is running", and reconciling on it would
+    delete providers that are perfectly healthy.
+
+    ``needs_key`` sits alongside ``detected`` rather than inside it. Those
+    endpoints exist and are OpenAI-compatible, but no provider is created for
+    them: a row carrying the keyless sentinel against a service that has just
+    rejected it would be a provider guaranteed to fail, reported as a success.
     """
     if not is_local_detection_available():
         return {
             "available": False,
             "detected": [],
+            "needs_key": [],
             "message": (
                 "Local AI detection is not available for this deployment, because "
                 "there is no container host to probe."
@@ -163,47 +288,92 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         }
 
     gateway = get_host_gateway_address()
+
+    # Every configured endpoint, whatever its source. A detected provider's key
+    # is used to probe its own endpoint and no other, and any configured
+    # endpoint is one the caller has already dealt with — so it is never
+    # offered for adoption again.
+    configured = (await session.execute(
+        select(LlmProvider).order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
+    )).scalars().all()
+    configured_urls = {canonical_base_url(p.base_url) for p in configured}
+
+    # One row per endpoint, oldest first. Adoption refuses to create a second
+    # row at an endpoint that already has one, but an installation that ran a
+    # build where it could must not be left with a scan that raises for ever —
+    # so take the earliest and say so, rather than deleting anything. A
+    # duplicate visible in the settings list is a problem a person can fix; a
+    # 500 on every scan is not.
+    detected_rows: dict[str, LlmProvider] = {}
+    for provider in configured:
+        if provider.source != "detected":
+            continue
+        if canonical_base_url(provider.base_url) in detected_rows:
+            logger.warning(
+                "Ignoring duplicate detected provider %r at %s; reconciling %r",
+                provider.name, provider.base_url,
+                detected_rows[canonical_base_url(provider.base_url)].name,
+            )
+            continue
+        detected_rows[canonical_base_url(provider.base_url)] = provider
+
     # Keyed by base_url, not by name. The endpoint is the stable identity of a
     # runtime; the name is a label the user is free to change. Keying by name
     # meant a renamed detected provider matched nothing on the next scan, so it
     # was reconciled away as departed — taking its model settings with it — and
     # re-created as a duplicate under the original name.
     detected: dict[str, dict] = {}
+    needs_key: list[dict] = []
+    # A runtime that answers at all is present, whether or not it will talk to
+    # us. Only the ones that answer nothing have gone.
+    present: set[str] = set()
 
     for port in candidate_ports():
         base_url = f"http://{gateway}:{port}/v1"
-        provider_type = await probe_provider_type(base_url, DETECTED_API_KEY)
-        if provider_type == "unknown":
+        stored = detected_rows.get(base_url)
+        api_key = decrypt_api_key(stored.api_key_encrypted) if stored else DETECTED_API_KEY
+
+        status, models_payload = await probe_local_endpoint(base_url, api_key)
+
+        if status == ENDPOINT_NO_ANSWER:
             continue
-        name = identify_runtime(await _fetch_models(base_url), port)
+
+        present.add(base_url)
+
+        if status == ENDPOINT_ERROR:
+            # Present, and that is all reconciliation needs. Nothing is known
+            # about it beyond that, so it is neither registered nor offered for
+            # adoption: a key would not fix a 503.
+            continue
+
+        if status == ENDPOINT_UNAUTHORIZED:
+            # Nothing beyond the endpoint is known: a 401 returns no body, so
+            # asserting a runtime name or type here would be inventing one.
+            if base_url not in configured_urls:
+                needs_key.append({"base_url": base_url})
+            continue
+
         detected[base_url] = {
-            "name": name,
+            "name": identify_runtime(models_payload, port),
             "base_url": base_url,
-            "provider_type": provider_type,
+            "provider_type": await _resolved_type(base_url, api_key),
             "port": port,
         }
 
-    # An empty installation is the only one where the scan may choose what
-    # inference runs against; anywhere else, adopting a provider is the user's
-    # decision to make explicitly.
-    total = (await session.execute(select(func.count()).select_from(LlmProvider))).scalar() or 0
-    claim_default = total == 0
+    claim_default = await _claim_default(session)
 
     now = datetime.now(timezone.utc)
     registered: list[dict] = []
 
     for base_url, info in detected.items():
-        existing = (await session.execute(
-            select(LlmProvider).where(
-                LlmProvider.base_url == base_url,
-                LlmProvider.source == "detected",
-            )
-        )).scalar_one_or_none()
+        existing = detected_rows.get(base_url)
 
         if existing is not None:
             # Its name is the user's to keep — they may have renamed it, and a
-            # scan reconciles the endpoint, not the label.
-            existing.api_key_encrypted = encrypt_api_key(DETECTED_API_KEY)
+            # scan reconciles the endpoint, not the label. Its key is left
+            # alone too: the probe just succeeded with whatever is stored, so
+            # overwriting it with the sentinel would break an adopted runtime
+            # on its first re-scan.
             existing.provider_type = info["provider_type"]
             existing.updated_at = now
             evict_client(existing.id)
@@ -233,11 +403,15 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         registered.append({**info, "name": name})
 
     # Reconcile: a runtime that has gone away should not leave a row behind.
+    # One that answered but rejected its stored key has not gone away — a
+    # rotated or revoked credential is not evidence of absence, and deleting
+    # the provider would take its model settings with it. Saying that provider
+    # is not currently usable is the reachability check's job.
     stale = (await session.execute(
         select(LlmProvider).where(LlmProvider.source == "detected")
     )).scalars().all()
     for provider in stale:
-        if provider.base_url in detected:
+        if canonical_base_url(provider.base_url) in present:
             continue
         evict_client(provider.id)
         await _clear_model_settings_for_provider(session, provider.id)
@@ -250,5 +424,157 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         "detected": [
             {k: v for k, v in info.items() if k != "port"} for info in registered
         ],
+        "needs_key": needs_key,
         "message": None,
     }
+
+
+async def _resolved_type(base_url: str, api_key: str) -> str:
+    """The provider type, never `unknown` once a listing has been read.
+
+    `probe_provider_type()` is a second, independent pair of requests, so it can
+    time out after the listing succeeded. Recording `unknown` on that basis
+    produces a provider the model-list route refuses — an unusable row created
+    from a transient failure, when the listing already proved the endpoint is
+    OpenAI-compatible.
+    """
+    probed = await probe_provider_type(base_url, api_key)
+    return probed if probed != "unknown" else "openai_compatible"
+
+
+async def adopt_local_runtime(
+    session: AsyncSession,
+    base_url: str,
+    api_key: str,
+    name: str | None = None,
+) -> dict:
+    """Create a detected provider for an endpoint, using a caller-supplied key.
+
+    Probes with the key first and creates the provider only if it is accepted,
+    so a key that does not work never becomes a stored credential.
+
+    The outcome is a finding rather than a failure: the request was well formed
+    and the probe ran, so what the probe found is reported as a result, the way
+    the reachability check reports what it saw. The discriminator is whether a
+    provider was created, because adoption can fail for reasons other than the
+    key.
+
+    The provider is created with ``source="detected"`` — that is what it is.
+    Creating it as ``database`` would work on the first day and be wrong on the
+    second, when the next scan found the same endpoint, still saw a 401, and
+    offered it for adoption all over again.
+    """
+    # The scan constructs `http://<gateway>:<port>/v1` and matches detected
+    # providers against that exact string. A caller-supplied `.../v1/` would be
+    # probed successfully and stored verbatim, after which the next scan misses
+    # the stored key, offers the canonical endpoint for adoption again, and
+    # deletes this row as departed — clearing the model settings that
+    # referenced it. Normalising here keeps the stored form and the constructed
+    # form the same form.
+    base_url = canonical_base_url(base_url)
+
+    adoptable = adoptable_endpoints()
+    if base_url not in adoptable:
+        # Refused before probing, so the key is never sent. This is an argument
+        # the caller got wrong rather than a finding about the endpoint, which
+        # is why it is a 422 and not an `adopted: false` result.
+        raise ValueError(
+            f"{base_url} is not a local AI candidate endpoint. Adoption takes a "
+            "base_url from a scan result."
+        )
+
+    # Checked before probing: whether the endpoint is already configured is
+    # knowable without the network, and it is the answer whatever the probe
+    # would have said. Probing first meant a wrong key on an already-adopted
+    # endpoint reported `key_rejected` — sending the user to retry an adoption
+    # that cannot succeed rather than to edit the provider they already have —
+    # and a runtime merely down reported `unreachable` for the same reason. It
+    # also means no key is sent for a request already destined to be refused.
+    #
+    # `base_url` is a detected provider's identity: reconciliation matches on
+    # it, the endpoint constraint protects it, and normalisation keeps it
+    # canonical. A second row at one endpoint contradicts all three. Supplying
+    # a replacement key for a provider that exists is an edit to that provider,
+    # not an adoption.
+    held = next(
+        (p for p in (await session.execute(select(LlmProvider))).scalars().all()
+         if canonical_base_url(p.base_url) == base_url),
+        None,
+    )
+    if held is not None:
+        return {
+            "adopted": False,
+            "reason": "already_configured",
+            "conflicting_name": held.name,
+            "message": (
+                f"A provider named {held.name!r} is already configured for this "
+                "endpoint. Edit that provider to change its API key."
+            ),
+        }
+
+    status, models_payload = await probe_local_endpoint(base_url, api_key)
+
+    if status == ENDPOINT_NO_ANSWER:
+        return {
+            "adopted": False,
+            "reason": "unreachable",
+            "message": f"Nothing answered at {base_url}.",
+        }
+    if status == ENDPOINT_UNAUTHORIZED:
+        return {
+            "adopted": False,
+            "reason": "key_rejected",
+            "message": "The runtime did not accept that API key.",
+        }
+    if status == ENDPOINT_ERROR:
+        # Something is listening, which is enough for reconciliation to keep an
+        # existing provider but not to create one: the key was never accepted,
+        # so storing it would be a credential recorded on no evidence and
+        # reported as success — the sentinel mistake this change exists to
+        # remove, in a new form. Reported as `unreachable` rather than a fifth
+        # reason: no working endpoint was reached, and the wording carries what
+        # a caller cannot infer from the code.
+        return {
+            "adopted": False,
+            "reason": "unreachable",
+            "message": (
+                f"{base_url} answered with an error rather than a model listing. "
+                "The runtime may still be starting up."
+            ),
+        }
+
+    # Only now is there a response to read. Naming before this point would mean
+    # naming from the candidate table, which is how an oMLX server on 8000
+    # becomes `vllm`.
+    resolved_name = name or identify_runtime(models_payload, port_of(base_url))
+
+    taken = (await session.execute(
+        select(LlmProvider).where(LlmProvider.name == resolved_name)
+    )).scalar_one_or_none()
+    if taken is not None:
+        # The name was derived server-side after the key was accepted, so the
+        # caller has never seen it and could not otherwise say which name to
+        # avoid.
+        return {
+            "adopted": False,
+            "reason": "name_conflict",
+            "conflicting_name": resolved_name,
+            "message": (
+                f"A provider named {resolved_name!r} already exists. "
+                "Supply a different name to adopt this runtime."
+            ),
+        }
+
+    provider = LlmProvider(
+        name=resolved_name,
+        base_url=base_url,
+        api_key_encrypted=encrypt_api_key(api_key),
+        provider_type=await _resolved_type(base_url, api_key),
+        is_default=await _claim_default(session),
+        source="detected",
+    )
+    session.add(provider)
+    await session.commit()
+    await session.refresh(provider)
+
+    return {"adopted": True, "provider": provider_to_dict(provider)}
