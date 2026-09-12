@@ -177,7 +177,14 @@ async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict |
         except Exception:
             logger.debug("Unreadable listing from %s", base_url, exc_info=True)
             return ENDPOINT_NO_ANSWER, None
-        if isinstance(payload, dict):
+        # The same bar `probe_provider_type()` sets, and for the same reason:
+        # 200 carrying JSON is not proof of an OpenAI-compatible service. Any
+        # JSON object would let whatever happens to be listening on a candidate
+        # port register as a provider whose type resolves to `unknown` — a row
+        # the model-list route then refuses, so it could never be used. An
+        # empty `data` list is still a listing: a runtime with nothing loaded
+        # is present.
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
             return ENDPOINT_ANSWERED, payload
     return ENDPOINT_NO_ANSWER, None
 
@@ -382,6 +389,15 @@ async def adopt_local_runtime(
     second, when the next scan found the same endpoint, still saw a 401, and
     offered it for adoption all over again.
     """
+    # The scan constructs `http://<gateway>:<port>/v1` and matches detected
+    # providers against that exact string. A caller-supplied `.../v1/` would be
+    # probed successfully and stored verbatim, after which the next scan misses
+    # the stored key, offers the canonical endpoint for adoption again, and
+    # deletes this row as departed — clearing the model settings that
+    # referenced it. Normalising here keeps the stored form and the constructed
+    # form the same form.
+    base_url = base_url.rstrip("/")
+
     status, models_payload = await probe_local_endpoint(base_url, api_key)
 
     if status == ENDPOINT_NO_ANSWER:

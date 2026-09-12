@@ -102,6 +102,7 @@ Things to know:
 - **Errand publishes on port 8000, and so does vLLM.** If a local runtime already holds host port 8000, the shipped compose cannot start beside it — and if it does start, it shadows the very runtime the scan was meant to find. Move Errand instead of the runtime:
 
   ```bash
+  # from deploy/, or with -f deploy/docker-compose.yml
   ERRAND_PORT=8010 docker compose up      # Errand on http://localhost:8010
   ```
 

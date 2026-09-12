@@ -72,6 +72,15 @@ class _Endpoint:
     def accepts(self, key: str) -> bool:
         return self.api_key is None or key == self.api_key
 
+    def serves_a_listing(self) -> bool:
+        """Whether what it serves is an OpenAI-compatible model listing.
+
+        The fake holds itself to the real probe's bar. A double that answers
+        "present" to anything is a double whose unconfigured default is success
+        — which cannot fail for the reason you most need it to.
+        """
+        return isinstance(self.models, dict) and isinstance(self.models.get("data"), list)
+
 
 def _port_of(base_url: str) -> int:
     return int(base_url.split(":")[2].split("/")[0])
@@ -94,11 +103,13 @@ def _responders(responding: dict[int, dict | _Endpoint]):
             return ENDPOINT_NO_ANSWER, None
         if not endpoint.accepts(api_key):
             return ENDPOINT_UNAUTHORIZED, None
+        if not endpoint.serves_a_listing():
+            return ENDPOINT_NO_ANSWER, None
         return ENDPOINT_ANSWERED, endpoint.models
 
     async def fake_probe_type(base_url, api_key):
         endpoint = endpoints.get(_port_of(base_url))
-        if endpoint is None or not endpoint.accepts(api_key):
+        if endpoint is None or not endpoint.accepts(api_key) or not endpoint.serves_a_listing():
             return "unknown"
         return "openai_compatible"
 
@@ -597,6 +608,36 @@ class TestProbeLocalEndpoint:
         assert status == ENDPOINT_NO_ANSWER
         assert payload is None
 
+    async def test_a_json_object_that_is_not_a_listing_is_not_an_answer(self):
+        """A 200 carrying JSON is not proof of an OpenAI-compatible service.
+
+        Before this probe existed, `probe_provider_type()` resolved such an
+        endpoint to `unknown` and detection skipped it. Accepting any JSON
+        object here would register whatever happens to sit on a candidate port
+        as a provider whose type is `unknown` — which the model-list route then
+        refuses, so the row could never be used for anything.
+        """
+        for payload in ({}, {"foo": 1}, {"data": "not-a-list"}, {"data": {}}):
+            def handler(request, payload=payload):
+                return httpx.Response(200, json=payload)
+
+            with _mock_transport(handler):
+                status, body = await probe_local_endpoint("http://h:8080/v1", DETECTED_API_KEY)
+
+            assert status == ENDPOINT_NO_ANSWER, f"{payload!r} was accepted as a listing"
+            assert body is None
+
+    async def test_an_empty_listing_is_still_a_listing(self):
+        """A runtime with no models loaded is present and OpenAI-compatible."""
+        def handler(request):
+            return httpx.Response(200, json={"object": "list", "data": []})
+
+        with _mock_transport(handler):
+            status, body = await probe_local_endpoint("http://h:11434/v1", DETECTED_API_KEY)
+
+        assert status == ENDPOINT_ANSWERED
+        assert body == {"object": "list", "data": []}
+
     async def test_the_supplied_key_is_sent(self):
         seen = {}
 
@@ -663,6 +704,14 @@ class TestKeyRequiringRuntimes:
 
         urls = [e["base_url"] for e in result["needs_key"]]
         assert len(urls) == len(set(urls)) == 2
+
+    async def test_a_non_listing_responder_is_not_registered(self, session_maker):
+        """Whatever else is listening on a candidate port is not a provider."""
+        result, _ = await _scan(session_maker, {8080: {"status": "healthy"}})
+
+        assert result["detected"] == []
+        assert result["needs_key"] == []
+        assert await _providers(session_maker) == []
 
     async def test_nothing_found_at_all_reports_both_empty(self, session_maker):
         result, _ = await _scan(session_maker, {})
@@ -825,6 +874,39 @@ class TestAdoption:
 
         assert result["adopted"] is True
         assert result["provider"]["name"] == "my-omlx"
+
+    async def test_a_trailing_slash_is_normalised_before_storing(self, session_maker):
+        """The scan constructs `.../v1` and matches detected providers by exact
+        string. Storing `.../v1/` verbatim means the next scan misses the stored
+        key, offers the canonical endpoint for adoption again, and deletes this
+        row as departed — taking its model settings with it. The same data loss
+        D4 and the endpoint lock exist to prevent, reached by a third route.
+        """
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+
+        result = await _adopt(session_maker, endpoints, self.URL + "/", "sk-real")
+
+        assert result["adopted"] is True
+        assert (await _providers(session_maker))[0].base_url == self.URL
+
+    async def test_an_endpoint_adopted_with_a_trailing_slash_survives_a_rescan(self, session_maker):
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL + "/", "sk-real")
+        adopted = (await _providers(session_maker))[0]
+
+        result, _ = await _scan(session_maker, endpoints)
+
+        providers = await _providers(session_maker)
+        assert len(providers) == 1, "the adopted provider was reconciled away"
+        assert providers[0].id == adopted.id
+        assert result["needs_key"] == [], "its endpoint was offered for adoption again"
+
+    async def test_a_non_listing_responder_cannot_be_adopted(self, session_maker):
+        result = await _adopt(session_maker, {8000: {"status": "healthy"}}, self.URL, "sk-real")
+
+        assert result["adopted"] is False
+        assert result["reason"] == "unreachable"
+        assert await _providers(session_maker) == []
 
     async def test_adoption_reconciles_nothing(self, session_maker):
         """No scan, and no existing provider removed — including a detected one
