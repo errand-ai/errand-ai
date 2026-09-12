@@ -477,27 +477,19 @@ async def adopt_local_runtime(
             "base_url from a scan result."
         )
 
-    status, models_payload = await probe_local_endpoint(base_url, api_key)
-
-    if status == ENDPOINT_NO_ANSWER:
-        return {
-            "adopted": False,
-            "reason": "unreachable",
-            "message": f"Nothing answered at {base_url}.",
-        }
-    if status == ENDPOINT_UNAUTHORIZED:
-        return {
-            "adopted": False,
-            "reason": "key_rejected",
-            "message": "The runtime did not accept that API key.",
-        }
-
+    # Checked before probing: whether the endpoint is already configured is
+    # knowable without the network, and it is the answer whatever the probe
+    # would have said. Probing first meant a wrong key on an already-adopted
+    # endpoint reported `key_rejected` — sending the user to retry an adoption
+    # that cannot succeed rather than to edit the provider they already have —
+    # and a runtime merely down reported `unreachable` for the same reason. It
+    # also means no key is sent for a request already destined to be refused.
+    #
     # `base_url` is a detected provider's identity: reconciliation matches on
-    # it, the endpoint lock protects it, and normalisation above exists to keep
-    # it canonical. A second row at the same endpoint contradicts all three, and
-    # the scan's per-endpoint lookup then raises — 500ing every scan until
-    # someone deletes a row by hand. Supplying a replacement key for a provider
-    # that already exists is an edit to that provider, not an adoption.
+    # it, the endpoint constraint protects it, and normalisation keeps it
+    # canonical. A second row at one endpoint contradicts all three. Supplying
+    # a replacement key for a provider that exists is an edit to that provider,
+    # not an adoption.
     held = next(
         (p for p in (await session.execute(select(LlmProvider))).scalars().all()
          if canonical_base_url(p.base_url) == base_url),
@@ -512,6 +504,21 @@ async def adopt_local_runtime(
                 f"A provider named {held.name!r} is already configured for this "
                 "endpoint. Edit that provider to change its API key."
             ),
+        }
+
+    status, models_payload = await probe_local_endpoint(base_url, api_key)
+
+    if status == ENDPOINT_NO_ANSWER:
+        return {
+            "adopted": False,
+            "reason": "unreachable",
+            "message": f"Nothing answered at {base_url}.",
+        }
+    if status == ENDPOINT_UNAUTHORIZED:
+        return {
+            "adopted": False,
+            "reason": "key_rejected",
+            "message": "The runtime did not accept that API key.",
         }
 
     # Only now is there a response to read. Naming before this point would mean

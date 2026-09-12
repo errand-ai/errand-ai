@@ -1003,6 +1003,44 @@ class TestAdoption:
         assert result["adopted"] is False
         assert len(await _providers(session_maker)) == 1
 
+    async def test_an_already_configured_endpoint_is_reported_before_probing(self, session_maker):
+        """The endpoint is knowable without the network. Probing first means a
+        wrong key on an already-adopted endpoint answers `key_rejected`, which
+        sends the user to retry an adoption that can never succeed instead of
+        editing the provider they already have.
+        """
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        result = await _adopt(session_maker, endpoints, self.URL, "sk-wrong")
+
+        assert result["reason"] == "already_configured"
+        assert result["conflicting_name"] == "vllm"
+
+    async def test_an_already_configured_endpoint_that_is_down_says_so_too(self, session_maker):
+        await _adopt(
+            session_maker, {8000: _Endpoint(_anonymous_models(), api_key="sk-real")},
+            self.URL, "sk-real",
+        )
+
+        result = await _adopt(session_maker, {}, self.URL, "sk-real")
+
+        assert result["reason"] == "already_configured"
+
+    async def test_the_key_is_not_sent_to_an_endpoint_already_configured(self, session_maker):
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        probe_endpoint, probe_type = _responders(endpoints)
+        probe = AsyncMock(side_effect=probe_endpoint)
+        with patch("local_ai_detection.probe_local_endpoint", probe), \
+                patch("local_ai_detection.probe_provider_type", side_effect=probe_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                await adopt_local_runtime(session, self.URL, "sk-second-attempt", None)
+
+        probe.assert_not_awaited()
+
     async def test_a_non_candidate_endpoint_cannot_be_adopted(self, session_maker):
         """Reconciliation only probes the candidate table. A detected row at an
         endpoint no scan visits is deleted on the next scan, taking its model
@@ -1353,6 +1391,18 @@ class TestAdoptEndpoint:
             "base_url": "", "api_key": "sk-real",
         })
         assert resp.status_code == 422
+
+    async def test_a_value_that_is_not_a_url_is_rejected_with_422(self, admin_client):
+        """`min_length` does not make a string a URL. Anything that is not a
+        candidate endpoint is refused before the probe, so a nonsense value
+        cannot come back as a 200 `unreachable` finding."""
+        endpoint, ptype, environ = _adopt_patches({})
+        with endpoint, ptype, environ:
+            for bad in ("not a URL", "ftp://host.docker.internal:8000/v1", "javascript:alert(1)"):
+                resp = await admin_client.post("/api/llm/providers/adopt-local", json={
+                    "base_url": bad, "api_key": "sk-x",
+                })
+                assert resp.status_code == 422, f"{bad!r} returned {resp.status_code}"
 
     async def test_requires_admin(self, client):
         resp = await client.post("/api/llm/providers/adopt-local", json={
