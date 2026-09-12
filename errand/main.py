@@ -1196,7 +1196,13 @@ async def adopt_local_ai_provider(
     """
     from local_ai_detection import adopt_local_runtime
 
-    return await adopt_local_runtime(session, body.base_url, body.api_key, body.name)
+    try:
+        return await adopt_local_runtime(session, body.base_url, body.api_key, body.name)
+    except ValueError as exc:
+        # A base_url that no scan will ever probe is an argument the caller got
+        # wrong, not a finding about the endpoint — so it is rejected rather
+        # than reported as a refusal.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class ProviderUpdate(BaseModel):

@@ -50,6 +50,12 @@ DETECTED_API_KEY = "sk-no-key-required"
 # firmly as a 200 does.
 ENDPOINT_ANSWERED = "answered"
 ENDPOINT_UNAUTHORIZED = "unauthorized"
+# Answered, but with a status we cannot use — 500, 503, 429. Something is
+# listening, which is the only question reconciliation asks. Treating a
+# momentary upstream error as departure would delete the provider and clear the
+# model settings that referenced it, which is the same mistake as treating a
+# 401 as absence.
+ENDPOINT_ERROR = "error"
 ENDPOINT_NO_ANSWER = "no_answer"
 
 
@@ -138,6 +144,32 @@ def identify_runtime(models_payload: dict | None, port: int | None) -> str:
     return f"local-ai-{port}" if port is not None else "local-ai"
 
 
+def canonical_base_url(base_url: str) -> str:
+    """The form a scan constructs, for comparing against what is stored.
+
+    Detection builds `http://<gateway>:<port>/v1`, but a stored row may differ
+    by a trailing separator — the update route accepted one on every release
+    before the endpoint became server-enforced. Comparing raw strings would
+    leave such a row unmatched, probed with the sentinel, and deleted as
+    departed.
+    """
+    return base_url.rstrip("/")
+
+
+def adoptable_endpoints() -> set[str]:
+    """The endpoints a scan will probe, and therefore the only ones adoptable.
+
+    Reconciliation visits the candidate table and nothing else, so a detected
+    provider recorded anywhere else is deleted by the next scan along with the
+    model settings that referenced it. Restricting adoption to these also keeps
+    a caller-supplied key from being sent to any host a caller cares to name.
+    """
+    if not is_local_detection_available():
+        return set()
+    gateway = get_host_gateway_address()
+    return {f"http://{gateway}:{port}/v1" for port in candidate_ports()}
+
+
 def port_of(base_url: str) -> int | None:
     """The port a base URL names, or None if it names none."""
     try:
@@ -171,6 +203,11 @@ async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict |
 
     if resp.status_code in (401, 403):
         return ENDPOINT_UNAUTHORIZED, None
+    if resp.status_code == 404:
+        # The original rule, unchanged: 404 proves the endpoint is not there.
+        return ENDPOINT_NO_ANSWER, None
+    if resp.status_code != 200:
+        return ENDPOINT_ERROR, None
     if resp.status_code == 200:
         try:
             payload = resp.json()
@@ -253,7 +290,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     configured = (await session.execute(
         select(LlmProvider).order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
     )).scalars().all()
-    configured_urls = {p.base_url for p in configured}
+    configured_urls = {canonical_base_url(p.base_url) for p in configured}
 
     # One row per endpoint, oldest first. Adoption refuses to create a second
     # row at an endpoint that already has one, but an installation that ran a
@@ -265,13 +302,14 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     for provider in configured:
         if provider.source != "detected":
             continue
-        if provider.base_url in detected_rows:
+        if canonical_base_url(provider.base_url) in detected_rows:
             logger.warning(
                 "Ignoring duplicate detected provider %r at %s; reconciling %r",
-                provider.name, provider.base_url, detected_rows[provider.base_url].name,
+                provider.name, provider.base_url,
+                detected_rows[canonical_base_url(provider.base_url)].name,
             )
             continue
-        detected_rows[provider.base_url] = provider
+        detected_rows[canonical_base_url(provider.base_url)] = provider
 
     # Keyed by base_url, not by name. The endpoint is the stable identity of a
     # runtime; the name is a label the user is free to change. Keying by name
@@ -296,6 +334,12 @@ async def scan_local_ai(session: AsyncSession) -> dict:
 
         present.add(base_url)
 
+        if status == ENDPOINT_ERROR:
+            # Present, and that is all reconciliation needs. Nothing is known
+            # about it beyond that, so it is neither registered nor offered for
+            # adoption: a key would not fix a 503.
+            continue
+
         if status == ENDPOINT_UNAUTHORIZED:
             # Nothing beyond the endpoint is known: a 401 returns no body, so
             # asserting a runtime name or type here would be inventing one.
@@ -306,7 +350,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         detected[base_url] = {
             "name": identify_runtime(models_payload, port),
             "base_url": base_url,
-            "provider_type": await probe_provider_type(base_url, api_key),
+            "provider_type": await _resolved_type(base_url, api_key),
             "port": port,
         }
 
@@ -361,7 +405,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         select(LlmProvider).where(LlmProvider.source == "detected")
     )).scalars().all()
     for provider in stale:
-        if provider.base_url in present:
+        if canonical_base_url(provider.base_url) in present:
             continue
         evict_client(provider.id)
         await _clear_model_settings_for_provider(session, provider.id)
@@ -377,6 +421,19 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         "needs_key": needs_key,
         "message": None,
     }
+
+
+async def _resolved_type(base_url: str, api_key: str) -> str:
+    """The provider type, never `unknown` once a listing has been read.
+
+    `probe_provider_type()` is a second, independent pair of requests, so it can
+    time out after the listing succeeded. Recording `unknown` on that basis
+    produces a provider the model-list route refuses — an unusable row created
+    from a transient failure, when the listing already proved the endpoint is
+    OpenAI-compatible.
+    """
+    probed = await probe_provider_type(base_url, api_key)
+    return probed if probed != "unknown" else "openai_compatible"
 
 
 async def adopt_local_runtime(
@@ -408,7 +465,17 @@ async def adopt_local_runtime(
     # deletes this row as departed — clearing the model settings that
     # referenced it. Normalising here keeps the stored form and the constructed
     # form the same form.
-    base_url = base_url.rstrip("/")
+    base_url = canonical_base_url(base_url)
+
+    adoptable = adoptable_endpoints()
+    if base_url not in adoptable:
+        # Refused before probing, so the key is never sent. This is an argument
+        # the caller got wrong rather than a finding about the endpoint, which
+        # is why it is a 422 and not an `adopted: false` result.
+        raise ValueError(
+            f"{base_url} is not a local AI candidate endpoint. Adoption takes a "
+            "base_url from a scan result."
+        )
 
     status, models_payload = await probe_local_endpoint(base_url, api_key)
 
@@ -431,9 +498,11 @@ async def adopt_local_runtime(
     # the scan's per-endpoint lookup then raises — 500ing every scan until
     # someone deletes a row by hand. Supplying a replacement key for a provider
     # that already exists is an edit to that provider, not an adoption.
-    held = (await session.execute(
-        select(LlmProvider).where(LlmProvider.base_url == base_url)
-    )).scalars().first()
+    held = next(
+        (p for p in (await session.execute(select(LlmProvider))).scalars().all()
+         if canonical_base_url(p.base_url) == base_url),
+        None,
+    )
     if held is not None:
         return {
             "adopted": False,
@@ -471,7 +540,7 @@ async def adopt_local_runtime(
         name=resolved_name,
         base_url=base_url,
         api_key_encrypted=encrypt_api_key(api_key),
-        provider_type=await probe_provider_type(base_url, api_key),
+        provider_type=await _resolved_type(base_url, api_key),
         is_default=await _claim_default(session),
         source="detected",
     )

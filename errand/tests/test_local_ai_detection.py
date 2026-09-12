@@ -20,6 +20,7 @@ from llm_providers import encrypt_api_key
 from local_ai_detection import (
     DETECTED_API_KEY,
     ENDPOINT_ANSWERED,
+    ENDPOINT_ERROR,
     ENDPOINT_NO_ANSWER,
     ENDPOINT_UNAUTHORIZED,
     LOCAL_AI_CANDIDATES,
@@ -140,6 +141,18 @@ async def _scan(session_maker, responding: dict[int, dict | _Endpoint], env: dic
         async with session_maker() as session:
             result = await scan_local_ai(session)
     return result, probe_mock
+
+
+async def _unknown_type(base_url, api_key):
+    """A type probe that fails independently of the listing probe."""
+    return "unknown"
+
+
+def _erroring(port: int):
+    """An endpoint that answers with an HTTP error rather than not at all."""
+    async def probe(base_url, api_key):
+        return (ENDPOINT_ERROR, None) if _port_of(base_url) == port else (ENDPOINT_NO_ANSWER, None)
+    return probe
 
 
 async def _adopt(session_maker, responding, base_url, api_key, name=None):
@@ -638,6 +651,34 @@ class TestProbeLocalEndpoint:
         assert status == ENDPOINT_ANSWERED
         assert body == {"object": "list", "data": []}
 
+    @pytest.mark.parametrize("status", [500, 502, 503, 429, 400])
+    async def test_an_http_error_is_a_service_that_is_present(self, status):
+        """A runtime that answers 503 is up and briefly unwell, not gone.
+
+        Reconciliation deletes providers whose runtime has departed and clears
+        the model settings that referenced them. Treating a transient error as
+        absence turns a momentary blip into destroyed configuration — the same
+        argument that makes a 401 proof of presence rather than absence.
+        """
+        def handler(request):
+            return httpx.Response(status, text="upstream unavailable")
+
+        with _mock_transport(handler):
+            state, payload = await probe_local_endpoint("http://h:11434/v1", DETECTED_API_KEY)
+
+        assert state == ENDPOINT_ERROR
+        assert payload is None
+
+    async def test_404_is_still_nothing_here(self):
+        """Unchanged: 404 proves the endpoint does not exist."""
+        def handler(request):
+            return httpx.Response(404)
+
+        with _mock_transport(handler):
+            state, _ = await probe_local_endpoint("http://h:1234/v1", DETECTED_API_KEY)
+
+        assert state == ENDPOINT_NO_ANSWER
+
     async def test_the_supplied_key_is_sent(self):
         seen = {}
 
@@ -962,6 +1003,44 @@ class TestAdoption:
         assert result["adopted"] is False
         assert len(await _providers(session_maker)) == 1
 
+    async def test_a_non_candidate_endpoint_cannot_be_adopted(self, session_maker):
+        """Reconciliation only probes the candidate table. A detected row at an
+        endpoint no scan visits is deleted on the next scan, taking its model
+        settings — so adoption must not create one. It also stops a
+        caller-supplied key being sent to any host the caller names.
+        """
+        with pytest.raises(ValueError):
+            await _adopt(
+                session_maker, {9999: _Endpoint(_anonymous_models(), api_key="sk-real")},
+                "http://host.docker.internal:9999/v1", "sk-real",
+            )
+
+        assert await _providers(session_maker) == []
+
+    async def test_an_endpoint_on_another_host_cannot_be_adopted(self, session_maker):
+        with pytest.raises(ValueError):
+            await _adopt(
+                session_maker, {8000: _Endpoint(_anonymous_models(), api_key="sk-real")},
+                "http://evil.example:8000/v1", "sk-real",
+            )
+
+        assert await _providers(session_maker) == []
+
+    async def test_a_type_probe_that_disagrees_does_not_yield_an_unusable_provider(self, session_maker):
+        """The listing succeeded, so the endpoint is OpenAI-compatible. If the
+        separate type probe times out, recording `unknown` produces a provider
+        the model-list route refuses."""
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        probe_endpoint, _ = _responders(endpoints)
+        with patch("local_ai_detection.probe_local_endpoint", side_effect=probe_endpoint), \
+                patch("local_ai_detection.probe_provider_type", new=_unknown_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                result = await adopt_local_runtime(session, self.URL, "sk-real", None)
+
+        assert result["adopted"] is True
+        assert result["provider"]["provider_type"] == "openai_compatible"
+
     async def test_adoption_reconciles_nothing(self, session_maker):
         """No scan, and no existing provider removed — including a detected one
         whose runtime is not answering during this call."""
@@ -1088,6 +1167,57 @@ class TestReconciliationWithStoredKeys:
         assert result["available"] is True
         names = {p.name for p in await _providers(session_maker)}
         assert names == {"dup-a", "dup-b"}, "a duplicate was silently deleted"
+        assert result["needs_key"] == []
+
+    async def test_a_transient_error_does_not_delete_the_provider(self, session_maker):
+        """The runtime answered. It is present, however unhappily."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        assert len(await _providers(session_maker)) == 1
+
+        with patch("local_ai_detection.probe_local_endpoint",
+                   side_effect=_erroring(11434)), \
+                patch("local_ai_detection.probe_provider_type",
+                      new=_unknown_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                result = await scan_local_ai(session)
+
+        assert len(await _providers(session_maker)) == 1, "a 503 deleted the provider"
+        assert result["needs_key"] == [], "an erroring endpoint is not offered for adoption"
+
+    async def test_a_legacy_url_with_a_trailing_slash_is_still_matched(self, session_maker):
+        """Detected rows never carried a trailing slash, but the update route
+        accepted one on every release before this change, so a row edited that
+        way exists in the wild. Comparing raw strings would probe it with the
+        sentinel, see 401, and delete it as departed."""
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="legacy", base_url=self.URL + "/",
+                api_key_encrypted=encrypt_api_key("sk-real"),
+                provider_type="openai_compatible", is_default=False, source="detected",
+            ))
+            await session.commit()
+
+        result, probe_mock = await _scan(
+            session_maker, {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        )
+
+        assert len(await _providers(session_maker)) == 1, "the legacy row was deleted"
+        assert result["needs_key"] == [], "its endpoint was offered for adoption"
+        by_url = {c.args[0]: c.args[1] for c in probe_mock.call_args_list}
+        assert by_url[self.URL] == "sk-real", "its stored key was not used"
+
+    async def test_a_manual_provider_with_a_trailing_slash_is_not_offered(self, session_maker):
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="mine", base_url=self.URL + "/",
+                api_key_encrypted=encrypt_api_key("sk-x"),
+                provider_type="openai_compatible", is_default=True, source="database",
+            ))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {8000: _Endpoint(api_key="sk-real")})
+
         assert result["needs_key"] == []
 
     async def test_a_stored_key_is_sent_only_to_its_own_endpoint(self, session_maker):
