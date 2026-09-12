@@ -105,7 +105,9 @@ def _responders(responding: dict[int, dict | _Endpoint]):
         if not endpoint.accepts(api_key):
             return ENDPOINT_UNAUTHORIZED, None
         if not endpoint.serves_a_listing():
-            return ENDPOINT_NO_ANSWER, None
+            # It answered; the answer is just no use to us. Mirrors the real
+            # probe, which counts any reply as proof the endpoint is occupied.
+            return ENDPOINT_ERROR, None
         return ENDPOINT_ANSWERED, endpoint.models
 
     async def fake_probe_type(base_url, api_key):
@@ -610,18 +612,23 @@ class TestProbeLocalEndpoint:
 
         assert status == ENDPOINT_NO_ANSWER
 
-    async def test_an_unreadable_200_body_is_not_an_answer(self):
-        """200 from something that is not an OpenAI-compatible listing."""
+    async def test_an_unreadable_200_body_is_present_but_unusable(self):
+        """200 from something that is not an OpenAI-compatible listing.
+
+        Unusable, but it answered — so the endpoint is occupied, and a detected
+        provider recorded there has not departed. Absence is proved by silence
+        or a 404, not by a reply we cannot parse.
+        """
         def handler(request):
             return httpx.Response(200, text="<html>hello</html>")
 
         with _mock_transport(handler):
             status, payload = await probe_local_endpoint("http://h:8080/v1", DETECTED_API_KEY)
 
-        assert status == ENDPOINT_NO_ANSWER
+        assert status == ENDPOINT_ERROR
         assert payload is None
 
-    async def test_a_json_object_that_is_not_a_listing_is_not_an_answer(self):
+    async def test_a_json_object_that_is_not_a_listing_is_not_a_listing(self):
         """A 200 carrying JSON is not proof of an OpenAI-compatible service.
 
         Before this probe existed, `probe_provider_type()` resolved such an
@@ -637,7 +644,7 @@ class TestProbeLocalEndpoint:
             with _mock_transport(handler):
                 status, body = await probe_local_endpoint("http://h:8080/v1", DETECTED_API_KEY)
 
-            assert status == ENDPOINT_NO_ANSWER, f"{payload!r} was accepted as a listing"
+            assert status == ENDPOINT_ERROR, f"{payload!r} was accepted as a listing"
             assert body is None
 
     async def test_an_empty_listing_is_still_a_listing(self):
@@ -1242,6 +1249,29 @@ class TestReconciliationWithStoredKeys:
 
         assert len(await _providers(session_maker)) == 1, "a 503 deleted the provider"
         assert result["needs_key"] == [], "an erroring endpoint is not offered for adoption"
+
+    async def test_an_unreadable_reply_does_not_delete_the_provider(self, session_maker):
+        """A reply we cannot parse still proves the endpoint is occupied. The
+        provider stays; the reachability check is what reports it unusable."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider_id = (await _providers(session_maker))[0].id
+
+        async with session_maker() as session:
+            session.add(Setting(
+                key="task_processing_model",
+                value={"provider_id": str(provider_id), "model": "qwen3:8b"},
+            ))
+            await session.commit()
+
+        # Serving something, but not a model listing.
+        await _scan(session_maker, {11434: {"status": "healthy"}})
+
+        assert len(await _providers(session_maker)) == 1, "an unparseable reply deleted it"
+        async with session_maker() as session:
+            setting = (await session.execute(
+                select(Setting).where(Setting.key == "task_processing_model")
+            )).scalar_one()
+            assert setting.value["provider_id"] == str(provider_id), "its model setting was cleared"
 
     async def test_a_legacy_url_with_a_trailing_slash_is_still_matched(self, session_maker):
         """Detected rows never carried a trailing slash, but the update route

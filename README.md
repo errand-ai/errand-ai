@@ -89,11 +89,11 @@ One key, many models, no infrastructure. Add a provider in **Settings → Task M
 
 The catalog also carries OpenAI, Anthropic, Google Gemini, Groq, Mistral, DeepSeek, xAI, Cerebras, Together, Fireworks, DeepInfra, Perplexity, Hugging Face, Nebius, Novita, Hyperbolic and SiliconFlow. Anything not listed is reachable through **Other (OpenAI-compatible)**, which takes a base URL and a key.
 
-### A local AI runtime (no key, no cloud)
+### A local AI runtime (nothing leaves your machine)
 
-If you run [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), llama.cpp, Jan, vLLM, LocalAI, GPT4All or an MLX server on the same machine, press **Scan for local AI** and Errand will find it. Each of these exposes an OpenAI-compatible API, so nothing else is needed — no key, no configuration.
+If you run [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), llama.cpp, Jan, vLLM, LocalAI, GPT4All or an MLX server on the same machine, press **Scan for local AI** and Errand will find it. Each exposes an OpenAI-compatible API, so there is nothing to configure.
 
-A runtime that requires an API key — vLLM started with `--api-key`, or an MLX server, which requires one by default — is found too. It is listed separately as needing credentials: supply the key and adopt it, and it becomes a provider like any other. Errand never guesses a key, and never stores a placeholder against a service that would reject it.
+Most of these need no key at all, and are registered as soon as they answer. Some want one: vLLM started with `--api-key`, and an MLX server, which requires one by default. Those are found too and listed separately as needing credentials — supply the key and adopt it, and the runtime becomes a provider like any other. Errand never guesses a key, and never stores a placeholder against a service that would reject it.
 
 Things to know:
 

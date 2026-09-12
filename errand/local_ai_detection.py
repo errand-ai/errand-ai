@@ -189,6 +189,10 @@ async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict |
     The same rule `local-ai-provider-detection` used to verify the eighteen
     catalog base URLs — 401/403 proves the endpoint exists, 404 or a DNS
     failure proves it does not — applied where it was originally missing.
+
+    Only silence and a 404 mean absence. Every other reply, however useless,
+    proves something is serving the endpoint, and reconciliation deletes a
+    provider only for a runtime that has gone.
     """
     try:
         async with httpx.AsyncClient() as client:
@@ -213,7 +217,7 @@ async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict |
             payload = resp.json()
         except Exception:
             logger.debug("Unreadable listing from %s", base_url, exc_info=True)
-            return ENDPOINT_NO_ANSWER, None
+            return ENDPOINT_ERROR, None
         # The same bar `probe_provider_type()` sets, and for the same reason:
         # 200 carrying JSON is not proof of an OpenAI-compatible service. Any
         # JSON object would let whatever happens to be listening on a candidate
@@ -223,7 +227,9 @@ async def probe_local_endpoint(base_url: str, api_key: str) -> tuple[str, dict |
         # is present.
         if isinstance(payload, dict) and isinstance(payload.get("data"), list):
             return ENDPOINT_ANSWERED, payload
-    return ENDPOINT_NO_ANSWER, None
+    # It answered, so the endpoint is occupied even though the reply is no use
+    # to us — not registrable, not adoptable, but not departed either.
+    return ENDPOINT_ERROR, None
 
 
 async def _available_name(session: AsyncSession, name: str, port: int) -> str | None:
