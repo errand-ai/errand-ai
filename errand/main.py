@@ -1172,13 +1172,44 @@ async def scan_local_ai_providers(
     return await scan_local_ai(session)
 
 
+class LocalRuntimeAdoption(BaseModel):
+    base_url: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    # Only needed to resolve a name conflict — the runtime names itself from
+    # the response the key unlocks.
+    name: str | None = None
+
+
+@app.post("/api/llm/providers/adopt-local")
+async def adopt_local_ai_provider(
+    body: LocalRuntimeAdoption,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Adopt a local runtime that requires an API key.
+
+    Reports its outcome as a resolved result rather than a failure, as the
+    reachability check does: the request was well formed and the probe ran, so
+    what the probe found is a finding. The response is always 200 carrying
+    `adopted`; a refusal carries a machine-readable `reason` so a caller never
+    has to match on wording.
+    """
+    from local_ai_detection import adopt_local_runtime
+
+    return await adopt_local_runtime(session, body.base_url, body.api_key, body.name)
+
+
 class ProviderUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
     api_key: str | None = None
 
 
+# PATCH as well as PUT: the shipped settings card sends PATCH, and a route it
+# cannot reach is a server-side guarantee that never runs. Both verbs, rather
+# than a swap, because an existing caller may already send either.
 @app.put("/api/llm/providers/{provider_id}")
+@app.patch("/api/llm/providers/{provider_id}")
 async def update_provider(
     provider_id: uuid.UUID,
     body: ProviderUpdate,
@@ -1193,6 +1224,23 @@ async def update_provider(
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.source == "env":
         raise HTTPException(status_code=403, detail="Cannot modify env-sourced provider")
+    if (
+        provider.source == "detected"
+        and body.base_url is not None
+        and body.base_url != provider.base_url
+    ):
+        # The endpoint is a detected provider's identity: the next scan
+        # reconciles by it. Repointing the row means the scan matches nothing,
+        # deletes it as departed, and clears the model settings that referenced
+        # it. The settings card locks this field for the same reason — but a
+        # guarantee that lives only in the caller is decorative.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Cannot change the endpoint of a detected provider — it is "
+                "reconciled by scanning."
+            ),
+        )
 
     url_changed = False
     if body.name is not None:
@@ -1243,7 +1291,9 @@ async def delete_provider(
     await session.commit()
 
 
+# POST as well as PUT, for the same reason as the update route above.
 @app.put("/api/llm/providers/{provider_id}/default")
+@app.post("/api/llm/providers/{provider_id}/default")
 async def set_default_provider(
     provider_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),

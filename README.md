@@ -93,10 +93,19 @@ The catalog also carries OpenAI, Anthropic, Google Gemini, Groq, Mistral, DeepSe
 
 If you run [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), llama.cpp, Jan, vLLM, LocalAI, GPT4All or an MLX server on the same machine, press **Scan for local AI** and Errand will find it. Each of these exposes an OpenAI-compatible API, so nothing else is needed — no key, no configuration.
 
-Two things to know:
+A runtime that requires an API key — vLLM started with `--api-key`, or an MLX server, which requires one by default — is found too. It is listed separately as needing credentials: supply the key and adopt it, and it becomes a provider like any other. Errand never guesses a key, and never stores a placeholder against a service that would reject it.
+
+Things to know:
 
 - **Task containers must run on a named network.** Errand reaches a host-run runtime through a host gateway alias, which does not resolve inside a container that shares the host's network namespace. Both shipped compose files already set `TASK_RUNNER_NETWORK`, so this only affects hand-rolled setups; a task using a detected provider without it fails immediately and says so.
 - **The first request is slow.** A local runtime loads model weights from disk before generating anything, so Errand allows detected providers a longer default request timeout. Override it per profile or globally if your machine needs more.
+- **Errand publishes on port 8000, and so does vLLM.** If a local runtime already holds host port 8000, the shipped compose cannot start beside it — and if it does start, it shadows the very runtime the scan was meant to find. Move Errand instead of the runtime:
+
+  ```bash
+  ERRAND_PORT=8010 docker compose up      # Errand on http://localhost:8010
+  ```
+
+  The default is unchanged, so nothing moves unless you set it. Port 8000 stays on the candidate list because it is vLLM's documented default and one of the likeliest places to find a local runtime.
 
 Detection is unavailable on Kubernetes, where there is no host to probe; the scan says so rather than appearing broken.
 

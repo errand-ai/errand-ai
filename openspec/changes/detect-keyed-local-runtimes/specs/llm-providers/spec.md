@@ -137,9 +137,11 @@ A detected provider whose endpoint still responds SHALL be retained, including w
 - **THEN** that provider's key is sent only to its own endpoint
 - **AND** every other candidate is probed with the keyless sentinel
 
-### Requirement: An unreadable response does not yield a runtime name
+### Requirement: Only a silent response lets the port name a runtime
 
 Where a probe response cannot be read, the endpoint SHALL be named after itself rather than after the runtime that nominally claims its port. Falling back to a candidate's name is permitted only when a response was read and carried no identifying marker.
+
+A response carrying a marker that names no runtime the server knows SHALL likewise not be named after its port's claimant. An unrecognised marker is the response saying it is not the port's usual occupant, which is a statement and not a silence; naming it after the claimant would contradict the response just read. An absent or empty marker says nothing, and leaves the port free to speak.
 
 #### Scenario: Unreadable response on a port claimed by one runtime
 
@@ -150,3 +152,35 @@ Where a probe response cannot be read, the endpoint SHALL be named after itself 
 
 - **WHEN** an endpoint answers with a model listing carrying no identifying marker and its port is the default of exactly one known runtime
 - **THEN** that runtime's name is used
+
+#### Scenario: Readable response with an unrecognised marker
+
+- **WHEN** an endpoint answers with a model listing whose marker names no known runtime, and its port is the default of exactly one known runtime
+- **THEN** the endpoint is not named after that runtime
+
+### Requirement: Provider routes accept the verbs their client sends
+
+The provider update and default-selection routes SHALL each accept both verbs
+in use by shipped clients: `PUT` or `PATCH` to update a provider, and `PUT` or
+`POST` to set the default. A route a client cannot reach makes any server-side
+guarantee placed on it unreachable too — including the endpoint constraint on
+detected providers, whose whole purpose is to hold where the caller's restraint
+cannot be relied on.
+
+Both verbs SHALL be accepted rather than one exchanged for the other, since a
+caller may already be sending either.
+
+#### Scenario: A provider is updated by either verb
+
+- **WHEN** a client updates a provider with `PUT`, or with `PATCH`
+- **THEN** the update is applied in both cases
+
+#### Scenario: The default is set by either verb
+
+- **WHEN** a client sets the default provider with `PUT`, or with `POST`
+- **THEN** the provider becomes the default in both cases
+
+#### Scenario: The endpoint constraint holds on either verb
+
+- **WHEN** a client attempts to change a detected provider's base URL with the verb it ordinarily sends
+- **THEN** the change is refused
