@@ -105,9 +105,9 @@ which D4, the endpoint lock and URL normalisation all depend on.
 Requires a `@errand-ai/ui-components` release and a consumer bump; everything above ships without it.
 
 - [x] 7.1 Specify the scan-panel changes as an OpenSpec change in `errand-component-library` — key-requiring runtimes presented distinctly, a key field, an adopt action, and a rejected key explained without losing the entry
-- [ ] 7.2 Implement and release it there
-- [ ] 7.3 Bump the pin here and confirm the lockfile diff touches only that entry
-- [ ] 7.4 Extend `frontend/src/components/__tests__/LlmProviderCardSeam.test.ts` with the new scan-result shape, captured from this repo's endpoint as the existing fixture was — the adopt call is a sixth response shape across the seam
+- [x] 7.2 Implement and release it there
+- [x] 7.3 Bump the pin here and confirm the lockfile diff touches only that entry
+- [x] 7.4 Extend `frontend/src/components/__tests__/LlmProviderCardSeam.test.ts` with the new scan-result shape, captured from this repo's endpoint as the existing fixture was — the adopt call is a sixth response shape across the seam
 
 ## 8. Verify
 
