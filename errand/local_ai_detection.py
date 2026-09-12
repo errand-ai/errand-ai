@@ -250,11 +250,28 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     # is used to probe its own endpoint and no other, and any configured
     # endpoint is one the caller has already dealt with — so it is never
     # offered for adoption again.
-    configured = (await session.execute(select(LlmProvider))).scalars().all()
-    adopted_keys = {
-        p.base_url: p.api_key_encrypted for p in configured if p.source == "detected"
-    }
+    configured = (await session.execute(
+        select(LlmProvider).order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
+    )).scalars().all()
     configured_urls = {p.base_url for p in configured}
+
+    # One row per endpoint, oldest first. Adoption refuses to create a second
+    # row at an endpoint that already has one, but an installation that ran a
+    # build where it could must not be left with a scan that raises for ever —
+    # so take the earliest and say so, rather than deleting anything. A
+    # duplicate visible in the settings list is a problem a person can fix; a
+    # 500 on every scan is not.
+    detected_rows: dict[str, LlmProvider] = {}
+    for provider in configured:
+        if provider.source != "detected":
+            continue
+        if provider.base_url in detected_rows:
+            logger.warning(
+                "Ignoring duplicate detected provider %r at %s; reconciling %r",
+                provider.name, provider.base_url, detected_rows[provider.base_url].name,
+            )
+            continue
+        detected_rows[provider.base_url] = provider
 
     # Keyed by base_url, not by name. The endpoint is the stable identity of a
     # runtime; the name is a label the user is free to change. Keying by name
@@ -269,8 +286,8 @@ async def scan_local_ai(session: AsyncSession) -> dict:
 
     for port in candidate_ports():
         base_url = f"http://{gateway}:{port}/v1"
-        stored = adopted_keys.get(base_url)
-        api_key = decrypt_api_key(stored) if stored else DETECTED_API_KEY
+        stored = detected_rows.get(base_url)
+        api_key = decrypt_api_key(stored.api_key_encrypted) if stored else DETECTED_API_KEY
 
         status, models_payload = await probe_local_endpoint(base_url, api_key)
 
@@ -299,12 +316,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     registered: list[dict] = []
 
     for base_url, info in detected.items():
-        existing = (await session.execute(
-            select(LlmProvider).where(
-                LlmProvider.base_url == base_url,
-                LlmProvider.source == "detected",
-            )
-        )).scalar_one_or_none()
+        existing = detected_rows.get(base_url)
 
         if existing is not None:
             # Its name is the user's to keep — they may have renamed it, and a
@@ -411,6 +423,26 @@ async def adopt_local_runtime(
             "adopted": False,
             "reason": "key_rejected",
             "message": "The runtime did not accept that API key.",
+        }
+
+    # `base_url` is a detected provider's identity: reconciliation matches on
+    # it, the endpoint lock protects it, and normalisation above exists to keep
+    # it canonical. A second row at the same endpoint contradicts all three, and
+    # the scan's per-endpoint lookup then raises — 500ing every scan until
+    # someone deletes a row by hand. Supplying a replacement key for a provider
+    # that already exists is an edit to that provider, not an adoption.
+    held = (await session.execute(
+        select(LlmProvider).where(LlmProvider.base_url == base_url)
+    )).scalars().first()
+    if held is not None:
+        return {
+            "adopted": False,
+            "reason": "already_configured",
+            "conflicting_name": held.name,
+            "message": (
+                f"A provider named {held.name!r} is already configured for this "
+                "endpoint. Edit that provider to change its API key."
+            ),
         }
 
     # Only now is there a response to read. Naming before this point would mean

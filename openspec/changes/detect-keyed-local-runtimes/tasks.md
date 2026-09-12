@@ -69,6 +69,23 @@ it, because the versions that do will remain in the wild.
 - [x] 4c.1 Write a failing test: the card's verbs reach both routes, and the 4b.2 endpoint lock holds on the verb the card sends
 - [x] 4c.2 Accept `PATCH` alongside `PUT` on the update route, and `POST` alongside `PUT` on the default route — both, not a swap, since an existing caller may already send either
 
+## 4d. Adoption must not create a second provider at one endpoint
+
+Found while capturing real responses for the cross-repo seam fixture, on the
+deployed PR build. Adopting the same endpoint twice with different names
+created two `source="detected"` rows at one `base_url`, after which the scan's
+per-endpoint lookup raised `MultipleResultsFound` and every subsequent scan
+returned 500 — permanently, until a row was deleted by hand.
+
+This was considered during 3.2 and wrongly dismissed: the hazard was noted, and
+a closed `reason` enum was allowed to override it. It contradicts the premise
+the whole change rests on — that `base_url` is a detected provider's identity,
+which D4, the endpoint lock and URL normalisation all depend on.
+
+- [x] 4d.1 Write failing tests: a second adoption of one endpoint is refused and creates nothing; a supplied name does not bypass the check; an endpoint held by a provider of any source is refused; a scan survives duplicate rows already present
+- [x] 4d.2 Refuse adoption of an endpoint that already has a provider, reporting `already_configured` with that provider's name — a fourth `reason` value, additive to the union a caller discriminates on
+- [x] 4d.3 Remove the scan's `scalar_one_or_none()` per-endpoint lookup in favour of one deterministic pass, reconciling the earliest row and leaving duplicates in place rather than failing or deleting
+
 ## 5. Identification
 
 - [x] 5.1 Write failing tests: an unreadable response on a singly-claimed port is not named after that runtime; a readable response with no marker still is

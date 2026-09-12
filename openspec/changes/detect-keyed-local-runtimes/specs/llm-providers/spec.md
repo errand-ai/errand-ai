@@ -68,7 +68,11 @@ The runtime's name SHALL be taken from the probe response obtained with the supp
 
 The operation SHALL report its outcome as a resolved result rather than a failure, as the existing reachability check does: the request was well formed and the probe ran, so what the probe found is a finding and not an error. The response SHALL be HTTP 200 carrying `adopted: true` with the created provider, or `adopted: false` with a machine-readable `reason` and a human-readable `message`. The discriminator SHALL be whether a provider was created, because adoption can fail for reasons other than the key.
 
-`reason` SHALL be one of `key_rejected`, `unreachable`, or `name_conflict`. A caller SHALL be able to distinguish these without matching on `message`, whose wording is not part of this contract. Malformed input SHALL still be rejected with 422, and transport or server faults SHALL still fail.
+`reason` SHALL be one of `key_rejected`, `unreachable`, `name_conflict`, or `already_configured`. A caller SHALL be able to distinguish these without matching on `message`, whose wording is not part of this contract. Malformed input SHALL still be rejected with 422, and transport or server faults SHALL still fail.
+
+The caller-supplied `base_url` SHALL be normalised before it is probed or stored, so that the form recorded against a provider is the form a scan constructs. An endpoint recorded in one form and matched in another is an endpoint the scan treats as departed: it would be reconciled away and its model settings cleared.
+
+Adoption SHALL refuse an endpoint for which a provider is already configured, whatever that provider's source, and SHALL report `already_configured` carrying that provider's name. A detected provider is identified by its endpoint — reconciliation matches on it and the endpoint constraint protects it — so a second provider at one endpoint contradicts that identity and leaves the scan without a single row to reconcile.
 
 A `name_conflict` refusal SHALL additionally carry `conflicting_name`: the name the probe identified, which is already held. That name is derived server-side after the key is accepted, so a caller has never seen it and could not otherwise report it without parsing `message`. Without it the user is asked to choose a different name while being told nothing about the one to avoid.
 
@@ -103,6 +107,20 @@ A `name_conflict` refusal SHALL additionally carry `conflicting_name`: the name 
 - **WHEN** a caller adopts an endpoint supplying a name that is not already held
 - **THEN** the provider is created with that name
 
+#### Scenario: An endpoint that already has a provider is not adopted again
+
+- **WHEN** a caller adopts an endpoint for which a provider is already configured
+- **THEN** the response reports `adopted: false` with reason `already_configured`
+- **AND** the name of the provider already holding that endpoint is carried
+- **AND** no second provider is created
+- **AND** a caller-supplied name does not permit one
+
+#### Scenario: A base URL is stored in the form a scan constructs
+
+- **WHEN** a caller adopts an endpoint whose base URL differs from the canonical form only by a trailing separator
+- **THEN** the provider is recorded under the canonical form
+- **AND** a subsequent scan retains it rather than treating it as departed
+
 #### Scenario: Adoption reconciles nothing
 
 - **WHEN** an endpoint is adopted
@@ -114,6 +132,14 @@ A `name_conflict` refusal SHALL additionally carry `conflicting_name`: the name 
 Before probing a candidate endpoint, the scan SHALL check for an existing detected provider recorded at that endpoint and, where one exists, probe using that provider's stored key rather than the keyless sentinel. A stored key SHALL only ever be sent to the endpoint recorded against the provider that holds it.
 
 A detected provider whose endpoint still responds SHALL be retained, including when its stored key is no longer accepted — a key that has been rotated or revoked is not evidence that the runtime has gone. Reporting such a provider as unusable is the reachability check's responsibility, not the scan's.
+
+Where more than one detected provider is recorded at a single endpoint, the scan SHALL reconcile the earliest and leave the others in place rather than failing. Adoption no longer permits such a pair, but an installation that ran a build where it did must not be left with a scan that cannot complete: a duplicate visible in the provider list is something a person can resolve, whereas a scan that raises is not.
+
+#### Scenario: A scan completes despite duplicate rows at one endpoint
+
+- **WHEN** a scan runs and more than one detected provider is recorded at a responding endpoint
+- **THEN** the scan completes
+- **AND** no provider is deleted
 
 #### Scenario: Adopted runtime survives a re-scan
 

@@ -908,6 +908,60 @@ class TestAdoption:
         assert result["reason"] == "unreachable"
         assert await _providers(session_maker) == []
 
+    async def test_an_endpoint_that_already_has_a_provider_is_not_adopted_twice(self, session_maker):
+        """`base_url` is a detected provider's identity — D4, the endpoint lock
+        and URL normalisation all rest on that. Two rows at one endpoint
+        contradicts it, and the scan's lookup then raises, 500ing every
+        subsequent scan until a human deletes a row by hand.
+        """
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        result = await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        assert result["adopted"] is False
+        assert result["reason"] == "already_configured"
+        assert len(await _providers(session_maker)) == 1
+
+    async def test_a_supplied_name_does_not_bypass_the_endpoint_check(self, session_maker):
+        """The name was the only thing standing between this and a duplicate."""
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        result = await _adopt(session_maker, endpoints, self.URL, "sk-real", name="something-else")
+
+        assert result["adopted"] is False
+        assert result["reason"] == "already_configured"
+        assert len(await _providers(session_maker)) == 1
+
+    async def test_an_endpoint_held_by_a_manual_provider_is_not_adopted(self, session_maker):
+        """Consistent with needs_key exclusion, which is source-blind."""
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="mine", base_url=self.URL,
+                api_key_encrypted=encrypt_api_key("sk-x"), provider_type="openai_compatible",
+                is_default=True, source="database",
+            ))
+            await session.commit()
+
+        result = await _adopt(
+            session_maker, {8000: _Endpoint(_anonymous_models(), api_key="sk-real")},
+            self.URL, "sk-real",
+        )
+
+        assert result["adopted"] is False
+        assert result["reason"] == "already_configured"
+        assert len(await _providers(session_maker)) == 1
+
+    async def test_a_trailing_slash_does_not_evade_the_endpoint_check(self, session_maker):
+        endpoints = {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        await _adopt(session_maker, endpoints, self.URL, "sk-real")
+
+        result = await _adopt(session_maker, endpoints, self.URL + "/", "sk-real")
+
+        assert result["adopted"] is False
+        assert len(await _providers(session_maker)) == 1
+
     async def test_adoption_reconciles_nothing(self, session_maker):
         """No scan, and no existing provider removed — including a detected one
         whose runtime is not answering during this call."""
@@ -1013,6 +1067,28 @@ class TestReconciliationWithStoredKeys:
         await _scan(session_maker, {})
 
         assert await _providers(session_maker) == []
+
+    async def test_a_scan_survives_duplicate_rows_at_one_endpoint(self, session_maker):
+        """Adoption can no longer create these, but an installation that ran a
+        build where it could must not be left with a scan that raises forever.
+        """
+        for name in ("dup-a", "dup-b"):
+            async with session_maker() as session:
+                session.add(LlmProvider(
+                    id=uuid.uuid4(), name=name, base_url=self.URL,
+                    api_key_encrypted=encrypt_api_key("sk-real"),
+                    provider_type="openai_compatible", is_default=False, source="detected",
+                ))
+                await session.commit()
+
+        result, _ = await _scan(
+            session_maker, {8000: _Endpoint(_anonymous_models(), api_key="sk-real")}
+        )
+
+        assert result["available"] is True
+        names = {p.name for p in await _providers(session_maker)}
+        assert names == {"dup-a", "dup-b"}, "a duplicate was silently deleted"
+        assert result["needs_key"] == []
 
     async def test_a_stored_key_is_sent_only_to_its_own_endpoint(self, session_maker):
         await _adopt(
