@@ -70,6 +70,8 @@ The operation SHALL report its outcome as a resolved result rather than a failur
 
 `reason` SHALL be one of `key_rejected`, `unreachable`, `name_conflict`, or `already_configured`. A caller SHALL be able to distinguish these without matching on `message`, whose wording is not part of this contract. Malformed input SHALL still be rejected with 422, and transport or server faults SHALL still fail.
 
+The set of reasons is open, and a caller SHALL treat an unrecognised value as a refusal it cannot interpret, rendering `message` rather than the nearest reason it knows. Adoption can already fail for four unrelated causes and gained the fourth after a consumer had shipped against three; a consumer whose final branch is a specific reason rather than a fallback silently misattributes every value added later — offering, for instance, a new name for a refusal that has nothing to do with the name. `message` exists to be shown in exactly that case, which is why it is required on every refusal while `reason` is what may grow.
+
 The caller-supplied `base_url` SHALL be normalised before it is probed or stored, so that the form recorded against a provider is the form a scan constructs. An endpoint recorded in one form and matched in another is an endpoint the scan treats as departed: it would be reconciled away and its model settings cleared.
 
 Adoption SHALL refuse an endpoint for which a provider is already configured, whatever that provider's source, and SHALL report `already_configured` carrying that provider's name. A detected provider is identified by its endpoint — reconciliation matches on it and the endpoint constraint protects it — so a second provider at one endpoint contradicts that identity and leaves the scan without a single row to reconcile.

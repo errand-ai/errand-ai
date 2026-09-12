@@ -85,6 +85,7 @@ which D4, the endpoint lock and URL normalisation all depend on.
 - [x] 4d.1 Write failing tests: a second adoption of one endpoint is refused and creates nothing; a supplied name does not bypass the check; an endpoint held by a provider of any source is refused; a scan survives duplicate rows already present
 - [x] 4d.2 Refuse adoption of an endpoint that already has a provider, reporting `already_configured` with that provider's name — a fourth `reason` value, additive to the union a caller discriminates on
 - [x] 4d.3 Remove the scan's `scalar_one_or_none()` per-endpoint lookup in favour of one deterministic pass, reconciling the earliest row and leaving duplicates in place rather than failing or deleting
+- [x] 4d.4 State in the contract that `reason` is an open set and an unrecognised value must render `message` — adding the fourth value was not the additive change it looked like, because a consumer whose final branch was a specific reason misattributed it instead of falling through
 
 ## 5. Identification
 
