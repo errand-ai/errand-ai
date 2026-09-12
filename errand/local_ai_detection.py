@@ -520,6 +520,22 @@ async def adopt_local_runtime(
             "reason": "key_rejected",
             "message": "The runtime did not accept that API key.",
         }
+    if status == ENDPOINT_ERROR:
+        # Something is listening, which is enough for reconciliation to keep an
+        # existing provider but not to create one: the key was never accepted,
+        # so storing it would be a credential recorded on no evidence and
+        # reported as success — the sentinel mistake this change exists to
+        # remove, in a new form. Reported as `unreachable` rather than a fifth
+        # reason: no working endpoint was reached, and the wording carries what
+        # a caller cannot infer from the code.
+        return {
+            "adopted": False,
+            "reason": "unreachable",
+            "message": (
+                f"{base_url} answered with an error rather than a model listing. "
+                "The runtime may still be starting up."
+            ),
+        }
 
     # Only now is there a response to read. Naming before this point would mean
     # naming from the candidate table, which is how an oMLX server on 8000

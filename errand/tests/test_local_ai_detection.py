@@ -1041,6 +1041,26 @@ class TestAdoption:
 
         probe.assert_not_awaited()
 
+    async def test_an_erroring_endpoint_does_not_store_an_unvalidated_key(self, session_maker):
+        """A 503 is not acceptance. Creating a provider here would store a
+        credential the runtime never accepted and report it as success — the
+        `sk-no-key-required` mistake this change exists to remove, in a new
+        form. Presence is enough to keep an existing provider; it is not enough
+        to create one.
+        """
+        async def erroring(base_url, api_key):
+            return ENDPOINT_ERROR, None
+
+        with patch("local_ai_detection.probe_local_endpoint", side_effect=erroring), \
+                patch("local_ai_detection.probe_provider_type", new=_unknown_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                result = await adopt_local_runtime(session, self.URL, "sk-real", None)
+
+        assert result["adopted"] is False
+        assert result["reason"] == "unreachable"
+        assert await _providers(session_maker) == [], "a provider was created from a 503"
+
     async def test_a_non_candidate_endpoint_cannot_be_adopted(self, session_maker):
         """Reconciliation only probes the candidate table. A detected row at an
         endpoint no scan visits is deleted on the next scan, taking its model
