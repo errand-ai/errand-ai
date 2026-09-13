@@ -432,3 +432,20 @@ class TestEitherNameForTheModel:
                 f"{fn.__name__} reads a model setting without accepting the "
                 f"`model_id` the shared card writes"
             )
+
+    async def test_the_response_carries_only_the_contract(self, admin_client):
+        """`any_role_configured` gates whether a scan may establish settings. It
+        is a detail of this server's rule, not part of what a caller asked, and
+        emitting it invites a consumer to branch on it."""
+        resp = await admin_client.get("/api/llm/model-selection")
+
+        assert set(resp.json()) == {"model_configured", "provider_id", "model"}
+
+    async def test_the_post_returns_the_same_shape(self, admin_client):
+        provider = await _make_provider(admin_client)
+        with _api_listing(["qwen3:8b"]):
+            resp = await admin_client.post("/api/llm/model-selection", json={
+                "provider_id": provider["id"], "model": "qwen3:8b",
+            })
+
+        assert set(resp.json()) == {"model_configured", "provider_id", "model"}

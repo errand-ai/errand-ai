@@ -1275,7 +1275,12 @@ async def get_model_selection(
     """
     from llm_providers import model_selection_state
 
-    return await model_selection_state(session)
+    state = await model_selection_state(session)
+    # `any_role_configured` is an internal distinction — it gates whether a scan
+    # may establish settings — and is not part of what a caller is answering.
+    # Emitting it invites a consumer to branch on a field whose meaning is a
+    # detail of this server's gating rule.
+    return {k: state[k] for k in ("model_configured", "provider_id", "model")}
 
 
 @app.post("/api/llm/model-selection")
@@ -1315,7 +1320,8 @@ async def set_model_selection_endpoint(
         )
 
     await set_model_selection(session, provider, body.model_name)
-    return await model_selection_state(session)
+    state = await model_selection_state(session)
+    return {k: state[k] for k in ("model_configured", "provider_id", "model")}
 
 
 class ProviderUpdate(BaseModel):
