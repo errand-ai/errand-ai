@@ -642,6 +642,21 @@ A model setting naming a provider that no longer exists SHALL be reported as not
 - **WHEN** a model setting names an existing provider and a model it lists
 - **THEN** the server reports that a model is configured
 
+A role SHALL NOT be reported as configured merely because the provider it names still exists: the model SHALL be one the provider lists. A provider that still exists can have dropped the model, and the generic settings path can persist a model name nothing ever checked — either way the setting fails at the point of use, and reporting it as configured suppresses the prompt that would fix it.
+
+Where the provider's listing cannot be read, the setting SHALL continue to be reported as configured. Unavailable is not absent — the distinction this capability already makes for detection — and treating a brief outage as a missing model would flip a working installation to unconfigured for the duration of the blip.
+
+#### Scenario: A model the provider no longer serves is not configured
+
+- **WHEN** a model setting names an existing provider and a model that provider does not list
+- **THEN** the server reports that no model is configured
+- **AND** the setting is not replaced automatically
+
+#### Scenario: A listing that cannot be read does not unconfigure anything
+
+- **WHEN** a model setting names an existing provider whose model listing cannot be retrieved
+- **THEN** the server continues to report that a model is configured
+
 #### Scenario: A setting pointing at a departed provider is not configured
 
 - **WHEN** a model setting names a provider that no longer exists

@@ -309,6 +309,16 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     )).scalars().all()
     configured_urls = {canonical_base_url(p.base_url) for p in configured}
 
+    # Read before reconciliation touches anything. Reaping a departed detected
+    # provider clears the model settings that pointed at it, so by the time the
+    # establisher runs its own "has anybody chosen anything" gate, this scan may
+    # have emptied the very setting the gate exists to protect — and a sole
+    # model found at some other endpoint would then silently take the place of
+    # the operator's choice, inside the one call. Raised in review. The rule is
+    # that a scan does not replace a setting somebody made; whether this scan
+    # invalidated it on the way past is not the user's doing.
+    chose_before_scan = (await model_selection_state(session))["any_role_configured"]
+
     # One row per endpoint, oldest first. Adoption refuses to create a second
     # row at an endpoint that already has one, but an installation that ran a
     # build where it could must not be left with a scan that raises for ever —
@@ -461,7 +471,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         )
 
     model_established = None
-    if registered_provider is not None:
+    if registered_provider is not None and not chose_before_scan:
         model_established = await establish_model_settings_if_unset(session, registered_provider)
     selection = await model_selection_state(session)
 

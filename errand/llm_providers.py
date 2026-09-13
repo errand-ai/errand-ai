@@ -305,6 +305,26 @@ async def model_selection_state(session: AsyncSession) -> dict:
         if provider_id and model and provider_id in provider_ids:
             resolved[key] = {"provider_id": provider_id, "model": model}
 
+    # A provider id that still exists is not the same as a model that provider
+    # still serves. The generic `/api/settings` path can persist any string, and
+    # a runtime can drop a model from its listing, so a role could resolve here
+    # and fail at the point of use — reporting "configured" and suppressing the
+    # very prompt that would fix it. Raised in review.
+    #
+    # A listing that cannot be read invalidates nothing. Unavailable is not
+    # absent, the distinction this capability already makes for detection: a
+    # provider that is briefly unreachable would otherwise flip a working
+    # installation to "no model configured" for as long as the blip lasts.
+    listings: dict[str, list[str] | None] = {}
+    by_id = {str(p.id): p for p in (await session.execute(select(LlmProvider))).scalars().all()}
+    for key, value in list(resolved.items()):
+        pid = value["provider_id"]
+        if pid not in listings:
+            listings[pid] = await list_provider_model_ids(by_id[pid])
+        served = listings[pid]
+        if served is not None and value["model"] not in served:
+            del resolved[key]
+
     configured = len(resolved) == len(MODEL_ROLE_SETTINGS)
     first = next(iter(resolved.values()), None)
     return {

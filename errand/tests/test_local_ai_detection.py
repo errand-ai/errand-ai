@@ -1632,7 +1632,50 @@ class TestScanReportsTheModelQuestion:
                                                     "model": "chosen-by-hand"}))
             await session.commit()
 
+        # The listing must contain the chosen model, or the scan correctly
+        # reports it unconfigured — a setting naming a model the provider does
+        # not serve fails at the point of use.
+        result, _ = await _scan(session_maker, {11434: _ollama_models()},
+                                models=["chosen-by-hand"])
+
+        assert result["model_configured_after_scan"] is True
+        assert result["model_established"] is None
+
+    async def test_a_model_the_provider_no_longer_serves_is_not_configured(self, session_maker):
+        """Raised in review: a provider id that still exists is not the same as
+        a model that provider still serves. Reporting "configured" here would
+        suppress the very prompt that fixes it, while every task fails."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "dropped-from-the-listing"}))
+            await session.commit()
+
         result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
+
+        assert result["model_configured_after_scan"] is False
+        # Still not replaced. It does not resolve, but somebody chose it, and a
+        # scan is not the moment to decide their choice was wrong.
+        assert result["model_established"] is None
+        async with session_maker() as session:
+            rows = {x.key: x.value for x in (await session.execute(select(Setting))).scalars().all()}
+        assert rows["llm_model"]["model"] == "dropped-from-the-listing"
+
+    async def test_an_unreadable_listing_does_not_unconfigure_an_installation(self, session_maker):
+        """Unavailable is not absent — the distinction this capability already
+        makes for detection. A provider briefly unreachable must not flip a
+        working installation to "no model configured" for the duration."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "chosen-by-hand"}))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=None)
 
         assert result["model_configured_after_scan"] is True
         assert result["model_established"] is None
@@ -1722,6 +1765,44 @@ class TestScanReportsTheModelQuestion:
         assert [str(p.id) for p in detected] == [str(legacy_id)], \
             "the legacy row was duplicated rather than reconciled"
         assert result["registered_provider_id"] == str(legacy_id)
+
+    async def test_reaping_a_departed_provider_does_not_unlock_the_establisher(self, session_maker):
+        """A scan must not replace a choice it invalidated on the way past.
+
+        Raised in review. Reconciliation deletes a detected provider that has
+        stopped answering and clears the model settings that pointed at it. The
+        establisher then asks "has anybody chosen anything" and, reading the
+        state this same scan just emptied, is told no — so a sole model found at
+        some other endpoint quietly takes the place of the operator's choice
+        inside one call. The gate is now read before reconciliation touches
+        anything.
+        """
+        gone = "http://host.docker.internal:1234/v1"
+        gone_id = uuid.uuid4()
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=gone_id, name="lm-studio", base_url=gone,
+                api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                provider_type="openai_compatible", is_default=True, source="detected",
+            ))
+            session.add(Setting(key="llm_model",
+                                value={"provider_id": str(gone_id), "model": "chosen-by-hand"}))
+            session.add(Setting(key="task_processing_model",
+                                value={"provider_id": str(gone_id), "model": "chosen-by-hand"}))
+            await session.commit()
+
+        # 1234 no longer answers; 11434 does, with exactly one model.
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["model_established"] is None, \
+            "the scan replaced a choice it had just invalidated itself"
+        async with session_maker() as session:
+            rows = {s.key: s.value for s in
+                    (await session.execute(select(Setting))).scalars().all()
+                    if s.key in ("llm_model", "task_processing_model")}
+        for key, value in rows.items():
+            assert (value or {}).get("model") != "only-one", \
+                f"{key} was auto-established over the operator's cleared choice"
 
     async def test_a_manual_provider_at_the_same_endpoint_is_not_reported(self, session_maker):
         """The reported provider must be the detected row this scan reconciled,

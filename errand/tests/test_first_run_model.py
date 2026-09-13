@@ -504,14 +504,22 @@ class TestEstablishingDoesNotOverwriteALateChoice:
 
         provider = await _provider(session_maker)
 
+        raced = False
+
         async def listing_that_races(_provider):
-            # The user picks while /models is in flight.
-            async with session_maker() as session:
-                for key in ("llm_model", "task_processing_model"):
-                    session.add(Setting(key=key, value={"provider_id": str(provider.id),
-                                                        "model": "chosen-by-the-user"}))
-                await session.commit()
-            return ["the-sole-model"]
+            # The user picks while /models is in flight — once. The listing is
+            # now also read when resolving the configured state, so a fake that
+            # inserted on every call would insert twice and fail on the unique
+            # key rather than on the behaviour under test.
+            nonlocal raced
+            if not raced:
+                raced = True
+                async with session_maker() as session:
+                    for key in ("llm_model", "task_processing_model"):
+                        session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                            "model": "chosen-by-the-user"}))
+                    await session.commit()
+            return ["the-sole-model", "chosen-by-the-user"]
 
         with patch("llm_providers.list_provider_model_ids", side_effect=listing_that_races):
             async with session_maker() as session:
