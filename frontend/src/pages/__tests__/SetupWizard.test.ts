@@ -623,6 +623,75 @@ describe('SetupWizard', () => {
     }
   })
 
+  it('sends the model against the provider whose listing it came from', async () => {
+    // Raised in review: the guard compares model ids, so a model id both
+    // providers expose survives the switch. That is correct — but only if the
+    // provider it is sent with is the one whose listing was just read. This
+    // test exists to hold that, because the guard is worthless if the two can
+    // drift apart.
+    const A = '11111111-1111-1111-1111-111111111111'
+    const B = '22222222-2222-2222-2222-222222222222'
+    let nextProvider = A
+    const listings: Record<string, string[]> = {
+      [A]: ['shared-model'],
+      [B]: ['shared-model', 'b-only'],
+    }
+    const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
+    const fetchMock = vi.fn().mockImplementation((url: string, o?: RequestInit) => {
+      if (url === '/api/setup/create-user') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ access_token: token }) })
+      }
+      if (url === '/api/llm/providers' && (!o || o.method === undefined || o.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
+      }
+      if (url === '/api/llm/providers' && o?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: nextProvider, name: 'p', base_url: 'x', source: 'database' }),
+        })
+      }
+      const m = url.match(/^\/api\/llm\/providers\/([^/]+)\/models$/)
+      if (m) return Promise.resolve({ ok: true, json: () => Promise.resolve(listings[m[1]] ?? []) })
+      if (url === '/api/llm/model-selection' && o?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { wrapper } = await mountSetup()
+    await completeStep1(wrapper)
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://a.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-a')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+    // A serves exactly one model, so it is selected without the user asked.
+    // This is the only way a selection can exist while the provider is still
+    // changeable: step 3 has no route back to step 2.
+
+    // Switch to a provider that also serves that id.
+    nextProvider = B
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://b.example.com/v1')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.find('[data-testid="setup-model"]').element as HTMLSelectElement).value)
+      .toBe('shared-model')
+
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    // The id survives, and it is sent with B — the provider whose listing was
+    // read to keep it. Not A's id with B's listing, nor the reverse.
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      provider_id: B,
+      model: 'shared-model',
+    })
+  })
+
   it('handles the enriched objects the models endpoint really returns', async () => {
     // `/models` returns {id, mode, ...} objects, not strings. The wizard's own
     // fixtures returned strings, so nothing here ever met the real shape and
