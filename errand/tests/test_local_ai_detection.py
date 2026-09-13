@@ -1696,9 +1696,10 @@ class TestScanReportsTheModelQuestion:
         and establish nothing, on an installation that has one.
         """
         url = "http://host.docker.internal:11434/v1"
+        legacy_id = uuid.uuid4()
         async with session_maker() as session:
             session.add(LlmProvider(
-                id=uuid.uuid4(), name="ollama", base_url=url + "/",
+                id=legacy_id, name="ollama", base_url=url + "/",
                 api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
                 provider_type="openai_compatible", is_default=True, source="detected",
             ))
@@ -1708,6 +1709,19 @@ class TestScanReportsTheModelQuestion:
 
         assert result["registered_provider_id"] is not None, "the legacy row was not matched"
         assert result["model_established"] == "only-one"
+
+        # Which row, not merely some row. Raised in review: if reconciliation
+        # matched canonically but the scan's own lookup did not, a second
+        # detected row would be created at the same endpoint and reported —
+        # the scan would then configure a provider that is not the one the
+        # installation has been using. Asserting only "not None" cannot tell
+        # those apart, and the reconciliation and lookup keys are set in two
+        # different places, so nothing but an identity assertion holds them
+        # together.
+        detected = [p for p in await _providers(session_maker) if p.source == "detected"]
+        assert [str(p.id) for p in detected] == [str(legacy_id)], \
+            "the legacy row was duplicated rather than reconciled"
+        assert result["registered_provider_id"] == str(legacy_id)
 
     async def test_a_manual_provider_at_the_same_endpoint_is_not_reported(self, session_maker):
         """The reported provider must be the detected row this scan reconciled,

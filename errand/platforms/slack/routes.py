@@ -233,12 +233,23 @@ async def _handle_mention(event: dict) -> None:
         )
         position = (max_pos_result.scalar() or 0) + 1
 
+        # Auto-routing, as `task-categorisation` requires of the capability and not
+        # merely of the web endpoint: a task carrying "Needs Info" goes to review.
+        # Both Slack intakes tagged and then created the task `pending`
+        # unconditionally, so the tag was displayed and never acted on — a task the
+        # classifier said it could not understand was queued and run anyway, while
+        # the board showed it as needing attention. Raised in review; the web path
+        # at `main.py` has always done this.
+        status = "review" if "Needs Info" in tag_names else (
+            "pending" if category == "immediate" else "scheduled"
+        )
+
         task = Task(
             title=title,
             description=description,
             created_by=user_email,
             category=category,
-            status="pending",
+            status=status,
             position=position,
             execute_at=execute_at,
         )
