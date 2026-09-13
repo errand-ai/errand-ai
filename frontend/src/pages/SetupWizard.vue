@@ -162,7 +162,7 @@ async function testConnection() {
     }
     const data = await resp.json()
     models.value = toModelIds(data)
-    selectSoleModel()
+    reconcileSelections()
     connectionTested.value = true
     step2Success.value = 'Connection successful'
     toast.success('Connection successful!')
@@ -193,7 +193,16 @@ function toModelIds(data: unknown): string[] {
     .filter((id): id is string => typeof id === 'string' && id.length > 0)
 }
 
-function selectSoleModel() {
+function reconcileSelections() {
+  // A selection only means anything against the provider it was made for.
+  // Filling empty fields was not enough: choosing a sole-model provider and
+  // then switching to another left the first provider's model selected, and
+  // the template keeps an unlisted value selected — so the wizard would write
+  // a model the chosen provider has never heard of. That is the defect the
+  // pre-filled Claude ids caused, arriving again through the fix for them.
+  if (titleModel.value && !models.value.includes(titleModel.value)) titleModel.value = ''
+  if (taskModel.value && !models.value.includes(taskModel.value)) taskModel.value = ''
+
   // The same rule the server applies: one model is not a choice, so make it;
   // anything else is the user's to say.
   if (models.value.length === 1) {
@@ -216,7 +225,7 @@ async function advanceToStep3() {
       })
       if (resp.ok) {
         models.value = toModelIds(await resp.json())
-        selectSoleModel()
+        reconcileSelections()
       }
     } catch {
       // Use defaults
