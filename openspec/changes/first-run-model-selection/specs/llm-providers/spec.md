@@ -35,7 +35,8 @@ Establishing model settings SHALL apply only where none are configured, by the s
 #### Scenario: A scan on an empty installation reports that no model is configured
 
 - **WHEN** a scan registers a provider on an installation with no model configured
-- **THEN** the result identifies the provider and reports that no model is configured
+- **THEN** the result identifies the provider the scan registered, and reports that no model is configured
+- **AND** where another provider holds the default, it is not the one identified
 
 #### Scenario: A sole model is established by the scan
 

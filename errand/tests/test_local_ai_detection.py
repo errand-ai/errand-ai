@@ -1613,7 +1613,7 @@ class TestScanReportsTheModelQuestion:
 
         assert result["model_configured"] is False
         assert result["model_established"] is None
-        assert result["default_provider_id"] == str((await _providers(session_maker))[0].id)
+        assert result["registered_provider_id"] == str((await _providers(session_maker))[0].id)
 
     async def test_a_sole_model_is_established_and_named(self, session_maker):
         """Stating which model was chosen is a requirement: a choice made on the
@@ -1645,4 +1645,44 @@ class TestScanReportsTheModelQuestion:
 
         assert result["available"] is False
         assert result["model_configured"] is None
+        assert result["model_established"] is None
+
+    async def test_a_hosted_default_provider_is_not_the_one_offered(self, session_maker):
+        """The scan reports the provider it registered, not whichever holds the
+        default.
+
+        They are the same only on an empty installation, which is what every
+        other test here starts from. With a hosted provider already default,
+        reporting it means the card offers that provider's models under a local
+        AI heading — and establishing from it means pressing "Scan for local AI"
+        silently configures a model on a hosted proxy the scan never touched.
+        """
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="LiteLLM", base_url="https://litellm.example/v1",
+                api_key_encrypted=encrypt_api_key("sk-x"), provider_type="litellm",
+                is_default=True, source="env",
+            ))
+            await session.commit()
+
+        async def listing(provider):
+            # The hosted one lists exactly one model; the detected one lists many.
+            return ["a-hosted-model"] if provider.source == "env" else ["m1", "m2", "m3"]
+
+        probe_endpoint, probe_type = _responders({11434: _ollama_models()})
+        with patch("local_ai_detection.probe_local_endpoint", side_effect=probe_endpoint), \
+                patch("llm_providers.list_provider_model_ids", side_effect=listing), \
+                patch("local_ai_detection.probe_provider_type", side_effect=probe_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                result = await scan_local_ai(session)
+
+        detected_id = next(str(p.id) for p in await _providers(session_maker) if p.name == "ollama")
+        assert result["registered_provider_id"] == detected_id, "reported the hosted provider"
+        assert result["model_established"] is None, "configured a model on a hosted proxy"
+
+    async def test_a_scan_that_registers_nothing_reports_no_provider(self, session_maker):
+        result, _ = await _scan(session_maker, {}, models=["only-one"])
+
+        assert result["registered_provider_id"] is None
         assert result["model_established"] is None

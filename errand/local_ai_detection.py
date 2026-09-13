@@ -288,7 +288,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
             # answered" and "we could not look".
             "model_configured": None,
             "model_established": None,
-            "default_provider_id": None,
+            "registered_provider_id": None,
             "message": (
                 "Local AI detection is not available for this deployment, because "
                 "there is no container host to probe."
@@ -432,13 +432,20 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     # serves exactly one there is nothing to ask, so it is established here and
     # named in the result — a choice made on the user's behalf that does not say
     # what it chose is still a silent one.
-    default_provider = (await session.execute(
-        select(LlmProvider).where(LlmProvider.is_default == True)  # noqa: E712
-    )).scalars().first()
+    # The provider this scan registered — not whichever holds the default. They
+    # coincide only on an empty installation. Where a hosted provider is already
+    # default, reporting it would have the card offer that provider's models
+    # under a local-AI heading, and establishing from it would let "Scan for
+    # local AI" configure a model on a proxy the scan never touched.
+    registered_provider = None
+    if registered:
+        registered_provider = (await session.execute(
+            select(LlmProvider).where(LlmProvider.base_url == registered[0]["base_url"])
+        )).scalars().first()
 
     model_established = None
-    if default_provider is not None:
-        model_established = await establish_model_settings_if_unset(session, default_provider)
+    if registered_provider is not None:
+        model_established = await establish_model_settings_if_unset(session, registered_provider)
     selection = await model_selection_state(session)
 
     return {
@@ -449,7 +456,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         "needs_key": needs_key,
         "model_configured": selection["model_configured"],
         "model_established": model_established,
-        "default_provider_id": str(default_provider.id) if default_provider else None,
+        "registered_provider_id": str(registered_provider.id) if registered_provider else None,
         "message": None,
     }
 
