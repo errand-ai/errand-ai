@@ -70,7 +70,12 @@ LEADER_LOCK_CONNECT_ARGS = {
     "keepalives_count": 3,
 }
 
-DEFAULT_TASK_PROCESSING_MODEL = "claude-sonnet-4-5-20250929"
+# No model, rather than one vendor's model name applied with no provider. The
+# latter cannot succeed anywhere it is reached: with no provider id, the runner
+# is handed an empty OPENAI_BASE_URL and exits on missing environment
+# variables, which says nothing about the actual state — that nobody has chosen
+# a model. An unset setting now fails at the point of use, with the cause.
+DEFAULT_TASK_PROCESSING_MODEL = {"provider_id": None, "model": ""}
 
 # Default LLM request timeout for a locally detected provider, in seconds. A
 # local runtime answers a warm request in milliseconds but can spend far longer
@@ -334,6 +339,10 @@ def _task_to_dict(task: Task, profile_name: str | None = None) -> dict:
         "created_by": task.created_by,
         "updated_by": task.updated_by,
         "is_eval": task.is_eval,
+        # Describes how a task's creation went, so only the creating response
+        # can know it. Events about an existing task carry it as null rather
+        # than omitting it, because the two payload shapes are asserted equal.
+        "classification": None,
     }
 
 
@@ -789,7 +798,7 @@ async def _read_settings(session: AsyncSession) -> dict:
     settings: dict = {
         "mcp_servers": {},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": dict(DEFAULT_TASK_PROCESSING_MODEL),
         "system_prompt": "",
         "task_runner_log_level": "",
         "skills": [],
@@ -829,7 +838,7 @@ async def _read_settings(session: AsyncSession) -> dict:
             elif setting.value:
                 settings["task_processing_model"] = {"provider_id": None, "model": str(setting.value)}
             else:
-                settings["task_processing_model"] = {"provider_id": None, "model": DEFAULT_TASK_PROCESSING_MODEL}
+                settings["task_processing_model"] = dict(DEFAULT_TASK_PROCESSING_MODEL)
         elif setting.key == "system_prompt":
             settings["system_prompt"] = str(setting.value) if setting.value else ""
         elif setting.key == "task_runner_log_level":
@@ -1642,7 +1651,7 @@ class TaskManager:
 
         mcp_servers = settings.get("mcp_servers", {})
         credentials = settings.get("credentials", [])
-        task_processing_model = settings.get("task_processing_model", DEFAULT_TASK_PROCESSING_MODEL)
+        task_processing_model = settings.get("task_processing_model", dict(DEFAULT_TASK_PROCESSING_MODEL))
         system_prompt = settings.get("system_prompt", "")
 
         # Apply profile mcp_servers filter
@@ -1675,6 +1684,22 @@ class TaskManager:
             # exits with "Missing required environment variables: OPENAI_MODEL".
             # Accepting either key repairs those rows without a migration.
             model_name = task_processing_model.get("model") or task_processing_model.get("model_id", "")
+            if not model_name:
+                # No model name at all: nobody has chosen one. Saying so here
+                # is the difference between a user who knows what to do and one
+                # reading "Missing required environment variables: OPENAI_MODEL".
+                #
+                # Deliberately narrow. A model name with no provider id is the
+                # legacy shape — a bare string, resolving against the OpenAI
+                # default base URL with a key from credentials — and remains a
+                # configuration somebody may be relying on.
+                _err = (
+                    "No model is configured for running tasks. Choose one in "
+                    "Settings, or run Scan for local AI and pick a model for the "
+                    "provider it finds."
+                )
+                logger.error("Task %s: %s", task.id, _err)
+                return (-1, json.dumps({"error": _err}), _err)
             if provider_id_str:
                 provider_creds = await asyncio.get_event_loop().run_in_executor(
                     None, _resolve_provider_sync, provider_id_str,

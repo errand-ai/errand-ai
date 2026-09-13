@@ -15,7 +15,7 @@ from models import Setting, Task
 # Import task_manager functions under test
 from task_manager import (
     _read_settings as read_settings, truncate_output, _task_to_dict,
-    TaskManager, DEFAULT_TASK_PROCESSING_MODEL,
+    TaskManager,
     TaskRunnerOutput, parse_interval, normalize_interval,
     substitute_env_vars, extract_json, generate_ssh_config,
     build_skills_archive, build_skill_manifest,
@@ -24,6 +24,11 @@ from task_manager import (
     PLAYWRIGHT_MCP_URL,
     SYSTEM_SKILL_REGISTRY, load_system_skills_from_registry,
 )
+
+# The product default for `task_processing_model` is now "no model chosen",
+# which a task must refuse to run on. Fixtures below need a model that works,
+# which is a different thing and should not borrow the default's name.
+TEST_TASK_MODEL = "gpt-4o"
 from container_runtime import (
     _put_archive as put_archive, _put_archive_ssh as put_archive_ssh,
     RuntimeHandle,
@@ -751,7 +756,10 @@ async def test_read_settings_defaults(db_session):
     settings = await read_settings(db_session)
     assert settings["mcp_servers"] == {}
     assert settings["credentials"] == []
-    assert settings["task_processing_model"] == DEFAULT_TASK_PROCESSING_MODEL
+    # Previously asserted DEFAULT_TASK_PROCESSING_MODEL, which was the defect:
+    # a vendor model name with no provider, which cannot resolve to a usable
+    # client on any installation that reaches it.
+    assert settings["task_processing_model"] == {"provider_id": None, "model": ""}
     assert settings["system_prompt"] == ""
     assert settings["task_runner_log_level"] == ""
     assert settings["mcp_api_key"] == ""
@@ -1122,7 +1130,7 @@ async def test_process_task_container_copies_three_files():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "System instructions",
     }
 
@@ -1148,7 +1156,7 @@ async def test_process_task_completes_when_valkey_unavailable():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1176,7 +1184,7 @@ async def test_process_task_publishes_structured_events_to_valkey():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1206,7 +1214,7 @@ async def test_process_task_publishes_raw_event_for_non_json_stderr():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1234,7 +1242,7 @@ async def test_process_task_buffers_chunked_stderr_lines():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1264,7 +1272,7 @@ async def test_process_task_publishes_end_sentinel():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1315,7 +1323,7 @@ async def test_process_task_appends_to_log_buffer():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -1350,7 +1358,7 @@ async def test_process_task_deletes_log_buffer_on_end():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
     mock_runtime = _make_mock_runtime()
@@ -1371,7 +1379,7 @@ async def test_process_task_buffer_write_failure_does_not_block_publish(caplog):
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
     mock_runtime = _make_mock_runtime(log_lines=[json.dumps({"type": "tool_call", "data": {}})])
@@ -3353,7 +3361,7 @@ async def test_callback_token_stored_in_valkey():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -3382,7 +3390,7 @@ async def test_callback_url_derived_from_errand_mcp_url():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -3408,7 +3416,7 @@ async def test_callback_env_vars_passed_to_container():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -3433,7 +3441,7 @@ async def test_callback_env_vars_skipped_on_valkey_failure():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -3460,7 +3468,7 @@ async def test_callback_result_overrides_runtime_stdout():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
     callback_output = '{"status":"completed","result":"callback result","questions":[]}'
@@ -3487,7 +3495,7 @@ async def test_missing_callback_falls_back_to_runtime_stdout():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
     runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
@@ -3513,7 +3521,7 @@ async def test_callback_result_valkey_keys_deleted():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
 
@@ -3540,7 +3548,7 @@ async def test_callback_result_valkey_error_swallowed():
     settings = {
         "mcp_servers": {"mcpServers": {}},
         "credentials": [],
-        "task_processing_model": DEFAULT_TASK_PROCESSING_MODEL,
+        "task_processing_model": TEST_TASK_MODEL,
         "system_prompt": "",
     }
     runtime_output = '{"status":"completed","result":"runtime result","questions":[]}'
@@ -4131,3 +4139,25 @@ async def test_errand_api_vars_skipped_when_valkey_unavailable():
     assert env.get("GOOGLE_WORKSPACE_CLI_TOKEN") == "ya29.test"
     assert "ERRAND_API_URL" not in env
     assert "ERRAND_API_KEY" not in env
+
+
+# --- An unconfigured model fails legibly, not as a missing env var ----------
+
+
+async def test_unset_task_processing_model_does_not_become_a_vendor_model_name(db_session):
+    """`{"provider_id": None, "model": "claude-sonnet-4-5-..."}` cannot succeed.
+
+    An Anthropic model name on an OpenAI-compatible path, applied with no
+    provider, leaves OPENAI_BASE_URL and OPENAI_API_KEY empty — so the runner
+    exits on missing environment variables, which tells the user nothing about
+    the fact that no model is configured.
+    """
+    settings = await read_settings(db_session)
+
+    tpm = settings["task_processing_model"]
+    if isinstance(tpm, dict):
+        assert not (tpm.get("model") and not tpm.get("provider_id")), (
+            "a model name with no provider is a configuration that cannot work"
+        )
+    else:
+        assert not tpm, f"expected no model to be substituted, got {tpm!r}"

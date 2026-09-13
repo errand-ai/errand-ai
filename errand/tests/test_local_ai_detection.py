@@ -130,14 +130,22 @@ def _detection_env(env: dict | None = None) -> dict:
     return environ
 
 
-async def _scan(session_maker, responding: dict[int, dict | _Endpoint], env: dict | None = None):
+async def _scan(session_maker, responding: dict[int, dict | _Endpoint],
+                env: dict | None = None, models: list[str] | None = None):
     """Run a scan against fake endpoints.
 
     The returned mock is the *endpoint* probe — the one call every candidate
     receives, whatever it answers.
+
+    `models` is the default provider's model listing, which the scan reads to
+    decide whether there is a model to establish. It defaults to None — an
+    unreadable listing, which establishes nothing — so that a test which is not
+    about model selection neither changes behaviour nor makes a real request to
+    a gateway host that does not exist.
     """
     probe_endpoint, probe_type = _responders(responding)
     with patch("local_ai_detection.probe_local_endpoint", side_effect=probe_endpoint) as probe_mock, \
+            patch("llm_providers.list_provider_model_ids", AsyncMock(return_value=models)), \
             patch("local_ai_detection.probe_provider_type", side_effect=probe_type), \
             patch.dict("os.environ", _detection_env(env), clear=True):
         async with session_maker() as session:
@@ -1592,3 +1600,256 @@ class TestTheCardCanReachTheseRoutes:
 
         assert resp.status_code == 403
         assert "reconciled by scanning" in resp.json()["detail"]
+
+
+class TestScanReportsTheModelQuestion:
+    """The scan is the one moment the question is cheap: a provider has just
+    come into existence, the user is looking at the result, and the listing is
+    one request away. Nowhere else in the product is it put at all.
+    """
+
+    async def test_a_scan_on_an_empty_installation_reports_no_model(self, session_maker):
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["a", "b"])
+
+        assert result["model_configured_after_scan"] is False
+        assert result["model_established"] is None
+        assert result["registered_provider_id"] == str((await _providers(session_maker))[0].id)
+
+    async def test_a_sole_model_is_established_and_named(self, session_maker):
+        """Stating which model was chosen is a requirement: a choice made on the
+        user's behalf that does not say what it chose is still silent."""
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
+
+        assert result["model_established"] == "qwen3:8b"
+        assert result["model_configured_after_scan"] is True
+
+    async def test_an_installation_with_a_model_is_left_alone(self, session_maker):
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "chosen-by-hand"}))
+            await session.commit()
+
+        # The listing must contain the chosen model, or the scan correctly
+        # reports it unconfigured — a setting naming a model the provider does
+        # not serve fails at the point of use.
+        result, _ = await _scan(session_maker, {11434: _ollama_models()},
+                                models=["chosen-by-hand"])
+
+        assert result["model_configured_after_scan"] is True
+        assert result["model_established"] is None
+
+    async def test_a_model_the_provider_no_longer_serves_is_not_configured(self, session_maker):
+        """Raised in review: a provider id that still exists is not the same as
+        a model that provider still serves. Reporting "configured" here would
+        suppress the very prompt that fixes it, while every task fails."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "dropped-from-the-listing"}))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
+
+        assert result["model_configured_after_scan"] is False
+        # Still not replaced. It does not resolve, but somebody chose it, and a
+        # scan is not the moment to decide their choice was wrong.
+        assert result["model_established"] is None
+        async with session_maker() as session:
+            rows = {x.key: x.value for x in (await session.execute(select(Setting))).scalars().all()}
+        assert rows["llm_model"]["model"] == "dropped-from-the-listing"
+
+    async def test_an_unreadable_listing_does_not_unconfigure_an_installation(self, session_maker):
+        """Unavailable is not absent — the distinction this capability already
+        makes for detection. A provider briefly unreachable must not flip a
+        working installation to "no model configured" for the duration."""
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "chosen-by-hand"}))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=None)
+
+        assert result["model_configured_after_scan"] is True
+        assert result["model_established"] is None
+
+    async def test_an_unavailable_scan_reports_nothing_about_models(self, session_maker):
+        """"Cannot tell" is not "not configured" — the distinction this
+        capability already makes for detection itself."""
+        result, _ = await _scan(session_maker, {11434: _ollama_models()},
+                                env={"CONTAINER_RUNTIME": "kubernetes"})
+
+        assert result["available"] is False
+        assert result["model_configured_after_scan"] is None
+        assert result["model_established"] is None
+
+    async def test_a_hosted_default_provider_is_not_the_one_offered(self, session_maker):
+        """The scan reports the provider it registered, not whichever holds the
+        default.
+
+        They are the same only on an empty installation, which is what every
+        other test here starts from. With a hosted provider already default,
+        reporting it means the card offers that provider's models under a local
+        AI heading — and establishing from it means pressing "Scan for local AI"
+        silently configures a model on a hosted proxy the scan never touched.
+        """
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="LiteLLM", base_url="https://litellm.example/v1",
+                api_key_encrypted=encrypt_api_key("sk-x"), provider_type="litellm",
+                is_default=True, source="env",
+            ))
+            await session.commit()
+
+        async def listing(provider):
+            # The hosted one lists exactly one model; the detected one lists many.
+            return ["a-hosted-model"] if provider.source == "env" else ["m1", "m2", "m3"]
+
+        probe_endpoint, probe_type = _responders({11434: _ollama_models()})
+        with patch("local_ai_detection.probe_local_endpoint", side_effect=probe_endpoint), \
+                patch("llm_providers.list_provider_model_ids", side_effect=listing), \
+                patch("local_ai_detection.probe_provider_type", side_effect=probe_type), \
+                patch.dict("os.environ", _detection_env(), clear=True):
+            async with session_maker() as session:
+                result = await scan_local_ai(session)
+
+        detected_id = next(str(p.id) for p in await _providers(session_maker) if p.name == "ollama")
+        assert result["registered_provider_id"] == detected_id, "reported the hosted provider"
+        assert result["model_established"] is None, "configured a model on a hosted proxy"
+
+    async def test_a_scan_that_registers_nothing_reports_no_provider(self, session_maker):
+        result, _ = await _scan(session_maker, {}, models=["only-one"])
+
+        assert result["registered_provider_id"] is None
+        assert result["model_established"] is None
+
+    async def test_a_legacy_trailing_slash_row_is_still_the_registered_provider(self, session_maker):
+        """Every other match in this scan is canonical; this one was not.
+
+        A detected row stored as `.../v1/` — which the update route permitted
+        before this endpoint became server-enforced — would not match the URL
+        the scan constructs, so the scan would report no registered provider
+        and establish nothing, on an installation that has one.
+        """
+        url = "http://host.docker.internal:11434/v1"
+        legacy_id = uuid.uuid4()
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=legacy_id, name="ollama", base_url=url + "/",
+                api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                provider_type="openai_compatible", is_default=True, source="detected",
+            ))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["registered_provider_id"] is not None, "the legacy row was not matched"
+        assert result["model_established"] == "only-one"
+
+        # Which row, not merely some row. Raised in review: if reconciliation
+        # matched canonically but the scan's own lookup did not, a second
+        # detected row would be created at the same endpoint and reported —
+        # the scan would then configure a provider that is not the one the
+        # installation has been using. Asserting only "not None" cannot tell
+        # those apart, and the reconciliation and lookup keys are set in two
+        # different places, so nothing but an identity assertion holds them
+        # together.
+        detected = [p for p in await _providers(session_maker) if p.source == "detected"]
+        assert [str(p.id) for p in detected] == [str(legacy_id)], \
+            "the legacy row was duplicated rather than reconciled"
+        assert result["registered_provider_id"] == str(legacy_id)
+
+    async def test_reaping_a_departed_provider_does_not_unlock_the_establisher(self, session_maker):
+        """A scan must not replace a choice it invalidated on the way past.
+
+        Raised in review. Reconciliation deletes a detected provider that has
+        stopped answering and clears the model settings that pointed at it. The
+        establisher then asks "has anybody chosen anything" and, reading the
+        state this same scan just emptied, is told no — so a sole model found at
+        some other endpoint quietly takes the place of the operator's choice
+        inside one call. The gate is now read before reconciliation touches
+        anything.
+        """
+        gone = "http://host.docker.internal:1234/v1"
+        gone_id = uuid.uuid4()
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=gone_id, name="lm-studio", base_url=gone,
+                api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                provider_type="openai_compatible", is_default=True, source="detected",
+            ))
+            session.add(Setting(key="llm_model",
+                                value={"provider_id": str(gone_id), "model": "chosen-by-hand"}))
+            session.add(Setting(key="task_processing_model",
+                                value={"provider_id": str(gone_id), "model": "chosen-by-hand"}))
+            await session.commit()
+
+        # 1234 no longer answers; 11434 does, with exactly one model.
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["model_established"] is None, \
+            "the scan replaced a choice it had just invalidated itself"
+        async with session_maker() as session:
+            rows = {s.key: s.value for s in
+                    (await session.execute(select(Setting))).scalars().all()
+                    if s.key in ("llm_model", "task_processing_model")}
+        for key, value in rows.items():
+            assert (value or {}).get("model") != "only-one", \
+                f"{key} was auto-established over the operator's cleared choice"
+
+    async def test_a_manual_provider_at_the_same_endpoint_is_not_reported(self, session_maker):
+        """The reported provider must be the detected row this scan reconciled,
+        not an older manual row that happens to share the endpoint — otherwise
+        the card offers, and the scan configures, a provider the scan did not
+        create."""
+        url = "http://host.docker.internal:11434/v1"
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="mine", base_url=url,
+                api_key_encrypted=encrypt_api_key("sk-x"), provider_type="openai_compatible",
+                is_default=True, source="database",
+            ))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        detected = [p for p in await _providers(session_maker) if p.source == "detected"]
+        if result["registered_provider_id"] is not None:
+            assert result["registered_provider_id"] in {str(p.id) for p in detected}, \
+                "reported a provider the scan did not register"
+
+    async def test_duplicate_detected_rows_report_the_same_one_reconciliation_chose(self, session_maker):
+        """`detected_rows` deliberately takes the earliest row per endpoint, so
+        a second lookup must order the same way or the scan reconciles one row
+        and reports another.
+
+        This test cannot fail on SQLite, which happens to return rows in
+        insertion order; the ordering it guards is undefined on Postgres, which
+        is what production runs. It documents the requirement rather than
+        proving the bug.
+        """
+        url = "http://host.docker.internal:11434/v1"
+        ids = []
+        for name in ("first", "second"):
+            async with session_maker() as session:
+                p = LlmProvider(
+                    id=uuid.uuid4(), name=name, base_url=url,
+                    api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                    provider_type="openai_compatible", is_default=False, source="detected",
+                )
+                session.add(p)
+                await session.commit()
+                ids.append(str(p.id))
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["registered_provider_id"] == ids[0], (
+            "reported a different row than reconciliation chose"
+        )

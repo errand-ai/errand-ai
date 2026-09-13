@@ -264,7 +264,13 @@ async def test_create_task_llm_returns_invalid_json(client: AsyncClient):
 
 
 async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
-    """When LLM fails, a fallback title is generated and Needs Info tag is applied."""
+    """When the request cannot complete, a fallback title is used and the task
+    still runs.
+
+    This previously asserted "Needs Info". A timeout produced no answer, so it
+    says nothing about the input — parking the task blames the user for an
+    outage they cannot see and cannot fix by editing their words.
+    """
     mock_client = AsyncMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=Exception("LLM timeout"))
 
@@ -278,11 +284,18 @@ async def test_create_task_llm_failure_uses_fallback(client: AsyncClient):
     data = resp.json()
     assert data["title"] == "We need to fix the..."
     assert data["category"] == "immediate"
-    assert "Needs Info" in data["tags"]
+    assert "Needs Info" not in data["tags"]
+    assert data["status"] == "pending"
 
 
 async def test_create_task_llm_not_configured_uses_fallback(client: AsyncClient):
-    """When LLM client is None, fallback title is used."""
+    """When no model is configured, the fallback title is used and the task runs.
+
+    This previously asserted "Needs Info", which was the defect: nothing was
+    asked, so nothing was missing from what the user wrote. A newly installed
+    system configures no model, so that tag parked every task ever created on
+    it under a fault that was not the user's.
+    """
     with patch.object(llm_providers_module, "resolve_model_setting", AsyncMock(return_value=(None, None))):
         resp = await client.post(
             "/api/tasks",
@@ -293,7 +306,9 @@ async def test_create_task_llm_not_configured_uses_fallback(client: AsyncClient)
     data = resp.json()
     assert data["title"] == "This is a longer description..."
     assert data["category"] == "immediate"
-    assert "Needs Info" in data["tags"]
+    assert "Needs Info" not in data["tags"]
+    assert data["status"] == "pending"
+    assert data["classification"] == "no_model_configured"
 
 
 async def test_create_task_exactly_five_words_is_short(client: AsyncClient):
@@ -672,3 +687,92 @@ async def test_get_title_generation_timeout_uses_setting(db_session: AsyncSessio
     db_session.add(Setting(key="title_generation_timeout", value="15"))
     await db_session.commit()
     assert await _get_title_generation_timeout(db_session) == 15.0
+
+
+# --- Title generation reports why it failed ---------------------------------
+
+
+class TestGenerateTitleReportsWhyItFailed:
+    """`success=False` conflates two different facts about two different parties.
+
+    A classifier that ran and could not extract a description has said something
+    about the input. A classifier that was never reached has said something about
+    the installation. The caller cannot tell them apart, which is why a newly
+    installed system blames the user for its own missing configuration.
+    """
+
+    async def test_no_model_configured_reports_not_attempted(self, db_session: AsyncSession):
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.success is False
+        assert result.attempted is False
+        assert result.title, "the fallback title is still returned"
+
+    async def test_a_departed_provider_reports_not_attempted(self, db_session: AsyncSession):
+        # `resolve_model_setting` yields (None, None) for a setting naming a
+        # provider that no longer exists, exactly as for an unset one.
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.attempted is False
+
+    async def test_a_request_that_could_not_complete_reports_not_attempted(self, db_session: AsyncSession):
+        """A raised request produced no answer at all.
+
+        This previously asserted `attempted is True` on the grounds that the
+        model "was asked". Asking is not answering: a timeout or a 500 yields
+        nothing about the input, so treating it as an attempt routes the task to
+        review for a fault the user cannot see, let alone fix.
+        """
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("upstream is unwell"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.success is False
+        assert result.attempted is False
+        assert result.title
+
+    async def test_a_response_that_arrived_but_is_unusable_reports_attempted(self, db_session: AsyncSession):
+        """The round trip completed and the model said something unusable. That
+        is a fact about what came back, so the task routes to review."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_llm_response("not json at all"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.attempted is True
+
+    async def test_an_empty_response_reports_attempted(self, db_session: AsyncSession):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_llm_response("not json at all"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.attempted is True
+
+    async def test_a_successful_call_reports_success_and_attempted(self, db_session: AsyncSession):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_json_response("Test Title"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            result = await generate_title("a description long enough to be classified", db_session)
+
+        assert result.success is True
+        assert result.attempted is True
+
+    def test_attempted_defaults_to_true_for_existing_constructions(self):
+        """Other call sites build LLMResult without the new field."""
+        from llm import LLMResult
+
+        assert LLMResult(title="t", success=True).attempted is True

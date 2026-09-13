@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from host_gateway import get_host_gateway_address, is_local_detection_available
 from llm_providers import (
     _clear_model_settings_for_provider,
+    establish_model_settings_if_unset,
+    model_selection_state,
     decrypt_api_key,
     encrypt_api_key,
     evict_client,
@@ -281,6 +283,15 @@ async def scan_local_ai(session: AsyncSession) -> dict:
             "available": False,
             "detected": [],
             "needs_key": [],
+            # Null, not False, and named for the scan rather than for the
+            # configuration. `GET /api/llm/model-selection` answers "what is
+            # configured" and is always determinate; this answers "what is
+            # configured as of this scan", so no scan means no answer. One name
+            # across both, carrying a boolean in one and boolean-or-null in the
+            # other, is how a reader ends up typing it wrong.
+            "model_configured_after_scan": None,
+            "model_established": None,
+            "registered_provider_id": None,
             "message": (
                 "Local AI detection is not available for this deployment, because "
                 "there is no container host to probe."
@@ -297,6 +308,16 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         select(LlmProvider).order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
     )).scalars().all()
     configured_urls = {canonical_base_url(p.base_url) for p in configured}
+
+    # Read before reconciliation touches anything. Reaping a departed detected
+    # provider clears the model settings that pointed at it, so by the time the
+    # establisher runs its own "has anybody chosen anything" gate, this scan may
+    # have emptied the very setting the gate exists to protect — and a sole
+    # model found at some other endpoint would then silently take the place of
+    # the operator's choice, inside the one call. Raised in review. The rule is
+    # that a scan does not replace a setting somebody made; whether this scan
+    # invalidated it on the way past is not the user's doing.
+    chose_before_scan = (await model_selection_state(session))["any_role_configured"]
 
     # One row per endpoint, oldest first. Adoption refuses to create a second
     # row at an endpoint that already has one, but an installation that ran a
@@ -419,12 +440,50 @@ async def scan_local_ai(session: AsyncSession) -> dict:
 
     await session.commit()
 
+    # A provider now exists and the user is looking at the result: the one
+    # moment where asking which model to use costs nothing. Where the provider
+    # serves exactly one there is nothing to ask, so it is established here and
+    # named in the result — a choice made on the user's behalf that does not say
+    # what it chose is still a silent one.
+    # The provider this scan registered — not whichever holds the default. They
+    # coincide only on an empty installation. Where a hosted provider is already
+    # default, reporting it would have the card offer that provider's models
+    # under a local-AI heading, and establishing from it would let "Scan for
+    # local AI" configure a model on a proxy the scan never touched.
+    registered_provider = None
+    if registered:
+        # Canonically, like every other match in this scan. A raw comparison
+        # here would miss a row stored as `.../v1/` — the exact defect this
+        # change fixed everywhere else, reintroduced by new code written after
+        # the fix.
+        wanted = canonical_base_url(registered[0]["base_url"])
+        # Only the rows this scan reconciles. A manually configured provider may
+        # share the endpoint, and returning it would have the card offer — and
+        # this scan configure — a provider the scan never created.
+        registered_provider = next(
+            (p for p in (await session.execute(
+                select(LlmProvider)
+                .where(LlmProvider.source == "detected")
+                .order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
+            )).scalars().all()
+             if canonical_base_url(p.base_url) == wanted),
+            None,
+        )
+
+    model_established = None
+    if registered_provider is not None and not chose_before_scan:
+        model_established = await establish_model_settings_if_unset(session, registered_provider)
+    selection = await model_selection_state(session)
+
     return {
         "available": True,
         "detected": [
             {k: v for k, v in info.items() if k != "port"} for info in registered
         ],
         "needs_key": needs_key,
+        "model_configured_after_scan": selection["model_configured"],
+        "model_established": model_established,
+        "registered_provider_id": str(registered_provider.id) if registered_provider else None,
         "message": None,
     }
 

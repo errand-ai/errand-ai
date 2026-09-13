@@ -32,8 +32,20 @@ const providerId = ref<string | null>(null)
 
 // Step 3: Model Selection
 const models = ref<string[]>([])
-const titleModel = ref('claude-haiku-4-5-20251001')
-const taskModel = ref('claude-sonnet-4-5-20250929')
+// One question, not two. The wizard used to offer a dropdown per role and
+// write the settings keys itself; both facts were wrong. Naming the keys puts
+// the current set of roles into the caller, so a role added later leaves the
+// wizard configuring a subset — and writing them through `/api/settings`
+// bypasses the check that the chosen model is one the provider actually
+// serves, which is what separates a choice from a typo.
+//
+// Empty, not a vendor's model id. Pre-filling one meant a user who set up
+// against Ollama and did not touch the dropdown had a Claude model written
+// against their provider — a model it does not serve, so every task failed
+// while the settings reported a model was configured. A model errand chose on
+// the user's behalf is never right; a provider that offers exactly one is the
+// only case where there is nothing to choose.
+const selectedModel = ref('')
 const step3Loading = ref(false)
 const step3Error = ref('')
 
@@ -155,7 +167,8 @@ async function testConnection() {
       return
     }
     const data = await resp.json()
-    models.value = data
+    models.value = toModelIds(data)
+    reconcileSelections()
     connectionTested.value = true
     step2Success.value = 'Connection successful'
     toast.success('Connection successful!')
@@ -174,6 +187,34 @@ async function testConnection() {
   }
 }
 
+function toModelIds(data: unknown): string[] {
+  // `/models` returns enriched objects — {id, supports_reasoning,
+  // max_output_tokens, mode} — not strings. Assigning them straight into a
+  // string list rendered "[object Object]" in the dropdowns and wrote an
+  // object where a model id belonged. The wizard's own fixtures returned
+  // strings, so nothing here ever met the real shape.
+  if (!Array.isArray(data)) return []
+  return data
+    .map((m) => (typeof m === 'string' ? m : (m as { id?: string })?.id))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+}
+
+function reconcileSelections() {
+  // A selection only means anything against the provider it was made for.
+  // Clearing is not optional: choosing a sole-model provider and then
+  // switching to another left the first provider's model selected, and the
+  // template keeps an unlisted value selected — so the wizard would send a
+  // model the chosen provider has never heard of. That is the defect the
+  // pre-filled Claude ids caused, arriving again through the fix for them.
+  if (selectedModel.value && !models.value.includes(selectedModel.value)) selectedModel.value = ''
+
+  // The same rule the server applies: one model is not a choice, so make it;
+  // anything else is the user's to say.
+  if (models.value.length === 1 && !selectedModel.value) {
+    selectedModel.value = models.value[0]
+  }
+}
+
 async function advanceToStep3() {
   if (!connectionTested.value) {
     await testConnection()
@@ -187,7 +228,8 @@ async function advanceToStep3() {
         headers: { Authorization: `Bearer ${auth.token}` },
       })
       if (resp.ok) {
-        models.value = await resp.json()
+        models.value = toModelIds(await resp.json())
+        reconcileSelections()
       }
     } catch {
       // Use defaults
@@ -199,19 +241,35 @@ async function completeSetup() {
   step3Error.value = ''
   step3Loading.value = true
   try {
-    const resp = await fetch('/api/settings', {
-      method: 'PUT',
+    // Leaving it unset is a coherent answer: the server reports no model
+    // configured and the provider settings say so, which is what the rest of
+    // this change is for. Writing `model: ""` was not — it records a setting
+    // that names nothing, which reads as configured to anyone checking the key
+    // exists.
+    if (!selectedModel.value) {
+      toast.success('Setup complete!')
+      router.push('/settings')
+      return
+    }
+
+    const resp = await fetch('/api/llm/model-selection', {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${auth.token}`,
       },
-      body: JSON.stringify({
-        llm_model: { provider_id: providerId.value, model: titleModel.value },
-        task_processing_model: { provider_id: providerId.value, model: taskModel.value },
-      }),
+      body: JSON.stringify({ provider_id: providerId.value, model: selectedModel.value }),
     })
     if (!resp.ok) {
-      step3Error.value = 'Failed to save model settings.'
+      // Say what the server said. A refusal here is specific — the provider is
+      // gone, or does not serve that model, or its listing could not be read —
+      // and the wizard reporting a generic failure would hide the one sentence
+      // that tells the user what to do about it.
+      const detail = await resp
+        .json()
+        .then((b) => (typeof b?.detail === 'string' ? b.detail : ''))
+        .catch(() => '')
+      step3Error.value = detail || 'Failed to save the model selection.'
       return
     }
     toast.success('Setup complete!')
@@ -383,29 +441,26 @@ async function completeSetup() {
       <!-- Step 3: Model Selection -->
       <div v-if="currentStep === 3" class="bg-white rounded-lg shadow-sm p-8" data-testid="setup-step3">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Model Selection</h2>
-        <p class="text-sm text-gray-500 mb-6">Choose which models to use for different tasks.</p>
+        <p class="text-sm text-gray-500 mb-6">Choose the model errand should use.</p>
         <div class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-gray-700">Title Generation Model</label>
+            <label class="block text-sm font-medium text-gray-700">Model</label>
             <select
-              v-model="titleModel"
-              data-testid="setup-title-model"
+              v-model="selectedModel"
+              data-testid="setup-model"
               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
             >
+              <option value="">Choose later in Settings</option>
               <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
-              <option v-if="!models.includes(titleModel)" :value="titleModel">{{ titleModel }}</option>
             </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Default Task Model</label>
-            <select
-              v-model="taskModel"
-              data-testid="setup-task-model"
-              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-xs focus:border-gray-500 focus:outline-hidden focus:ring-1 focus:ring-gray-500"
-            >
-              <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
-              <option v-if="!models.includes(taskModel)" :value="taskModel">{{ taskModel }}</option>
-            </select>
+            <!-- Said out loud, deliberately. One answer governs two roles, and a
+                 question that decides more than it appears to is the same fault
+                 as choosing a model for the user, approached from the other
+                 side. It also tells them the two can be separated, which this
+                 screen does not offer. -->
+            <p class="mt-1 text-sm text-gray-500" data-testid="setup-model-scope">
+              This model runs your tasks and classifies new ones. You can set them separately later in Settings.
+            </p>
           </div>
           <div v-if="step3Error" class="text-sm text-red-600" data-testid="setup-step3-error">{{ step3Error }}</div>
           <button

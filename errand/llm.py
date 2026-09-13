@@ -71,6 +71,14 @@ def _fallback_title(description: str) -> str:
     return " ".join(words[:5]) + "..."
 
 
+# Nobody has chosen a model, or the one chosen names a provider that is gone.
+CAUSE_NO_MODEL = "no_model_configured"
+# A model was configured and the request did not complete — a timeout, a 5xx.
+CAUSE_REQUEST_FAILED = "request_failed"
+# A response arrived and carried nothing usable.
+CAUSE_UNUSABLE_RESPONSE = "unusable_response"
+
+
 @dataclass
 class LLMResult:
     title: str
@@ -81,6 +89,28 @@ class LLMResult:
     repeat_until: str | None = None
     description: str | None = None
     profile: str | None = None
+    # Why there is no usable classification, or None when there is one.
+    #
+    # `success=False` alone conflates facts about different parties. A
+    # classifier that answered unusably has said something about the input; one
+    # that was never reached, or whose request never completed, has said
+    # something about the installation — and those two differ again from each
+    # other, because "no model is configured" sends a user to settings while a
+    # timeout sends them nowhere useful at all.
+    #
+    # One field rather than a flag plus a cause: `attempted` is derived below,
+    # so the two cannot drift apart.
+    cause: str | None = None
+
+    @property
+    def attempted(self) -> bool:
+        """Whether a request completed and produced something to judge.
+
+        Asking is not answering: a raised request produced no answer, so it is
+        not an attempt for the purpose of deciding whether the *input* was at
+        fault.
+        """
+        return self.cause not in (CAUSE_NO_MODEL, CAUSE_REQUEST_FAILED)
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -162,7 +192,10 @@ async def generate_title(
     from llm_providers import resolve_model_setting
     client, model = await resolve_model_setting(session, "llm_model")
     if client is None or model is None:
-        return LLMResult(title=_fallback_title(description), success=False)
+        # Nothing was asked. `resolve_model_setting` answers the same way for a
+        # setting that was never made and one naming a provider since deleted;
+        # both mean no usable model, and neither is a statement about the input.
+        return LLMResult(title=_fallback_title(description), success=False, cause=CAUSE_NO_MODEL)
 
     tz = await _get_timezone(session)
     timeout = await _get_title_generation_timeout(session)
@@ -241,17 +274,25 @@ async def generate_title(
                     "Consider using a non-reasoning model for title generation.",
                     model,
                 )
-            return LLMResult(title=_fallback_title(description), success=False)
+            return LLMResult(title=_fallback_title(description), success=False,
+                             cause=CAUSE_UNUSABLE_RESPONSE)
 
         result = _parse_llm_response(raw)
         if result is not None:
             return result
 
         # JSON parse failed — use raw response as title, mark as needing info
-        return LLMResult(title=raw, success=False, category="immediate")
+        return LLMResult(title=raw, success=False, category="immediate",
+                         cause=CAUSE_UNUSABLE_RESPONSE)
     except Exception:
+        # The request did not complete, so nothing came back to judge the input
+        # by. Asking is not answering: a timeout or a 500 is a fact about the
+        # installation, and routing the task to review for it blames the user
+        # for an outage they cannot see. A response that *arrives* and is
+        # unusable is the other case, handled above, and does route to review.
         logger.exception("LLM title generation failed")
-        return LLMResult(title=_fallback_title(description), success=False)
+        return LLMResult(title=_fallback_title(description), success=False,
+                         cause=CAUSE_REQUEST_FAILED)
 
 
 async def transcribe_audio(file, session: AsyncSession) -> str:

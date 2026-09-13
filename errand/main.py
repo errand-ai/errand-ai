@@ -25,7 +25,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -41,6 +41,7 @@ from eval_marking import resolve_is_eval
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from llm_providers import (
+    list_provider_model_ids,
     encrypt_api_key, evict_client, probe_provider_type,
     provider_to_dict, scan_env_providers, _clear_model_settings_for_provider,
     get_client_for_provider_sync,
@@ -724,11 +725,19 @@ class TaskResponse(BaseModel):
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
     is_eval: bool = False
+    # What became of classification for this task. Not persisted: it describes
+    # how this creation went, not the task. Present so a caller can explain a
+    # degraded classification instead of leaving the user to infer it from a
+    # task that behaved oddly — `no_model_configured` in particular is a fault
+    # in the installation, and the user cannot fix it by editing their words.
+    classification: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_task(cls, task: Task, profile_name: str | None = None) -> "TaskResponse":
+    def from_task(
+        cls, task: Task, profile_name: str | None = None, classification: str | None = None
+    ) -> "TaskResponse":
         return cls(
             id=task.id,
             title=task.title,
@@ -751,6 +760,7 @@ class TaskResponse(BaseModel):
             updated_at=task.updated_at,
             created_by=task.created_by,
             updated_by=task.updated_by,
+            classification=classification,
             is_eval=task.is_eval,
         )
 
@@ -850,14 +860,27 @@ async def create_task(
         execute_at_str = llm_result.execute_at
         repeat_interval = llm_result.repeat_interval
         repeat_until_str = llm_result.repeat_until
-        if not llm_result.success:
+        if not llm_result.attempted:
+            # Nothing was asked, so nothing is missing from what the user wrote.
+            # "Needs Info" would send them to edit text that was never the
+            # problem, and a task parked on that basis is one they cannot
+            # repair. It routes by category like any unclassified task.
+            description = input_text
+            # The cause, not merely "something went wrong". Telling a user no
+            # model is configured when one is and it timed out sends them to
+            # settings that are already correct.
+            classification = llm_result.cause
+        elif not llm_result.success:
             description = input_text
             tag_names.append("Needs Info")
+            classification = "unclassified"
         elif llm_result.description is None:
             description = None
             tag_names.append("Needs Info")
+            classification = "unclassified"
         else:
             description = llm_result.description
+            classification = "classified"
 
         # Resolve profile name to ID
         if llm_result.profile and db_profiles:
@@ -871,6 +894,9 @@ async def create_task(
         repeat_interval = None
         repeat_until_str = None
         tag_names.append("Needs Info")
+        # Deliberately not classified: a judgement about the input, not a
+        # failure to reach anything.
+        classification = "skipped"
 
     # Parse datetime strings from LLM
     execute_at = None
@@ -921,7 +947,11 @@ async def create_task(
 
     await session.commit()
     await session.refresh(task, ["tags", "profile"])
-    resp = TaskResponse.from_task(task, profile_name=task.profile.name if task.profile else None)
+    resp = TaskResponse.from_task(
+        task,
+        profile_name=task.profile.name if task.profile else None,
+        classification=classification,
+    )
     await publish_event("task_created", resp.model_dump(mode="json"))
     return resp
 
@@ -1203,6 +1233,95 @@ async def adopt_local_ai_provider(
         # wrong, not a finding about the endpoint — so it is rejected rather
         # than reported as a refusal.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ModelSelection(BaseModel):
+    provider_id: uuid.UUID
+    # `model` is canonical; `model_id` is what the shared LlmModelCard writes,
+    # and `resolve_model_setting` has long accepted either. Taking only one
+    # here would leave a client sending `model_id` to the settings and `model`
+    # to this operation — two names for one concept from a single card, with a
+    # translation in between. Translations are where the next mismatch hides,
+    # and this repository has already paid for that: reading only `model` in
+    # `model_selection_state` reported a card-configured installation as having
+    # no model, after which a scan would have overwritten the user's choice.
+    model: str | None = None
+    model_id: str | None = None
+
+    @property
+    def model_name(self) -> str:
+        return (self.model or self.model_id or "").strip()
+
+    @model_validator(mode="after")
+    def _one_name_is_required(self) -> "ModelSelection":
+        if not self.model_name:
+            raise ValueError("model (or model_id) is required")
+        return self
+
+
+@app.get("/api/llm/model-selection")
+async def get_model_selection(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Whether a usable model is configured, and which one.
+
+    Read on mount, without running a scan: a scan is a deliberate,
+    side-effecting reconciliation, not a way to ask a question that is already
+    true on arrival. A setting naming a provider that no longer exists reports
+    as not configured — it looks configured and cannot be used, which is the
+    direction that hurts, because a caller would otherwise report all is well
+    while every task fails.
+    """
+    from llm_providers import model_selection_state
+
+    state = await model_selection_state(session)
+    # `any_role_configured` is an internal distinction — it gates whether a scan
+    # may establish settings — and is not part of what a caller is answering.
+    # Emitting it invites a consumer to branch on a field whose meaning is a
+    # detail of this server's gating rule.
+    return {k: state[k] for k in ("model_configured", "provider_id", "model")}
+
+
+@app.post("/api/llm/model-selection")
+async def set_model_selection_endpoint(
+    body: ModelSelection,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """State which model errand should use.
+
+    One operation rather than a write of individual settings keys. A caller
+    says which model to use; which settings implement that, and how many there
+    are, is decided here — expressing it as a settings write would put the
+    current set of roles into every caller, so adding one later would leave
+    them configuring a subset with the rest silently unset. It also lets the
+    model be checked against the provider's listing, which a generic settings
+    write cannot do, and which is what separates a choice from a typo.
+    """
+    from llm_providers import model_selection_state, set_model_selection
+
+    provider = (await session.execute(
+        select(LlmProvider).where(LlmProvider.id == body.provider_id)
+    )).scalar_one_or_none()
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    models = await list_provider_model_ids(provider)
+    if models is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not read the provider's model list, so the choice cannot be checked.",
+        )
+    if body.model_name not in models:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{provider.name} does not serve a model called {body.model_name!r}.",
+        )
+
+    await set_model_selection(session, provider, body.model_name)
+    state = await model_selection_state(session)
+    return {k: state[k] for k in ("model_configured", "provider_id", "model")}
 
 
 class ProviderUpdate(BaseModel):

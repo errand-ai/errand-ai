@@ -100,6 +100,28 @@ async def test_capture(admin_client, monkeypatch):
     with patch.dict(os.environ, {"CONTAINER_RUNTIME": "kubernetes"}):
         out["scan_unavailable"] = (await admin_client.post("/api/llm/providers/scan-local")).json()
 
+    # --- first-run model selection -------------------------------------
+    # The three the paired change asked for by name, plus every branch of the
+    # selection operation. `scan_unavailable` above already carries the three
+    # null model fields.
+    out["model_selection_none"] = (await admin_client.get("/api/llm/model-selection")).json()
+
+    async def choose(provider_id, **body):
+        return (await admin_client.post("/api/llm/model-selection",
+                                        json={"provider_id": provider_id, **body})).json()
+
+    provider_id = out["scan_found"]["registered_provider_id"]
+    if provider_id:
+        with patch("main.list_provider_model_ids", AsyncMock(return_value=["qwen3:8b", "gemma-4-26b"])):
+            out["model_selection_applied"] = await choose(provider_id, model="qwen3:8b")
+            out["model_selection_applied_by_model_id"] = await choose(provider_id, model_id="gemma-4-26b")
+            out["model_selection_model_not_served"] = await choose(provider_id, model="not-served")
+        with patch("main.list_provider_model_ids", AsyncMock(return_value=None)):
+            out["model_selection_listing_unreadable"] = await choose(provider_id, model="qwen3:8b")
+        out["model_selection_provider_missing"] = await choose(
+            "00000000-0000-0000-0000-000000000000", model="qwen3:8b")
+        out["model_selection_configured"] = (await admin_client.get("/api/llm/model-selection")).json()
+
     # `providers`, `reachability_*`, `catalog` and `models*` are untouched by
     # this change, and the reachability fixtures are keyed to a provider id in
     # `providers` — regenerating it would break tests that have nothing to do

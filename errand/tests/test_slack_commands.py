@@ -143,6 +143,13 @@ async def slack_client() -> AsyncGenerator[AsyncClient, None]:
     await engine.dispose()
 
 
+def _llm(**kw):
+    from llm import LLMResult
+    base = dict(title="A title", success=True, category="immediate", description="cleaned")
+    base.update(kw)
+    return LLMResult(**base)
+
+
 async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123", channel_id: str = ""):
     """Post a slash command to /slack/commands."""
     data = {"command": "/task", "text": text, "user_id": user_id}
@@ -297,7 +304,16 @@ class TestListCommand:
 
     @pytest.mark.asyncio
     async def test_list_with_status_filter(self, slack_client):
-        await _post_command(slack_client, text="new Pending task")
+        # A task that actually reaches `pending`. A short Slack input is tagged
+        # "Needs Info" and now parks in review, as `task-categorisation`
+        # requires of every intake — so it can no longer stand in for a queued
+        # task here.
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Pending task")
+            await _post_command(
+                slack_client,
+                text="new Pending task that is long enough to be classified properly",
+            )
 
         response = await _post_command(slack_client, text="list pending")
         data = response.json()
@@ -319,10 +335,18 @@ class TestListCommand:
 class TestRunCommand:
     @pytest.mark.asyncio
     async def test_run_already_pending(self, slack_client):
-        create_resp = await _post_command(slack_client, text="new Run test")
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Run test")
+            create_resp = await _post_command(
+                slack_client,
+                text="new Run test with an input long enough to be classified properly",
+            )
         short_id = _extract_short_id(create_resp)
 
-        # Task starts as pending, so run should say it's already pending
+        # A classified task reaches pending, so run should say it is already
+        # pending. Before both Slack intakes routed on the tag, a short input
+        # served here — it was tagged "Needs Info" and queued anyway, which is
+        # the defect, not a fixture.
         response = await _post_command(slack_client, text=f"run {short_id}")
         data = response.json()
         assert ":warning:" in data["blocks"][0]["text"]["text"]
@@ -542,3 +566,218 @@ class TestTitleGeneration:
             data = response.json()
             fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
             assert "Weekly Report" in fields_text
+
+
+# --- Cause-based routing on both Slack intakes ---
+#
+# Raised in review: both Slack intakes carry the same tag/route decision as the
+# web endpoint and neither had coverage for it, so a Slack-specific regression
+# could hide behind the web-path tests. Two independent facts are asserted at
+# once, deliberately — the tag, and the status the tag is supposed to cause.
+# Testing only the tag is what let both files tag `Needs Info` and then create
+# the task `pending` regardless, for as long as they have existed.
+
+
+async def _task_row(client: AsyncClient, title_fragment: str):
+    from sqlalchemy import select
+    from database import get_session as _gs
+    gen = app.dependency_overrides[_gs]()
+    session = await gen.__anext__()
+    try:
+        task = (await session.execute(
+            select(Task).where(Task.title.contains(title_fragment))
+        )).scalars().first()
+        if task is None:
+            return None, []
+        from models import Tag, task_tags
+        tags = (await session.execute(
+            select(Tag.name).join(task_tags, task_tags.c.tag_id == Tag.id)
+            .where(task_tags.c.task_id == task.id)
+        )).scalars().all()
+        return task, list(tags)
+    finally:
+        await gen.aclose()
+
+
+LONG = "please book the meeting room for the quarterly planning session tomorrow"
+
+
+class TestSlashCommandCauseRouting:
+    """`/task new <long input>` — the handlers.py intake."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cause", ["no_model_configured", "request_failed"])
+    async def test_unreached_classifier_is_not_the_users_fault(self, slack_client, cause):
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Fallback", success=False, description=None, cause=cause)
+            await _post_command(slack_client, text=f"new {LONG}")
+
+        task, tags = await _task_row(slack_client, "Fallback")
+        assert task is not None
+        assert "Needs Info" not in tags, "blamed the user for an unconfigured installation"
+        assert task.status == "pending"
+        # The raw input is kept: nothing was missing from what they wrote.
+        assert task.description == LONG
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_answer_is_tagged_and_parked(self, slack_client):
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Unusable", success=False, description=None,
+                                   cause="unusable_response")
+            await _post_command(slack_client, text=f"new {LONG}")
+
+        task, tags = await _task_row(slack_client, "Unusable")
+        assert "Needs Info" in tags
+        assert task.status == "review", "tagged Needs Info but queued to run anyway"
+
+    @pytest.mark.asyncio
+    async def test_a_successful_answer_with_no_description_is_parked(self, slack_client):
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Empty", success=True, description=None)
+            await _post_command(slack_client, text=f"new {LONG}")
+
+        task, tags = await _task_row(slack_client, "Empty")
+        assert "Needs Info" in tags
+        assert task.status == "review"
+
+    @pytest.mark.asyncio
+    async def test_short_input_is_parked(self, slack_client):
+        """The classifier is deliberately not run, which is a judgement about
+        the input — so the tag is right, and so is the parking."""
+        await _post_command(slack_client, text="new fix it")
+        task, tags = await _task_row(slack_client, "fix it")
+        assert "Needs Info" in tags
+        assert task.status == "review"
+
+    @pytest.mark.asyncio
+    async def test_a_usable_answer_runs(self, slack_client):
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Good")
+            await _post_command(slack_client, text=f"new {LONG}")
+
+        task, tags = await _task_row(slack_client, "Good")
+        assert "Needs Info" not in tags
+        assert task.status == "pending"
+        assert task.description == "cleaned"
+
+
+class TestSlackPositionIsPerColumn:
+    """Position is numbered per column, so it has to be taken after the status
+    is known. Raised in review, and introduced by the routing fix itself: while
+    every Slack task was `pending` the pending-filtered maximum was right by
+    accident, and the moment a task could land in `review` it stopped being.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_parked_task_is_numbered_in_the_review_column(self, slack_client):
+        # Three tasks queued, so the pending column's bottom is well past 1.
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Queued")
+            for _ in range(3):
+                await _post_command(
+                    slack_client,
+                    text="new Queued task with an input long enough to be classified",
+                )
+
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Parked", success=False, description=None,
+                                   cause="unusable_response")
+            await _post_command(
+                slack_client,
+                text="new Parked task with an input long enough to be classified",
+            )
+
+        parked, tags = await _task_row(slack_client, "Parked")
+        assert parked.status == "review"
+        assert "Needs Info" in tags
+        # First in its own column, not fourth from the pending one.
+        assert parked.position == 1, (
+            f"numbered {parked.position} from the pending column, so it lands "
+            "in an arbitrary place in review"
+        )
+
+
+class TestMentionCauseRouting:
+    """`@errand <long input>` — the routes.py intake.
+
+    A second, separate implementation of the same decision. It reaches the
+    database through `async_session` directly rather than the request
+    dependency, which is why it needs its own factory patched and is also why
+    it drifted from the slash-command path unnoticed.
+    """
+
+    @staticmethod
+    async def _mention(slack_client, text_body: str, llm=None):
+        from database import get_session as _gs
+        import platforms.slack.routes as routes
+
+        override = app.dependency_overrides[_gs]
+
+        class _Factory:
+            def __call__(self):
+                return self
+
+            async def __aenter__(self):
+                self._gen = override()
+                return await self._gen.__anext__()
+
+            async def __aexit__(self, *exc):
+                await self._gen.aclose()
+                return False
+
+        patches = [patch.object(routes, "async_session", _Factory())]
+        if llm is not None:
+            p = patch.object(routes, "generate_title", new_callable=AsyncMock)
+            patches.append(p)
+        started = [p.start() for p in patches]
+        if llm is not None:
+            started[1].return_value = llm
+        try:
+            await routes._handle_mention(
+                {"text": f"<@BOT> {text_body}", "user": "U123", "channel": "C1"}
+            )
+        finally:
+            for p in patches:
+                p.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cause", ["no_model_configured", "request_failed"])
+    async def test_unreached_classifier_is_not_the_users_fault(self, slack_client, cause):
+        await self._mention(slack_client, LONG,
+                            _llm(title="MFallback", success=False, description=None, cause=cause))
+        task, tags = await _task_row(slack_client, "MFallback")
+        assert task is not None
+        assert "Needs Info" not in tags
+        assert task.status == "pending"
+        assert task.description == LONG
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_answer_is_tagged_and_parked(self, slack_client):
+        await self._mention(slack_client, LONG,
+                            _llm(title="MUnusable", success=False, description=None,
+                                 cause="unusable_response"))
+        task, tags = await _task_row(slack_client, "MUnusable")
+        assert "Needs Info" in tags
+        assert task.status == "review", "tagged Needs Info but queued to run anyway"
+
+    @pytest.mark.asyncio
+    async def test_a_successful_answer_with_no_description_is_parked(self, slack_client):
+        await self._mention(slack_client, LONG,
+                            _llm(title="MEmpty", success=True, description=None))
+        task, tags = await _task_row(slack_client, "MEmpty")
+        assert "Needs Info" in tags
+        assert task.status == "review"
+
+    @pytest.mark.asyncio
+    async def test_short_input_is_parked(self, slack_client):
+        await self._mention(slack_client, "fix the thing")
+        task, tags = await _task_row(slack_client, "fix the thing")
+        assert "Needs Info" in tags
+        assert task.status == "review"
+
+    @pytest.mark.asyncio
+    async def test_a_usable_answer_runs(self, slack_client):
+        await self._mention(slack_client, LONG, _llm(title="MGood"))
+        task, tags = await _task_row(slack_client, "MGood")
+        assert "Needs Info" not in tags
+        assert task.status == "pending"

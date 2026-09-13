@@ -27,6 +27,7 @@ from platforms.slack.handlers import (
     handle_status,
 )
 from platforms.slack.identity import resolve_slack_email
+from utils import _next_position
 from platforms.slack.verification import verify_slack_request
 from tags import add_tag
 
@@ -212,7 +213,14 @@ async def _handle_mention(event: dict) -> None:
                     execute_at = datetime.fromisoformat(llm_result.execute_at)
                 except (ValueError, TypeError):
                     pass  # LLM returned unparseable date; fall back to default scheduling
-            if not llm_result.success:
+            if llm_result.attempted and (
+                not llm_result.success or not llm_result.description
+            ):
+                # The classifier answered and the answer carried nothing usable
+                # — either it failed, or it succeeded with no description. Both
+                # are statements about the input, so both route to review. A
+                # classifier that was never reached is neither, and is not the
+                # user's to fix.
                 tag_names.append("Needs Info")
         else:
             tag_names.append("Needs Info")
@@ -221,17 +229,31 @@ async def _handle_mention(event: dict) -> None:
             execute_at = datetime.now(timezone.utc)
 
         # Create task
-        max_pos_result = await session.execute(
-            select(func.max(Task.position)).where(Task.status == "pending")
+        # Auto-routing, as `task-categorisation` requires of the capability and not
+        # merely of the web endpoint: a task carrying "Needs Info" goes to review.
+        # Both Slack intakes tagged and then created the task `pending`
+        # unconditionally, so the tag was displayed and never acted on — a task the
+        # classifier said it could not understand was queued and run anyway, while
+        # the board showed it as needing attention. Raised in review; the web path
+        # at `main.py` has always done this.
+        #
+        # Decided before the position is taken, because position is per-column: a
+        # review task numbered from the bottom of the pending column lands in an
+        # arbitrary place in its own. Also raised in review — introduced by the fix
+        # above, which was correct only for as long as the status was always
+        # `pending`.
+        status = "review" if "Needs Info" in tag_names else (
+            "pending" if category == "immediate" else "scheduled"
         )
-        position = (max_pos_result.scalar() or 0) + 1
+
+        position = await _next_position(session, status)
 
         task = Task(
             title=title,
             description=description,
             created_by=user_email,
             category=category,
-            status="pending",
+            status=status,
             position=position,
             execute_at=execute_at,
         )

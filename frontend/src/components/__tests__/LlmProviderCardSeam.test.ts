@@ -10,7 +10,7 @@
  * suite sees on its own: the library tests its rendering against fixtures it
  * wrote, and errand tests its responses against fixtures it wrote. Whether the
  * fields one emits are the fields the other reads is checked only here — and
- * there are eight response shapes to get wrong, not one — the scan result
+ * there are fifteen response shapes to get wrong, not one — the scan result
  * grew a `needs_key` list, and adoption answers with four distinct refusals
  * plus a success.
  *
@@ -44,6 +44,8 @@ function makeApi(overrides: Record<string, unknown> = {}) {
     deleteProvider: vi.fn().mockResolvedValue(undefined),
     setDefaultProvider: vi.fn().mockResolvedValue(capture.providers[0]),
     adoptLocalAiProvider: vi.fn().mockResolvedValue(capture.adopt_success),
+    getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_configured),
+    applyModelChoice: vi.fn().mockResolvedValue({ applied: true, state: capture.model_selection_applied }),
     ...overrides,
   }
 }
@@ -439,6 +441,115 @@ describe('adoption: the four refusals errand distinguishes', () => {
 
     expect(wrapper.find('[data-testid="llm-provider-adopt-message"]').text())
       .toContain('A reason this card has never heard of.')
+  })
+})
+
+describe('first-run model selection: the shapes errand emits', () => {
+  it('states that no model is configured, without calling it an error', async () => {
+    // A provider exists and works; what is missing is a decision nobody has
+    // been asked to make. Reporting a healthy provider list while every task
+    // fails for want of a model is not reporting the state of the system.
+    const wrapper = await mountCard(makeApi({
+      getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none),
+    }))
+
+    expect(wrapper.find('[data-testid="llm-no-model-notice"]').exists()).toBe(true)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('says nothing once a model is configured', async () => {
+    const wrapper = await mountCard(makeApi())
+
+    expect(wrapper.find('[data-testid="llm-no-model-notice"]').exists()).toBe(false)
+  })
+
+  it('reads the state without running a scan', async () => {
+    // A scan is a side-effecting reconciliation, not a way to ask a question
+    // that is already true on arrival.
+    const api = makeApi({ getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none) })
+    await mountCard(api)
+
+    expect(api.getModelSelection).toHaveBeenCalled()
+    expect(api.scanLocalAi).not.toHaveBeenCalled()
+  })
+
+  it('asks which model to use after a scan that registered one', async () => {
+    const api = makeApi({
+      getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none),
+      scanLocalAi: vi.fn().mockResolvedValue(capture.scan_found),
+    })
+    const wrapper = await mountCard(api)
+
+    await wrapper.find('[data-testid="llm-provider-scan"]').trigger('click')
+    await flush()
+
+    expect(wrapper.find('[data-testid="llm-model-question"]').exists()).toBe(true)
+    // The captured scan names the provider it registered, not whichever is default.
+    expect(capture.scan_found.registered_provider_id).toBeTruthy()
+  })
+
+  it('discloses that one answer governs both roles', async () => {
+    const api = makeApi({
+      getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none),
+      scanLocalAi: vi.fn().mockResolvedValue(capture.scan_found),
+    })
+    const wrapper = await mountCard(api)
+    await wrapper.find('[data-testid="llm-provider-scan"]').trigger('click')
+    await flush()
+
+    // Asserted on the statement, not on an element id: the requirement is that
+    // the user is told what the single answer governs, and where that sentence
+    // lives is the card's business.
+    const question = wrapper.find('[data-testid="llm-model-question"]')
+    expect(question.exists()).toBe(true)
+    const text = question.text().toLowerCase()
+    expect(text).toContain('running of tasks')
+    expect(text).toContain('classification')
+  })
+
+  it('states an automatically established model rather than asking', async () => {
+    // A choice made on the user's behalf that does not say what it chose is
+    // still a silent one.
+    const established = {
+      ...capture.scan_found,
+      model_configured_after_scan: true,
+      model_established: 'only-one-model',
+    }
+    const wrapper = await mountCard(makeApi({
+      getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none),
+      scanLocalAi: vi.fn().mockResolvedValue(established),
+    }))
+
+    await wrapper.find('[data-testid="llm-provider-scan"]').trigger('click')
+    await flush()
+
+    expect(wrapper.find('[data-testid="llm-model-question"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="llm-model-established"]').text()).toContain('only-one-model')
+  })
+
+  it('asks nothing when detection could not run', async () => {
+    // "Cannot tell" is not "not configured": all three model fields are null.
+    expect(capture.scan_unavailable.model_configured_after_scan).toBeNull()
+    expect(capture.scan_unavailable.registered_provider_id).toBeNull()
+
+    const wrapper = await mountCard(makeApi({
+      getModelSelection: vi.fn().mockResolvedValue(capture.model_selection_none),
+      scanLocalAi: vi.fn().mockResolvedValue(capture.scan_unavailable),
+    }))
+    await wrapper.find('[data-testid="llm-provider-scan"]').trigger('click')
+    await flush()
+
+    expect(wrapper.find('[data-testid="llm-model-question"]').exists()).toBe(false)
+  })
+
+  it('carries the model the server reports, in the field the server names it', async () => {
+    // The GET says `model`; the scan says `model_configured_after_scan`. Two
+    // names because they answer different questions, and only the scan's can
+    // be null.
+    expect(Object.keys(capture.model_selection_configured).sort())
+      .toEqual(['model', 'model_configured', 'provider_id'])
+    expect(capture.model_selection_none.model_configured).toBe(false)
+    expect(capture.model_selection_configured.model_configured).toBe(true)
   })
 })
 

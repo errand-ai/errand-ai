@@ -431,35 +431,229 @@ describe('SetupWizard', () => {
     expect(wrapper.find('[data-testid="setup-step2-success"]').exists()).toBe(false)
   })
 
-  it('saves model settings as {provider_id, model} objects on complete setup', async () => {
+  /**
+   * The wizard states which model errand should use; the server decides which
+   * settings implement that. These tests are written against that operation,
+   * not against `/api/settings` — the previous set asserted the wizard wrote
+   * `llm_model` and `task_processing_model` itself, which is the shape this
+   * change exists to remove: it names the roles in the caller, and it skips
+   * the check that the provider actually serves the chosen model.
+   */
+  function stubWizard(opts: {
+    models?: unknown[]
+    selection?: { ok: boolean; status?: number; detail?: string }
+  } = {}) {
     const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
-    const fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    const models = opts.models ?? ['model-a', 'model-b', 'model-c']
+    const selection = opts.selection ?? { ok: true }
+    const fetchMock = vi.fn().mockImplementation((url: string, o?: RequestInit) => {
       if (url === '/api/setup/create-user') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ access_token: token }),
-        })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ access_token: token }) })
       }
-      if (url === '/api/llm/providers' && (!opts || opts.method === undefined || opts.method === 'GET')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([]),
-        })
+      if (url === '/api/llm/providers' && (!o || o.method === undefined || o.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
       }
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
+      if (url === '/api/llm/providers' && o?.method === 'POST') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'default', base_url: 'https://api.example.com/v1', source: 'database' }),
+          json: () => Promise.resolve({
+            id: FAKE_PROVIDER_ID,
+            name: 'default',
+            base_url: 'https://api.example.com/v1',
+            source: 'database',
+          }),
         })
       }
       if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(models) })
+      }
+      if (url === '/api/llm/model-selection' && o?.method === 'POST') {
         return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929', 'model-c']),
+          ok: selection.ok,
+          status: selection.status ?? (selection.ok ? 200 : 422),
+          json: () => Promise.resolve(
+            selection.ok
+              ? { model_configured: true, provider_id: FAKE_PROVIDER_ID, model: 'model-a' }
+              : { detail: selection.detail ?? 'refused' }
+          ),
         })
       }
-      if (url === '/api/settings' && opts?.method === 'PUT') {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  async function reachStep3(wrapper: ReturnType<typeof mount>) {
+    await completeStep1(wrapper)
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://api.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="setup-step3"]').exists()).toBe(true)
+  }
+
+  function selectionCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(
+      (call: unknown[]) =>
+        call[0] === '/api/llm/model-selection' &&
+        (call[1] as RequestInit | undefined)?.method === 'POST'
+    )
+  }
+
+  function settingsWrites(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(
+      (call: unknown[]) =>
+        call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
+    )
+  }
+
+  it('states the chosen model through the model-selection operation', async () => {
+    const fetchMock = stubWizard()
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('model-b')
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      provider_id: FAKE_PROVIDER_ID,
+      model: 'model-b',
+    })
+    // The role keys are the server's business. A wizard that writes them is a
+    // caller carrying the current set of roles, so one added later leaves it
+    // configuring a subset with the rest silently unset.
+    expect(settingsWrites(fetchMock)).toHaveLength(0)
+  })
+
+  it('asks one question and says it governs both roles', async () => {
+    // A question that decides more than it appears to is the same fault as
+    // choosing a model on the user's behalf, arrived at from the other side.
+    const fetchMock = stubWizard()
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    expect(wrapper.findAll('select')).toHaveLength(1)
+    const scope = wrapper.find('[data-testid="setup-model-scope"]').text()
+    expect(scope).toMatch(/runs your tasks/i)
+    expect(scope).toMatch(/classifies new ones/i)
+    expect(fetchMock).toBeTruthy()
+  })
+
+  it('shows the server\'s reason when a choice is refused', async () => {
+    // The refusal is specific — the provider is gone, or does not serve that
+    // model. Reporting a generic failure would hide the one sentence that
+    // tells the user what to do about it.
+    const fetchMock = stubWizard({
+      selection: { ok: false, status: 422, detail: "default does not serve a model called 'model-b'." },
+    })
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('model-b')
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="setup-step3-error"]').text()).toContain(
+      "does not serve a model called 'model-b'"
+    )
+    expect(selectionCalls(fetchMock)).toHaveLength(1)
+  })
+
+  it('sends nothing when the user chose no model', async () => {
+    // Leaving it unset is coherent: the server reports no model configured and
+    // the provider settings say so. Writing an empty model was not — it records
+    // a setting that names nothing, which reads as configured to anyone
+    // checking the key exists.
+    const fetchMock = stubWizard()
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('')
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    expect(selectionCalls(fetchMock)).toHaveLength(0)
+    expect(settingsWrites(fetchMock)).toHaveLength(0)
+    expect(toastMock.success).toHaveBeenCalled()
+  })
+
+  it('drops a selection the newly chosen provider does not serve', async () => {
+    // A selection only means anything against the provider it was made for.
+    // The template used to keep an unlisted value selected, so switching
+    // provider sent the first one's model to the second.
+    const fetchMock = stubWizard({ models: ['only-one-model'] })
+    const { wrapper } = await mountSetup()
+    await completeStep1(wrapper)
+
+    // Provider A serves exactly one model, so the wizard selects it.
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://a.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+
+    // Provider B serves something else entirely. The selection made against A
+    // must not survive into the call made for B.
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, o?: RequestInit) => {
+      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(['different-model']) })
+      }
+      return original(url, o)
+    })
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://b.example.com/v1')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.find('[data-testid="setup-model"]').element as HTMLSelectElement).value)
+      .toBe('different-model')
+
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    for (const call of selectionCalls(fetchMock)) {
+      expect(JSON.parse((call[1] as RequestInit).body as string).model).not.toBe('only-one-model')
+    }
+  })
+
+  it('sends the model against the provider whose listing it came from', async () => {
+    // Raised in review: the guard compares model ids, so a model id both
+    // providers expose survives the switch. That is correct — but only if the
+    // provider it is sent with is the one whose listing was just read. This
+    // test exists to hold that, because the guard is worthless if the two can
+    // drift apart.
+    const A = '11111111-1111-1111-1111-111111111111'
+    const B = '22222222-2222-2222-2222-222222222222'
+    let nextProvider = A
+    const listings: Record<string, string[]> = {
+      [A]: ['shared-model'],
+      [B]: ['shared-model', 'b-only'],
+    }
+    const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
+    const fetchMock = vi.fn().mockImplementation((url: string, o?: RequestInit) => {
+      if (url === '/api/setup/create-user') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ access_token: token }) })
+      }
+      if (url === '/api/llm/providers' && (!o || o.method === undefined || o.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
+      }
+      if (url === '/api/llm/providers' && o?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: nextProvider, name: 'p', base_url: 'x', source: 'database' }),
+        })
+      }
+      const m = url.match(/^\/api\/llm\/providers\/([^/]+)\/models$/)
+      if (m) return Promise.resolve({ ok: true, json: () => Promise.resolve(listings[m[1]] ?? []) })
+      if (url === '/api/llm/model-selection' && o?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     })
@@ -467,31 +661,73 @@ describe('SetupWizard', () => {
 
     const { wrapper } = await mountSetup()
     await completeStep1(wrapper)
-
-    // Fill in provider and test connection
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://api.example.com/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test')
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://a.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-a')
     await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
     await flushPromises()
+    // A serves exactly one model, so it is selected without the user asked.
+    // This is the only way a selection can exist while the provider is still
+    // changeable: step 3 has no route back to step 2.
 
-    // Advance to step 3
+    // Switch to a provider that also serves that id.
+    nextProvider = B
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://b.example.com/v1')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
     await flushPromises()
+    expect((wrapper.find('[data-testid="setup-model"]').element as HTMLSelectElement).value)
+      .toBe('shared-model')
 
-    expect(wrapper.find('[data-testid="setup-step3"]').exists()).toBe(true)
-
-    // Complete setup with default model selections
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    // Find the PUT /api/settings call
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    expect(settingsCalls).toHaveLength(1)
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    // The id survives, and it is sent with B — the provider whose listing was
+    // read to keep it. Not A's id with B's listing, nor the reverse.
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      provider_id: B,
+      model: 'shared-model',
+    })
+  })
 
-    const body = JSON.parse((settingsCalls[0][1] as RequestInit).body as string)
-    expect(body.llm_model).toEqual({ provider_id: FAKE_PROVIDER_ID, model: 'claude-haiku-4-5-20251001' })
-    expect(body.task_processing_model).toEqual({ provider_id: FAKE_PROVIDER_ID, model: 'claude-sonnet-4-5-20250929' })
+  it('handles the enriched objects the models endpoint really returns', async () => {
+    // `/models` returns {id, mode, ...} objects, not strings. The wizard's own
+    // fixtures returned strings, so nothing here ever met the real shape and
+    // the dropdown rendered "[object Object]".
+    const fetchMock = stubWizard({
+      models: [
+        { id: 'qwen3:8b', mode: 'chat', supports_reasoning: false },
+        { id: 'nomic-embed-text', mode: 'embedding' },
+      ],
+    })
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    const options = wrapper.find('[data-testid="setup-model"]').findAll('option').map((o) => o.text())
+    expect(options).toContain('qwen3:8b')
+    expect(options.join(' ')).not.toContain('[object Object]')
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('qwen3:8b')
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string).model).toBe('qwen3:8b')
+  })
+
+  it("selects a provider's only model, because there is nothing to choose", async () => {
+    const fetchMock = stubWizard({ models: ['only-one-model'] })
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string).model).toBe('only-one-model')
   })
 })

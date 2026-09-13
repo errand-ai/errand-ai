@@ -27,6 +27,15 @@ def _mock_json_response(title: str, category: str = "immediate", execute_at=None
     return response
 
 
+def _mock_raw_response(text: str) -> MagicMock:
+    """A response that arrived and carries something unusable."""
+    choice = MagicMock()
+    choice.message.content = text
+    response = MagicMock()
+    response.choices = [choice]
+    return response
+
+
 # --- GET /api/tasks ---
 
 
@@ -407,3 +416,119 @@ async def test_reorder_task_down(client: AsyncClient):
     data = resp.json()
     ids_in_order = [d["id"] for d in data]
     assert ids_in_order == [t2["id"], t3["id"], t1["id"]]
+
+
+# --- A classifier that could not be reached is not the user's fault ----------
+
+
+class TestUnreachableClassifierIsNotNeedsInfo:
+    """`Needs Info` says *you did not tell us enough*.
+
+    On a newly installed system no model is configured, so every task created
+    would otherwise be parked under a tag describing a fault that is not the
+    user's — and one they cannot repair by editing, because nothing was missing
+    from what they wrote. The test of the tag is whether editing the task could
+    fix it.
+    """
+
+    LONG = "please summarise the quarterly revenue figures and email them to the team"
+
+    async def test_no_model_configured_creates_a_runnable_task(self, client: AsyncClient):
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert "Needs Info" not in data["tags"]
+        assert data["status"] == "pending", "an immediate task must reach the runner"
+        assert data["description"] == self.LONG, "the user's own words are kept"
+
+    async def test_the_unconfigured_state_is_reported(self, client: AsyncClient):
+        """A caller must be able to explain the degraded classification rather
+        than leaving the user to infer it from a task that behaved oddly."""
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "no_model_configured"
+
+    async def test_a_classified_task_reports_that_it_was_classified(self, client: AsyncClient):
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_mock_json_response("Fix Bug", "immediate", description="Fix the bug")
+        )
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "classified"
+
+    async def test_a_completed_but_unusable_classification_still_parks(self, client: AsyncClient):
+        """Unchanged: the classifier answered and the answer carried nothing
+        usable, which is a statement about the input."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_raw_response("not json"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        data = resp.json()
+        assert "Needs Info" in data["tags"]
+        assert data["status"] == "review"
+
+    async def test_a_request_that_could_not_complete_does_not_park(self, client: AsyncClient):
+        """A timeout or a 500 says nothing about the input. The spec routes it by
+        category like any unclassified task; parking it would blame the user for
+        an outage."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        data = resp.json()
+        assert "Needs Info" not in data["tags"]
+        assert data["status"] == "pending"
+
+    async def test_short_input_still_parks(self, client: AsyncClient):
+        """Untouched. There the classifier is deliberately not run — a judgement
+        about the input, not a failure to reach anything."""
+        resp = await client.post("/api/tasks", json={"input": "Run analysis"})
+
+        assert "Needs Info" in resp.json()["tags"]
+        assert resp.json()["status"] == "review"
+
+    async def test_the_task_is_selectable_by_the_runner(self, client: AsyncClient):
+        """`pending` is the only status TaskManager selects. A task that avoids
+        the review column but is not picked up has traded a silent park for a
+        silent nothing."""
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            created = (await client.post("/api/tasks", json={"input": self.LONG})).json()
+
+        listed = (await client.get("/api/tasks")).json()
+        mine = next(t for t in listed if t["id"] == created["id"])
+        assert mine["status"] == "pending"
+
+    async def test_a_failed_request_is_not_reported_as_no_model(self, client: AsyncClient):
+        """Both route by category, and they are not the same fact. Telling a
+        user no model is configured, when one is and it timed out, sends them to
+        settings that are already correct."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "request_failed"
+
+    async def test_no_model_is_still_reported_as_no_model(self, client: AsyncClient):
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "no_model_configured"
