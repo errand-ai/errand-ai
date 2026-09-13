@@ -215,6 +215,111 @@ async def scan_env_providers(session: AsyncSession) -> None:
     await session.commit()
 
 
+# --- First-run model selection ---
+
+# The settings that must name a model before errand can do anything: one
+# classifies new tasks, the other runs them. They are established together
+# because leaving either unset reproduces the defect this exists to fix — the
+# task either parks for want of a title model, or fails at the runner.
+MODEL_ROLE_SETTINGS = ("llm_model", "task_processing_model")
+
+
+async def list_provider_model_ids(provider: LlmProvider) -> list[str] | None:
+    """The model ids a provider serves, or None if the listing cannot be read.
+
+    None and an empty list are different answers: one is "we could not ask",
+    the other is "it serves nothing". Neither yields a model, but only the
+    second is a fact about the provider.
+    """
+    try:
+        client = get_client_for_provider_sync(provider)
+        resp = await client.models.list()
+        return sorted(m.id for m in resp.data)
+    except Exception:
+        logger.debug("Model listing failed for provider %s", provider.id, exc_info=True)
+        return None
+
+
+async def _write_model_setting(session: AsyncSession, key: str, provider_id, model: str) -> None:
+    setting = (await session.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+    value = {"provider_id": str(provider_id), "model": model}
+    if setting is None:
+        session.add(Setting(key=key, value=value))
+    else:
+        setting.value = value
+
+
+async def set_model_selection(session: AsyncSession, provider: LlmProvider, model: str) -> None:
+    """Point every model role at this provider and model.
+
+    Callers state which model errand should use; which settings implement that,
+    and how many there are, is decided here. Expressing it as a settings write
+    would put the current set of roles into every caller, so adding one later
+    would leave them configuring a subset with the rest silently unset.
+    """
+    for key in MODEL_ROLE_SETTINGS:
+        await _write_model_setting(session, key, provider.id, model)
+    await session.commit()
+
+
+async def model_selection_state(session: AsyncSession) -> dict:
+    """Whether a usable model is configured, and which one.
+
+    A setting naming a provider that no longer exists reports as not
+    configured: it looks configured and cannot be used, which is the direction
+    that hurts — a caller would say all is well while every task fails.
+    """
+    provider_ids = {
+        str(p.id) for p in (await session.execute(select(LlmProvider))).scalars().all()
+    }
+    resolved: dict[str, dict] = {}
+    for key in MODEL_ROLE_SETTINGS:
+        setting = (await session.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+        value = setting.value if setting and isinstance(setting.value, dict) else {}
+        provider_id = str(value.get("provider_id") or "")
+        model = value.get("model") or ""
+        if provider_id and model and provider_id in provider_ids:
+            resolved[key] = {"provider_id": provider_id, "model": model}
+
+    configured = len(resolved) == len(MODEL_ROLE_SETTINGS)
+    first = next(iter(resolved.values()), None)
+    return {
+        "model_configured": configured,
+        "provider_id": first["provider_id"] if configured and first else None,
+        "model": first["model"] if configured and first else None,
+        # Distinct from `model_configured`: one role set is not a working
+        # installation, but it is a deliberate choice that must not be
+        # overwritten by a scan the user did not connect to their settings.
+        "any_role_configured": bool(resolved),
+    }
+
+
+async def establish_model_settings_if_unset(
+    session: AsyncSession, provider: LlmProvider
+) -> str | None:
+    """Establish the model settings from a provider's sole model.
+
+    Returns the model established, or None. Only where no role is configured —
+    the same empty-installation rule detection uses for the default provider:
+    with nothing configured there is nothing to override.
+
+    Where the provider serves more than one model, nothing is written. A
+    listing carries no mode, and chat, embedding, reranker and speech models
+    arrive in one list, so any pick would be a guess — and a model stored on a
+    guess is a setting the user did not make, presented as one they did.
+    """
+    state = await model_selection_state(session)
+    if state["any_role_configured"]:
+        return None
+
+    models = await list_provider_model_ids(provider)
+    if not models or len(models) != 1:
+        return None
+
+    await set_model_selection(session, provider, models[0])
+    return models[0]
+
+
 async def _clear_model_settings_for_provider(session: AsyncSession, provider_id: uuid_mod.UUID) -> list[str]:
     """Clear model settings that reference a given provider. Returns list of affected setting keys."""
     affected = []

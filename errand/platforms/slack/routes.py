@@ -212,7 +212,7 @@ async def _handle_mention(event: dict) -> None:
                     execute_at = datetime.fromisoformat(llm_result.execute_at)
                 except (ValueError, TypeError):
                     pass  # LLM returned unparseable date; fall back to default scheduling
-            if not llm_result.success:
+            if not llm_result.success and llm_result.attempted:
                 tag_names.append("Needs Info")
         else:
             tag_names.append("Needs Info")

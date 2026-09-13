@@ -130,14 +130,22 @@ def _detection_env(env: dict | None = None) -> dict:
     return environ
 
 
-async def _scan(session_maker, responding: dict[int, dict | _Endpoint], env: dict | None = None):
+async def _scan(session_maker, responding: dict[int, dict | _Endpoint],
+                env: dict | None = None, models: list[str] | None = None):
     """Run a scan against fake endpoints.
 
     The returned mock is the *endpoint* probe — the one call every candidate
     receives, whatever it answers.
+
+    `models` is the default provider's model listing, which the scan reads to
+    decide whether there is a model to establish. It defaults to None — an
+    unreadable listing, which establishes nothing — so that a test which is not
+    about model selection neither changes behaviour nor makes a real request to
+    a gateway host that does not exist.
     """
     probe_endpoint, probe_type = _responders(responding)
     with patch("local_ai_detection.probe_local_endpoint", side_effect=probe_endpoint) as probe_mock, \
+            patch("llm_providers.list_provider_model_ids", AsyncMock(return_value=models)), \
             patch("local_ai_detection.probe_provider_type", side_effect=probe_type), \
             patch.dict("os.environ", _detection_env(env), clear=True):
         async with session_maker() as session:
@@ -1592,3 +1600,49 @@ class TestTheCardCanReachTheseRoutes:
 
         assert resp.status_code == 403
         assert "reconciled by scanning" in resp.json()["detail"]
+
+
+class TestScanReportsTheModelQuestion:
+    """The scan is the one moment the question is cheap: a provider has just
+    come into existence, the user is looking at the result, and the listing is
+    one request away. Nowhere else in the product is it put at all.
+    """
+
+    async def test_a_scan_on_an_empty_installation_reports_no_model(self, session_maker):
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["a", "b"])
+
+        assert result["model_configured"] is False
+        assert result["model_established"] is None
+        assert result["default_provider_id"] == str((await _providers(session_maker))[0].id)
+
+    async def test_a_sole_model_is_established_and_named(self, session_maker):
+        """Stating which model was chosen is a requirement: a choice made on the
+        user's behalf that does not say what it chose is still silent."""
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
+
+        assert result["model_established"] == "qwen3:8b"
+        assert result["model_configured"] is True
+
+    async def test_an_installation_with_a_model_is_left_alone(self, session_maker):
+        await _scan(session_maker, {11434: _ollama_models()})
+        provider = (await _providers(session_maker))[0]
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model": "chosen-by-hand"}))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
+
+        assert result["model_configured"] is True
+        assert result["model_established"] is None
+
+    async def test_an_unavailable_scan_reports_nothing_about_models(self, session_maker):
+        """"Cannot tell" is not "not configured" — the distinction this
+        capability already makes for detection itself."""
+        result, _ = await _scan(session_maker, {11434: _ollama_models()},
+                                env={"CONTAINER_RUNTIME": "kubernetes"})
+
+        assert result["available"] is False
+        assert result["model_configured"] is None
+        assert result["model_established"] is None

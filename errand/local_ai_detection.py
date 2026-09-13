@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from host_gateway import get_host_gateway_address, is_local_detection_available
 from llm_providers import (
     _clear_model_settings_for_provider,
+    establish_model_settings_if_unset,
+    model_selection_state,
     decrypt_api_key,
     encrypt_api_key,
     evict_client,
@@ -281,6 +283,12 @@ async def scan_local_ai(session: AsyncSession) -> dict:
             "available": False,
             "detected": [],
             "needs_key": [],
+            # Null, not False. Nothing was probed, so nothing is known — the
+            # same distinction this scan already makes between "no runtime
+            # answered" and "we could not look".
+            "model_configured": None,
+            "model_established": None,
+            "default_provider_id": None,
             "message": (
                 "Local AI detection is not available for this deployment, because "
                 "there is no container host to probe."
@@ -419,12 +427,29 @@ async def scan_local_ai(session: AsyncSession) -> dict:
 
     await session.commit()
 
+    # A provider now exists and the user is looking at the result: the one
+    # moment where asking which model to use costs nothing. Where the provider
+    # serves exactly one there is nothing to ask, so it is established here and
+    # named in the result — a choice made on the user's behalf that does not say
+    # what it chose is still a silent one.
+    default_provider = (await session.execute(
+        select(LlmProvider).where(LlmProvider.is_default == True)  # noqa: E712
+    )).scalars().first()
+
+    model_established = None
+    if default_provider is not None:
+        model_established = await establish_model_settings_if_unset(session, default_provider)
+    selection = await model_selection_state(session)
+
     return {
         "available": True,
         "detected": [
             {k: v for k, v in info.items() if k != "port"} for info in registered
         ],
         "needs_key": needs_key,
+        "model_configured": selection["model_configured"],
+        "model_established": model_established,
+        "default_provider_id": str(default_provider.id) if default_provider else None,
         "message": None,
     }
 

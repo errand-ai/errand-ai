@@ -75,7 +75,11 @@ async def handle_new(args: str, user_email: str, session: AsyncSession) -> dict:
                 execute_at = datetime.fromisoformat(llm_result.execute_at)
             except (ValueError, TypeError):
                 pass  # LLM returned unparseable date; fall back to default scheduling
-        if not llm_result.success:
+        if not llm_result.attempted:
+            # No model configured: nothing was asked, so nothing is missing from
+            # what the user wrote. Same reasoning as the web intake.
+            description = input_text
+        elif not llm_result.success:
             description = input_text
             tag_names.append("Needs Info")
         elif llm_result.description is None:

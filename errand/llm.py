@@ -81,6 +81,14 @@ class LLMResult:
     repeat_until: str | None = None
     description: str | None = None
     profile: str | None = None
+    # Whether the model was asked at all. `success=False` alone conflates two
+    # facts about two different parties: a classifier that ran and could not
+    # extract a description has said something about the input, while one that
+    # was never reached has said something about the installation. A caller
+    # that cannot tell them apart blames the user for a missing configuration.
+    # Defaults True so that every construction which did reach a model — including
+    # the parser's own — keeps its meaning without restating it.
+    attempted: bool = True
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -162,7 +170,10 @@ async def generate_title(
     from llm_providers import resolve_model_setting
     client, model = await resolve_model_setting(session, "llm_model")
     if client is None or model is None:
-        return LLMResult(title=_fallback_title(description), success=False)
+        # Nothing was asked. `resolve_model_setting` answers the same way for a
+        # setting that was never made and one naming a provider since deleted;
+        # both mean no usable model, and neither is a statement about the input.
+        return LLMResult(title=_fallback_title(description), success=False, attempted=False)
 
     tz = await _get_timezone(session)
     timeout = await _get_title_generation_timeout(session)
