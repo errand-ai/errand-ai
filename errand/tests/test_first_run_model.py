@@ -449,3 +449,30 @@ class TestEitherNameForTheModel:
             })
 
         assert set(resp.json()) == {"model_configured", "provider_id", "model"}
+
+
+class TestEstablishingDoesNotOverwriteALateChoice:
+    async def test_a_choice_made_while_the_listing_is_in_flight_survives(self, session_maker):
+        """The empty check precedes a network call, so the window between them
+        is as long as the listing takes. A user who chooses during it must not
+        have their choice replaced by the sole-model result that arrives after.
+        """
+        from llm_providers import establish_model_settings_if_unset
+
+        provider = await _provider(session_maker)
+
+        async def listing_that_races(_provider):
+            # The user picks while /models is in flight.
+            async with session_maker() as session:
+                for key in ("llm_model", "task_processing_model"):
+                    session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                        "model": "chosen-by-the-user"}))
+                await session.commit()
+            return ["the-sole-model"]
+
+        with patch("llm_providers.list_provider_model_ids", side_effect=listing_that_races):
+            async with session_maker() as session:
+                established = await establish_model_settings_if_unset(session, provider)
+
+        assert established is None, "the late arrival overwrote a live choice"
+        assert (await _settings(session_maker))["llm_model"]["model"] == "chosen-by-the-user"

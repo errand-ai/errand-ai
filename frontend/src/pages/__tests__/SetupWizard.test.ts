@@ -543,6 +543,53 @@ describe('SetupWizard', () => {
     }
   })
 
+  it('handles the enriched objects the models endpoint really returns', async () => {
+    // `/models` returns {id, supports_reasoning, max_output_tokens, mode}, not
+    // strings. Every fixture in this file returned strings, so the wizard met
+    // the real shape only in production — where it rendered "[object Object]"
+    // and wrote an object where a model id belonged.
+    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
+      if (url === '/api/llm/providers' && opts?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'ollama', base_url: 'http://h:11434/v1', source: 'database' }),
+        })
+      }
+      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([
+            { id: 'qwen3:8b', supports_reasoning: false, max_output_tokens: 4096, mode: null },
+          ]),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { wrapper } = await mountSetup()
+    await completeStep1(wrapper)
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:11434/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="setup-step3"]').text()).not.toContain('[object Object]')
+
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const settingsCalls = fetchMock.mock.calls.filter(
+      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
+    )
+    expect(settingsCalls.length).toBeGreaterThan(0)
+    const body = JSON.parse((settingsCalls[0][1] as RequestInit).body as string)
+    expect(body.llm_model.model).toBe('qwen3:8b')
+    expect(body.task_processing_model.model).toBe('qwen3:8b')
+  })
+
   it('selects a provider\'s only model, because there is nothing to choose', async () => {
     const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
       if (url === '/api/llm/providers' && opts?.method === 'POST') {

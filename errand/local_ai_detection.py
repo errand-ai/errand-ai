@@ -447,8 +447,13 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         # change fixed everywhere else, reintroduced by new code written after
         # the fix.
         wanted = canonical_base_url(registered[0]["base_url"])
+        # Only the rows this scan reconciles. A manually configured provider may
+        # share the endpoint, and returning it would have the card offer — and
+        # this scan configure — a provider the scan never created.
         registered_provider = next(
-            (p for p in (await session.execute(select(LlmProvider))).scalars().all()
+            (p for p in (await session.execute(
+                select(LlmProvider).where(LlmProvider.source == "detected")
+            )).scalars().all()
              if canonical_base_url(p.base_url) == wanted),
             None,
         )

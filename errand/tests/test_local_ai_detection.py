@@ -1708,3 +1708,24 @@ class TestScanReportsTheModelQuestion:
 
         assert result["registered_provider_id"] is not None, "the legacy row was not matched"
         assert result["model_established"] == "only-one"
+
+    async def test_a_manual_provider_at_the_same_endpoint_is_not_reported(self, session_maker):
+        """The reported provider must be the detected row this scan reconciled,
+        not an older manual row that happens to share the endpoint — otherwise
+        the card offers, and the scan configures, a provider the scan did not
+        create."""
+        url = "http://host.docker.internal:11434/v1"
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="mine", base_url=url,
+                api_key_encrypted=encrypt_api_key("sk-x"), provider_type="openai_compatible",
+                is_default=True, source="database",
+            ))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        detected = [p for p in await _providers(session_maker) if p.source == "detected"]
+        if result["registered_provider_id"] is not None:
+            assert result["registered_provider_id"] in {str(p.id) for p in detected}, \
+                "reported a provider the scan did not register"

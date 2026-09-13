@@ -320,6 +320,14 @@ async def establish_model_settings_if_unset(
     if not models or len(models) != 1:
         return None
 
+    # Re-read before writing. The check above happened before a network call,
+    # so the window between them is as long as the listing takes — long enough
+    # for a user to choose a model in the settings card and have this overwrite
+    # it with the sole-model result arriving afterwards. Not a lock, but it
+    # closes the part of the window that is measured in seconds.
+    if (await model_selection_state(session))["any_role_configured"]:
+        return None
+
     await set_model_selection(session, provider, models[0])
     return models[0]
 

@@ -161,7 +161,7 @@ async function testConnection() {
       return
     }
     const data = await resp.json()
-    models.value = data
+    models.value = toModelIds(data)
     selectSoleModel()
     connectionTested.value = true
     step2Success.value = 'Connection successful'
@@ -179,6 +179,18 @@ async function testConnection() {
   } finally {
     testingConnection.value = false
   }
+}
+
+function toModelIds(data: unknown): string[] {
+  // `/models` returns enriched objects — {id, supports_reasoning,
+  // max_output_tokens, mode} — not strings. Assigning them straight into a
+  // string list rendered "[object Object]" in the dropdowns and wrote an
+  // object where a model id belonged. The wizard's own fixtures returned
+  // strings, so nothing here ever met the real shape.
+  if (!Array.isArray(data)) return []
+  return data
+    .map((m) => (typeof m === 'string' ? m : (m as { id?: string })?.id))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)
 }
 
 function selectSoleModel() {
@@ -203,7 +215,7 @@ async function advanceToStep3() {
         headers: { Authorization: `Bearer ${auth.token}` },
       })
       if (resp.ok) {
-        models.value = await resp.json()
+        models.value = toModelIds(await resp.json())
         selectSoleModel()
       }
     } catch {
