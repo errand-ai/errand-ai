@@ -130,17 +130,25 @@ async def revoke_cloud_endpoints(cloud_creds: dict, cloud_service_url: str) -> N
         logger.exception("Cloud endpoint revocation API call failed")
 
 
-async def check_existing_endpoints(cloud_creds: dict, cloud_service_url: str) -> list[dict]:
-    """Check for existing Slack endpoints on errand-cloud.
+async def check_existing_endpoints(
+    cloud_creds: dict, cloud_service_url: str, integration: str = "slack"
+) -> list[dict] | None:
+    """List the live (non-revoked) endpoints errand-cloud holds for an integration.
 
-    Calls GET /api/endpoints?integration=slack.
-    Returns the list of existing endpoints.
+    Calls GET /api/endpoints?integration=<integration>.
+
+    Returns the list of endpoints, or ``None`` if the question could not be
+    asked at all (no access token, network error, HTTP error). ``None`` and
+    ``[]`` must stay distinguishable: the reconciliation pass treats "the cloud
+    says this endpoint is gone" as grounds to re-register and to discard a
+    stored URL, and a failed call read as "nothing exists" would re-register
+    every trigger and change every URL at once.
     """
     access_token = cloud_creds.get("access_token", "")
     if not access_token:
-        return []
+        return None
 
-    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration=slack"
+    api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints?integration={integration}"
 
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -152,8 +160,8 @@ async def check_existing_endpoints(cloud_creds: dict, cloud_service_url: str) ->
             resp.raise_for_status()
             return resp.json()
     except Exception:
-        logger.exception("Cloud endpoint check API call failed")
-        return []
+        logger.exception("Cloud endpoint check API call failed for integration %s", integration)
+        return None
 
 
 async def try_register_endpoints(session: AsyncSession) -> None:
@@ -189,7 +197,10 @@ async def try_register_endpoints(session: AsyncSession) -> None:
     url_setting = result.scalar_one_or_none()
     cloud_service_url = url_setting.value if url_setting and url_setting.value else SETTINGS_REGISTRY["cloud_service_url"]["default"]
 
-    # Check for existing endpoints
+    # Check for existing endpoints. A failed listing (None) is deliberately
+    # treated the same as an empty one here — unchanged from the behaviour
+    # before the helper distinguished the two — because Slack registration is
+    # an idempotent upsert, so a redundant POST costs nothing.
     existing = await check_existing_endpoints(cloud_creds, cloud_service_url)
     if existing:
         # Persist existing endpoints to local setting so the UI can display them
@@ -330,17 +341,21 @@ async def _resolve_cloud_context(session: AsyncSession) -> tuple[dict, str] | No
 
 async def register_webhook_trigger_with_cloud(
     trigger: WebhookTrigger, session: AsyncSession
-) -> None:
+) -> bool:
     """Register a webhook trigger with errand-cloud and persist the URL/token.
 
     Best-effort: on cloud disconnected, returns silently. On HTTP failure, logs
     the error, stores the detail in `cloud_endpoint_error` Setting, leaves the
     trigger's cloud columns unchanged, and does NOT raise.
+
+    Returns True when the trigger now holds a live URL and token. Reconciliation
+    relies on this: comparing the token before and after would not do, because
+    the cloud's upsert may legitimately return the token it had.
     """
     ctx = await _resolve_cloud_context(session)
     if ctx is None:
         logger.debug("Cloud not connected, skipping trigger endpoint registration for %s", trigger.id)
-        return
+        return False
     cloud_creds, cloud_service_url = ctx
 
     # Backfill: legacy trigger rows may pre-date server-side secret generation
@@ -358,15 +373,15 @@ async def register_webhook_trigger_with_cloud(
             plaintext_secret = secret_data.get("secret", "")
         except Exception:
             logger.exception("Failed to decrypt webhook_secret for trigger %s", trigger.id)
-            return
+            return False
 
         if not plaintext_secret:
             logger.debug("Empty webhook_secret for trigger %s, skipping cloud registration", trigger.id)
-            return
+            return False
 
     access_token = cloud_creds.get("access_token", "")
     if not access_token:
-        return
+        return False
 
     api_url = f"{cloud_service_url.rstrip('/')}/api/endpoints"
     body = {
@@ -397,12 +412,12 @@ async def register_webhook_trigger_with_cloud(
                 except Exception:
                     error_detail = resp.text
                 await _store_endpoint_error(session, error_detail)
-                return
+                return False
             data = resp.json()
     except Exception:
         logger.exception("Cloud webhook trigger registration API call failed for %s", trigger.id)
         await _store_endpoint_error(session, "Cloud endpoint registration failed (network or server error)")
-        return
+        return False
 
     # Cloud returns the URL/token under `endpoints: [{type, url, token}]` (the same
     # envelope as the Slack registration). Fall back to top-level `url`/`token` for
@@ -418,7 +433,7 @@ async def register_webhook_trigger_with_cloud(
     if not url or not token:
         logger.error("Cloud webhook trigger registration response missing url/token for %s: %s", trigger.id, data)
         await _store_endpoint_error(session, "Cloud endpoint registration response missing url/token")
-        return
+        return False
 
     trigger.cloud_webhook_url = url
     trigger.cloud_endpoint_token = token
@@ -429,6 +444,94 @@ async def register_webhook_trigger_with_cloud(
     # consumer of this setting.
     await session.commit()
     logger.info("Registered cloud webhook endpoint for trigger %s (%s)", trigger.id, trigger.source)
+    return True
+
+
+# Integrations whose endpoints are registered per webhook trigger. Slack is
+# excluded deliberately: its endpoints are instance-wide and already reconcile
+# through try_register_endpoints.
+WEBHOOK_TRIGGER_INTEGRATIONS = ("jira", "github")
+
+
+async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
+    """Re-register webhook trigger endpoints that errand-cloud no longer holds.
+
+    Runs on cloud connect. For each integration with triggers, lists the live
+    endpoints once and compares them against the stored `cloud_endpoint_token`.
+    A trigger whose token is missing — revoked server-side, or never registered
+    because the cloud was unavailable at save time — is re-registered with its
+    existing webhook secret, so deliveries signed with the secret already
+    configured in Jira or GitHub keep verifying.
+
+    Failure is not emptiness. When the listing call fails, nothing is
+    re-registered and nothing is discarded: the cached URLs stay on display.
+    When the cloud affirmatively reports an endpoint absent and re-registration
+    then fails, `cloud_webhook_url` is cleared, so the settings page shows
+    "Registration failed — re-save trigger to retry" instead of a URL that
+    would silently drop every delivery.
+
+    Never raises: a cloud connect must not fail because reconciliation did.
+    """
+    try:
+        ctx = await _resolve_cloud_context(session)
+        if ctx is None:
+            logger.debug("Cloud not connected, skipping webhook trigger reconciliation")
+            return
+        cloud_creds, cloud_service_url = ctx
+
+        result = await session.execute(
+            select(WebhookTrigger).where(
+                WebhookTrigger.source.in_(WEBHOOK_TRIGGER_INTEGRATIONS)
+            )
+        )
+        triggers = list(result.scalars().all())
+        if not triggers:
+            return
+
+        by_integration: dict[str, list[WebhookTrigger]] = {}
+        for trigger in triggers:
+            by_integration.setdefault(trigger.source, []).append(trigger)
+
+        for integration, group in by_integration.items():
+            existing = await check_existing_endpoints(
+                cloud_creds, cloud_service_url, integration=integration
+            )
+            if existing is None:
+                logger.warning(
+                    "Could not list %s endpoints on errand-cloud; leaving %d trigger(s) as cached",
+                    integration, len(group),
+                )
+                continue
+
+            live_tokens = {
+                ep.get("token") for ep in existing if isinstance(ep, dict) and ep.get("token")
+            }
+
+            for trigger in group:
+                if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
+                    continue
+
+                logger.info(
+                    "Webhook trigger %s (%s) has no live cloud endpoint, re-registering",
+                    trigger.id, integration,
+                )
+                registered = await register_webhook_trigger_with_cloud(trigger, session)
+                if registered:
+                    continue
+
+                # The cloud told us the endpoint is gone and we could not make a
+                # new one. Displaying the old URL is the failure this change
+                # exists to end.
+                if trigger.cloud_webhook_url is not None:
+                    logger.warning(
+                        "Clearing stale cloud_webhook_url for trigger %s: endpoint gone "
+                        "and re-registration failed",
+                        trigger.id,
+                    )
+                    trigger.cloud_webhook_url = None
+                    await session.commit()
+    except Exception:
+        logger.exception("Webhook trigger endpoint reconciliation failed")
 
 
 async def revoke_webhook_trigger_in_cloud(

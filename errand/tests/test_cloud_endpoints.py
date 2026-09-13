@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
+from sqlalchemy import select
 
 from cloud_endpoints import (
     check_existing_endpoints,
@@ -149,7 +150,59 @@ class TestCheckExistingEndpoints:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_check_returns_empty_on_failure(self):
+    async def test_check_queries_the_requested_integration(self):
+        """1.1 — the helper can ask about an integration other than slack."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = [{"token": "jira-1", "type": "webhook"}]
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await check_existing_endpoints(
+                cloud_creds={"access_token": "test-token"},
+                cloud_service_url="https://cloud.test",
+                integration="jira",
+            )
+
+            called_url = mock_client.get.call_args.args[0]
+
+        assert called_url == "https://cloud.test/api/endpoints?integration=jira"
+        assert result == [{"token": "jira-1", "type": "webhook"}]
+
+    @pytest.mark.asyncio
+    async def test_check_defaults_to_slack(self):
+        """1.3 — existing callers are unchanged: no integration argument means slack."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await check_existing_endpoints(
+                cloud_creds={"access_token": "test-token"},
+                cloud_service_url="https://cloud.test",
+            )
+
+            called_url = mock_client.get.call_args.args[0]
+
+        assert called_url == "https://cloud.test/api/endpoints?integration=slack"
+
+    @pytest.mark.asyncio
+    async def test_check_returns_none_on_failure(self):
+        """1.2 — a failed call is None, NOT an empty list.
+
+        Conflating the two is the hazard the reconciliation pass turns on: an
+        unreachable cloud read as "no endpoints exist" would re-register every
+        trigger and change every URL.
+        """
         with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=httpx.HTTPError("fail"))
@@ -161,7 +214,39 @@ class TestCheckExistingEndpoints:
                 cloud_service_url="https://cloud.test",
             )
 
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_check_returns_empty_list_when_cloud_has_none(self):
+        """1.2 — an affirmative "nothing here" stays distinguishable from failure."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await check_existing_endpoints(
+                cloud_creds={"access_token": "test-token"},
+                cloud_service_url="https://cloud.test",
+            )
+
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_check_returns_none_without_access_token(self):
+        """No token means we never asked, which is not evidence of emptiness."""
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            result = await check_existing_endpoints(
+                cloud_creds={"access_token": ""},
+                cloud_service_url="https://cloud.test",
+            )
+            mock_client_cls.assert_not_called()
+
+        assert result is None
 
 
 def _make_trigger(source="jira", token=None, encrypted_secret=None, name="Trigger"):
@@ -500,3 +585,467 @@ class TestRevokeWebhookTriggerInCloud:
             url = mock_client.delete.call_args[0][0]
             assert "integration=github" in url
             assert f"trigger_id={trigger.id}" in url
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation of webhook trigger endpoints on cloud connect
+# ---------------------------------------------------------------------------
+
+
+def _listing_response(endpoints):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = endpoints
+    return resp
+
+
+def _registration_response(url, token, integration="jira"):
+    resp = MagicMock()
+    resp.is_success = True
+    resp.json.return_value = {
+        "integration": integration,
+        "endpoints": [{"type": "webhook", "url": url, "token": token}],
+    }
+    return resp
+
+
+def _failed_registration_response(status_code=403, detail="Active subscription required"):
+    resp = MagicMock()
+    resp.is_success = False
+    resp.status_code = status_code
+    resp.reason_phrase = "Forbidden"
+    resp.text = detail
+    resp.json.return_value = {"detail": detail}
+    return resp
+
+
+class _FakeCloud:
+    """Stands in for httpx.AsyncClient, recording every call it is asked to make."""
+
+    def __init__(self, get_responses=None, post_responses=None):
+        self._get_responses = list(get_responses or [])
+        self._post_responses = list(post_responses or [])
+        self.get_urls: list[str] = []
+        self.post_bodies: list[dict] = []
+
+    async def get(self, url, **kwargs):
+        self.get_urls.append(url)
+        response = self._get_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    async def post(self, url, **kwargs):
+        self.post_bodies.append(kwargs.get("json", {}))
+        response = self._post_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _patch_cloud(fake):
+    patcher = patch("cloud_endpoints.httpx.AsyncClient")
+    mock_client_cls = patcher.start()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=fake)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    return patcher
+
+
+async def _seed_cloud_credentials(session_factory, status="connected"):
+    from models import PlatformCredential, Setting
+    from platforms.credentials import encrypt
+
+    async with session_factory() as session:
+        session.add(PlatformCredential(
+            platform_id="cloud",
+            encrypted_data=encrypt({"access_token": "test-token"}),
+            status=status,
+        ))
+        session.add(Setting(key="cloud_service_url", value="https://cloud.test"))
+        await session.commit()
+
+
+async def _add_trigger(session_factory, *, name, source, url, token, secret="plaintext-secret"):
+    from models import WebhookTrigger
+    from platforms.credentials import encrypt
+
+    async with session_factory() as session:
+        trigger = WebhookTrigger(
+            name=name,
+            source=source,
+            filters={},
+            actions={},
+            webhook_secret=encrypt({"secret": secret}) if secret else None,
+            cloud_webhook_url=url,
+            cloud_endpoint_token=token,
+        )
+        session.add(trigger)
+        await session.commit()
+        return trigger.id
+
+
+async def _reload(session_factory, trigger_id):
+    from models import WebhookTrigger
+    async with session_factory() as session:
+        result = await session.execute(
+            select(WebhookTrigger).where(WebhookTrigger.id == trigger_id)
+        )
+        return result.scalar_one()
+
+
+async def _run_reconcile(session_factory):
+    from cloud_endpoints import reconcile_webhook_trigger_endpoints
+    async with session_factory() as session:
+        await reconcile_webhook_trigger_endpoints(session)
+
+
+class TestReconcileWebhookTriggerEndpoints:
+    @pytest.mark.asyncio
+    async def test_revoked_jira_endpoint_is_reregistered(self, db_session):
+        """2.1 — a stored token absent from the cloud listing is re-registered."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira T", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([{"token": "someone-else", "type": "webhook"}])],
+            post_responses=[_registration_response("https://cloud.test/hook/fresh", "fresh-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/fresh"
+        assert trigger.cloud_endpoint_token == "fresh-token"
+        assert fake.get_urls == ["https://cloud.test/api/endpoints?integration=jira"]
+        assert len(fake.post_bodies) == 1
+
+    @pytest.mark.asyncio
+    async def test_revoked_github_endpoint_is_reregistered(self, db_session):
+        """2.2 — the same for GitHub."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="GH T", source="github",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[
+                _registration_response("https://cloud.test/hook/gh", "gh-token", integration="github")
+            ],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/gh"
+        assert trigger.cloud_endpoint_token == "gh-token"
+        assert fake.get_urls == ["https://cloud.test/api/endpoints?integration=github"]
+        assert fake.post_bodies[0]["integration"] == "github"
+
+    @pytest.mark.asyncio
+    async def test_live_endpoint_is_left_untouched(self, db_session):
+        """2.3 — a token present in the listing means no POST and no change."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Live", source="jira",
+            url="https://cloud.test/hook/live", token="live-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([{"token": "live-token", "type": "webhook"}])],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/live"
+        assert trigger.cloud_endpoint_token == "live-token"
+        assert fake.post_bodies == []
+
+    @pytest.mark.asyncio
+    async def test_reregistration_reuses_the_stored_secret(self, db_session):
+        """2.4 — the already-configured third-party secret must not be regenerated."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Secret", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+            secret="configured-in-jira",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/new", "new-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.post_bodies[0]["webhook_secret"] == "configured-in-jira"
+        assert fake.post_bodies[0]["trigger_id"] == str(trigger_id)
+
+    @pytest.mark.asyncio
+    async def test_never_registered_trigger_is_registered(self, db_session):
+        """2.6 — a null token means registration never succeeded; connect is the retry."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Never", source="jira", url=None, token=None,
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/first", "first-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/first"
+        assert trigger.cloud_endpoint_token == "first-token"
+
+    @pytest.mark.asyncio
+    async def test_one_listing_call_per_integration(self, db_session):
+        """2.7 — three Jira triggers produce one GET, not three."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        for n in range(3):
+            await _add_trigger(
+                session_factory, name=f"Jira {n}", source="jira",
+                url="https://cloud.test/hook/live", token="live-token",
+            )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([{"token": "live-token", "type": "webhook"}])],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.get_urls == ["https://cloud.test/api/endpoints?integration=jira"]
+
+    @pytest.mark.asyncio
+    async def test_gone_endpoint_with_failed_reregistration_clears_url(self, db_session):
+        """3.1 — a dead URL must stop being displayed as live."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Gone", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_failed_registration_response()],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url is None
+
+        from models import Setting
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )
+            error = result.scalar_one_or_none()
+        assert error is not None
+        assert error.value["detail"] == "Active subscription required"
+
+    @pytest.mark.asyncio
+    async def test_unreachable_cloud_clears_nothing(self, db_session):
+        """3.2 — a failed listing is not evidence the endpoint is gone."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Cached", source="jira",
+            url="https://cloud.test/hook/cached", token="cached-token",
+        )
+
+        fake = _FakeCloud(get_responses=[httpx.HTTPError("cloud down")])
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/cached"
+        assert trigger.cloud_endpoint_token == "cached-token"
+        assert fake.post_bodies == []
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_never_raises(self, db_session):
+        """3.4 — an exception anywhere must not abort the cloud connect flow."""
+        from cloud_endpoints import reconcile_webhook_trigger_endpoints
+
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await reconcile_webhook_trigger_endpoints(session)
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_cloud_not_connected(self, db_session):
+        """4.3 — no credential, or a credential that is not connected, means no pass."""
+        _, session_factory = db_session
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Orphan", source="jira",
+            url="https://cloud.test/hook/cached", token="cached-token",
+        )
+
+        fake = _FakeCloud()
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.get_urls == []
+
+        await _seed_cloud_credentials(session_factory, status="disconnected")
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.get_urls == []
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url == "https://cloud.test/hook/cached"
+
+
+class TestTryRegisterEndpointsSlackUnchanged:
+    """1.5 — generalising the helper must not move the Slack path."""
+
+    @staticmethod
+    async def _seed(session_factory):
+        from models import PlatformCredential, Setting
+        from platforms.credentials import encrypt
+
+        async with session_factory() as session:
+            session.add(PlatformCredential(
+                platform_id="cloud",
+                encrypted_data=encrypt({"access_token": "test-token"}),
+                status="connected",
+            ))
+            session.add(PlatformCredential(
+                platform_id="slack",
+                encrypted_data=encrypt({"signing_secret": "sign-me"}),
+                status="connected",
+            ))
+            session.add(Setting(key="cloud_service_url", value="https://cloud.test"))
+            await session.commit()
+
+    @staticmethod
+    async def _run(session_factory):
+        from cloud_endpoints import try_register_endpoints
+        async with session_factory() as session:
+            await try_register_endpoints(session)
+
+    @staticmethod
+    async def _stored_endpoints(session_factory):
+        from models import Setting
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Setting).where(Setting.key == "cloud_endpoints")
+            )
+            setting = result.scalar_one_or_none()
+        return setting.value if setting else None
+
+    @pytest.mark.asyncio
+    async def test_existing_endpoints_are_cached_without_reregistering(self, db_session):
+        _, session_factory = db_session
+        await self._seed(session_factory)
+
+        fake = _FakeCloud(get_responses=[_listing_response([
+            {"integration": "slack", "type": "events", "url": "https://cloud.test/hook/e", "token": "e"},
+        ])])
+        patcher = _patch_cloud(fake)
+        try:
+            await self._run(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.post_bodies == []
+        assert fake.get_urls == ["https://cloud.test/api/endpoints?integration=slack"]
+        assert await self._stored_endpoints(session_factory) == [
+            {"integration": "slack", "endpoint_type": "events",
+             "url": "https://cloud.test/hook/e", "token": "e"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_previously_revoked_endpoints_are_recreated(self, db_session):
+        """The re-create path: the cloud holds nothing, so Slack endpoints are made again."""
+        _, session_factory = db_session
+        await self._seed(session_factory)
+
+        registration = MagicMock()
+        registration.is_success = True
+        registration.status_code = 200
+        registration.json.return_value = {
+            "integration": "slack",
+            "endpoints": [{"type": "events", "url": "https://cloud.test/hook/new", "token": "new"}],
+        }
+        fake = _FakeCloud(get_responses=[_listing_response([])], post_responses=[registration])
+        patcher = _patch_cloud(fake)
+        try:
+            await self._run(session_factory)
+        finally:
+            patcher.stop()
+
+        assert len(fake.post_bodies) == 1
+        assert fake.post_bodies[0]["integration"] == "slack"
+        assert fake.post_bodies[0]["signing_secret"] == "sign-me"
+        assert await self._stored_endpoints(session_factory) == [
+            {"integration": "slack", "endpoint_type": "events",
+             "url": "https://cloud.test/hook/new", "token": "new"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_failed_listing_still_registers(self, db_session):
+        """Unchanged from before None existed: Slack registration is an idempotent upsert."""
+        _, session_factory = db_session
+        await self._seed(session_factory)
+
+        registration = MagicMock()
+        registration.is_success = True
+        registration.status_code = 200
+        registration.json.return_value = {"integration": "slack", "endpoints": []}
+        fake = _FakeCloud(
+            get_responses=[httpx.HTTPError("cloud down")],
+            post_responses=[registration],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await self._run(session_factory)
+        finally:
+            patcher.stop()
+
+        assert len(fake.post_bodies) == 1

@@ -376,12 +376,19 @@ async def lifespan(app: FastAPI):
             from cloud_client import start_cloud_client
             await start_cloud_client()
 
-            # Register endpoints in background to avoid blocking startup
+            # Register endpoints in background to avoid blocking startup.
+            # The two passes are independent: try_register_endpoints owns the
+            # instance-wide Slack endpoints, reconciliation owns the per-trigger
+            # Jira/GitHub ones, and neither reads what the other writes.
             async def _register_endpoints_background():
                 try:
                     async with async_session() as bg_session:
-                        from cloud_endpoints import try_register_endpoints
+                        from cloud_endpoints import (
+                            reconcile_webhook_trigger_endpoints,
+                            try_register_endpoints,
+                        )
                         await try_register_endpoints(bg_session)
+                        await reconcile_webhook_trigger_endpoints(bg_session)
                 except Exception:
                     logger.exception("Cloud endpoint registration failed on startup")
             asyncio.create_task(_register_endpoints_background())
@@ -2267,9 +2274,16 @@ async def _run_device_grant(
     # Best-effort: a registration failure is surfaced through /api/cloud/status,
     # not by undoing a connection that is otherwise good.
     try:
-        from cloud_endpoints import try_register_endpoints
+        from cloud_endpoints import (
+            reconcile_webhook_trigger_endpoints,
+            try_register_endpoints,
+        )
         async with async_session() as session:
             await try_register_endpoints(session)
+            # Repair webhook trigger endpoints the cloud no longer holds —
+            # revoked server-side, or never registered because the cloud was
+            # unreachable when the trigger was saved.
+            await reconcile_webhook_trigger_endpoints(session)
     except Exception:
         logger.exception("Cloud endpoint registration failed after device authorization")
 
