@@ -178,6 +178,49 @@ class TestExistingSettingsAreKept:
         assert settings["llm_model"]["model"] == "chosen-by-hand"
         assert settings["task_processing_model"]["model"] == "chosen-by-hand"
 
+    async def test_a_legacy_bare_string_execution_model_is_not_replaced(self, session_maker):
+        """`_process_task` still runs tasks on a bare-string model name, against
+        the OpenAI default base URL with a key from credentials. It does not
+        resolve here — title generation has no model — so the installation is
+        honestly not `model_configured`. It is emphatically not *unset*: a scan
+        establishing a sole local model would take away an execution
+        configuration that is currently running tasks."""
+        from llm_providers import establish_model_settings_if_unset, model_selection_state
+
+        provider = await _provider(session_maker)
+        async with session_maker() as session:
+            session.add(Setting(key="task_processing_model", value="gpt-4o"))
+            await session.commit()
+
+        with _listing(["qwen3:8b"]):
+            async with session_maker() as session:
+                established = await establish_model_settings_if_unset(session, provider)
+
+        assert established is None
+        assert (await _settings(session_maker))["task_processing_model"] == "gpt-4o"
+
+        async with session_maker() as session:
+            state = await model_selection_state(session)
+        assert state["model_configured"] is False
+        assert state["any_role_configured"] is True
+
+    async def test_a_model_naming_a_departed_provider_is_not_replaced(self, session_maker):
+        """It cannot be used, so it is not configured — but somebody chose it,
+        and a scan is not the moment to decide their choice was wrong."""
+        from llm_providers import establish_model_settings_if_unset
+
+        provider = await _provider(session_maker)
+        async with session_maker() as session:
+            session.add(Setting(key="llm_model",
+                                value={"provider_id": "00000000-0000-0000-0000-000000000000",
+                                       "model": "chosen-by-hand"}))
+            await session.commit()
+
+        with _listing(["qwen3:8b"]):
+            async with session_maker() as session:
+                assert await establish_model_settings_if_unset(session, provider) is None
+        assert (await _settings(session_maker))["llm_model"]["model"] == "chosen-by-hand"
+
     async def test_a_partially_configured_installation_is_not_touched(self, session_maker):
         """One role set is not "none configured". Overwriting it would discard a
         deliberate choice on the strength of a scan the user did not connect to

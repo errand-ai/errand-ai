@@ -273,15 +273,35 @@ async def model_selection_state(session: AsyncSession) -> dict:
         str(p.id) for p in (await session.execute(select(LlmProvider))).scalars().all()
     }
     resolved: dict[str, dict] = {}
+    any_role_set = False
     for key in MODEL_ROLE_SETTINGS:
         setting = (await session.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
-        value = setting.value if setting and isinstance(setting.value, dict) else {}
+        raw = setting.value if setting else None
+        # A bare string is the legacy shape — a model name resolving against
+        # the OpenAI default base URL with a key from credentials — and
+        # `_process_task` still runs tasks on it deliberately. It cannot be
+        # *resolved* here, because `resolve_model_setting` requires a provider
+        # and title generation therefore has no model; so such an installation
+        # is honestly reported as not configured. But it is emphatically not
+        # *unset*: somebody chose that model and tasks are running on it, and a
+        # scan that overwrote both roles from a sole-model runtime would take
+        # away a working execution configuration without being asked.
+        if isinstance(raw, str) and raw.strip():
+            any_role_set = True
+            continue
+        value = raw if isinstance(raw, dict) else {}
         provider_id = str(value.get("provider_id") or "")
         # `model` is canonical, but the shared LlmModelCard writes `model_id`,
         # and `resolve_model_setting` accepts either. Reading only `model` here
         # would report a card-saved installation as unconfigured — and then a
         # sole-model scan would overwrite the selection the user had made.
         model = value.get("model") or value.get("model_id") or ""
+        # Same reasoning as the bare string: a model named with no provider, or
+        # naming a provider that has departed, is a choice somebody made. It
+        # does not resolve, so it is not `model_configured` — but it is not
+        # ours to replace.
+        if model:
+            any_role_set = True
         if provider_id and model and provider_id in provider_ids:
             resolved[key] = {"provider_id": provider_id, "model": model}
 
@@ -294,7 +314,11 @@ async def model_selection_state(session: AsyncSession) -> dict:
         # Distinct from `model_configured`: one role set is not a working
         # installation, but it is a deliberate choice that must not be
         # overwritten by a scan the user did not connect to their settings.
-        "any_role_configured": bool(resolved),
+        # It counts settings that do not resolve, too — see above; the question
+        # this gate answers is "has anybody chosen anything here", not "does it
+        # work". Answering the second would have a scan quietly replace a
+        # legacy configuration that is currently running tasks.
+        "any_role_configured": bool(resolved) or any_role_set,
     }
 
 

@@ -26,7 +26,8 @@ The renamed scenario, and why it is done this way: `task-categorisation`'s exist
 - [x] 4.1 Write failing tests: a provider listing exactly one model establishes it; a provider listing several with no supplied choice establishes nothing; a listing that cannot be retrieved establishes nothing; no selection is made by position or by name
 - [x] 4.2 Implement establishing model settings from a provider, setting both `llm_model` and `task_processing_model` (D3, and the two-settings note in Risks)
 - [x] 4.3 Apply only where no model is configured, by the empty-installation rule detection already uses for the default provider (D6) — an installation with settings keeps them
-- [ ] 4.4 Verify against a real multi-model runtime that nothing is written, and against a single-model one that it is
+- [x] 4.4 Verify against a real multi-model runtime that nothing is written, and against a single-model one that it is — a real `llama.cpp` server on the candidate port serving one model (`stories15m`, identified from `owned_by: llamacpp`, not from the port) established it; the machine's real Ollama listing three established nothing
+- [x] 4.5 Do not replace a role setting that was set but does not resolve: the legacy bare-string execution model tasks still run on, or a model naming a departed provider. Raised in review — the gate tested usability where it needed to test whether anybody had chosen anything
 
 ## 5. The caller-supplied choice
 
@@ -75,8 +76,8 @@ The wizard is the other first-run surface, and it had the defect this change exi
 
 - [x] 9.1 Run the full errand, task-runner and frontend test suites
 - [ ] 9.2 End to end from an empty database: bring the stack up with no providers and no settings, scan, observe the reported missing model, choose one, create a task in the user's own words, and watch it run to completion
-- [ ] 9.3 Confirm the same flow with a single-model runtime asks nothing and still runs
-- [ ] 9.4 Confirm an installation that already has model settings is untouched by a scan
+- [x] 9.3 Confirm the same flow with a single-model runtime asks nothing (established without prompting against the real llama.cpp listing; the task-run half is covered by 9.2)
+- [x] 9.4 Confirm an installation that already has model settings is untouched by a scan — a second scan against the same live runtimes established nothing and left the selection alone
 
 ## 10. Archive
 

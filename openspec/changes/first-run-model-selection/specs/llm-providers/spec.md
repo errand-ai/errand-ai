@@ -30,7 +30,15 @@ Where a scan registers a provider on an installation that has no model configure
 
 The scan is where the question belongs. A provider has just come into existence, the user is looking at the result, and the model listing is one request away. Nowhere else in the product is the question put at all, which is why a newly installed system reaches its first task with a default provider and no usable model.
 
-Establishing model settings SHALL apply only where none are configured, by the same rule under which detection claims the default provider only on an empty installation: with nothing configured there is nothing to override. An installation that already has model settings SHALL keep them.
+Establishing model settings SHALL apply only where no role setting has been **set**, by the same rule under which detection claims the default provider only on an empty installation: with nothing configured there is nothing to override. An installation that already has model settings SHALL keep them.
+
+Set is a wider test than usable, deliberately, and the two must not be conflated. A model named with no provider is the legacy shape — a bare model name resolving against the default base URL with a key from credentials — and tasks still run on it; a model naming a provider that has since been deleted does not resolve at all. Neither is reported as configured, because neither can serve every role. But both were chosen by somebody, and a scan is not the moment to decide that choice was wrong: replacing them would take a running installation off the model its operator picked, on the strength of a button they pressed to look for local runtimes.
+
+#### Scenario: A model setting that does not resolve is still not replaced
+
+- **WHEN** a scan would establish a sole model on an installation whose role setting names a model with no provider, or a provider that no longer exists
+- **THEN** no model setting is established
+- **AND** the existing setting is unchanged
 
 #### Scenario: A scan on an empty installation reports that no model is configured
 
