@@ -512,3 +512,23 @@ class TestUnreachableClassifierIsNotNeedsInfo:
         listed = (await client.get("/api/tasks")).json()
         mine = next(t for t in listed if t["id"] == created["id"])
         assert mine["status"] == "pending"
+
+    async def test_a_failed_request_is_not_reported_as_no_model(self, client: AsyncClient):
+        """Both route by category, and they are not the same fact. Telling a
+        user no model is configured, when one is and it timed out, sends them to
+        settings that are already correct."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "request_failed"
+
+    async def test_no_model_is_still_reported_as_no_model(self, client: AsyncClient):
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(None, None))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        assert resp.json()["classification"] == "no_model_configured"

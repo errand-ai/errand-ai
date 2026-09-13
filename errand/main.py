@@ -866,7 +866,10 @@ async def create_task(
             # problem, and a task parked on that basis is one they cannot
             # repair. It routes by category like any unclassified task.
             description = input_text
-            classification = "no_model_configured"
+            # The cause, not merely "something went wrong". Telling a user no
+            # model is configured when one is and it timed out sends them to
+            # settings that are already correct.
+            classification = llm_result.cause
         elif not llm_result.success:
             description = input_text
             tag_names.append("Needs Info")
