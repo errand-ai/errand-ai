@@ -283,10 +283,13 @@ async def scan_local_ai(session: AsyncSession) -> dict:
             "available": False,
             "detected": [],
             "needs_key": [],
-            # Null, not False. Nothing was probed, so nothing is known — the
-            # same distinction this scan already makes between "no runtime
-            # answered" and "we could not look".
-            "model_configured": None,
+            # Null, not False, and named for the scan rather than for the
+            # configuration. `GET /api/llm/model-selection` answers "what is
+            # configured" and is always determinate; this answers "what is
+            # configured as of this scan", so no scan means no answer. One name
+            # across both, carrying a boolean in one and boolean-or-null in the
+            # other, is how a reader ends up typing it wrong.
+            "model_configured_after_scan": None,
             "model_established": None,
             "registered_provider_id": None,
             "message": (
@@ -454,7 +457,7 @@ async def scan_local_ai(session: AsyncSession) -> dict:
             {k: v for k, v in info.items() if k != "port"} for info in registered
         ],
         "needs_key": needs_key,
-        "model_configured": selection["model_configured"],
+        "model_configured_after_scan": selection["model_configured"],
         "model_established": model_established,
         "registered_provider_id": str(registered_provider.id) if registered_provider else None,
         "message": None,

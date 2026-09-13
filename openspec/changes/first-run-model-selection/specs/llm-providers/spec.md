@@ -26,7 +26,7 @@ A model stored on a guess is a setting the user did not make, presented as one t
 
 ### Requirement: Scanning an installation with no model established offers to establish one
 
-Where a scan registers a provider on an installation that has no model configured, the scan result SHALL carry what a caller needs to resolve that: which provider was registered, and that no model is configured. Where the provider offers exactly one model, the model settings SHALL be established from it and the scan result SHALL say so.
+Where a scan registers a provider on an installation that has no model configured, the scan result SHALL carry what a caller needs to resolve that: which provider was registered, and whether a model is configured as of that scan. The latter SHALL be named distinctly from the configuration state a caller may read directly, because the two answer different questions and only the scan's can be undeterminable — a caller typing one from the other gets the wrong domain. Where the provider offers exactly one model, the model settings SHALL be established from it and the scan result SHALL say so.
 
 The scan is where the question belongs. A provider has just come into existence, the user is looking at the result, and the model listing is one request away. Nowhere else in the product is the question put at all, which is why a newly installed system reaches its first task with a default provider and no usable model.
 

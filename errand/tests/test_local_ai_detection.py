@@ -1611,7 +1611,7 @@ class TestScanReportsTheModelQuestion:
     async def test_a_scan_on_an_empty_installation_reports_no_model(self, session_maker):
         result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["a", "b"])
 
-        assert result["model_configured"] is False
+        assert result["model_configured_after_scan"] is False
         assert result["model_established"] is None
         assert result["registered_provider_id"] == str((await _providers(session_maker))[0].id)
 
@@ -1621,7 +1621,7 @@ class TestScanReportsTheModelQuestion:
         result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
 
         assert result["model_established"] == "qwen3:8b"
-        assert result["model_configured"] is True
+        assert result["model_configured_after_scan"] is True
 
     async def test_an_installation_with_a_model_is_left_alone(self, session_maker):
         await _scan(session_maker, {11434: _ollama_models()})
@@ -1634,7 +1634,7 @@ class TestScanReportsTheModelQuestion:
 
         result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["qwen3:8b"])
 
-        assert result["model_configured"] is True
+        assert result["model_configured_after_scan"] is True
         assert result["model_established"] is None
 
     async def test_an_unavailable_scan_reports_nothing_about_models(self, session_maker):
@@ -1644,7 +1644,7 @@ class TestScanReportsTheModelQuestion:
                                 env={"CONTAINER_RUNTIME": "kubernetes"})
 
         assert result["available"] is False
-        assert result["model_configured"] is None
+        assert result["model_configured_after_scan"] is None
         assert result["model_established"] is None
 
     async def test_a_hosted_default_provider_is_not_the_one_offered(self, session_maker):
