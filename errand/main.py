@@ -25,7 +25,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1237,7 +1237,26 @@ async def adopt_local_ai_provider(
 
 class ModelSelection(BaseModel):
     provider_id: uuid.UUID
-    model: str = Field(min_length=1)
+    # `model` is canonical; `model_id` is what the shared LlmModelCard writes,
+    # and `resolve_model_setting` has long accepted either. Taking only one
+    # here would leave a client sending `model_id` to the settings and `model`
+    # to this operation — two names for one concept from a single card, with a
+    # translation in between. Translations are where the next mismatch hides,
+    # and this repository has already paid for that: reading only `model` in
+    # `model_selection_state` reported a card-configured installation as having
+    # no model, after which a scan would have overwritten the user's choice.
+    model: str | None = None
+    model_id: str | None = None
+
+    @property
+    def model_name(self) -> str:
+        return (self.model or self.model_id or "").strip()
+
+    @model_validator(mode="after")
+    def _one_name_is_required(self) -> "ModelSelection":
+        if not self.model_name:
+            raise ValueError("model (or model_id) is required")
+        return self
 
 
 @app.get("/api/llm/model-selection")
@@ -1289,13 +1308,13 @@ async def set_model_selection_endpoint(
             status_code=502,
             detail="Could not read the provider's model list, so the choice cannot be checked.",
         )
-    if body.model not in models:
+    if body.model_name not in models:
         raise HTTPException(
             status_code=422,
-            detail=f"{provider.name} does not serve a model called {body.model!r}.",
+            detail=f"{provider.name} does not serve a model called {body.model_name!r}.",
         )
 
-    await set_model_selection(session, provider, body.model)
+    await set_model_selection(session, provider, body.model_name)
     return await model_selection_state(session)
 
 

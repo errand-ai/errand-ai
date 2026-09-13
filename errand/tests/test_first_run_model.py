@@ -368,3 +368,67 @@ class TestTheCardsSettingShapeIsUnderstood:
         with _listing(["qwen3:8b"]):
             async with session_maker() as session:
                 assert await establish_model_settings_if_unset(session, provider) is None
+
+
+class TestEitherNameForTheModel:
+    """`model` is canonical; `model_id` is what the shared LlmModelCard writes.
+
+    `resolve_model_setting` has accepted either for a long time, and the
+    selection operation accepting only one would leave a client sending
+    `model_id` to the settings and `model` here — two names for one concept
+    from a single card, with a translation layer in between. Translation layers
+    are where the next mismatch hides; this repository has just paid for that
+    twice.
+    """
+
+    async def test_the_canonical_name_is_accepted(self, admin_client):
+        provider = await _make_provider(admin_client)
+        with _api_listing(["qwen3:8b"]):
+            resp = await admin_client.post("/api/llm/model-selection", json={
+                "provider_id": provider["id"], "model": "qwen3:8b",
+            })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["model"] == "qwen3:8b"
+
+    async def test_the_cards_name_is_accepted(self, admin_client):
+        provider = await _make_provider(admin_client)
+        with _api_listing(["qwen3:8b"]):
+            resp = await admin_client.post("/api/llm/model-selection", json={
+                "provider_id": provider["id"], "model_id": "qwen3:8b",
+            })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["model"] == "qwen3:8b"
+
+    async def test_neither_name_is_rejected(self, admin_client):
+        provider = await _make_provider(admin_client)
+        resp = await admin_client.post("/api/llm/model-selection", json={
+            "provider_id": provider["id"],
+        })
+        assert resp.status_code == 422
+
+    async def test_an_empty_model_is_rejected(self, admin_client):
+        provider = await _make_provider(admin_client)
+        resp = await admin_client.post("/api/llm/model-selection", json={
+            "provider_id": provider["id"], "model": "",
+        })
+        assert resp.status_code == 422
+
+    async def test_every_surface_that_reads_a_model_accepts_either_name(self):
+        """The invariant, not the instance.
+
+        The `model`/`model_id` defect survived because tolerance was decided
+        per call site: `resolve_model_setting` accepted both, so nobody noticed
+        `model_selection_state` did not. Asserting it once, over the sites,
+        means the next site cannot quietly forget.
+        """
+        import inspect
+
+        import llm_providers
+
+        for fn in (llm_providers.resolve_model_setting,
+                   llm_providers.model_selection_state):
+            src = inspect.getsource(fn)
+            assert '"model_id"' in src or "'model_id'" in src, (
+                f"{fn.__name__} reads a model setting without accepting the "
+                f"`model_id` the shared card writes"
+            )

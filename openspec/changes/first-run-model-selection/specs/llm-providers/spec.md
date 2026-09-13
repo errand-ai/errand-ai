@@ -53,9 +53,17 @@ Establishing model settings SHALL apply only where none are configured, by the s
 
 The server SHALL accept a caller-supplied choice of provider and model and establish it as the model settings that govern task classification and task execution. The choice SHALL be rejected where the named provider does not exist, and where the named model is not one the provider lists.
 
+The model SHALL be nameable as either `model` or `model_id`. `model` is canonical, and `model_id` is what the shared settings card writes; the existing setting resolution already accepts either, and an operation accepting only one would leave a client using both names for one concept in two calls, with a translation between them. That translation is where a mismatch hides — reading only `model` in one place reported a card-configured installation as having no model, after which a scan would have overwritten the user's own choice.
+
 It SHALL be a single operation, not a write of individual settings keys. A caller states which model errand should use; which settings implement that, and how many there are, is the server's business. Expressing the choice as a settings write would put the current set of roles into every caller, so adding or renaming one later would silently leave callers configuring a subset — which is this change's own defect, reintroduced by the fix for it. A single operation also lets the model be validated against the provider's listing, which a generic settings write cannot do.
 
 Validating the model against the listing is what separates a choice from a typo. A setting naming a model the provider does not serve produces a task that fails at the point of use, far from the screen where the mistake was made.
+
+#### Scenario: Either name for the model is accepted
+
+- **WHEN** a caller names the model as `model`, or as `model_id`
+- **THEN** the choice is established in both cases
+- **AND** supplying neither is rejected
 
 #### Scenario: A chosen model is established
 
