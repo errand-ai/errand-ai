@@ -75,6 +75,9 @@ The capture is a handoff, and `first-run-model-choice` is waiting on it before i
 
 ## Post-merge notes
 
+- **A scan that registers several providers reports only the first.** `registered_provider_id` is `registered[0]`, so a user who scans and gets two new providers is asked about one and never told about the other. Raised by `errand-component-library` during its implementation. Not fixed here: changing the field's shape after v0.22.0 shipped against it would break a released consumer, and the standing no-model statement already gives the user a route to the second provider. Worth revisiting as a plural field the next time this contract moves.
+
+
 - `interactive-task-spec` becomes implementable after this: its clarification loop is an LLM call and cannot run on an installation with no model configured.
 - The automatic path covers only single-model providers, which is the minority. If first-run friction is still the complaint after this ships, the next lever is the model *listing* — a provider that reported which of its models can chat would remove the question entirely, and that is a request to make of the runtimes rather than a heuristic to write here.
 - `DEFAULT_TASK_PROCESSING_MODEL` naming a specific vendor model is worth revisiting across the codebase, not only where this change touches it.
