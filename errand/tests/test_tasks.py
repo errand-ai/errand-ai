@@ -27,6 +27,15 @@ def _mock_json_response(title: str, category: str = "immediate", execute_at=None
     return response
 
 
+def _mock_raw_response(text: str) -> MagicMock:
+    """A response that arrived and carries something unusable."""
+    choice = MagicMock()
+    choice.message.content = text
+    response = MagicMock()
+    response.choices = [choice]
+    return response
+
+
 # --- GET /api/tasks ---
 
 
@@ -456,10 +465,10 @@ class TestUnreachableClassifierIsNotNeedsInfo:
         assert resp.json()["classification"] == "classified"
 
     async def test_a_completed_but_unusable_classification_still_parks(self, client: AsyncClient):
-        """Unchanged: the classifier ran and did not extract a description, which
-        is a statement about the input."""
+        """Unchanged: the classifier answered and the answer carried nothing
+        usable, which is a statement about the input."""
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_raw_response("not json"))
 
         with patch.object(llm_providers_module, "resolve_model_setting",
                           AsyncMock(return_value=(mock_client, "test-model"))):
@@ -468,6 +477,21 @@ class TestUnreachableClassifierIsNotNeedsInfo:
         data = resp.json()
         assert "Needs Info" in data["tags"]
         assert data["status"] == "review"
+
+    async def test_a_request_that_could_not_complete_does_not_park(self, client: AsyncClient):
+        """A timeout or a 500 says nothing about the input. The spec routes it by
+        category like any unclassified task; parking it would blame the user for
+        an outage."""
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(llm_providers_module, "resolve_model_setting",
+                          AsyncMock(return_value=(mock_client, "test-model"))):
+            resp = await client.post("/api/tasks", json={"input": self.LONG})
+
+        data = resp.json()
+        assert "Needs Info" not in data["tags"]
+        assert data["status"] == "pending"
 
     async def test_short_input_still_parks(self, client: AsyncClient):
         """Untouched. There the classifier is deliberately not run — a judgement

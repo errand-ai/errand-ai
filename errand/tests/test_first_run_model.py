@@ -331,3 +331,40 @@ class TestAskingWhetherAModelIsConfigured:
 
         body = (await admin_client.get("/api/llm/model-selection")).json()
         assert body["model_configured"] is False
+
+
+class TestTheCardsSettingShapeIsUnderstood:
+    """`resolve_model_setting` accepts `model_id` as well as `model` — the shared
+    LlmModelCard writes it. Reading only `model` would report such an
+    installation as unconfigured, and then a sole-model scan would overwrite a
+    selection the user had already made.
+    """
+
+    async def test_a_model_id_only_setting_counts_as_configured(self, session_maker):
+        from llm_providers import model_selection_state
+
+        provider = await _provider(session_maker)
+        async with session_maker() as session:
+            for key in ("llm_model", "task_processing_model"):
+                session.add(Setting(key=key, value={"provider_id": str(provider.id),
+                                                    "model_id": "saved-by-the-card"}))
+            await session.commit()
+
+        async with session_maker() as session:
+            state = await model_selection_state(session)
+
+        assert state["model_configured"] is True
+        assert state["model"] == "saved-by-the-card"
+
+    async def test_a_model_id_only_setting_is_not_overwritten_by_a_scan(self, session_maker):
+        from llm_providers import establish_model_settings_if_unset
+
+        provider = await _provider(session_maker)
+        async with session_maker() as session:
+            session.add(Setting(key="llm_model", value={"provider_id": str(provider.id),
+                                                        "model_id": "saved-by-the-card"}))
+            await session.commit()
+
+        with _listing(["qwen3:8b"]):
+            async with session_maker() as session:
+                assert await establish_model_settings_if_unset(session, provider) is None

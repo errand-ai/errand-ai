@@ -277,7 +277,11 @@ async def model_selection_state(session: AsyncSession) -> dict:
         setting = (await session.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
         value = setting.value if setting and isinstance(setting.value, dict) else {}
         provider_id = str(value.get("provider_id") or "")
-        model = value.get("model") or ""
+        # `model` is canonical, but the shared LlmModelCard writes `model_id`,
+        # and `resolve_model_setting` accepts either. Reading only `model` here
+        # would report a card-saved installation as unconfigured — and then a
+        # sole-model scan would overwrite the selection the user had made.
+        model = value.get("model") or value.get("model_id") or ""
         if provider_id and model and provider_id in provider_ids:
             resolved[key] = {"provider_id": provider_id, "model": model}
 

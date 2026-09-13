@@ -261,8 +261,13 @@ async def generate_title(
         # JSON parse failed — use raw response as title, mark as needing info
         return LLMResult(title=raw, success=False, category="immediate")
     except Exception:
+        # The request did not complete, so nothing came back to judge the input
+        # by. Asking is not answering: a timeout or a 500 is a fact about the
+        # installation, and routing the task to review for it blames the user
+        # for an outage they cannot see. A response that *arrives* and is
+        # unusable is the other case, handled above, and does route to review.
         logger.exception("LLM title generation failed")
-        return LLMResult(title=_fallback_title(description), success=False)
+        return LLMResult(title=_fallback_title(description), success=False, attempted=False)
 
 
 async def transcribe_audio(file, session: AsyncSession) -> str:
