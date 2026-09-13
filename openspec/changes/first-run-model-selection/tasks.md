@@ -62,9 +62,18 @@ The capture is a handoff, and `first-run-model-choice` is waiting on it before i
 
 - [x] 8.5 Capture and hand over, at minimum: a scan on an installation with **no model configured**; a scan where a **sole model was established automatically**, including the field naming that model — stating it is a requirement on their side and they cannot invent the field; a scan where **detection is unavailable**, so all three model fields are `null` — asked for specifically, because the three-valued rule is the one most worth failing against a real response rather than a fixture written to match one reading of the spec; the **model-selection read**, which is what the card reads on mount; and the selection call **accepted**, **refused for a model the provider does not list**, and **refused for a provider that does not exist**
 
+## 8b. The setup wizard asks the same question, the same way
+
+The wizard is the other first-run surface, and it had the defect this change exists to remove — worse than unset, because it pre-filled a named Anthropic model against whatever provider the user configured, so `model_configured` reported true for a model the provider does not serve.
+
+- [x] 8b.1 Write failing tests: the choice goes through the model-selection operation and writes no settings keys; a refusal shows the server's reason; no choice sends nothing; a selection does not survive a change of provider; a sole model is chosen; the enriched objects `/models` really returns are handled
+- [x] 8b.2 Collapse the two role dropdowns into one choice and route it through the single operation (D9) — writing the keys directly puts the role set into the wizard and skips validating the model against the provider's listing
+- [x] 8b.3 State what the one answer governs, at the point of asking (D10)
+- [x] 8b.4 Amend the `setup-wizard` spec, which mandated the two dropdowns and the vendor defaults by name
+
 ## 9. Verify
 
-- [ ] 9.1 Run the full errand, task-runner and frontend test suites
+- [x] 9.1 Run the full errand, task-runner and frontend test suites
 - [ ] 9.2 End to end from an empty database: bring the stack up with no providers and no settings, scan, observe the reported missing model, choose one, create a task in the user's own words, and watch it run to completion
 - [ ] 9.3 Confirm the same flow with a single-model runtime asks nothing and still runs
 - [ ] 9.4 Confirm an installation that already has model settings is untouched by a scan
@@ -75,6 +84,7 @@ The capture is a handoff, and `first-run-model-choice` is waiting on it before i
 
 ## Post-merge notes
 
+- **The Slack slash-command path never routes on `Needs Info`.** `errand/platforms/slack/routes.py` constructs its task with `status="pending"` unconditionally, so the tag is applied and displayed but the auto-routing requirement — a task tagged `Needs Info` is set to `review` — is not implemented there at all. That predates this change and affects the failure case as much as the unusable-classification case added here, so both tags in that file are decorative. Not fixed here because making Slack tasks park where they currently run is a user-visible behaviour change that deserves its own consideration rather than arriving inside a change about model selection. `handlers.py` is unaffected; it routes correctly.
 - **A scan that registers several providers reports only the first.** `registered_provider_id` is `registered[0]`, so a user who scans and gets two new providers is asked about one and never told about the other. Raised by `errand-component-library` during its implementation. Not fixed here: changing the field's shape after v0.22.0 shipped against it would break a released consumer, and the standing no-model statement already gives the user a route to the second provider. Worth revisiting as a plural field the next time this contract moves.
 
 

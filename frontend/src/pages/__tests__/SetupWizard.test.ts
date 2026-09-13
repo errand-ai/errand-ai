@@ -431,339 +431,234 @@ describe('SetupWizard', () => {
     expect(wrapper.find('[data-testid="setup-step2-success"]').exists()).toBe(false)
   })
 
-  it('saves model settings as {provider_id, model} objects on complete setup', async () => {
+  /**
+   * The wizard states which model errand should use; the server decides which
+   * settings implement that. These tests are written against that operation,
+   * not against `/api/settings` — the previous set asserted the wizard wrote
+   * `llm_model` and `task_processing_model` itself, which is the shape this
+   * change exists to remove: it names the roles in the caller, and it skips
+   * the check that the provider actually serves the chosen model.
+   */
+  function stubWizard(opts: {
+    models?: unknown[]
+    selection?: { ok: boolean; status?: number; detail?: string }
+  } = {}) {
     const token = fakeJwt({ sub: 'admin', _roles: ['admin'] })
-    const fetchMock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    const models = opts.models ?? ['model-a', 'model-b', 'model-c']
+    const selection = opts.selection ?? { ok: true }
+    const fetchMock = vi.fn().mockImplementation((url: string, o?: RequestInit) => {
       if (url === '/api/setup/create-user') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ access_token: token }),
-        })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ access_token: token }) })
       }
-      if (url === '/api/llm/providers' && (!opts || opts.method === undefined || opts.method === 'GET')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([]),
-        })
+      if (url === '/api/llm/providers' && (!o || o.method === undefined || o.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
       }
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
+      if (url === '/api/llm/providers' && o?.method === 'POST') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'default', base_url: 'https://api.example.com/v1', source: 'database' }),
+          json: () => Promise.resolve({
+            id: FAKE_PROVIDER_ID,
+            name: 'default',
+            base_url: 'https://api.example.com/v1',
+            source: 'database',
+          }),
         })
       }
       if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929', 'model-c']),
-        })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(models) })
       }
-      if (url === '/api/settings' && opts?.method === 'PUT') {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+      if (url === '/api/llm/model-selection' && o?.method === 'POST') {
+        return Promise.resolve({
+          ok: selection.ok,
+          status: selection.status ?? (selection.ok ? 200 : 422),
+          json: () => Promise.resolve(
+            selection.ok
+              ? { model_configured: true, provider_id: FAKE_PROVIDER_ID, model: 'model-a' }
+              : { detail: selection.detail ?? 'refused' }
+          ),
+        })
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     })
     vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
 
-    const { wrapper } = await mountSetup()
+  async function reachStep3(wrapper: ReturnType<typeof mount>) {
     await completeStep1(wrapper)
-
-    // Fill in provider and test connection
     await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://api.example.com/v1')
     await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test')
     await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
     await flushPromises()
-
-    // Advance to step 3
     await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
     await flushPromises()
-
     expect(wrapper.find('[data-testid="setup-step3"]').exists()).toBe(true)
+  }
 
-    // Choose models from what the provider actually serves. This previously
-    // relied on pre-filled Claude ids being selected by default, which is the
-    // behaviour the wizard no longer has.
-    await wrapper.findAll('select')[0].setValue('claude-haiku-4-5-20251001')
-    await wrapper.findAll('select')[1].setValue('claude-sonnet-4-5-20250929')
+  function selectionCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(
+      (call: unknown[]) =>
+        call[0] === '/api/llm/model-selection' &&
+        (call[1] as RequestInit | undefined)?.method === 'POST'
+    )
+  }
+
+  function settingsWrites(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(
+      (call: unknown[]) =>
+        call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
+    )
+  }
+
+  it('states the chosen model through the model-selection operation', async () => {
+    const fetchMock = stubWizard()
+    const { wrapper } = await mountSetup()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('model-b')
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    // Find the PUT /api/settings call
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    expect(settingsCalls).toHaveLength(1)
-
-    const body = JSON.parse((settingsCalls[0][1] as RequestInit).body as string)
-    expect(body.llm_model).toEqual({ provider_id: FAKE_PROVIDER_ID, model: 'claude-haiku-4-5-20251001' })
-    expect(body.task_processing_model).toEqual({ provider_id: FAKE_PROVIDER_ID, model: 'claude-sonnet-4-5-20250929' })
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      provider_id: FAKE_PROVIDER_ID,
+      model: 'model-b',
+    })
+    // The role keys are the server's business. A wizard that writes them is a
+    // caller carrying the current set of roles, so one added later leaves it
+    // configuring a subset with the rest silently unset.
+    expect(settingsWrites(fetchMock)).toHaveLength(0)
   })
 
-  it('does not write a model the provider does not serve', async () => {
-    // The defect: the wizard pre-filled Claude model ids, and a provider whose
-    // listing did not contain them kept them selected anyway — so a user
-    // setting up against Ollama had a Claude model written against their
-    // provider. Every task then failed while the settings reported a model was
-    // configured, which is worse than none: the server would report
-    // `model_configured: true` and nothing would ask again.
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'ollama', base_url: 'http://host.docker.internal:11434/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(['qwen3:8b', 'gemma-4-26b']) })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
+  it('asks one question and says it governs both roles', async () => {
+    // A question that decides more than it appears to is the same fault as
+    // choosing a model on the user's behalf, arrived at from the other side.
+    const fetchMock = stubWizard()
     const { wrapper } = await mountSetup()
-    await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://host.docker.internal:11434/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-no-key-required')
-    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
-    await flushPromises()
+    await reachStep3(wrapper)
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    for (const call of settingsCalls) {
-      const body = JSON.parse((call[1] as RequestInit).body as string)
-      for (const key of ['llm_model', 'task_processing_model']) {
-        const chosen = body[key]?.model
-        expect(chosen === '' || chosen === undefined || ['qwen3:8b', 'gemma-4-26b'].includes(chosen)).toBe(true)
-      }
-    }
+    expect(wrapper.findAll('select')).toHaveLength(1)
+    const scope = wrapper.find('[data-testid="setup-model-scope"]').text()
+    expect(scope).toMatch(/runs your tasks/i)
+    expect(scope).toMatch(/classifies new ones/i)
+    expect(fetchMock).toBeTruthy()
   })
 
-  it('refuses half a configuration', async () => {
-    // One role chosen and one blank leaves the server reporting no model
-    // configured — a single role is not a working installation — while the
-    // user has plainly chosen one and been told setup completed.
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'p', base_url: 'http://h:1/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([
-            { id: 'x', supports_reasoning: false, max_output_tokens: 1, mode: null },
-            { id: 'y', supports_reasoning: false, max_output_tokens: 1, mode: null },
-          ]),
-        })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+  it('shows the server\'s reason when a choice is refused', async () => {
+    // The refusal is specific — the provider is gone, or does not serve that
+    // model. Reporting a generic failure would hide the one sentence that
+    // tells the user what to do about it.
+    const fetchMock = stubWizard({
+      selection: { ok: false, status: 422, detail: "default does not serve a model called 'model-b'." },
     })
-    vi.stubGlobal('fetch', fetchMock)
-
     const { wrapper } = await mountSetup()
-    await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:1/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
-    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
-    await flushPromises()
+    await reachStep3(wrapper)
 
-    await wrapper.findAll('select')[0].setValue('x')   // only one of the two
+    await wrapper.find('[data-testid="setup-model"]').setValue('model-b')
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
+    expect(wrapper.find('[data-testid="setup-step3-error"]').text()).toContain(
+      "does not serve a model called 'model-b'"
     )
-    expect(settingsCalls).toHaveLength(0)
+    expect(selectionCalls(fetchMock)).toHaveLength(1)
   })
 
-  it('writes no model setting when the user chose none', async () => {
-    // With the vendor defaults gone, a multi-model provider leaves both selects
-    // empty. Writing `model: ""` would record a setting naming nothing, which
-    // reads as configured to anyone checking the key exists. Not writing it is
-    // the honest state and a recoverable one — the server reports no model
-    // configured and the provider settings say so.
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'p', base_url: 'http://h:1/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([
-            { id: 'x', supports_reasoning: false, max_output_tokens: 1, mode: null },
-            { id: 'y', supports_reasoning: false, max_output_tokens: 1, mode: null },
-          ]),
-        })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
+  it('sends nothing when the user chose no model', async () => {
+    // Leaving it unset is coherent: the server reports no model configured and
+    // the provider settings say so. Writing an empty model was not — it records
+    // a setting that names nothing, which reads as configured to anyone
+    // checking the key exists.
+    const fetchMock = stubWizard()
     const { wrapper } = await mountSetup()
-    await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:1/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
-    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
-    await flushPromises()
+    await reachStep3(wrapper)
+
+    await wrapper.find('[data-testid="setup-model"]').setValue('')
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    for (const call of settingsCalls) {
-      const body = JSON.parse((call[1] as RequestInit).body as string)
-      expect(body.llm_model?.model).not.toBe('')
-      expect(body.task_processing_model?.model).not.toBe('')
-    }
+    expect(selectionCalls(fetchMock)).toHaveLength(0)
+    expect(settingsWrites(fetchMock)).toHaveLength(0)
+    expect(toastMock.success).toHaveBeenCalled()
   })
 
   it('drops a selection the newly chosen provider does not serve', async () => {
-    // Sole-model selection filled the field for provider A; switching to
-    // provider B left it filled with a model B has never heard of, and the
-    // template keeps an unlisted value selected — so the wizard would write
-    // A's model against B. The same defect the pre-filled Claude ids caused,
-    // reintroduced by the fix for them.
-    let listing: unknown[] = [{ id: 'only-a', supports_reasoning: false, max_output_tokens: 1, mode: null }]
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'p', base_url: 'http://h:1/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(listing) })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
+    // A selection only means anything against the provider it was made for.
+    // The template used to keep an unlisted value selected, so switching
+    // provider sent the first one's model to the second.
+    const fetchMock = stubWizard({ models: ['only-one-model'] })
     const { wrapper } = await mountSetup()
     await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:1/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
+
+    // Provider A serves exactly one model, so the wizard selects it.
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://a.example.com/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-test')
     await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
     await flushPromises()
 
-    // The user changes their mind about the provider; the new one serves other models.
-    listing = [
-      { id: 'x', supports_reasoning: false, max_output_tokens: 1, mode: null },
-      { id: 'y', supports_reasoning: false, max_output_tokens: 1, mode: null },
-    ]
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:2/v1')
+    // Provider B serves something else entirely. The selection made against A
+    // must not survive into the call made for B.
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, o?: RequestInit) => {
+      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(['different-model']) })
+      }
+      return original(url, o)
+    })
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('https://b.example.com/v1')
     await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
     await flushPromises()
+
     await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
     await flushPromises()
+    expect((wrapper.find('[data-testid="setup-model"]').element as HTMLSelectElement).value)
+      .toBe('different-model')
+
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    for (const call of settingsCalls) {
-      const body = JSON.parse((call[1] as RequestInit).body as string)
-      for (const key of ['llm_model', 'task_processing_model']) {
-        expect(body[key]?.model).not.toBe('only-a')
-      }
+    for (const call of selectionCalls(fetchMock)) {
+      expect(JSON.parse((call[1] as RequestInit).body as string).model).not.toBe('only-one-model')
     }
   })
 
   it('handles the enriched objects the models endpoint really returns', async () => {
-    // `/models` returns {id, supports_reasoning, max_output_tokens, mode}, not
-    // strings. Every fixture in this file returned strings, so the wizard met
-    // the real shape only in production — where it rendered "[object Object]"
-    // and wrote an object where a model id belonged.
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'ollama', base_url: 'http://h:11434/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve([
-            { id: 'qwen3:8b', supports_reasoning: false, max_output_tokens: 4096, mode: null },
-          ]),
-        })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    // `/models` returns {id, mode, ...} objects, not strings. The wizard's own
+    // fixtures returned strings, so nothing here ever met the real shape and
+    // the dropdown rendered "[object Object]".
+    const fetchMock = stubWizard({
+      models: [
+        { id: 'qwen3:8b', mode: 'chat', supports_reasoning: false },
+        { id: 'nomic-embed-text', mode: 'embedding' },
+      ],
     })
-    vi.stubGlobal('fetch', fetchMock)
-
     const { wrapper } = await mountSetup()
-    await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:11434/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
-    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
-    await flushPromises()
+    await reachStep3(wrapper)
 
-    expect(wrapper.find('[data-testid="setup-step3"]').text()).not.toContain('[object Object]')
+    const options = wrapper.find('[data-testid="setup-model"]').findAll('option').map((o) => o.text())
+    expect(options).toContain('qwen3:8b')
+    expect(options.join(' ')).not.toContain('[object Object]')
 
+    await wrapper.find('[data-testid="setup-model"]').setValue('qwen3:8b')
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    expect(settingsCalls.length).toBeGreaterThan(0)
-    const body = JSON.parse((settingsCalls[0][1] as RequestInit).body as string)
-    expect(body.llm_model.model).toBe('qwen3:8b')
-    expect(body.task_processing_model.model).toBe('qwen3:8b')
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string).model).toBe('qwen3:8b')
   })
 
-  it('selects a provider\'s only model, because there is nothing to choose', async () => {
-    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
-      if (url === '/api/llm/providers' && opts?.method === 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'ollama', base_url: 'http://h:11434/v1', source: 'database' }),
-        })
-      }
-      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(['only-one-model']) })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
+  it("selects a provider's only model, because there is nothing to choose", async () => {
+    const fetchMock = stubWizard({ models: ['only-one-model'] })
     const { wrapper } = await mountSetup()
-    await completeStep1(wrapper)
-    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:11434/v1')
-    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
-    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
-    await flushPromises()
+    await reachStep3(wrapper)
+
     await wrapper.find('[data-testid="setup-complete"]').trigger('click')
     await flushPromises()
 
-    const settingsCalls = fetchMock.mock.calls.filter(
-      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
-    )
-    expect(settingsCalls.length).toBeGreaterThan(0)
-    const body = JSON.parse((settingsCalls[0][1] as RequestInit).body as string)
-    expect(body.llm_model.model).toBe('only-one-model')
-    expect(body.task_processing_model.model).toBe('only-one-model')
+    const calls = selectionCalls(fetchMock)
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string).model).toBe('only-one-model')
   })
 })

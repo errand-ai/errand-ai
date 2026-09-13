@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from llm_providers import list_provider_model_ids  # noqa: F401
 from local_ai_detection import (
     ENDPOINT_ANSWERED,
     ENDPOINT_NO_ANSWER,
