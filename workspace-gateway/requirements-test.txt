@@ -1,4 +1,4 @@
 # Test-only deps for the workspace-gateway Python (reconcile + refresher health).
 # refresher.py imports requests at module load; keep it pinned to the image's.
-pytest==9.0.3
-requests==2.33.0
+pytest==9.1.1
+requests==2.34.2
