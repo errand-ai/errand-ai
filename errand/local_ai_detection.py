@@ -452,7 +452,9 @@ async def scan_local_ai(session: AsyncSession) -> dict:
         # this scan configure — a provider the scan never created.
         registered_provider = next(
             (p for p in (await session.execute(
-                select(LlmProvider).where(LlmProvider.source == "detected")
+                select(LlmProvider)
+                .where(LlmProvider.source == "detected")
+                .order_by(LlmProvider.created_at.asc(), LlmProvider.id.asc())
             )).scalars().all()
              if canonical_base_url(p.base_url) == wanted),
             None,

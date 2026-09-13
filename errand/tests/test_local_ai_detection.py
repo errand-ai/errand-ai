@@ -1729,3 +1729,32 @@ class TestScanReportsTheModelQuestion:
         if result["registered_provider_id"] is not None:
             assert result["registered_provider_id"] in {str(p.id) for p in detected}, \
                 "reported a provider the scan did not register"
+
+    async def test_duplicate_detected_rows_report_the_same_one_reconciliation_chose(self, session_maker):
+        """`detected_rows` deliberately takes the earliest row per endpoint, so
+        a second lookup must order the same way or the scan reconciles one row
+        and reports another.
+
+        This test cannot fail on SQLite, which happens to return rows in
+        insertion order; the ordering it guards is undefined on Postgres, which
+        is what production runs. It documents the requirement rather than
+        proving the bug.
+        """
+        url = "http://host.docker.internal:11434/v1"
+        ids = []
+        for name in ("first", "second"):
+            async with session_maker() as session:
+                p = LlmProvider(
+                    id=uuid.uuid4(), name=name, base_url=url,
+                    api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                    provider_type="openai_compatible", is_default=False, source="detected",
+                )
+                session.add(p)
+                await session.commit()
+                ids.append(str(p.id))
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["registered_provider_id"] == ids[0], (
+            "reported a different row than reconciliation chose"
+        )

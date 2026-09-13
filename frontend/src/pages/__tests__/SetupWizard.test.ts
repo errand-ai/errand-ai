@@ -543,6 +543,53 @@ describe('SetupWizard', () => {
     }
   })
 
+  it('writes no model setting when the user chose none', async () => {
+    // With the vendor defaults gone, a multi-model provider leaves both selects
+    // empty. Writing `model: ""` would record a setting naming nothing, which
+    // reads as configured to anyone checking the key exists. Not writing it is
+    // the honest state and a recoverable one — the server reports no model
+    // configured and the provider settings say so.
+    const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
+      if (url === '/api/llm/providers' && opts?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: FAKE_PROVIDER_ID, name: 'p', base_url: 'http://h:1/v1', source: 'database' }),
+        })
+      }
+      if (url === `/api/llm/providers/${FAKE_PROVIDER_ID}/models`) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([
+            { id: 'x', supports_reasoning: false, max_output_tokens: 1, mode: null },
+            { id: 'y', supports_reasoning: false, max_output_tokens: 1, mode: null },
+          ]),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { wrapper } = await mountSetup()
+    await completeStep1(wrapper)
+    await wrapper.find('[data-testid="setup-provider-url"]').setValue('http://h:1/v1')
+    await wrapper.find('[data-testid="setup-api-key"]').setValue('sk-x')
+    await wrapper.find('[data-testid="setup-test-connection"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="setup-continue-step2"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="setup-complete"]').trigger('click')
+    await flushPromises()
+
+    const settingsCalls = fetchMock.mock.calls.filter(
+      (call: unknown[]) => call[0] === '/api/settings' && (call[1] as RequestInit | undefined)?.method === 'PUT'
+    )
+    for (const call of settingsCalls) {
+      const body = JSON.parse((call[1] as RequestInit).body as string)
+      expect(body.llm_model?.model).not.toBe('')
+      expect(body.task_processing_model?.model).not.toBe('')
+    }
+  })
+
   it('drops a selection the newly chosen provider does not serve', async () => {
     // Sole-model selection filled the field for provider A; switching to
     // provider B left it filled with a model B has never heard of, and the

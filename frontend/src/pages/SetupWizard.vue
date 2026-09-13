@@ -193,6 +193,18 @@ function toModelIds(data: unknown): string[] {
     .filter((id): id is string => typeof id === 'string' && id.length > 0)
 }
 
+function modelSettingsBody(): Record<string, unknown> {
+  // Only what the user actually chose. Writing `model: ""` records a setting
+  // that names nothing, which reads as configured to anyone checking the key
+  // exists. Leaving it unwritten is the honest state, and now a recoverable
+  // one: the server reports no model configured and the provider settings say
+  // so, which is what the rest of this change is for.
+  const body: Record<string, unknown> = {}
+  if (titleModel.value) body.llm_model = { provider_id: providerId.value, model: titleModel.value }
+  if (taskModel.value) body.task_processing_model = { provider_id: providerId.value, model: taskModel.value }
+  return body
+}
+
 function reconcileSelections() {
   // A selection only means anything against the provider it was made for.
   // Filling empty fields was not enough: choosing a sole-model provider and
@@ -237,16 +249,19 @@ async function completeSetup() {
   step3Error.value = ''
   step3Loading.value = true
   try {
+    const body = modelSettingsBody()
+    if (Object.keys(body).length === 0) {
+      toast.success('Setup complete!')
+      router.push('/settings')
+      return
+    }
     const resp = await fetch('/api/settings', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${auth.token}`,
       },
-      body: JSON.stringify({
-        llm_model: { provider_id: providerId.value, model: titleModel.value },
-        task_processing_model: { provider_id: providerId.value, model: taskModel.value },
-      }),
+      body: JSON.stringify(modelSettingsBody()),
     })
     if (!resp.ok) {
       step3Error.value = 'Failed to save model settings.'
