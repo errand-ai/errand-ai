@@ -32,8 +32,14 @@ const providerId = ref<string | null>(null)
 
 // Step 3: Model Selection
 const models = ref<string[]>([])
-const titleModel = ref('claude-haiku-4-5-20251001')
-const taskModel = ref('claude-sonnet-4-5-20250929')
+// Empty, not a vendor's model id. Pre-filling one meant a user who set up
+// against Ollama and did not touch the dropdowns had a Claude model written
+// against their provider — a model it does not serve, so every task failed
+// while the settings reported a model was configured. A model errand chose on
+// the user's behalf is never right; a provider that offers exactly one is the
+// only case where there is nothing to choose.
+const titleModel = ref('')
+const taskModel = ref('')
 const step3Loading = ref(false)
 const step3Error = ref('')
 
@@ -156,6 +162,7 @@ async function testConnection() {
     }
     const data = await resp.json()
     models.value = data
+    selectSoleModel()
     connectionTested.value = true
     step2Success.value = 'Connection successful'
     toast.success('Connection successful!')
@@ -174,6 +181,15 @@ async function testConnection() {
   }
 }
 
+function selectSoleModel() {
+  // The same rule the server applies: one model is not a choice, so make it;
+  // anything else is the user's to say.
+  if (models.value.length === 1) {
+    if (!titleModel.value) titleModel.value = models.value[0]
+    if (!taskModel.value) taskModel.value = models.value[0]
+  }
+}
+
 async function advanceToStep3() {
   if (!connectionTested.value) {
     await testConnection()
@@ -188,6 +204,7 @@ async function advanceToStep3() {
       })
       if (resp.ok) {
         models.value = await resp.json()
+        selectSoleModel()
       }
     } catch {
       // Use defaults

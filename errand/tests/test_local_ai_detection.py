@@ -1686,3 +1686,25 @@ class TestScanReportsTheModelQuestion:
 
         assert result["registered_provider_id"] is None
         assert result["model_established"] is None
+
+    async def test_a_legacy_trailing_slash_row_is_still_the_registered_provider(self, session_maker):
+        """Every other match in this scan is canonical; this one was not.
+
+        A detected row stored as `.../v1/` — which the update route permitted
+        before this endpoint became server-enforced — would not match the URL
+        the scan constructs, so the scan would report no registered provider
+        and establish nothing, on an installation that has one.
+        """
+        url = "http://host.docker.internal:11434/v1"
+        async with session_maker() as session:
+            session.add(LlmProvider(
+                id=uuid.uuid4(), name="ollama", base_url=url + "/",
+                api_key_encrypted=encrypt_api_key(DETECTED_API_KEY),
+                provider_type="openai_compatible", is_default=True, source="detected",
+            ))
+            await session.commit()
+
+        result, _ = await _scan(session_maker, {11434: _ollama_models()}, models=["only-one"])
+
+        assert result["registered_provider_id"] is not None, "the legacy row was not matched"
+        assert result["model_established"] == "only-one"

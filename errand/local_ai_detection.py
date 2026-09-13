@@ -442,9 +442,16 @@ async def scan_local_ai(session: AsyncSession) -> dict:
     # local AI" configure a model on a proxy the scan never touched.
     registered_provider = None
     if registered:
-        registered_provider = (await session.execute(
-            select(LlmProvider).where(LlmProvider.base_url == registered[0]["base_url"])
-        )).scalars().first()
+        # Canonically, like every other match in this scan. A raw comparison
+        # here would miss a row stored as `.../v1/` — the exact defect this
+        # change fixed everywhere else, reintroduced by new code written after
+        # the fix.
+        wanted = canonical_base_url(registered[0]["base_url"])
+        registered_provider = next(
+            (p for p in (await session.execute(select(LlmProvider))).scalars().all()
+             if canonical_base_url(p.base_url) == wanted),
+            None,
+        )
 
     model_established = None
     if registered_provider is not None:
