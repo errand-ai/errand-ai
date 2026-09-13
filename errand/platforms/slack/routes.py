@@ -27,6 +27,7 @@ from platforms.slack.handlers import (
     handle_status,
 )
 from platforms.slack.identity import resolve_slack_email
+from utils import _next_position
 from platforms.slack.verification import verify_slack_request
 from tags import add_tag
 
@@ -228,11 +229,6 @@ async def _handle_mention(event: dict) -> None:
             execute_at = datetime.now(timezone.utc)
 
         # Create task
-        max_pos_result = await session.execute(
-            select(func.max(Task.position)).where(Task.status == "pending")
-        )
-        position = (max_pos_result.scalar() or 0) + 1
-
         # Auto-routing, as `task-categorisation` requires of the capability and not
         # merely of the web endpoint: a task carrying "Needs Info" goes to review.
         # Both Slack intakes tagged and then created the task `pending`
@@ -240,9 +236,17 @@ async def _handle_mention(event: dict) -> None:
         # classifier said it could not understand was queued and run anyway, while
         # the board showed it as needing attention. Raised in review; the web path
         # at `main.py` has always done this.
+        #
+        # Decided before the position is taken, because position is per-column: a
+        # review task numbered from the bottom of the pending column lands in an
+        # arbitrary place in its own. Also raised in review — introduced by the fix
+        # above, which was correct only for as long as the status was always
+        # `pending`.
         status = "review" if "Needs Info" in tag_names else (
             "pending" if category == "immediate" else "scheduled"
         )
+
+        position = await _next_position(session, status)
 
         task = Task(
             title=title,

@@ -49,9 +49,17 @@ The `_parse_llm_response` function SHALL extract the `description` field from th
 - **WHEN** a task is created with input "Fix the login bug on the settings page"
 - **THEN** the LLM returns a JSON response with category `immediate` and description "Fix the login bug on the settings page" (no timing to remove)
 
-#### Scenario: LLM call fails
+#### Scenario: A call that could not be completed keeps the fallback title and no tag
 - **WHEN** a task is created with a long input and the LLM call fails or times out
-- **THEN** the task is created with the first 5 words of the input plus "..." as the title, category `immediate`, execute_at set to current server time, repeat_interval null, repeat_until null, description set to the raw input, and a "Needs Info" tag is applied
+- **THEN** the task is created with the first 5 words of the input plus "..." as the title, category `immediate`, execute_at set to current server time, repeat_interval null, repeat_until null, and description set to the raw input
+- **AND** no "Needs Info" tag is applied, because the classifier produced no answer and the input was not at fault
+
+This scenario previously required the tag, which contradicts the cause-aware
+requirement above: a request that never completed is reported as not attempted,
+and "Needs Info" asserts to the user that they did not say enough. The two
+cannot both hold, and the tag is the half that was wrong — a task parked under
+it is one the user cannot repair by editing, because nothing was missing from
+what they wrote.
 
 #### Scenario: Custom title-generation timeout from settings
 - **WHEN** `generate_title` is called and the `title_generation_timeout` setting is `60`

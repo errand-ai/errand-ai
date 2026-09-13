@@ -661,6 +661,42 @@ class TestSlashCommandCauseRouting:
         assert task.description == "cleaned"
 
 
+class TestSlackPositionIsPerColumn:
+    """Position is numbered per column, so it has to be taken after the status
+    is known. Raised in review, and introduced by the routing fix itself: while
+    every Slack task was `pending` the pending-filtered maximum was right by
+    accident, and the moment a task could land in `review` it stopped being.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_parked_task_is_numbered_in_the_review_column(self, slack_client):
+        # Three tasks queued, so the pending column's bottom is well past 1.
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Queued")
+            for _ in range(3):
+                await _post_command(
+                    slack_client,
+                    text="new Queued task with an input long enough to be classified",
+                )
+
+        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
+            gt.return_value = _llm(title="Parked", success=False, description=None,
+                                   cause="unusable_response")
+            await _post_command(
+                slack_client,
+                text="new Parked task with an input long enough to be classified",
+            )
+
+        parked, tags = await _task_row(slack_client, "Parked")
+        assert parked.status == "review"
+        assert "Needs Info" in tags
+        # First in its own column, not fourth from the pending one.
+        assert parked.position == 1, (
+            f"numbered {parked.position} from the pending column, so it lands "
+            "in an arbitrary place in review"
+        )
+
+
 class TestMentionCauseRouting:
     """`@errand <long input>` — the routes.py intake.
 
