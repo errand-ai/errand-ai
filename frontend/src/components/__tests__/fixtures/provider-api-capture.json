@@ -21,13 +21,13 @@
     "provider": {
       "api_key": "sk-l****",
       "base_url": "http://host.docker.internal:1234/v1",
-      "created_at": "2026-09-12T18:31:13.982169",
-      "id": "962184a7-f7aa-435f-bd7c-854bee071020",
+      "created_at": "2026-09-13T18:06:40.889046",
+      "id": "4b93c006-7ffa-4757-a1be-19bca4642169",
       "is_default": false,
       "name": "lm-studio",
       "provider_type": "openai_compatible",
       "source": "detected",
-      "updated_at": "2026-09-12T18:31:13.982172"
+      "updated_at": "2026-09-13T18:06:40.889051"
     }
   },
   "adopt_unreachable": {
@@ -217,6 +217,35 @@
       "supports_model_listing": true
     }
   ],
+  "model_selection_applied": {
+    "model": "qwen3:8b",
+    "model_configured": true,
+    "provider_id": "1c676582-c560-4c87-854c-2e9402363cce"
+  },
+  "model_selection_applied_by_model_id": {
+    "model": "gemma-4-26b",
+    "model_configured": true,
+    "provider_id": "1c676582-c560-4c87-854c-2e9402363cce"
+  },
+  "model_selection_configured": {
+    "model": "gemma-4-26b",
+    "model_configured": true,
+    "provider_id": "1c676582-c560-4c87-854c-2e9402363cce"
+  },
+  "model_selection_listing_unreadable": {
+    "detail": "Could not read the provider's model list, so the choice cannot be checked."
+  },
+  "model_selection_model_not_served": {
+    "detail": "ollama does not serve a model called 'not-served'."
+  },
+  "model_selection_none": {
+    "model": null,
+    "model_configured": false,
+    "provider_id": null
+  },
+  "model_selection_provider_missing": {
+    "detail": "Provider not found"
+  },
   "models": [
     {
       "id": "bge-m3",
@@ -302,11 +331,14 @@
       }
     ],
     "message": null,
+    "model_configured_after_scan": false,
+    "model_established": null,
     "needs_key": [
       {
         "base_url": "http://host.docker.internal:8000/v1"
       }
-    ]
+    ],
+    "registered_provider_id": "1c676582-c560-4c87-854c-2e9402363cce"
   },
   "scan_found": {
     "available": true,
@@ -318,6 +350,8 @@
       }
     ],
     "message": null,
+    "model_configured_after_scan": false,
+    "model_established": null,
     "needs_key": [
       {
         "base_url": "http://host.docker.internal:1234/v1"
@@ -325,12 +359,16 @@
       {
         "base_url": "http://host.docker.internal:8000/v1"
       }
-    ]
+    ],
+    "registered_provider_id": "1c676582-c560-4c87-854c-2e9402363cce"
   },
   "scan_unavailable": {
     "available": false,
     "detected": [],
     "message": "Local AI detection is not available for this deployment, because there is no container host to probe.",
-    "needs_key": []
+    "model_configured_after_scan": null,
+    "model_established": null,
+    "needs_key": [],
+    "registered_provider_id": null
   }
 }
