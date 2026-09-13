@@ -233,7 +233,15 @@ async def list_provider_model_ids(provider: LlmProvider) -> list[str] | None:
     """
     try:
         client = get_client_for_provider_sync(provider)
-        resp = await client.models.list()
+        # Bounded, because this is now on a read path. The cached client sets no
+        # timeout and the SDK's own default is ten minutes, so a provider that
+        # black-holes rather than refuses would hold `GET /api/llm/model-selection`
+        # — the call the settings card makes on mount, on the very installation
+        # this change exists to unblock — for as long as it liked. Raised in
+        # review. A listing is cheap even on a cold local runtime: it is the
+        # weights load before *inference* that is slow, which is what the far
+        # longer `DETECTED_PROVIDER_LLM_TIMEOUT` covers.
+        resp = await client.models.list(timeout=PROBE_TIMEOUT)
         return sorted(m.id for m in resp.data)
     except Exception:
         logger.debug("Model listing failed for provider %s", provider.id, exc_info=True)

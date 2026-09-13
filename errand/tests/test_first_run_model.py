@@ -155,6 +155,28 @@ class TestNeverGuessing:
                 assert await establish_model_settings_if_unset(session, provider) is None
 
 
+class TestTheListingIsBounded:
+    async def test_the_model_listing_call_carries_a_timeout(self, session_maker):
+        """The listing is on a read path now — `GET /api/llm/model-selection`
+        is what the settings card calls on mount. The cached client sets no
+        timeout and the SDK default is ten minutes, so a provider that
+        black-holes rather than refuses would hold that request open. Raised in
+        review.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from llm_providers import PROBE_TIMEOUT, list_provider_model_ids
+
+        provider = await _provider(session_maker)
+        client = MagicMock()
+        client.models.list = AsyncMock(return_value=MagicMock(data=[]))
+        with patch("llm_providers.get_client_for_provider_sync", return_value=client):
+            await list_provider_model_ids(provider)
+
+        client.models.list.assert_awaited_once()
+        assert client.models.list.await_args.kwargs.get("timeout") == PROBE_TIMEOUT, \
+            "the listing was issued with no bound on how long it may take"
+
+
 class TestExistingSettingsAreKept:
     async def test_a_configured_installation_is_not_touched(self, session_maker):
         """The empty-installation rule detection already uses for the default

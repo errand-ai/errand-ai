@@ -727,6 +727,44 @@ async def test_schedule_task_long_description_uses_llm(db_session):
         assert task.category == "scheduled"
 
 
+async def test_schedule_task_keeps_the_users_words_when_the_classifier_gives_none(db_session):
+    """A scheduled task fires later, unattended, and has no "Needs Info" tag to
+    send anybody back to repair it — so losing the description is losing the
+    task. Raised in review: this path took `llm_result.description` directly
+    while `new_task` has always fallen back to the raw input.
+    """
+    from mcp_server import schedule_task
+
+    words = "Send the weekly status report to the team every Monday morning"
+    for cause, success in (("no_model_configured", False),
+                           ("request_failed", False),
+                           (None, True)):
+        with patch("mcp_server.generate_title") as mock_gen:
+            mock_gen.return_value = type("LLMResult", (), {
+                "title": "Send the weekly status...",
+                "success": success,
+                "category": "scheduled",
+                "execute_at": None,
+                "repeat_interval": None,
+                "repeat_until": None,
+                "description": None,          # nothing usable, whatever the cause
+                "profile": None,
+                "cause": cause,
+            })()
+            task_uuid = await schedule_task(description=words,
+                                            execute_at="2026-03-01T09:00:00Z")
+
+        _, session_factory = db_session
+        async with session_factory() as session:
+            task = (await session.execute(
+                select(Task).where(Task.id == uuid.UUID(task_uuid))
+            )).scalar_one()
+            assert task.description == words, (
+                f"cause={cause}: the scheduled task was persisted without the "
+                "user's instructions"
+            )
+
+
 async def test_schedule_task_human_readable_interval_normalised(db_session):
     """schedule_task normalises human-readable repeat_interval to compact form."""
     _, session_factory = db_session

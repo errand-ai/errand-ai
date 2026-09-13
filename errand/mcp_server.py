@@ -520,7 +520,16 @@ async def schedule_task(
         if len(words) > 5:
             llm_result = await generate_title(description, session)
             title = llm_result.title
-            cleaned_desc = llm_result.description
+            # Never lose the user's own words. `new_task` already falls back to
+            # the raw input when the classifier gives nothing usable; this path
+            # did not, so a scheduled task could be persisted with no
+            # description at all and fire later with only its five-word title.
+            # There is no "Needs Info" tag on this path to send anybody back to
+            # repair it, and nobody is present when it runs. Raised in review —
+            # pre-existing, but reachable far more often now that a task on an
+            # installation with no model configured actually runs instead of
+            # parking.
+            cleaned_desc = llm_result.description or description.strip()
         else:
             title = description.strip()
             cleaned_desc = None
