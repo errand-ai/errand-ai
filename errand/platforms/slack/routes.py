@@ -212,7 +212,14 @@ async def _handle_mention(event: dict) -> None:
                     execute_at = datetime.fromisoformat(llm_result.execute_at)
                 except (ValueError, TypeError):
                     pass  # LLM returned unparseable date; fall back to default scheduling
-            if not llm_result.success and llm_result.attempted:
+            if llm_result.attempted and (
+                not llm_result.success or not llm_result.description
+            ):
+                # The classifier answered and the answer carried nothing usable
+                # — either it failed, or it succeeded with no description. Both
+                # are statements about the input, so both route to review. A
+                # classifier that was never reached is neither, and is not the
+                # user's to fix.
                 tag_names.append("Needs Info")
         else:
             tag_names.append("Needs Info")

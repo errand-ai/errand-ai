@@ -249,6 +249,16 @@ async function completeSetup() {
   step3Error.value = ''
   step3Loading.value = true
   try {
+    // Both roles or neither. One chosen and one blank writes half a
+    // configuration: the server then reports no model configured, because a
+    // single role is not a working installation, while the user has plainly
+    // chosen one and been told setup completed. Either answer is coherent; a
+    // half-answer is the one that is not.
+    if (Boolean(titleModel.value) !== Boolean(taskModel.value)) {
+      step3Error.value = 'Choose a model for both, or leave both unset and pick them in Settings.'
+      return
+    }
+
     const body = modelSettingsBody()
     if (Object.keys(body).length === 0) {
       toast.success('Setup complete!')
