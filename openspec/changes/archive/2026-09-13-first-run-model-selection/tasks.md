@@ -19,7 +19,7 @@
 
 The renamed scenario, and why it is done this way: `task-categorisation`'s existing `#### Scenario: LLM failure goes to review` now describes only the completed-but-unusable case, so its heading is wrong. `openspec archive` compares scenario headings and refuses to drop one, and renaming is not an expressible delta operation — so the delta keeps the old heading with corrected content, and the flattened spec is renamed separately.
 
-- [ ] 3.6 After archiving, rename that scenario in `openspec/specs/task-categorisation/spec.md` to describe the case it now covers, in this PR — correcting only the body leaves a heading that contradicts it
+- [x] 3.6 After archiving, rename that scenario in `openspec/specs/task-categorisation/spec.md` to describe the case it now covers, in this PR — correcting only the body leaves a heading that contradicts it
 
 ## 4. Choosing a model, and never guessing one
 
@@ -75,13 +75,13 @@ The wizard is the other first-run surface, and it had the defect this change exi
 ## 9. Verify
 
 - [x] 9.1 Run the full errand, task-runner and frontend test suites
-- [ ] 9.2 End to end from an empty database: bring the stack up with no providers and no settings, scan, observe the reported missing model, choose one, create a task in the user's own words, and watch it run to completion
+- [x] 9.2 End to end from an empty database: bring the stack up with no providers and no settings, scan, observe the reported missing model, choose one, create a task in the user's own words, and watch it run to completion — `model_configured: false` on arrival; the scan found the machine's real Ollama and llama.cpp and reported oMLX under `needs_key`; an unlisted model was refused 422 with the provider's name in the sentence and an absent provider 404; the choice read back; a rescan established nothing and left it alone; the task was created `pending` with no `Needs Info` tag, classified (title "Lighthouse Haiku"), and ran to `completed` with real output
 - [x] 9.3 Confirm the same flow with a single-model runtime asks nothing (established without prompting against the real llama.cpp listing; the task-run half is covered by 9.2)
 - [x] 9.4 Confirm an installation that already has model settings is untouched by a scan — a second scan against the same live runtimes established nothing and left the selection alone
 
 ## 10. Archive
 
-- [ ] 10.1 `openspec archive first-run-model-selection -y` and commit the result in this PR
+- [x] 10.1 `openspec archive first-run-model-selection -y` and commit the result in this PR
 
 ## Post-merge notes
 
