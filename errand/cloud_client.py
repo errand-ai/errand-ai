@@ -144,6 +144,14 @@ class CloudWebSocketClient:
                 await publish_event("cloud_status", {"status": "connected"})
                 self._consecutive_evictions = 0
 
+                # Repair cloud endpoints on every reconnect, not just at
+                # startup: an endpoint revoked mid-session is otherwise stale
+                # until the process restarts. Dispatched as a task so a slow
+                # cloud cannot stall the receive loop, and self-suppressing so
+                # a flapping connection cannot pile passes up.
+                from cloud_endpoints import run_post_connect_endpoint_passes
+                asyncio.create_task(run_post_connect_endpoint_passes())
+
                 while self._running:
                     try:
                         raw_message = await asyncio.wait_for(ws.recv(), timeout=90.0)

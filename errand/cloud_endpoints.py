@@ -3,6 +3,7 @@
 Handles automatic registration and revocation of webhook endpoints
 with errand-cloud when both cloud and Slack credentials are active.
 """
+import asyncio
 import logging
 import secrets
 import time as _time
@@ -373,10 +374,16 @@ async def register_webhook_trigger_with_cloud(
             plaintext_secret = secret_data.get("secret", "")
         except Exception:
             logger.exception("Failed to decrypt webhook_secret for trigger %s", trigger.id)
+            await _store_endpoint_error(
+                session, "Cloud endpoint registration failed: webhook secret could not be decrypted"
+            )
             return False
 
         if not plaintext_secret:
             logger.debug("Empty webhook_secret for trigger %s, skipping cloud registration", trigger.id)
+            await _store_endpoint_error(
+                session, "Cloud endpoint registration failed: webhook secret is empty"
+            )
             return False
 
     access_token = cloud_creds.get("access_token", "")
@@ -511,6 +518,27 @@ async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
                 if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
                     continue
 
+                # The rows were read before the listing call, so they are as old
+                # as one network round trip. Re-read immediately before acting:
+                # a trigger deleted in the meantime must not be re-created on the
+                # cloud as an orphan, and one re-registered by a concurrent save
+                # must not be registered twice. This narrows the window to the
+                # single POST below; it does not close it, which would take
+                # coordination with the trigger CRUD path.
+                fresh = (
+                    await session.execute(
+                        select(WebhookTrigger)
+                        .where(WebhookTrigger.id == trigger.id)
+                        .execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
+                if fresh is None:
+                    logger.debug("Trigger %s was deleted during reconciliation, skipping", trigger.id)
+                    continue
+                trigger = fresh
+                if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
+                    continue
+
                 logger.info(
                     "Webhook trigger %s (%s) has no live cloud endpoint, re-registering",
                     trigger.id, integration,
@@ -532,6 +560,45 @@ async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
                     await session.commit()
     except Exception:
         logger.exception("Webhook trigger endpoint reconciliation failed")
+
+
+_post_connect_lock = asyncio.Lock()
+
+
+async def run_post_connect_endpoint_passes() -> None:
+    """Run both endpoint passes after a successful cloud connect.
+
+    Called from every path that establishes a cloud connection — process
+    startup, device authorization, and each WebSocket (re)connect — so an
+    endpoint revoked mid-session is repaired on the next reconnect rather than
+    waiting for a restart.
+
+    The two passes are genuinely independent: try_register_endpoints owns the
+    instance-wide Slack endpoints and reconciliation owns the per-trigger
+    Jira/GitHub ones, and neither reads what the other writes. They are
+    therefore guarded separately — a Slack-side failure must not cost the
+    webhook triggers their attempt.
+
+    Reconnects can be frequent and bursty, so an in-flight pass suppresses a
+    duplicate. The check is not atomic with the acquire; the cost of losing
+    that race is one redundant pass of idempotent upserts.
+    """
+    if _post_connect_lock.locked():
+        logger.debug("Cloud endpoint passes already running, skipping this post-connect trigger")
+        return
+
+    async with _post_connect_lock:
+        try:
+            from database import async_session
+            async with async_session() as session:
+                try:
+                    await try_register_endpoints(session)
+                except Exception:
+                    logger.exception("Cloud endpoint registration failed after cloud connect")
+                # reconcile_webhook_trigger_endpoints never raises.
+                await reconcile_webhook_trigger_endpoints(session)
+        except Exception:
+            logger.exception("Cloud endpoint passes failed after cloud connect")
 
 
 async def revoke_webhook_trigger_in_cloud(

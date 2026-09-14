@@ -91,7 +91,7 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** errand-cloud reports a trigger's endpoint absent and the subsequent registration attempt fails
 - **THEN** the backend SHALL clear `cloud_webhook_url` on that trigger
 - **AND** the trigger's row SHALL display "Registration failed — re-save trigger to retry" rather than a URL that would silently drop deliveries
-- **AND** the failure SHALL be recorded in the `cloud_endpoint_error` Setting
+- **AND** the failure SHALL be recorded in the `cloud_endpoint_error` Setting, including when the cause is a webhook secret that is missing or cannot be decrypted
 
 #### Scenario: Cloud unreachable during reconciliation
 - **WHEN** the endpoint listing call fails with a network or server error
@@ -108,6 +108,19 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** several Jira triggers exist
 - **THEN** the backend SHALL issue a single `GET /api/endpoints?integration=jira` for the comparison
 - **AND** SHALL NOT issue one request per trigger
+
+#### Scenario: Reconnection reconciles too
+- **WHEN** the cloud WebSocket client re-establishes a connection after a drop
+- **THEN** reconciliation SHALL run for that connection as it does for a connection established at startup or by device authorization
+- **AND** an endpoint revoked mid-session SHALL therefore be repaired on the next reconnect rather than waiting for a process restart
+
+#### Scenario: Concurrent connects do not stack reconciliation passes
+- **WHEN** a further cloud connect occurs while a reconciliation pass is still running
+- **THEN** the backend SHALL suppress the duplicate pass rather than run both
+
+#### Scenario: A trigger deleted mid-pass is not re-created
+- **WHEN** a webhook trigger is deleted after reconciliation read it but before it is re-registered
+- **THEN** the backend SHALL NOT register an endpoint for that trigger
 
 #### Scenario: Reconciliation is skipped when cloud is not connected
 - **WHEN** no cloud PlatformCredential exists, or its status is not "connected"

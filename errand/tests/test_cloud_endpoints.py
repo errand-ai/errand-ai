@@ -1,4 +1,6 @@
 """Tests for cloud endpoint management."""
+import asyncio
+import inspect
 import uuid
 
 import pytest
@@ -1049,3 +1051,133 @@ class TestTryRegisterEndpointsSlackUnchanged:
             patcher.stop()
 
         assert len(fake.post_bodies) == 1
+
+
+class TestPostConnectEndpointPasses:
+    """Review follow-up: the two passes are independent, and every connect runs them."""
+
+    @pytest.mark.asyncio
+    async def test_slack_failure_does_not_cost_reconciliation_its_attempt(self):
+        """A raising try_register_endpoints must not skip reconciliation."""
+        import cloud_endpoints
+
+        with patch.object(cloud_endpoints, "try_register_endpoints",
+                          new=AsyncMock(side_effect=RuntimeError("slack blew up"))), \
+             patch.object(cloud_endpoints, "reconcile_webhook_trigger_endpoints",
+                          new=AsyncMock()) as reconcile, \
+             patch("database.async_session") as session_cls:
+            session_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+            session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await cloud_endpoints.run_post_connect_endpoint_passes()
+
+        reconcile.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_in_flight_pass_suppresses_a_duplicate(self):
+        """A flapping connection must not pile passes up."""
+        import cloud_endpoints
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def slow_register(session):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+
+        with patch.object(cloud_endpoints, "try_register_endpoints", new=slow_register), \
+             patch.object(cloud_endpoints, "reconcile_webhook_trigger_endpoints",
+                          new=AsyncMock()), \
+             patch("database.async_session") as session_cls:
+            session_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+            session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            first = asyncio.create_task(cloud_endpoints.run_post_connect_endpoint_passes())
+            await started.wait()
+            await cloud_endpoints.run_post_connect_endpoint_passes()  # should be suppressed
+            release.set()
+            await first
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_websocket_connect_runs_the_passes(self):
+        """Spec: reconciliation runs on each successful cloud connect, reconnects included."""
+        import cloud_client
+
+        source = inspect.getsource(cloud_client.CloudWebSocketClient._connect_and_receive)
+        assert "run_post_connect_endpoint_passes" in source, (
+            "the WebSocket connect path must run the endpoint passes, or an endpoint "
+            "revoked mid-session stays stale until the process restarts"
+        )
+
+
+class TestReconcileSkipsRowsDeletedMidPass:
+    @pytest.mark.asyncio
+    async def test_trigger_deleted_during_the_pass_is_not_recreated(self, db_session):
+        """A row deleted between the listing call and the POST must not come back."""
+        from models import WebhookTrigger
+        from sqlalchemy import delete
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Doomed", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        class _DeletingCloud(_FakeCloud):
+            async def get(self, url, **kwargs):
+                # The user deletes the trigger while we are asking the cloud.
+                async with session_factory() as s:
+                    await s.execute(delete(WebhookTrigger).where(WebhookTrigger.id == trigger_id))
+                    await s.commit()
+                return await super().get(url, **kwargs)
+
+        fake = _DeletingCloud(get_responses=[_listing_response([])])
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.post_bodies == [], "a deleted trigger must not be re-created on the cloud"
+
+
+class TestSecretFailuresRecordADetail:
+    @pytest.mark.asyncio
+    async def test_undecryptable_secret_records_an_error(self, db_session):
+        """The cleared URL must come with a reason, as every other failure does."""
+        from models import Setting
+        from cloud_endpoints import register_webhook_trigger_with_cloud, reconcile_webhook_trigger_endpoints
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        await _add_trigger(
+            session_factory, name="Jira Corrupt", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token", secret=None,
+        )
+        # A secret that is present but not decryptable with this key.
+        from models import WebhookTrigger
+        async with session_factory() as s:
+            trig = (await s.execute(select(WebhookTrigger))).scalars().one()
+            trig.webhook_secret = "not-a-valid-fernet-token"
+            await s.commit()
+
+        fake = _FakeCloud(get_responses=[_listing_response([])])
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        async with session_factory() as s:
+            err = (await s.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )).scalar_one_or_none()
+        assert err is not None
+        assert "webhook secret" in err.value["detail"]
+        assert fake.post_bodies == []
