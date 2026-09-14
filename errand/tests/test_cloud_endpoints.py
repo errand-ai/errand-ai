@@ -22,6 +22,20 @@ def _ensure_encryption_key(monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "QqXQtnJMYRkG519FlL64LIGn3R_DvpZfeGgrWcHJV_w=")
 
 
+@pytest.fixture(autouse=True)
+def _reset_post_connect_cooldown():
+    """Clear the post-connect cooldown between tests.
+
+    It is module-level mutable state: a test that runs a pass leaves the next
+    one inside the cooldown window, which silently turns its pass into a no-op
+    and makes the outcome depend on test order.
+    """
+    import cloud_endpoints
+    cloud_endpoints._last_post_connect_at = 0.0
+    yield
+    cloud_endpoints._last_post_connect_at = 0.0
+
+
 class TestRegisterEndpoints:
     @pytest.mark.asyncio
     async def test_register_calls_cloud_api(self):
@@ -1095,7 +1109,7 @@ class TestPostConnectEndpointPasses:
             session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
             first = asyncio.create_task(cloud_endpoints.run_post_connect_endpoint_passes())
-            await started.wait()
+            await asyncio.wait_for(started.wait(), timeout=5)
             await cloud_endpoints.run_post_connect_endpoint_passes()  # should be suppressed
             release.set()
             await first
@@ -1167,7 +1181,7 @@ class TestPostConnectEndpointPasses:
 
         task = asyncio.create_task(slow_pass())
         cloud_client._track_endpoint_task(task)
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5)
 
         await cloud_client.cancel_endpoint_tasks()
 
@@ -1411,3 +1425,66 @@ class TestReconcileEdgeCases:
             patcher.stop()
 
         assert len(fake.post_bodies) == 1, "and must proceed once it is released"
+
+
+class TestPostConnectCooldown:
+    """A reconnect storm must not become a request storm against errand-cloud."""
+
+    @staticmethod
+    def _patched(register, reconcile):
+        import cloud_endpoints
+        return (
+            patch.object(cloud_endpoints, "try_register_endpoints", new=register),
+            patch.object(cloud_endpoints, "reconcile_webhook_trigger_endpoints", new=reconcile),
+            patch("database.async_session"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_burst_of_reconnects_runs_one_pass(self):
+        import cloud_endpoints
+
+        register, reconcile = AsyncMock(), AsyncMock()
+        p1, p2, p3 = self._patched(register, reconcile)
+        with p1, p2, p3 as session_cls:
+            session_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+            session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            for _ in range(20):
+                await cloud_endpoints.run_post_connect_endpoint_passes()
+
+        assert reconcile.await_count == 1, "the cooldown must absorb the burst"
+
+    @pytest.mark.asyncio
+    async def test_a_deliberate_connect_is_never_swallowed(self):
+        """The user waiting on device authorization must not lose their pass."""
+        import cloud_endpoints
+
+        register, reconcile = AsyncMock(), AsyncMock()
+        p1, p2, p3 = self._patched(register, reconcile)
+        with p1, p2, p3 as session_cls:
+            session_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+            session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await cloud_endpoints.run_post_connect_endpoint_passes()          # reconnect
+            await cloud_endpoints.run_post_connect_endpoint_passes(force=True)  # device auth
+
+        assert reconcile.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_the_cooldown_expires(self):
+        import cloud_endpoints
+
+        register, reconcile = AsyncMock(), AsyncMock()
+        p1, p2, p3 = self._patched(register, reconcile)
+        with p1, p2, p3 as session_cls:
+            session_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+            session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await cloud_endpoints.run_post_connect_endpoint_passes()
+            # Wind the clock past the cooldown rather than waiting it out.
+            cloud_endpoints._last_post_connect_at -= (
+                cloud_endpoints.POST_CONNECT_COOLDOWN_SECS + 1
+            )
+            await cloud_endpoints.run_post_connect_endpoint_passes()
+
+        assert reconcile.await_count == 2, "a later reconnect must still reconcile"

@@ -628,8 +628,20 @@ async def _reconcile_one(
 
 _post_connect_lock = asyncio.Lock()
 
+# Reconnects can arrive in bursts — during a rolling update two replicas
+# supersede each other's socket and the client reconnects several times a
+# second. Without a floor between passes each reconnect costs a listing call
+# per integration plus a POST per unhealthy trigger, which turns a reconnect
+# storm into a request storm against errand-cloud. Measured on a single rolling
+# update before this floor existed: 140 registration attempts in about a
+# minute. A trigger that cannot be repaired re-attempts on every reconnect
+# forever, so the in-flight guard alone is no protection — each pass finishes
+# long before the next reconnect arrives.
+POST_CONNECT_COOLDOWN_SECS = 60
+_last_post_connect_at: float = 0.0
 
-async def run_post_connect_endpoint_passes() -> None:
+
+async def run_post_connect_endpoint_passes(force: bool = False) -> None:
     """Run both endpoint passes after a successful cloud connect.
 
     Called from every path that establishes a cloud connection — process
@@ -643,15 +655,30 @@ async def run_post_connect_endpoint_passes() -> None:
     therefore guarded separately — a Slack-side failure must not cost the
     webhook triggers their attempt.
 
-    Reconnects can be frequent and bursty, so an in-flight pass suppresses a
-    duplicate. The check is not atomic with the acquire; the cost of losing
-    that race is one redundant pass of idempotent upserts.
+    An in-flight pass suppresses a duplicate, and a pass that ran within
+    POST_CONNECT_COOLDOWN_SECS suppresses the next one. Pass ``force=True`` from
+    a deliberate connect — startup, or the user completing device authorization
+    — where the user is waiting on the result and a reconnect moments earlier
+    must not swallow it. Reconnects never force.
     """
+    global _last_post_connect_at
+
     if _post_connect_lock.locked():
         logger.debug("Cloud endpoint passes already running, skipping this post-connect trigger")
         return
 
+    since_last = _time.monotonic() - _last_post_connect_at
+    if not force and since_last < POST_CONNECT_COOLDOWN_SECS:
+        logger.debug(
+            "Cloud endpoint passes ran %.1fs ago, within the %ds cooldown; skipping",
+            since_last, POST_CONNECT_COOLDOWN_SECS,
+        )
+        return
+
     async with _post_connect_lock:
+        # Stamped on entry, so the floor is between starts and a slow pass does
+        # not license a burst the moment it finishes.
+        _last_post_connect_at = _time.monotonic()
         try:
             from database import async_session
             # A session of its own each. Sharing one means a failed transaction

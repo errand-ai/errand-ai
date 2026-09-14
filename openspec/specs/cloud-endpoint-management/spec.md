@@ -173,6 +173,11 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** a further cloud connect occurs while a reconciliation pass is still running
 - **THEN** the backend SHALL suppress the duplicate pass rather than run both
 
+#### Scenario: A burst of reconnects does not become a burst of requests
+- **WHEN** the WebSocket reconnects repeatedly in quick succession
+- **THEN** the backend SHALL run at most one pass per cooldown period, and SHALL NOT issue a listing call and registration attempt per reconnect
+- **AND** a deliberate connect — process startup, or the user completing device authorization — SHALL run its pass regardless of the cooldown, since the user is waiting on the result
+
 #### Scenario: A trigger deleted mid-pass is not re-created
 - **WHEN** a webhook trigger is deleted after reconciliation read it but before it is re-registered
 - **THEN** the backend SHALL NOT register an endpoint for that trigger

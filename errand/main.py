@@ -382,7 +382,7 @@ async def lifespan(app: FastAPI):
             # suppressed, so this stays useful when the socket cannot connect.
             async def _register_endpoints_background():
                 from cloud_endpoints import run_post_connect_endpoint_passes
-                await run_post_connect_endpoint_passes()
+                await run_post_connect_endpoint_passes(force=True)
             asyncio.create_task(_register_endpoints_background())
 
     async with mcp_server.session_manager.run():
@@ -2269,7 +2269,7 @@ async def _run_device_grant(
     # no longer holds — revoked server-side, or never registered because the
     # cloud was unreachable when the trigger was saved.
     from cloud_endpoints import run_post_connect_endpoint_passes
-    await run_post_connect_endpoint_passes()
+    await run_post_connect_endpoint_passes(force=True)
 
 
 @app.post("/api/cloud/auth/device")
