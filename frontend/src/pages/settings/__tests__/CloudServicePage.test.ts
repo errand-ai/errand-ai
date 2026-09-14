@@ -829,3 +829,98 @@ describe('CloudServicePage background endpoint refresh', () => {
     expect(mockFetchWebhookTriggers.mock.calls.length).toBe(callsAtUnmount)
   })
 })
+
+describe('CloudServicePage URL change notice', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  const changed = {
+    status: 'connected',
+    tenant_id: 'tenant-abc',
+    email: 'user@example.com',
+    endpoints: [],
+    endpoint_url_changes: [
+      {
+        trigger_id: 't1',
+        name: 'Jira Story',
+        source: 'jira',
+        previous_url: 'https://cloud.test/hook/old',
+        new_url: 'https://cloud.test/hook/new',
+        changed_at: 1789376449,
+      },
+    ],
+  }
+
+  async function mountWith(status: object, triggers: unknown[]) {
+    vi.stubGlobal('fetch', stubFetch(status))
+    mockFetchWebhookTriggers.mockResolvedValue(triggers)
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('tells the user to repoint the third-party webhook', async () => {
+    const wrapper = await mountWith(changed, [
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+    ])
+
+    const banner = wrapper.find('[data-testid="cloud-url-changed-banner"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('Jira')
+    expect(banner.text()).toContain('Jira Story')
+    expect(banner.text()).toContain('secret is unchanged')
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(true)
+  })
+
+  it('shows nothing when no URL changed', async () => {
+    const wrapper = await mountWith(
+      { status: 'connected', tenant_id: 'a', email: 'e', endpoints: [] },
+      [{ id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/x' }],
+    )
+
+    expect(wrapper.find('[data-testid="cloud-url-changed-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(false)
+  })
+
+  it('marks only the trigger whose URL changed', async () => {
+    const wrapper = await mountWith(changed, [
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+      { id: 't2', name: 'GH Other', source: 'github', cloud_webhook_url: 'https://cloud.test/hook/gh' },
+    ])
+
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t2"]').exists()).toBe(false)
+  })
+
+  it('dismisses the notice and calls the API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(changed) })
+    vi.stubGlobal('fetch', fetchMock)
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+    ])
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="dismiss-url-changed-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/cloud/endpoint-url-changes',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(wrapper.find('[data-testid="cloud-url-changed-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(false)
+  })
+})

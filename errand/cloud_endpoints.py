@@ -573,6 +573,58 @@ async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
         logger.exception("Webhook trigger endpoint reconciliation failed")
 
 
+# Reconciliation can replace a trigger's URL. The secret is reused, so the user
+# only has to repoint Jira or GitHub at the new URL — but until they do, the
+# third party goes on POSTing to a URL that now 404s, and nothing on screen says
+# so. Recorded here, surfaced once, and dismissed by the user.
+#
+# "Changed" means the trigger previously had a URL that is not the one it has
+# now. A trigger being registered for the first time is not a change: there is
+# no stale configuration anywhere to correct. The subtlety is that a repair is
+# usually preceded by a failed attempt that cleared the URL, so the immediately
+# previous value is null by the time the repair succeeds — `last_known` carries
+# the URL across that gap so the change is still reported.
+URL_CHANGES_SETTING = "cloud_endpoint_url_changes"
+
+
+async def _load_url_changes(session: AsyncSession) -> dict:
+    result = await session.execute(
+        select(Setting).where(Setting.key == URL_CHANGES_SETTING)
+    )
+    setting = result.scalar_one_or_none()
+    value = setting.value if setting and isinstance(setting.value, dict) else {}
+    return {
+        "changes": value.get("changes") or [],
+        "last_known": value.get("last_known") or {},
+    }
+
+
+async def _save_url_changes(session: AsyncSession, value: dict) -> None:
+    result = await session.execute(
+        select(Setting).where(Setting.key == URL_CHANGES_SETTING)
+    )
+    setting = result.scalar_one_or_none()
+    if not value["changes"] and not value["last_known"]:
+        if setting:
+            await session.delete(setting)
+        return
+    if setting:
+        setting.value = value
+    else:
+        session.add(Setting(key=URL_CHANGES_SETTING, value=value))
+
+
+async def clear_url_changes(session: AsyncSession) -> None:
+    """Drop the recorded URL changes once the user has acknowledged them."""
+    result = await session.execute(
+        select(Setting).where(Setting.key == URL_CHANGES_SETTING)
+    )
+    setting = result.scalar_one_or_none()
+    if setting:
+        await session.delete(setting)
+        await session.commit()
+
+
 async def _reconcile_one(
     session: AsyncSession, trigger_id, integration: str, live_tokens: set
 ) -> None:
@@ -611,7 +663,34 @@ async def _reconcile_one(
             "Webhook trigger %s (%s) has no live cloud endpoint, re-registering",
             trigger.id, integration,
         )
+
+        url_changes = await _load_url_changes(session)
+        key = str(trigger.id)
+        # Either the URL it still holds, or the one we cleared on a previous
+        # failed attempt — both mean "the third party is pointed somewhere".
+        previous_url = trigger.cloud_webhook_url or url_changes["last_known"].get(key)
+
         if await register_webhook_trigger_with_cloud(trigger, session):
+            new_url = trigger.cloud_webhook_url
+            if previous_url and new_url and previous_url != new_url:
+                logger.info(
+                    "Webhook trigger %s URL changed, the third-party webhook needs repointing",
+                    trigger.id,
+                )
+                url_changes["changes"] = [
+                    c for c in url_changes["changes"] if c.get("trigger_id") != key
+                ]
+                url_changes["changes"].append({
+                    "trigger_id": key,
+                    "name": trigger.name,
+                    "source": trigger.source,
+                    "previous_url": previous_url,
+                    "new_url": new_url,
+                    "changed_at": _time.time(),
+                })
+            url_changes["last_known"].pop(key, None)
+            await _save_url_changes(session, url_changes)
+            await session.commit()
             return
 
         # The cloud told us the endpoint is gone and we could not make a new
@@ -622,7 +701,11 @@ async def _reconcile_one(
                 "and re-registration failed",
                 trigger.id,
             )
+            # Remember it so that if a later pass repairs this trigger we can
+            # still tell the user the URL they configured has been replaced.
+            url_changes["last_known"][key] = trigger.cloud_webhook_url
             trigger.cloud_webhook_url = None
+            await _save_url_changes(session, url_changes)
             await session.commit()
 
 

@@ -92,6 +92,27 @@ The Cloud Service settings page SHALL display the cloud webhook endpoint URLs wh
 - **WHEN** the user is connected to errand-cloud AND Slack credentials are configured AND no Slack endpoints are registered AND no `endpoint_error` is present
 - **THEN** the page SHALL display a "Registering endpoints..." loading state for the Slack rows
 
+### Requirement: Changed webhook URLs are surfaced for repointing
+When reconciliation replaces a webhook trigger's URL, the secret is reused but the URL is not, so the third-party system goes on delivering to a URL that no longer resolves. The Cloud Service settings page SHALL tell the user which triggers changed and that the third-party webhook needs repointing, and SHALL say that the secret is unchanged so the user knows only the URL must be edited.
+
+#### Scenario: A changed URL is announced once
+- **WHEN** the cloud status reports one or more changed webhook URLs
+- **THEN** the page SHALL display a notice naming the affected triggers and the system to update
+- **AND** the affected trigger's row SHALL be marked
+
+#### Scenario: Unchanged triggers are not marked
+- **WHEN** only some triggers have changed URLs
+- **THEN** only those triggers' rows SHALL be marked
+
+#### Scenario: No notice when nothing changed
+- **WHEN** the cloud status reports no changed URLs
+- **THEN** the page SHALL display no notice and mark no rows
+
+#### Scenario: The user can dismiss the notice
+- **WHEN** the user dismisses the notice
+- **THEN** the page SHALL ask the backend to discard the records
+- **AND** the notice and the row markers SHALL disappear without a reload
+
 ### Requirement: Cloud status API endpoint
 The backend SHALL expose `GET /api/cloud/status` requiring the `admin` role. The endpoint returns the current cloud connection state for the frontend.
 

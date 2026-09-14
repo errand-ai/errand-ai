@@ -641,6 +641,89 @@ class TestCloudStatus:
         assert data["endpoint_error"] == {"detail": "Active subscription required"}
 
     @pytest.mark.asyncio
+    async def test_status_includes_endpoint_url_changes(self, cloud_client):
+        """A replaced URL must reach the page, or the user never learns to repoint."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(
+                key="cloud_endpoint_url_changes",
+                value={
+                    "changes": [{
+                        "trigger_id": "t1", "name": "Jira Story", "source": "jira",
+                        "previous_url": "https://cloud.test/hook/old",
+                        "new_url": "https://cloud.test/hook/new",
+                        "changed_at": 1234567890.0,
+                    }],
+                    "last_known": {},
+                },
+            ))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/cloud/status")
+        assert resp.status_code == 200
+        changes = resp.json()["endpoint_url_changes"]
+        assert len(changes) == 1
+        assert changes[0]["name"] == "Jira Story"
+        assert changes[0]["new_url"] == "https://cloud.test/hook/new"
+
+    @pytest.mark.asyncio
+    async def test_status_omits_url_changes_when_there_are_none(self, cloud_client):
+        """An empty record must not render an empty banner."""
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from platforms.credentials import encrypt
+        from models import PlatformCredential, Setting
+        async with session_maker() as session:
+            cred_data = encrypt({"access_token": "test", "refresh_token": "test", "token_expiry": 0, "tenant_id": "t1"})
+            session.add(PlatformCredential(
+                platform_id="cloud", encrypted_data=cred_data, status="connected",
+            ))
+            session.add(Setting(
+                key="cloud_endpoint_url_changes",
+                value={"changes": [], "last_known": {"t1": "https://cloud.test/hook/old"}},
+            ))
+            await session.commit()
+
+        with patch("cloud_client.is_connected", return_value=True), \
+             patch("cloud_endpoints.fetch_subscription_status", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/cloud/status")
+        assert "endpoint_url_changes" not in resp.json()
+
+    @pytest.mark.asyncio
+    async def test_dismissing_url_changes_clears_them(self, cloud_client):
+        client, session_maker = cloud_client
+        _mock_admin_user()
+
+        from models import Setting
+        from sqlalchemy import select as _select
+        async with session_maker() as session:
+            session.add(Setting(
+                key="cloud_endpoint_url_changes",
+                value={"changes": [{"trigger_id": "t1"}], "last_known": {}},
+            ))
+            await session.commit()
+
+        resp = await client.delete("/api/cloud/endpoint-url-changes")
+        assert resp.status_code == 204
+
+        async with session_maker() as session:
+            remaining = (await session.execute(
+                _select(Setting).where(Setting.key == "cloud_endpoint_url_changes")
+            )).scalar_one_or_none()
+        assert remaining is None
+
+    @pytest.mark.asyncio
     async def test_status_includes_subscription(self, cloud_client):
         client, session_maker = cloud_client
         _mock_admin_user()

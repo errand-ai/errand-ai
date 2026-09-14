@@ -201,6 +201,21 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** reconciling one trigger raises
 - **THEN** the backend SHALL log it and continue with the remaining triggers
 
+#### Scenario: A replaced URL is reported to the user
+- **WHEN** reconciliation re-registers a trigger that previously had a URL, and the new URL differs from it
+- **THEN** the backend SHALL record the change, including the trigger's name, source, previous URL and new URL
+- **AND** the record SHALL survive the intervening clearing of `cloud_webhook_url` by an earlier failed attempt, since the third-party system is still configured with the URL that was cleared
+- **AND** repeated changes to the same trigger SHALL replace its record rather than accumulate
+
+#### Scenario: A first registration is not a URL change
+- **WHEN** reconciliation registers a trigger that had no URL and has never had one
+- **THEN** the backend SHALL NOT record a change, because no third-party configuration exists to correct
+
+#### Scenario: Recorded URL changes are dismissed by the user
+- **WHEN** the user acknowledges the reported URL changes
+- **THEN** the backend SHALL discard the records
+- **AND** disconnecting from errand-cloud SHALL discard them too, alongside the other cached cloud state
+
 #### Scenario: Reconciliation is skipped when cloud is not connected
 - **WHEN** no cloud PlatformCredential exists, or its status is not "connected"
 - **THEN** reconciliation SHALL NOT run

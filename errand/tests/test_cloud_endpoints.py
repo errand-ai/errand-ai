@@ -1488,3 +1488,165 @@ class TestPostConnectCooldown:
             await cloud_endpoints.run_post_connect_endpoint_passes()
 
         assert reconcile.await_count == 2, "a later reconnect must still reconcile"
+
+
+class TestUrlChangeNotice:
+    """A replaced URL leaves the third party posting into a 404 until repointed."""
+
+    @staticmethod
+    async def _changes(session_factory):
+        from models import Setting
+        from cloud_endpoints import URL_CHANGES_SETTING
+        async with session_factory() as s:
+            setting = (await s.execute(
+                select(Setting).where(Setting.key == URL_CHANGES_SETTING)
+            )).scalar_one_or_none()
+        return setting.value if setting else None
+
+    @pytest.mark.asyncio
+    async def test_a_replaced_url_is_recorded(self, db_session):
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Moved", source="jira",
+            url="https://cloud.test/hook/old", token="dead-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/new", "new-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        value = await self._changes(session_factory)
+        assert value is not None
+        assert len(value["changes"]) == 1
+        change = value["changes"][0]
+        assert change["trigger_id"] == str(trigger_id)
+        assert change["name"] == "Jira Moved"
+        assert change["previous_url"] == "https://cloud.test/hook/old"
+        assert change["new_url"] == "https://cloud.test/hook/new"
+
+    @pytest.mark.asyncio
+    async def test_a_first_registration_is_not_a_change(self, db_session):
+        """Nothing is configured anywhere yet, so there is nothing to correct."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        await _add_trigger(
+            session_factory, name="Jira New", source="jira", url=None, token=None,
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/first", "first-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert await self._changes(session_factory) is None
+
+    @pytest.mark.asyncio
+    async def test_a_change_survives_the_clearing_gap(self, db_session):
+        """The repair usually follows a failed attempt that cleared the URL.
+
+        Without carrying the cleared URL forward the change would go unreported
+        precisely in the case that motivated the feature.
+        """
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Gap", source="jira",
+            url="https://cloud.test/hook/configured-in-jira", token="dead-token",
+        )
+
+        # Pass one: endpoint gone, registration refused, URL cleared.
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_failed_registration_response()],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url is None
+
+        # Pass two, after the cloud-side fix: registration now succeeds.
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/repaired", "new-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        value = await self._changes(session_factory)
+        assert value is not None, "the change must still be reported across the gap"
+        assert value["changes"][0]["previous_url"] == "https://cloud.test/hook/configured-in-jira"
+        assert value["changes"][0]["new_url"] == "https://cloud.test/hook/repaired"
+        assert value["last_known"] == {}, "the carried URL is dropped once reported"
+
+    @pytest.mark.asyncio
+    async def test_repeated_passes_do_not_stack_entries(self, db_session):
+        """One entry per trigger, or a flapping endpoint becomes a wall of notices."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Flappy", source="jira",
+            url="https://cloud.test/hook/v1", token="t1",
+        )
+
+        for n in (2, 3, 4):
+            fake = _FakeCloud(
+                get_responses=[_listing_response([])],
+                post_responses=[
+                    _registration_response(f"https://cloud.test/hook/v{n}", f"t{n}")
+                ],
+            )
+            patcher = _patch_cloud(fake)
+            try:
+                await _run_reconcile(session_factory)
+            finally:
+                patcher.stop()
+
+        value = await self._changes(session_factory)
+        assert len(value["changes"]) == 1
+        assert value["changes"][0]["trigger_id"] == str(trigger_id)
+        assert value["changes"][0]["new_url"] == "https://cloud.test/hook/v4"
+
+    @pytest.mark.asyncio
+    async def test_dismissal_clears_the_record(self, db_session):
+        from cloud_endpoints import clear_url_changes
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        await _add_trigger(
+            session_factory, name="Jira Ack", source="jira",
+            url="https://cloud.test/hook/old", token="dead",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/new", "new")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert await self._changes(session_factory) is not None
+        async with session_factory() as s:
+            await clear_url_changes(s)
+        assert await self._changes(session_factory) is None
