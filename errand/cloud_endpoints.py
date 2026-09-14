@@ -169,9 +169,15 @@ async def check_existing_endpoints(
     # "no endpoints exist". Reducing it to an empty list would make every
     # trigger look revoked and re-register the lot.
     if not isinstance(data, list) or not all(isinstance(ep, dict) for ep in data):
+        # Deliberately not logging the body. A malformed list can still hold
+        # valid records, and an endpoint token is a capability — /hook/<token>
+        # is the address. Shape only.
         logger.error(
-            "Cloud endpoint listing for integration %s was not a list of records: %r",
-            integration, data,
+            "Cloud endpoint listing for integration %s was not a list of records "
+            "(got %s with %s entries)",
+            integration,
+            type(data).__name__,
+            len(data) if isinstance(data, (list, dict, str)) else "unknown",
         )
         return None
     return data
@@ -466,16 +472,31 @@ async def register_webhook_trigger_with_cloud(
     # Cloud returns the URL/token under `endpoints: [{type, url, token}]` (the same
     # envelope as the Slack registration). Fall back to top-level `url`/`token` for
     # forward-compatibility in case the cloud response shape ever flattens.
-    url = data.get("url")
-    token = data.get("token")
-    if not (url and token):
-        for ep in data.get("endpoints", []) or []:
-            if ep.get("type") == "webhook" and ep.get("url") and ep.get("token"):
-                url = ep["url"]
-                token = ep["token"]
-                break
-    if not url or not token:
-        logger.error("Cloud webhook trigger registration response missing url/token for %s: %s", trigger.id, data)
+    #
+    # Everything here is defensive about shape. Reconciliation depends on this
+    # helper returning False for *every* kind of failure: an exception instead
+    # would unwind past its clearing block, leaving a revoked URL on display
+    # with no recorded error — the exact failure this change exists to end.
+    url = token = None
+    if isinstance(data, dict):
+        url = data.get("url")
+        token = data.get("token")
+        if not (url and token):
+            endpoints = data.get("endpoints")
+            for ep in endpoints if isinstance(endpoints, list) else []:
+                if not isinstance(ep, dict):
+                    continue
+                if ep.get("type") == "webhook" and ep.get("url") and ep.get("token"):
+                    url = ep["url"]
+                    token = ep["token"]
+                    break
+    if not isinstance(url, str) or not isinstance(token, str) or not url or not token:
+        # Shape only — same reasoning as the listing log: the body may still
+        # carry live endpoint tokens even when this trigger's are unusable.
+        logger.error(
+            "Cloud webhook trigger registration response missing url/token for %s (got %s)",
+            trigger.id, type(data).__name__,
+        )
         await _store_endpoint_error(session, "Cloud endpoint registration response missing url/token")
         return False
 

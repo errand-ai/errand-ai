@@ -144,23 +144,31 @@ async function apiFetch(url: string, options: RequestInit = {}): Promise<Respons
   return fetch(url, { ...options, headers })
 }
 
+// Refreshes overlap: a slow one can land after a newer one and overwrite a
+// repaired URL with the stale value it fetched earlier, putting a dead URL and
+// its Copy button back on the page. Only the newest may write.
+let statusSeq = 0
+
 async function fetchStatus(options: { quiet?: boolean } = {}) {
   // A background refresh must not flash the skeleton over a populated page.
   if (!options.quiet) loading.value = true
+  const seq = ++statusSeq
   try {
     const [statusResp, triggersResp] = await Promise.all([
       apiFetch('/api/cloud/status'),
       fetchWebhookTriggers().catch(() => [] as WebhookTrigger[]),
     ])
-    if (statusResp.ok) {
-      cloudStatus.value = await statusResp.json()
+    const status = statusResp.ok ? await statusResp.json() : null
+    if (seq !== statusSeq) return
+    if (status) {
+      cloudStatus.value = status
       taskStore.cloudStatus = cloudStatus.value.status
     }
     triggers.value = triggersResp
   } catch {
     // Silent failure — status display is best-effort
   } finally {
-    if (!options.quiet) loading.value = false
+    if (!options.quiet && seq === statusSeq) loading.value = false
   }
 }
 

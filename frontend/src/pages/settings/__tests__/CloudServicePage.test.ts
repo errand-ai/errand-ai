@@ -924,3 +924,76 @@ describe('CloudServicePage URL change notice', () => {
     expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(false)
   })
 })
+
+describe('CloudServicePage overlapping refreshes', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockReset()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  it('a slow earlier refresh cannot overwrite a newer one', async () => {
+    // Drives the real 30s interval. The first background tick stalls on its
+    // status request while still holding the stale trigger list; the second
+    // completes with the repaired URL. When the stalled one finally lands it
+    // must not put the dead URL, and its Copy button, back on the page.
+    const base = { status: 'connected', tenant_id: 't', email: 'e', endpoints: [] }
+    const dead = [{ id: 't1', name: 'Jira', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' }]
+    const fresh = [{ id: 't1', name: 'Jira', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/fresh' }]
+
+    let releaseSlow: (v: unknown) => void = () => {}
+    const slow = new Promise((r) => { releaseSlow = r })
+
+    // Stall the SECOND /api/cloud/status request specifically. Matching on call
+    // index instead would hit restoreDeviceGrant's fetch during mount, which
+    // would hang onMounted before the refresh interval is ever created.
+    let statusCall = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cloud/status')) {
+        statusCall += 1
+        if (statusCall === 2) await slow
+        return { ok: true, json: () => Promise.resolve(base) }
+      }
+      return { ok: true, json: () => Promise.resolve({}) }
+    }))
+
+    // What the trigger list currently says, flipped explicitly between ticks so
+    // the test does not depend on how many times the component calls it.
+    let currentTriggers = dead
+    mockFetchWebhookTriggers.mockImplementation(async () => currentTriggers)
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/dead')
+
+    // Tick 1: starts and stalls on its status response, holding the stale list.
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    // The endpoint is repaired in the background.
+    currentTriggers = fresh
+
+    // Tick 2: completes with the repaired URL.
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+
+    // The stalled tick 1 now lands. Its own trigger fetch already resolved with
+    // the stale list, so an unsequenced write here would undo the repair.
+    currentTriggers = dead
+    releaseSlow(null)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(true)
+  })
+})

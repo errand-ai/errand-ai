@@ -1650,3 +1650,106 @@ class TestUrlChangeNotice:
         async with session_factory() as s:
             await clear_url_changes(s)
         assert await self._changes(session_factory) is None
+
+
+class TestResponseShapeHardening:
+    """Review follow-up: malformed 2xx bodies, and not leaking tokens to logs."""
+
+    @staticmethod
+    def _post_resp(payload):
+        resp = MagicMock()
+        resp.is_success = True
+        resp.json.return_value = payload
+        return resp
+
+    @pytest.mark.parametrize("payload", [
+        None,
+        ["not", "a", "dict"],
+        {"endpoints": "not-a-list"},
+        {"endpoints": ["stray string"]},
+        {"endpoints": [{"type": "webhook", "url": 123, "token": 456}]},
+    ])
+    @pytest.mark.asyncio
+    async def test_malformed_registration_response_is_a_clean_failure(self, db_session, payload):
+        """It must return False, not raise — reconciliation's clearing depends on it."""
+        from cloud_endpoints import register_webhook_trigger_with_cloud
+        from models import WebhookTrigger
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Shape", source="jira",
+            url="https://cloud.test/hook/old", token="dead",
+        )
+
+        fake = _FakeCloud(post_responses=[self._post_resp(payload)])
+        patcher = _patch_cloud(fake)
+        try:
+            async with session_factory() as session:
+                trigger = (await session.execute(
+                    select(WebhookTrigger).where(WebhookTrigger.id == trigger_id)
+                )).scalar_one()
+                result = await register_webhook_trigger_with_cloud(trigger, session)
+        finally:
+            patcher.stop()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_response_still_clears_the_stale_url(self, db_session):
+        """The whole point: a URL known not to work must stop being displayed."""
+        from models import Setting
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Shape2", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[self._post_resp(["unexpected", "list"])],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        trigger = await _reload(session_factory, trigger_id)
+        assert trigger.cloud_webhook_url is None
+        async with session_factory() as s:
+            err = (await s.execute(
+                select(Setting).where(Setting.key == "cloud_endpoint_error")
+            )).scalar_one_or_none()
+        assert err is not None, "a malformed response must still record a reason"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_listing_does_not_log_endpoint_tokens(self, caplog):
+        """Endpoint tokens are capabilities — /hook/<token> is the address."""
+        import logging
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = [
+            {"token": "super-secret-token", "url": "https://cloud.test/hook/super-secret-token"},
+            "malformed entry",
+        ]
+
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=resp)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with caplog.at_level(logging.ERROR, logger="cloud_endpoints"):
+                result = await check_existing_endpoints(
+                    cloud_creds={"access_token": "t"},
+                    cloud_service_url="https://cloud.test",
+                    integration="jira",
+                )
+
+        assert result is None
+        assert "super-secret-token" not in caplog.text
+        assert "jira" in caplog.text
