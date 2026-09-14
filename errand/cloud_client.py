@@ -47,7 +47,7 @@ async def cancel_endpoint_tasks() -> None:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected after cancel(); ensures the task is fully awaited before we return
         except Exception:
             logger.exception("Cloud endpoint pass failed while being cancelled")
     _endpoint_tasks.clear()
