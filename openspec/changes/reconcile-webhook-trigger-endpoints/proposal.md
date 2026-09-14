@@ -28,16 +28,19 @@ None.
 ### Modified Capabilities
 
 - `cloud-endpoint-management`: add reconciliation of webhook trigger endpoints on cloud connect; generalise the existing-endpoint check beyond Slack; reverse the recorded non-goal that the system does not backfill on reconnect.
+- `cloud-settings-ui`: refresh the endpoint display periodically while the page is open.
 
-`cloud-settings-ui` needs **no** delta. "Cloud endpoint URL display" already specifies the "Registration failed — re-save trigger to retry" row for a trigger whose `cloud_webhook_url` is null while connected. Reconciliation reuses that state rather than introducing a new one.
+"Cloud endpoint URL display" already specifies the "Registration failed — re-save trigger to retry" row for a trigger whose `cloud_webhook_url` is null while connected, and reconciliation reuses that state rather than introducing a new one — so the *states* need no delta. What does need one is timing: because reconciliation now runs on every WebSocket reconnect, a URL can change while the page is open, and a page that only fetches on mount would go on offering a Copy button for a URL that has already been replaced.
 
 ## Impact
 
 - `errand/cloud_endpoints.py` — generalise `check_existing_endpoints`; add the reconciliation pass.
-- `errand/main.py` — invoke reconciliation on the cloud connect path, alongside `try_register_endpoints`.
+- `errand/main.py`, `errand/cloud_client.py` — run both endpoint passes from every path that establishes a cloud connection, reconnects included.
+- `errand/webhook_trigger_routes.py` — take the per-trigger lock so trigger CRUD and reconciliation cannot interleave.
+- `frontend/src/pages/settings/CloudServicePage.vue` — refresh the endpoint display while mounted.
 - `errand/tests/test_cloud_endpoints.py` — reconciliation coverage.
 
-**Recovery is not immediate.** Reconciliation runs on connect, so an endpoint revoked mid-session stays stale until the next reconnect. Given the WebSocket reconnects frequently this is a short window in practice, but it is a window, and it is why the stale-URL display fix matters independently of the reconciliation.
+**Recovery is not immediate.** Reconciliation runs on connect — process start, device authorization, and every WebSocket reconnect — so an endpoint revoked mid-session stays stale until the socket next reconnects. Given how often it does, this is a short window in practice, but it is a window, and it is why the stale-URL display fix matters independently of the reconciliation.
 
 **The URL changes.** A re-registered trigger gets a new token and therefore a new URL, which the user must paste into Jira or GitHub again. Reconciliation restores the endpoint; it cannot restore the third-party configuration pointing at the old one.
 

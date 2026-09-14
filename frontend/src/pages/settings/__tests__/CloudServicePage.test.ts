@@ -728,3 +728,104 @@ describe('CloudServicePage', () => {
     })
   })
 })
+
+describe('CloudServicePage background endpoint refresh', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  const connected = {
+    status: 'connected',
+    tenant_id: 'tenant-abc',
+    email: 'user@example.com',
+    endpoints: [],
+  }
+
+  it('picks up a URL repaired by a reconnect without a reload', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' },
+    ])
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/dead')
+
+    // A reconciliation pass replaces the endpoint while the page is open.
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/fresh' },
+    ])
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+  })
+
+  it('stops offering Copy once reconciliation clears the URL', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' },
+    ])
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(true)
+
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: null },
+    ])
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-registration-failed"]').exists()).toBe(true)
+  })
+
+  it('does not flash the loading skeleton on a background refresh', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const pending = vi.advanceTimersByTimeAsync(30000)
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+    await pending
+    await flushPromises()
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+  })
+
+  it('stops refreshing once the page is unmounted', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const callsAtUnmount = mockFetchWebhookTriggers.mock.calls.length
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(120000)
+    await flushPromises()
+
+    expect(mockFetchWebhookTriggers.mock.calls.length).toBe(callsAtUnmount)
+  })
+})

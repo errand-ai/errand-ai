@@ -331,15 +331,24 @@ class TestRunDeviceGrant:
             "expires_in": 300,
         }
 
+        # The endpoint passes now open their own sessions via
+        # database.async_session, so point that at the test session maker too —
+        # otherwise this test quietly runs them against the real one.
+        import database as database_module
+        monkeypatch.setattr(database_module, "async_session", session_maker)
+
         with patch("main.poll_until_complete", new_callable=AsyncMock,
                    return_value=DeviceTokenResult(outcome=DEVICE_TOKENS, tokens=tokens)), \
              patch("cloud_client.start_cloud_client", new_callable=AsyncMock) as start_ws, \
-             patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock) as register:
+             patch("cloud_endpoints.try_register_endpoints", new_callable=AsyncMock) as register, \
+             patch("cloud_endpoints.reconcile_webhook_trigger_endpoints",
+                   new_callable=AsyncMock) as reconcile:
             await main_module._run_device_grant("https://cloud.test", "dc", 5, 600)
 
         assert main_module._cloud_device_grant["status"] == "connected"
         start_ws.assert_awaited_once()
         register.assert_awaited_once()
+        reconcile.assert_awaited_once()
 
         from models import PlatformCredential
         from platforms.credentials import decrypt

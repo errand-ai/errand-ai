@@ -159,10 +159,22 @@ async def check_existing_endpoints(
                 timeout=30,
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
     except Exception:
         logger.exception("Cloud endpoint check API call failed for integration %s", integration)
         return None
+
+    # A 2xx body that is not a list of endpoint records — a proxy's error page,
+    # an envelope, a shape change — must be treated as a failed listing, not as
+    # "no endpoints exist". Reducing it to an empty list would make every
+    # trigger look revoked and re-register the lot.
+    if not isinstance(data, list) or not all(isinstance(ep, dict) for ep in data):
+        logger.error(
+            "Cloud endpoint listing for integration %s was not a list of records: %r",
+            integration, data,
+        )
+        return None
+    return data
 
 
 async def try_register_endpoints(session: AsyncSession) -> None:
@@ -340,6 +352,31 @@ async def _resolve_cloud_context(session: AsyncSession) -> tuple[dict, str] | No
     return cloud_creds, cloud_service_url
 
 
+# One lock per trigger, shared by reconciliation and the trigger CRUD routes.
+# Reconciliation's [re-read -> POST -> commit] and a delete's [revoke -> delete]
+# must not interleave, or reconciliation can re-create on the cloud an endpoint
+# the delete has just revoked, leaving an orphan the user cannot see or remove.
+# Both live in this process, so an asyncio lock is the whole mechanism.
+_trigger_locks: dict[str, asyncio.Lock] = {}
+
+
+def trigger_endpoint_lock(trigger_id) -> asyncio.Lock:
+    """Return the lock guarding cloud-endpoint work for one trigger."""
+    key = str(trigger_id)
+    lock = _trigger_locks.get(key)
+    if lock is None:
+        # No await between the miss and the insert, so this cannot race on the
+        # single-threaded event loop.
+        lock = asyncio.Lock()
+        _trigger_locks[key] = lock
+    return lock
+
+
+def forget_trigger_lock(trigger_id) -> None:
+    """Drop a deleted trigger's lock so the registry does not grow forever."""
+    _trigger_locks.pop(str(trigger_id), None)
+
+
 async def register_webhook_trigger_with_cloud(
     trigger: WebhookTrigger, session: AsyncSession
 ) -> bool:
@@ -486,18 +523,24 @@ async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
             return
         cloud_creds, cloud_service_url = ctx
 
+        # Snapshot ids and tokens as plain values rather than holding ORM
+        # objects across the pass. A rollback after one trigger's failure
+        # expires every instance in the session, and touching an expired
+        # attribute later emits IO where the next statement does not expect it —
+        # which took the whole pass down instead of the one trigger. Each
+        # trigger is re-read by id under its own lock anyway.
         result = await session.execute(
-            select(WebhookTrigger).where(
-                WebhookTrigger.source.in_(WEBHOOK_TRIGGER_INTEGRATIONS)
-            )
+            select(
+                WebhookTrigger.id, WebhookTrigger.source, WebhookTrigger.cloud_endpoint_token
+            ).where(WebhookTrigger.source.in_(WEBHOOK_TRIGGER_INTEGRATIONS))
         )
-        triggers = list(result.scalars().all())
-        if not triggers:
+        rows = result.all()
+        if not rows:
             return
 
-        by_integration: dict[str, list[WebhookTrigger]] = {}
-        for trigger in triggers:
-            by_integration.setdefault(trigger.source, []).append(trigger)
+        by_integration: dict[str, list[tuple]] = {}
+        for trigger_id, source, token in rows:
+            by_integration.setdefault(source, []).append((trigger_id, token))
 
         for integration, group in by_integration.items():
             existing = await check_existing_endpoints(
@@ -514,52 +557,73 @@ async def reconcile_webhook_trigger_endpoints(session: AsyncSession) -> None:
                 ep.get("token") for ep in existing if isinstance(ep, dict) and ep.get("token")
             }
 
-            for trigger in group:
-                if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
+            for trigger_id, token in group:
+                if token and token in live_tokens:
                     continue
 
-                # The rows were read before the listing call, so they are as old
-                # as one network round trip. Re-read immediately before acting:
-                # a trigger deleted in the meantime must not be re-created on the
-                # cloud as an orphan, and one re-registered by a concurrent save
-                # must not be registered twice. This narrows the window to the
-                # single POST below; it does not close it, which would take
-                # coordination with the trigger CRUD path.
-                fresh = (
-                    await session.execute(
-                        select(WebhookTrigger)
-                        .where(WebhookTrigger.id == trigger.id)
-                        .execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-                if fresh is None:
-                    logger.debug("Trigger %s was deleted during reconciliation, skipping", trigger.id)
-                    continue
-                trigger = fresh
-                if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
-                    continue
-
-                logger.info(
-                    "Webhook trigger %s (%s) has no live cloud endpoint, re-registering",
-                    trigger.id, integration,
-                )
-                registered = await register_webhook_trigger_with_cloud(trigger, session)
-                if registered:
-                    continue
-
-                # The cloud told us the endpoint is gone and we could not make a
-                # new one. Displaying the old URL is the failure this change
-                # exists to end.
-                if trigger.cloud_webhook_url is not None:
-                    logger.warning(
-                        "Clearing stale cloud_webhook_url for trigger %s: endpoint gone "
-                        "and re-registration failed",
-                        trigger.id,
-                    )
-                    trigger.cloud_webhook_url = None
-                    await session.commit()
+                # One trigger's problem must not cost the rest of the pass
+                # their attempt — including a StaleDataError from a row deleted
+                # by another process between the re-read and the commit.
+                try:
+                    await _reconcile_one(session, trigger_id, integration, live_tokens)
+                except Exception:
+                    logger.exception("Reconciling webhook trigger %s failed", trigger_id)
+                    await session.rollback()
     except Exception:
         logger.exception("Webhook trigger endpoint reconciliation failed")
+
+
+async def _reconcile_one(
+    session: AsyncSession, trigger_id, integration: str, live_tokens: set
+) -> None:
+    """Re-register one trigger whose cloud endpoint is missing, or clear its URL."""
+    # The snapshot was taken before the listing call, so it is as old as one
+    # network round trip. Hold the trigger's lock across the re-read, the POST
+    # and the commit, so a concurrent delete or save on the CRUD path cannot
+    # interleave with them.
+    async with trigger_endpoint_lock(trigger_id):
+        trigger = (
+            await session.execute(
+                select(WebhookTrigger)
+                .where(WebhookTrigger.id == trigger_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if trigger is None:
+            logger.debug("Trigger %s was deleted during reconciliation, skipping", trigger_id)
+            return
+
+        # A concurrent save may have moved the trigger to another integration.
+        # Its token was never in this integration's listing, so acting on it
+        # here would register it against the wrong snapshot.
+        if trigger.source != integration:
+            logger.debug(
+                "Trigger %s moved from %s to %s during reconciliation, skipping",
+                trigger.id, integration, trigger.source,
+            )
+            return
+
+        # A concurrent save may also have already re-registered it.
+        if trigger.cloud_endpoint_token and trigger.cloud_endpoint_token in live_tokens:
+            return
+
+        logger.info(
+            "Webhook trigger %s (%s) has no live cloud endpoint, re-registering",
+            trigger.id, integration,
+        )
+        if await register_webhook_trigger_with_cloud(trigger, session):
+            return
+
+        # The cloud told us the endpoint is gone and we could not make a new
+        # one. Displaying the old URL is the failure this change exists to end.
+        if trigger.cloud_webhook_url is not None:
+            logger.warning(
+                "Clearing stale cloud_webhook_url for trigger %s: endpoint gone "
+                "and re-registration failed",
+                trigger.id,
+            )
+            trigger.cloud_webhook_url = None
+            await session.commit()
 
 
 _post_connect_lock = asyncio.Lock()
@@ -590,12 +654,18 @@ async def run_post_connect_endpoint_passes() -> None:
     async with _post_connect_lock:
         try:
             from database import async_session
-            async with async_session() as session:
-                try:
+            # A session of its own each. Sharing one means a failed transaction
+            # left behind by the Slack pass makes reconciliation's very first
+            # query raise, so "guarded separately" would not be true in the one
+            # case that matters.
+            try:
+                async with async_session() as session:
                     await try_register_endpoints(session)
-                except Exception:
-                    logger.exception("Cloud endpoint registration failed after cloud connect")
-                # reconcile_webhook_trigger_endpoints never raises.
+            except Exception:
+                logger.exception("Cloud endpoint registration failed after cloud connect")
+
+            # reconcile_webhook_trigger_endpoints never raises.
+            async with async_session() as session:
                 await reconcile_webhook_trigger_endpoints(session)
         except Exception:
             logger.exception("Cloud endpoint passes failed after cloud connect")

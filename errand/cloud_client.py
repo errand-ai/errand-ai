@@ -27,6 +27,30 @@ _refresh_task: asyncio.Task | None = None
 _ws_connected: bool = False
 _active_ws = None
 _active_client: "CloudWebSocketClient | None" = None
+# Endpoint passes dispatched from the connect path. Held so that disconnect can
+# cancel one in flight: a pass that POSTs after disconnect's bulk revoke would
+# re-create the very endpoints the disconnect removed.
+_endpoint_tasks: set[asyncio.Task] = set()
+
+
+def _track_endpoint_task(task: asyncio.Task) -> None:
+    _endpoint_tasks.add(task)
+    task.add_done_callback(_endpoint_tasks.discard)
+
+
+async def cancel_endpoint_tasks() -> None:
+    """Cancel any in-flight post-connect endpoint pass and wait for it to stop."""
+    tasks = [t for t in _endpoint_tasks if not t.done()]
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Cloud endpoint pass failed while being cancelled")
+    _endpoint_tasks.clear()
 
 
 def is_connected() -> bool:
@@ -150,7 +174,7 @@ class CloudWebSocketClient:
                 # cloud cannot stall the receive loop, and self-suppressing so
                 # a flapping connection cannot pile passes up.
                 from cloud_endpoints import run_post_connect_endpoint_passes
-                asyncio.create_task(run_post_connect_endpoint_passes())
+                _track_endpoint_task(asyncio.create_task(run_post_connect_endpoint_passes()))
 
                 while self._running:
                     try:
@@ -791,6 +815,10 @@ async def start_cloud_client() -> None:
 async def stop_cloud_client() -> None:
     """Stop the cloud WebSocket client and token refresh tasks."""
     global _client_task, _refresh_task, _ws_connected, _active_ws, _active_client
+
+    # Before anything else: an endpoint pass still running would otherwise race
+    # the caller's bulk revoke and resurrect endpoints it had just removed.
+    await cancel_endpoint_tasks()
 
     if _client_task and not _client_task.done():
         _client_task.cancel()

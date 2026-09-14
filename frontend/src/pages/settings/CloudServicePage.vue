@@ -61,6 +61,11 @@ const deviceDetail = ref<string | null>(null)
 const DEVICE_POLL_MS = 3000
 const MAX_POLL_FAILURES = 3
 let devicePoll: ReturnType<typeof setInterval> | null = null
+// Endpoints are repaired in the background on every cloud reconnect, so a
+// trigger's URL can change while this page is open. Without a refresh the page
+// keeps offering a Copy button for a URL that has already been replaced.
+let endpointRefresh: ReturnType<typeof setInterval> | null = null
+const ENDPOINT_REFRESH_MS = 30000
 // Polls are async and overlapping: a slow response can land after a newer one.
 // Only the newest poll may touch state, or a stale "pending" could overwrite
 // "connected" and leave the panel wrong with polling already stopped.
@@ -123,8 +128,9 @@ async function apiFetch(url: string, options: RequestInit = {}): Promise<Respons
   return fetch(url, { ...options, headers })
 }
 
-async function fetchStatus() {
-  loading.value = true
+async function fetchStatus(options: { quiet?: boolean } = {}) {
+  // A background refresh must not flash the skeleton over a populated page.
+  if (!options.quiet) loading.value = true
   try {
     const [statusResp, triggersResp] = await Promise.all([
       apiFetch('/api/cloud/status'),
@@ -138,7 +144,14 @@ async function fetchStatus() {
   } catch {
     // Silent failure — status display is best-effort
   } finally {
-    loading.value = false
+    if (!options.quiet) loading.value = false
+  }
+}
+
+function stopEndpointRefresh() {
+  if (endpointRefresh !== null) {
+    clearInterval(endpointRefresh)
+    endpointRefresh = null
   }
 }
 
@@ -306,9 +319,18 @@ onMounted(async () => {
   if (cloudStatus.value.endpoint_error?.detail) {
     toast.error('Endpoint registration failed: ' + cloudStatus.value.endpoint_error.detail)
   }
+
+  endpointRefresh = setInterval(() => {
+    // The device-grant flow polls and refetches on its own; leave it alone.
+    if (isPendingGrant.value) return
+    fetchStatus({ quiet: true })
+  }, ENDPOINT_REFRESH_MS)
 })
 
-onBeforeUnmount(stopDevicePolling)
+onBeforeUnmount(() => {
+  stopDevicePolling()
+  stopEndpointRefresh()
+})
 </script>
 
 <template>

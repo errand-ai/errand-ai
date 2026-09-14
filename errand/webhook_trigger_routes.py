@@ -364,8 +364,10 @@ async def update_trigger(
     cloud_relevant_fields = {"name", "source", "filters", "actions"}
     if cloud_relevant_fields & update_data.keys():
         try:
-            from cloud_endpoints import register_webhook_trigger_with_cloud
-            await register_webhook_trigger_with_cloud(trigger, session)
+            from cloud_endpoints import register_webhook_trigger_with_cloud, trigger_endpoint_lock
+            # Serialise against a reconciliation pass working on this trigger.
+            async with trigger_endpoint_lock(trigger.id):
+                await register_webhook_trigger_with_cloud(trigger, session)
         except Exception:
             logger.warning("Cloud re-registration failed for trigger %s", trigger.id, exc_info=True)
 
@@ -384,15 +386,24 @@ async def delete_trigger(
     trigger = result.scalar_one_or_none()
     if not trigger:
         raise HTTPException(status_code=404, detail="Trigger not found")
-    # Deregister from cloud before deleting
-    try:
-        from cloud_endpoints import revoke_webhook_trigger_in_cloud
-        await revoke_webhook_trigger_in_cloud(trigger, session)
-    except Exception:
-        logger.warning("Cloud deregistration failed for trigger %s", trigger.id, exc_info=True)
+    from cloud_endpoints import (
+        forget_trigger_lock,
+        revoke_webhook_trigger_in_cloud,
+        trigger_endpoint_lock,
+    )
+    # Hold the trigger's lock across revoke-and-delete. Without it a
+    # reconciliation pass can re-create on the cloud the endpoint this revoke
+    # has just removed, leaving an orphan with no local row to delete it from.
+    trigger_id_value = trigger.id
+    async with trigger_endpoint_lock(trigger_id_value):
+        try:
+            await revoke_webhook_trigger_in_cloud(trigger, session)
+        except Exception:
+            logger.warning("Cloud deregistration failed for trigger %s", trigger.id, exc_info=True)
 
-    await session.delete(trigger)
-    await session.commit()
+        await session.delete(trigger)
+        await session.commit()
+    forget_trigger_lock(trigger_id_value)
 
 
 @router.post("/github/introspect-project")

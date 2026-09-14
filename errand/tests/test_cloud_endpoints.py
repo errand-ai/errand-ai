@@ -1,6 +1,5 @@
 """Tests for cloud endpoint management."""
 import asyncio
-import inspect
 import uuid
 
 import pytest
@@ -1105,14 +1104,76 @@ class TestPostConnectEndpointPasses:
 
     @pytest.mark.asyncio
     async def test_websocket_connect_runs_the_passes(self):
-        """Spec: reconciliation runs on each successful cloud connect, reconnects included."""
+        """Spec: reconciliation runs on each successful cloud connect, reconnects included.
+
+        Drives the real connect path rather than inspecting its source, so an
+        unreachable or commented-out call would fail here.
+        """
+        import cloud_client
+        import websockets.exceptions
+
+        ran = asyncio.Event()
+
+        async def fake_passes():
+            ran.set()
+
+        class _FakeWS:
+            async def recv(self):
+                raise websockets.exceptions.ConnectionClosed(None, None)
+
+            async def close(self):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        client = cloud_client.CloudWebSocketClient()
+        client._running = True
+
+        with patch("cloud_endpoints.run_post_connect_endpoint_passes", new=fake_passes), \
+             patch.object(client, "_load_credentials",
+                          new=AsyncMock(return_value={"access_token": "t"})), \
+             patch.object(client, "_get_cloud_ws_url",
+                          new=AsyncMock(return_value="wss://cloud.test/ws")), \
+             patch.object(client, "_send_register", new=AsyncMock()), \
+             patch.object(client, "_wait_for_registered", new=AsyncMock(return_value=True)), \
+             patch.object(client, "_handle_close", new=AsyncMock()), \
+             patch.object(client, "_cleanup_subscriptions", new=AsyncMock()), \
+             patch("cloud_client.publish_event", new=AsyncMock()), \
+             patch("cloud_client.websockets.connect", return_value=_FakeWS()):
+            await client._connect_and_receive()
+            # The pass is dispatched as a task so it cannot stall the receive loop.
+            await asyncio.wait_for(ran.wait(), timeout=2)
+
+        assert ran.is_set()
+        await cloud_client.cancel_endpoint_tasks()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_an_in_flight_pass(self):
+        """A pass still running would POST after disconnect's bulk revoke."""
         import cloud_client
 
-        source = inspect.getsource(cloud_client.CloudWebSocketClient._connect_and_receive)
-        assert "run_post_connect_endpoint_passes" in source, (
-            "the WebSocket connect path must run the endpoint passes, or an endpoint "
-            "revoked mid-session stays stale until the process restarts"
-        )
+        started = asyncio.Event()
+        completed = False
+
+        async def slow_pass():
+            nonlocal completed
+            started.set()
+            await asyncio.sleep(30)
+            completed = True
+
+        task = asyncio.create_task(slow_pass())
+        cloud_client._track_endpoint_task(task)
+        await started.wait()
+
+        await cloud_client.cancel_endpoint_tasks()
+
+        assert task.cancelled() or task.done()
+        assert completed is False
+        assert cloud_client._endpoint_tasks == set()
 
 
 class TestReconcileSkipsRowsDeletedMidPass:
@@ -1181,3 +1242,172 @@ class TestSecretFailuresRecordADetail:
         assert err is not None
         assert "webhook secret" in err.value["detail"]
         assert fake.post_bodies == []
+
+
+class TestListingPayloadValidation:
+    """A 2xx body that is not a list of records must not read as 'nothing exists'."""
+
+    @staticmethod
+    def _resp(payload):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = payload
+        return resp
+
+    @pytest.mark.parametrize("payload", [
+        {"detail": "gateway error"},
+        "not json at all",
+        [{"token": "ok"}, "stray string"],
+        None,
+    ])
+    @pytest.mark.asyncio
+    async def test_non_list_body_is_a_failure_not_an_empty_listing(self, payload):
+        with patch("cloud_endpoints.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=self._resp(payload))
+            mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await check_existing_endpoints(
+                cloud_creds={"access_token": "t"},
+                cloud_service_url="https://cloud.test",
+                integration="jira",
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_listing_reregisters_nothing(self, db_session):
+        """The mass-churn hazard: every trigger must not look revoked at once."""
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        for n in range(3):
+            await _add_trigger(
+                session_factory, name=f"Jira {n}", source="jira",
+                url=f"https://cloud.test/hook/{n}", token=f"token-{n}",
+            )
+
+        fake = _FakeCloud(get_responses=[self._resp({"detail": "bad gateway"})])
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.post_bodies == []
+        from models import WebhookTrigger
+        async with session_factory() as s:
+            rows = (await s.execute(select(WebhookTrigger))).scalars().all()
+        assert all(r.cloud_webhook_url is not None for r in rows)
+
+
+class TestReconcileEdgeCases:
+    @pytest.mark.asyncio
+    async def test_trigger_that_changed_integration_is_skipped(self, db_session):
+        """It was never in this integration's listing, so it must not be acted on here."""
+        from models import WebhookTrigger
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Mover", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        class _MovingCloud(_FakeCloud):
+            async def get(self, url, **kwargs):
+                async with session_factory() as s:
+                    row = (await s.execute(
+                        select(WebhookTrigger).where(WebhookTrigger.id == trigger_id)
+                    )).scalar_one()
+                    row.source = "github"
+                    await s.commit()
+                return await super().get(url, **kwargs)
+
+        fake = _MovingCloud(get_responses=[_listing_response([])])
+        patcher = _patch_cloud(fake)
+        try:
+            await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert fake.post_bodies == []
+
+    @pytest.mark.asyncio
+    async def test_one_triggers_failure_does_not_end_the_pass(self, db_session):
+        """A raise on the first trigger must not cost the second its attempt."""
+        import cloud_endpoints
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        await _add_trigger(session_factory, name="Jira A", source="jira",
+                           url="https://cloud.test/hook/a", token="dead-a")
+        await _add_trigger(session_factory, name="Jira B", source="jira",
+                           url="https://cloud.test/hook/b", token="dead-b")
+
+        calls = 0
+        real = cloud_endpoints.register_webhook_trigger_with_cloud
+
+        async def flaky(trigger, session):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("first one explodes")
+            return await real(trigger, session)
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/new", "new-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            with patch.object(cloud_endpoints, "register_webhook_trigger_with_cloud", new=flaky):
+                await _run_reconcile(session_factory)
+        finally:
+            patcher.stop()
+
+        assert calls == 2, "the pass must continue past a failing trigger"
+
+    @pytest.mark.asyncio
+    async def test_delete_path_and_reconciliation_share_the_trigger_lock(self):
+        """The lock registry is the coordination; both sides must reach the same object."""
+        from cloud_endpoints import forget_trigger_lock, trigger_endpoint_lock
+
+        tid = uuid.uuid4()
+        first = trigger_endpoint_lock(tid)
+        assert trigger_endpoint_lock(str(tid)) is first, "uuid and str must map to one lock"
+
+        forget_trigger_lock(tid)
+        assert trigger_endpoint_lock(tid) is not first, "a deleted trigger's lock is dropped"
+        forget_trigger_lock(tid)
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_waits_for_a_held_trigger_lock(self, db_session):
+        """A delete in progress must finish before reconciliation registers."""
+        from cloud_endpoints import trigger_endpoint_lock
+
+        _, session_factory = db_session
+        await _seed_cloud_credentials(session_factory)
+        trigger_id = await _add_trigger(
+            session_factory, name="Jira Locked", source="jira",
+            url="https://cloud.test/hook/dead", token="dead-token",
+        )
+
+        lock = trigger_endpoint_lock(trigger_id)
+        await lock.acquire()
+
+        fake = _FakeCloud(
+            get_responses=[_listing_response([])],
+            post_responses=[_registration_response("https://cloud.test/hook/new", "new-token")],
+        )
+        patcher = _patch_cloud(fake)
+        try:
+            pass_task = asyncio.create_task(_run_reconcile(session_factory))
+            await asyncio.sleep(0.05)
+            assert fake.post_bodies == [], "must not register while the lock is held"
+            lock.release()
+            await asyncio.wait_for(pass_task, timeout=2)
+        finally:
+            patcher.stop()
+
+        assert len(fake.post_bodies) == 1, "and must proceed once it is released"
