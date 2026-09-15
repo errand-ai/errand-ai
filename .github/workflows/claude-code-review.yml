@@ -93,6 +93,19 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
+        # The code-review plugin's first step launches a subagent, and Claude Code
+        # runs subagents in the background by default. claude-code-action breaks its
+        # query() loop on the first SDK result — which is the orchestrator's "waiting
+        # for the agent" turn — so the subagent is orphaned, the review never starts,
+        # and the job exits green having posted nothing.
+        # anthropics/claude-code-action#1499 and #1646.
+        # Measured here: before the gh/--comment fixes a run was 23 turns / 128s /
+        # $0.68 (thrashing on the missing gh); with those fixed it collapsed to
+        # 3 turns / 15.8s / $0.15 and still posted nothing — the orchestrator
+        # returning almost immediately. Remove this once the action resumes
+        # background agents.
+        env:
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Renovate opens PRs as a Bot actor, which the action refuses unless the
