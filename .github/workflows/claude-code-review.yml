@@ -71,6 +71,13 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Renovate opens PRs as a Bot actor, which the action refuses unless the
+          # bot is listed here — every Renovate PR failed with "Workflow initiated
+          # by non-human actor". Named explicitly rather than '*', which would let
+          # any external GitHub App invoke the action. The job's `if:` already
+          # limits this to non-draft PRs from this repository, so widening the
+          # actor check does not open it to forks.
+          allowed_bots: 'renovate[bot]'
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           # The plugin command is contradictory for the clean case ("do not proceed" vs. a
