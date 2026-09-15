@@ -66,6 +66,30 @@ jobs:
         with:
           fetch-depth: 1
 
+      # ARC's default runner image (ghcr.io/actions/actions-runner) ships git, curl
+      # and jq but NOT gh — unlike ubuntu-latest, which does. Moving this workflow
+      # to errand-ai-runner in f2f968e therefore silently broke the review: the
+      # code-review plugin does everything through `gh` (read the PR, post the
+      # comment), so the job kept going green while posting nothing. Idempotent,
+      # so a future image that bundles gh costs one `command -v`.
+      - name: Install GitHub CLI
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then
+            echo "gh already installed: $(gh --version | head -1)"
+            exit 0
+          fi
+          # https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+          sudo mkdir -p -m 755 /etc/apt/keyrings
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+          sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gh
+          gh --version | head -1
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
@@ -80,14 +104,20 @@ jobs:
           allowed_bots: 'renovate[bot]'
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # The plugin command is contradictory for the clean case ("do not proceed" vs. a
-          # "No issues found" template), so a clean PR non-deterministically posts nothing.
-          # Force a visible note every time so a silent run can't be mistaken for a broken one.
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} — always post your review as a PR comment, including a brief "No issues found" note when you find nothing worth flagging.'
+          # `--comment` is load-bearing: without it the plugin's own instructions say
+          # "stop here, do not post any GitHub comments", and a free-text "always post"
+          # only sometimes overrides that. With it, a clean PR gets the plugin's
+          # "No issues found" comment.
+          # The plugin also skips PRs it judges automated, so Renovate PRs would be
+          # dropped despite allowed_bots above — hence the explicit instruction.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment — Review automated PRs, including Renovate dependency updates, like any other PR; do not skip them for being automated. Always post a PR comment, including the "No issues found" note when nothing is worth flagging.'
           # Agent mode injects no default tool allowlist, so headless Claude denies every
           # Bash call. The plugin needs `gh` (read PR + post the review comment) and `git`
           # (blame/history). Without this the review runs but silently posts nothing.
+          # claude-code-action only installs the github_inline_comment MCP server when
+          # its tool is named here, and the plugin posts findings inline through it — so
+          # without it a review that finds problems has nowhere to put them.
           claude_args: |
-            --allowedTools "Bash(gh:*),Bash(git:*)"
+            --allowedTools "Bash(gh:*),Bash(git:*),mcp__github_inline_comment__create_inline_comment"
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
