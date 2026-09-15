@@ -1753,3 +1753,93 @@ class TestResponseShapeHardening:
         assert result is None
         assert "super-secret-token" not in caplog.text
         assert "jira" in caplog.text
+
+
+class TestEndpointPassCancellation:
+    """A pass that outlives disconnect can resurrect the endpoints it revoked."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_tracked(self):
+        import cloud_client
+        cloud_client._endpoint_tasks.clear()
+        yield
+        cloud_client._endpoint_tasks.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_registered_during_cancellation_is_still_cancelled(self):
+        """A client mid-handshake can register a pass after the first snapshot."""
+        import cloud_client
+
+        late_started = asyncio.Event()
+        late_finished = False
+
+        async def late_pass():
+            nonlocal late_finished
+            late_started.set()
+            await asyncio.sleep(30)
+            late_finished = True
+
+        late_task: asyncio.Task | None = None
+
+        async def first_pass():
+            nonlocal late_task
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # Registered while cancellation is already under way, exactly as
+                # a client completing its handshake would.
+                late_task = asyncio.create_task(late_pass())
+                cloud_client._track_endpoint_task(late_task)
+                raise
+
+        first = asyncio.create_task(first_pass())
+        cloud_client._track_endpoint_task(first)
+        await asyncio.sleep(0)
+
+        await cloud_client.cancel_endpoint_tasks()
+
+        assert late_task is not None, "the test did not exercise the late-registration path"
+        assert late_task.cancelled() or late_task.done()
+        assert late_finished is False, "a late pass must not survive cancellation"
+        assert cloud_client._endpoint_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_tracked_passes_are_cancellable_and_awaited(self):
+        """main.py's deliberate connects must be cancellable too, not just reconnects."""
+        import cloud_client
+
+        started = asyncio.Event()
+        finished = False
+
+        async def slow_passes(force=False):
+            nonlocal finished
+            started.set()
+            await asyncio.sleep(30)
+            finished = True
+
+        with patch("cloud_endpoints.run_post_connect_endpoint_passes", new=slow_passes):
+            caller = asyncio.create_task(cloud_client.run_tracked_endpoint_passes(force=True))
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert len(cloud_client._endpoint_tasks) == 1, "the pass must be tracked"
+
+            await cloud_client.cancel_endpoint_tasks()
+            await asyncio.wait_for(caller, timeout=5)
+
+        assert finished is False
+        assert caller.done() and not caller.cancelled(), (
+            "the caller should return normally when its pass is cancelled by disconnect"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_client_is_stopped_before_passes_are_cancelled(self):
+        """Cancelling first lets a live client register another pass behind us."""
+        import cloud_client
+        import inspect
+
+        source = inspect.getsource(cloud_client.stop_cloud_client)
+        client_stop = source.index("_client_task.cancel()")
+        passes_cancel = source.index("await cancel_endpoint_tasks()")
+        assert client_stop < passes_cancel, (
+            "stop_cloud_client must stop the WebSocket client before cancelling endpoint "
+            "passes, or a client mid-handshake can register one afterwards"
+        )

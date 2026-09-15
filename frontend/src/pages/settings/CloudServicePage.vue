@@ -74,6 +74,10 @@ let devicePoll: ReturnType<typeof setInterval> | null = null
 // keeps offering a Copy button for a URL that has already been replaced.
 let endpointRefresh: ReturnType<typeof setInterval> | null = null
 const ENDPOINT_REFRESH_MS = 30000
+// onMounted awaits before installing the interval. Navigating away during
+// those awaits runs onBeforeUnmount while endpointRefresh is still null, and
+// the continuation would then install a timer nothing will ever clear.
+let mounted = true
 // Polls are async and overlapping: a slow response can land after a newer one.
 // Only the newest poll may touch state, or a stale "pending" could overwrite
 // "connected" and leave the panel wrong with polling already stopped.
@@ -353,6 +357,8 @@ onMounted(async () => {
     toast.error('Endpoint registration failed: ' + cloudStatus.value.endpoint_error.detail)
   }
 
+  if (!mounted) return
+
   endpointRefresh = setInterval(() => {
     // The device-grant flow polls and refetches on its own; leave it alone.
     if (isPendingGrant.value) return
@@ -361,6 +367,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  mounted = false
   stopDevicePolling()
   stopEndpointRefresh()
 })

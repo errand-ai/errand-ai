@@ -381,8 +381,8 @@ async def lifespan(app: FastAPI):
             # each connect; whichever gets there first wins and the other is
             # suppressed, so this stays useful when the socket cannot connect.
             async def _register_endpoints_background():
-                from cloud_endpoints import run_post_connect_endpoint_passes
-                await run_post_connect_endpoint_passes(force=True)
+                from cloud_client import run_tracked_endpoint_passes
+                await run_tracked_endpoint_passes(force=True)
             asyncio.create_task(_register_endpoints_background())
 
     async with mcp_server.session_manager.run():
@@ -2268,8 +2268,8 @@ async def _run_device_grant(
     # Register Slack endpoints, and repair webhook trigger endpoints the cloud
     # no longer holds — revoked server-side, or never registered because the
     # cloud was unreachable when the trigger was saved.
-    from cloud_endpoints import run_post_connect_endpoint_passes
-    await run_post_connect_endpoint_passes(force=True)
+    from cloud_client import run_tracked_endpoint_passes
+    await run_tracked_endpoint_passes(force=True)
 
 
 @app.post("/api/cloud/auth/device")

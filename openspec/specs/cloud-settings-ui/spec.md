@@ -151,3 +151,4 @@ Because webhook trigger endpoints are now repaired in the background on every cl
 #### Scenario: The refresh stops when the page is left
 - **WHEN** the user navigates away from the Cloud Service settings page
 - **THEN** the periodic refresh SHALL stop
+- **AND** this SHALL hold when the page is left before the refresh was installed, so that no timer outlives the page

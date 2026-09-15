@@ -196,6 +196,14 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** the user disconnects from errand-cloud while a reconciliation pass is running
 - **THEN** the backend SHALL cancel that pass before revoking endpoints
 - **AND** the pass SHALL NOT re-create an endpoint the disconnect has revoked
+- **AND** every pass SHALL be cancellable, including those started by process startup and device authorization, not only those started by a WebSocket reconnect
+- **AND** the WebSocket client SHALL be stopped before passes are cancelled, and cancellation SHALL account for a pass registered while cancellation is already under way
+
+#### Scenario: Trigger create, update and delete re-read the row under the lock
+- **WHEN** a trigger update or delete acquires the per-trigger lock
+- **THEN** it SHALL re-read the row inside the lock before acting on the cloud
+- **AND** an update SHALL skip cloud registration if the row has since been deleted, rather than re-creating an orphaned endpoint
+- **AND** a delete SHALL revoke the token the row currently holds, not one a reconciliation pass has already replaced
 
 #### Scenario: One trigger's failure does not end the pass
 - **WHEN** reconciling one trigger raises

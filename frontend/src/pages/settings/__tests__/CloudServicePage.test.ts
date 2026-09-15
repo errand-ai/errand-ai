@@ -997,3 +997,53 @@ describe('CloudServicePage overlapping refreshes', () => {
     expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(true)
   })
 })
+
+describe('CloudServicePage unmount during mount awaits', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockReset()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  it('does not leave a refresh interval running when unmounted mid-mount', async () => {
+    // onMounted awaits before installing the interval. Navigating away during
+    // those awaits runs onBeforeUnmount while endpointRefresh is still null, so
+    // an unguarded continuation installs a timer nothing will ever clear.
+    let releaseMount: (v: unknown) => void = () => {}
+    const held = new Promise((r) => { releaseMount = r })
+
+    let statusCall = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cloud/status')) {
+        statusCall += 1
+        if (statusCall === 1) await held
+        return { ok: true, json: () => Promise.resolve({ status: 'connected', tenant_id: 't', email: 'e', endpoints: [] }) }
+      }
+      return { ok: true, json: () => Promise.resolve({}) }
+    }))
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+
+    // Unmount while onMounted is still awaiting its first status call.
+    wrapper.unmount()
+
+    // The mount continuation now runs.
+    releaseMount(null)
+    await flushPromises()
+
+    const callsAfterUnmount = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length
+    await vi.advanceTimersByTimeAsync(180000)
+    await flushPromises()
+
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterUnmount)
+  })
+})

@@ -367,9 +367,27 @@ async def update_trigger(
             from cloud_endpoints import register_webhook_trigger_with_cloud, trigger_endpoint_lock
             # Serialise against a reconciliation pass working on this trigger.
             async with trigger_endpoint_lock(trigger.id):
-                await register_webhook_trigger_with_cloud(trigger, session)
+                # Re-read inside the lock, as reconciliation does. Holding the
+                # lock only serialises the cloud call; the instance loaded
+                # before acquiring it can already describe a row a concurrent
+                # delete has removed, and registering that would leave an
+                # orphaned endpoint on the cloud with no local row to delete it.
+                current = (
+                    await session.execute(
+                        select(WebhookTrigger)
+                        .where(WebhookTrigger.id == trigger.id)
+                        .execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
+                if current is None:
+                    logger.info(
+                        "Trigger %s was deleted before cloud re-registration, skipping",
+                        trigger_id,
+                    )
+                else:
+                    await register_webhook_trigger_with_cloud(current, session)
         except Exception:
-            logger.warning("Cloud re-registration failed for trigger %s", trigger.id, exc_info=True)
+            logger.warning("Cloud re-registration failed for trigger %s", trigger_id, exc_info=True)
 
     return _trigger_response(trigger)
 
@@ -396,12 +414,29 @@ async def delete_trigger(
     # has just removed, leaving an orphan with no local row to delete it from.
     trigger_id_value = trigger.id
     async with trigger_endpoint_lock(trigger_id_value):
-        try:
-            await revoke_webhook_trigger_in_cloud(trigger, session)
-        except Exception:
-            logger.warning("Cloud deregistration failed for trigger %s", trigger.id, exc_info=True)
+        # Re-read inside the lock. `expire_on_commit` is disabled, so the
+        # instance loaded before acquiring it can still carry the token a
+        # reconciliation pass has since replaced — revoking that stale token
+        # would remove an endpoint that is already gone and leave the newly
+        # registered one orphaned, with the row about to be deleted.
+        current = (
+            await session.execute(
+                select(WebhookTrigger)
+                .where(WebhookTrigger.id == trigger_id_value)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if current is None:
+            # Someone else deleted it while we waited; their revoke stands.
+            forget_trigger_lock(trigger_id_value)
+            return
 
-        await session.delete(trigger)
+        try:
+            await revoke_webhook_trigger_in_cloud(current, session)
+        except Exception:
+            logger.warning("Cloud deregistration failed for trigger %s", trigger_id_value, exc_info=True)
+
+        await session.delete(current)
         await session.commit()
     forget_trigger_lock(trigger_id_value)
 

@@ -38,19 +38,59 @@ def _track_endpoint_task(task: asyncio.Task) -> None:
     task.add_done_callback(_endpoint_tasks.discard)
 
 
+# A client already mid-handshake can register a pass while we are cancelling,
+# so one snapshot is not enough. Bounded so a pathological adder cannot spin
+# here forever; in practice the first or second round is empty.
+_MAX_ENDPOINT_CANCEL_ROUNDS = 5
+
+
 async def cancel_endpoint_tasks() -> None:
-    """Cancel any in-flight post-connect endpoint pass and wait for it to stop."""
-    tasks = [t for t in _endpoint_tasks if not t.done()]
-    for task in tasks:
-        task.cancel()
-    for task in tasks:
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass  # Expected after cancel(); ensures the task is fully awaited before we return
-        except Exception:
-            logger.exception("Cloud endpoint pass failed while being cancelled")
+    """Cancel every in-flight post-connect endpoint pass and wait for it to stop.
+
+    Callers revoke endpoints immediately afterwards, so a pass that survives
+    this would POST after the revoke and resurrect what was just removed.
+    """
+    for _ in range(_MAX_ENDPOINT_CANCEL_ROUNDS):
+        tasks = [t for t in _endpoint_tasks if not t.done()]
+        if not tasks:
+            break
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # Expected after cancel(); ensures the task is fully awaited before we return
+            except Exception:
+                logger.exception("Cloud endpoint pass failed while being cancelled")
+    else:
+        logger.warning(
+            "Cloud endpoint passes were still being registered after %d cancellation rounds",
+            _MAX_ENDPOINT_CANCEL_ROUNDS,
+        )
     _endpoint_tasks.clear()
+
+
+async def run_tracked_endpoint_passes(force: bool = False) -> None:
+    """Run the post-connect endpoint passes as a cancellable, tracked task.
+
+    Awaiting the helper directly would leave `stop_cloud_client` no handle on
+    it, so a disconnect during the pass could revoke endpoints and have the
+    pass re-create them a moment later. Dispatched as a task and tracked, then
+    awaited, so callers that want the result still get it.
+    """
+    from cloud_endpoints import run_post_connect_endpoint_passes
+
+    task = asyncio.create_task(run_post_connect_endpoint_passes(force=force))
+    _track_endpoint_task(task)
+    try:
+        await task
+    except asyncio.CancelledError:
+        # Our own cancellation must still propagate; only the task being
+        # cancelled out from under us (by stop_cloud_client) is expected here.
+        if not task.cancelled():
+            raise
+        logger.info("Cloud endpoint passes cancelled by disconnect")
 
 
 def is_connected() -> bool:
@@ -816,10 +856,6 @@ async def stop_cloud_client() -> None:
     """Stop the cloud WebSocket client and token refresh tasks."""
     global _client_task, _refresh_task, _ws_connected, _active_ws, _active_client
 
-    # Before anything else: an endpoint pass still running would otherwise race
-    # the caller's bulk revoke and resurrect endpoints it had just removed.
-    await cancel_endpoint_tasks()
-
     if _client_task and not _client_task.done():
         _client_task.cancel()
         try:
@@ -838,4 +874,10 @@ async def stop_cloud_client() -> None:
     _ws_connected = False
     _active_ws = None
     _active_client = None
+
+    # Only now, with the client stopped and unable to register more: an endpoint
+    # pass still running would otherwise race the caller's bulk revoke and
+    # resurrect the endpoints it had just removed.
+    await cancel_endpoint_tasks()
+
     logger.info("Cloud WebSocket client stopped")
