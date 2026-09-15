@@ -91,7 +91,7 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** errand-cloud reports a trigger's endpoint absent and the subsequent registration attempt fails
 - **THEN** the backend SHALL clear `cloud_webhook_url` on that trigger
 - **AND** the trigger's row SHALL display "Registration failed — re-save trigger to retry" rather than a URL that would silently drop deliveries
-- **AND** the failure SHALL be recorded in the `cloud_endpoint_error` Setting
+- **AND** the failure SHALL be recorded in the `cloud_endpoint_error` Setting, including when the cause is a webhook secret that cannot be decrypted or is empty (a null secret is instead generated and persisted by the existing backfill)
 
 #### Scenario: Cloud unreachable during reconciliation
 - **WHEN** the endpoint listing call fails with a network or server error
@@ -108,6 +108,38 @@ Reconciliation SHALL NOT block or fail the cloud connect flow.
 - **WHEN** several Jira triggers exist
 - **THEN** the backend SHALL issue a single `GET /api/endpoints?integration=jira` for the comparison
 - **AND** SHALL NOT issue one request per trigger
+
+#### Scenario: Reconnection reconciles too
+- **WHEN** the cloud WebSocket client re-establishes a connection after a drop
+- **THEN** reconciliation SHALL run for that connection as it does for a connection established at startup or by device authorization
+- **AND** an endpoint revoked mid-session SHALL therefore be repaired on the next reconnect rather than waiting for a process restart
+
+#### Scenario: Concurrent connects do not stack reconciliation passes
+- **WHEN** a further cloud connect occurs while a reconciliation pass is still running
+- **THEN** the backend SHALL suppress the duplicate pass rather than run both
+
+#### Scenario: A trigger deleted mid-pass is not re-created
+- **WHEN** a webhook trigger is deleted after reconciliation read it but before it is re-registered
+- **THEN** the backend SHALL NOT register an endpoint for that trigger
+- **AND** reconciliation SHALL hold a per-trigger lock across re-reading the row, registering it, and persisting the result, so that a delete cannot interleave with those steps and leave an orphaned cloud endpoint
+
+#### Scenario: A trigger that changes integration mid-pass is skipped
+- **WHEN** a webhook trigger's source changes between reconciliation reading it and acting on it
+- **THEN** the backend SHALL skip it rather than register it against the previous integration's listing
+
+#### Scenario: A malformed endpoint listing is treated as a failure
+- **WHEN** the endpoint listing call succeeds but the body is not a list of endpoint records
+- **THEN** the backend SHALL treat the listing as failed
+- **AND** SHALL NOT re-register any trigger or clear any stored URL
+
+#### Scenario: An in-flight pass is cancelled on disconnect
+- **WHEN** the user disconnects from errand-cloud while a reconciliation pass is running
+- **THEN** the backend SHALL cancel that pass before revoking endpoints
+- **AND** the pass SHALL NOT re-create an endpoint the disconnect has revoked
+
+#### Scenario: One trigger's failure does not end the pass
+- **WHEN** reconciling one trigger raises
+- **THEN** the backend SHALL log it and continue with the remaining triggers
 
 #### Scenario: Reconciliation is skipped when cloud is not connected
 - **WHEN** no cloud PlatformCredential exists, or its status is not "connected"

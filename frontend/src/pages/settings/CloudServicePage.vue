@@ -31,6 +31,14 @@ interface CloudStatus {
   slack_configured?: boolean
   detail?: string
   endpoint_error?: { detail: string }
+  endpoint_url_changes?: {
+    trigger_id: string
+    name: string
+    source: string
+    previous_url: string
+    new_url: string
+    changed_at: number
+  }[]
   // `active`/`expires_at` are optional: /api/cloud/status may return a
   // subscription object carrying only `payment_warning` when the cloud
   // subscription fetch yields nothing but a payment warning is stored.
@@ -61,6 +69,15 @@ const deviceDetail = ref<string | null>(null)
 const DEVICE_POLL_MS = 3000
 const MAX_POLL_FAILURES = 3
 let devicePoll: ReturnType<typeof setInterval> | null = null
+// Endpoints are repaired in the background on every cloud reconnect, so a
+// trigger's URL can change while this page is open. Without a refresh the page
+// keeps offering a Copy button for a URL that has already been replaced.
+let endpointRefresh: ReturnType<typeof setInterval> | null = null
+const ENDPOINT_REFRESH_MS = 30000
+// onMounted awaits before installing the interval. Navigating away during
+// those awaits runs onBeforeUnmount while endpointRefresh is still null, and
+// the continuation would then install a timer nothing will ever clear.
+let mounted = true
 // Polls are async and overlapping: a slow response can land after a newer one.
 // Only the newest poll may touch state, or a stale "pending" could overwrite
 // "connected" and leave the panel wrong with polling already stopped.
@@ -77,6 +94,10 @@ const hasEndpoints = computed(
   () => (cloudStatus.value.endpoints?.length ?? 0) > 0 || webhookTriggers.value.length > 0,
 )
 const hasEndpointError = computed(() => !!cloudStatus.value.endpoint_error?.detail)
+// Triggers whose URL reconciliation replaced. Until the user repoints Jira or
+// GitHub, the third party keeps POSTing to a URL that now 404s.
+const urlChanges = computed(() => cloudStatus.value.endpoint_url_changes ?? [])
+const changedTriggerIds = computed(() => new Set(urlChanges.value.map((c) => c.trigger_id)))
 const isPendingGrant = computed(() => deviceStatus.value === 'pending' && !!deviceGrant.value)
 const deviceFailureMessage = computed(() => {
   switch (deviceStatus.value) {
@@ -92,6 +113,10 @@ const deviceFailureMessage = computed(() => {
       return null
   }
 })
+function sourceLabel(source: string): string {
+  return source === 'github' ? 'GitHub' : source === 'jira' ? 'Jira' : source
+}
+
 function formatDate(iso: string): string | null {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return null
@@ -123,22 +148,38 @@ async function apiFetch(url: string, options: RequestInit = {}): Promise<Respons
   return fetch(url, { ...options, headers })
 }
 
-async function fetchStatus() {
-  loading.value = true
+// Refreshes overlap: a slow one can land after a newer one and overwrite a
+// repaired URL with the stale value it fetched earlier, putting a dead URL and
+// its Copy button back on the page. Only the newest may write.
+let statusSeq = 0
+
+async function fetchStatus(options: { quiet?: boolean } = {}) {
+  // A background refresh must not flash the skeleton over a populated page.
+  if (!options.quiet) loading.value = true
+  const seq = ++statusSeq
   try {
     const [statusResp, triggersResp] = await Promise.all([
       apiFetch('/api/cloud/status'),
       fetchWebhookTriggers().catch(() => [] as WebhookTrigger[]),
     ])
-    if (statusResp.ok) {
-      cloudStatus.value = await statusResp.json()
+    const status = statusResp.ok ? await statusResp.json() : null
+    if (seq !== statusSeq) return
+    if (status) {
+      cloudStatus.value = status
       taskStore.cloudStatus = cloudStatus.value.status
     }
     triggers.value = triggersResp
   } catch {
     // Silent failure — status display is best-effort
   } finally {
-    loading.value = false
+    if (!options.quiet && seq === statusSeq) loading.value = false
+  }
+}
+
+function stopEndpointRefresh() {
+  if (endpointRefresh !== null) {
+    clearInterval(endpointRefresh)
+    endpointRefresh = null
   }
 }
 
@@ -289,6 +330,15 @@ function handleReconnect() {
   handleConnect()
 }
 
+async function dismissUrlChanges() {
+  try {
+    await apiFetch('/api/cloud/endpoint-url-changes', { method: 'DELETE' })
+    cloudStatus.value = { ...cloudStatus.value, endpoint_url_changes: [] }
+  } catch {
+    toast.error('Failed to dismiss')
+  }
+}
+
 async function copyUrl(url: string) {
   try {
     await navigator.clipboard.writeText(url)
@@ -306,9 +356,21 @@ onMounted(async () => {
   if (cloudStatus.value.endpoint_error?.detail) {
     toast.error('Endpoint registration failed: ' + cloudStatus.value.endpoint_error.detail)
   }
+
+  if (!mounted) return
+
+  endpointRefresh = setInterval(() => {
+    // The device-grant flow polls and refetches on its own; leave it alone.
+    if (isPendingGrant.value) return
+    fetchStatus({ quiet: true })
+  }, ENDPOINT_REFRESH_MS)
 })
 
-onBeforeUnmount(stopDevicePolling)
+onBeforeUnmount(() => {
+  mounted = false
+  stopDevicePolling()
+  stopEndpointRefresh()
+})
 </script>
 
 <template>
@@ -478,6 +540,37 @@ onBeforeUnmount(stopDevicePolling)
         Endpoint registration failed: {{ cloudStatus.endpoint_error?.detail }}
       </p>
 
+      <!-- Reconciliation replaced one or more URLs. The secret is unchanged, so
+           only the URL has to be updated in the third-party system — but nothing
+           else on this page says the old one has stopped working. -->
+      <div
+        v-if="urlChanges.length"
+        class="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800"
+        data-testid="cloud-url-changed-banner"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="font-medium">
+              {{ urlChanges.length === 1 ? 'A webhook URL has changed' : `${urlChanges.length} webhook URLs have changed` }}
+            </p>
+            <p class="mt-1">
+              Update the webhook URL in
+              {{ urlChanges.length === 1 ? sourceLabel(urlChanges[0].source) : 'Jira or GitHub' }}
+              for
+              <span class="font-medium">{{ urlChanges.map((c) => c.name).join(', ') }}</span>.
+              Deliveries to the old URL are being rejected. The webhook secret is unchanged.
+            </p>
+          </div>
+          <button
+            class="shrink-0 rounded-md bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-200"
+            data-testid="dismiss-url-changed-btn"
+            @click="dismissUrlChanges"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+
       <div v-if="hasEndpoints" class="space-y-3 mt-4" data-testid="cloud-endpoints">
         <div
           v-for="ep in cloudStatus.endpoints"
@@ -520,6 +613,13 @@ onBeforeUnmount(stopDevicePolling)
               :data-testid="`trigger-url-${trigger.id}`"
             >
               {{ trigger.cloud_webhook_url }}
+            </p>
+            <p
+              v-if="changedTriggerIds.has(trigger.id)"
+              class="mt-1 text-xs font-medium text-amber-700"
+              :data-testid="`trigger-url-changed-${trigger.id}`"
+            >
+              New URL — update it in {{ sourceLabel(trigger.source) }}
             </p>
             <p
               v-else-if="!isConnected"

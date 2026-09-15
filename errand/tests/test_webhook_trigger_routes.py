@@ -1,5 +1,7 @@
 """Tests for webhook trigger CRUD API routes."""
 
+import uuid
+
 import pytest
 
 
@@ -275,3 +277,113 @@ class TestCloudRegistrationOnTriggerCreate:
         assert resp.status_code == 204
         assert len(revoked) == 1
         assert revoked[0][0] == tid
+
+
+class TestTriggerCrudCloudRaces:
+    """The lock serialises the cloud call; the row must be re-read inside it too."""
+
+    @staticmethod
+    def _lock_that_mutates(mutate):
+        """A stand-in lock whose acquisition runs `mutate` first.
+
+        Models the other party — a reconciliation pass, or a concurrent delete —
+        having held the real lock and committed while this caller waited.
+        """
+        def factory(trigger_id):
+            class _Lock:
+                async def __aenter__(self):
+                    await mutate()
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return _Lock()
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_delete_revokes_the_current_token_not_a_stale_one(self, admin_client_with_session):
+        """expire_on_commit is off, so a pre-lock instance can carry a replaced token.
+
+        Revoking that removes an endpoint which is already gone and leaves the
+        newly registered one orphaned, with the local row about to be deleted.
+        """
+        from unittest.mock import patch
+        from models import WebhookTrigger
+        from sqlalchemy import select
+
+        client, session_maker = admin_client_with_session
+
+        resp = await client.post("/api/webhook-triggers", json={
+            "name": "Race Delete", "source": "jira", "filters": {}, "actions": {},
+        })
+        assert resp.status_code == 201
+        trigger_id = resp.json()["id"]
+
+        async with session_maker() as s:
+            row = (await s.execute(
+                select(WebhookTrigger).where(WebhookTrigger.id == uuid.UUID(trigger_id))
+            )).scalar_one()
+            row.cloud_endpoint_token = "stale-token"
+            await s.commit()
+
+        async def reconciliation_replaces_the_token():
+            async with session_maker() as s:
+                row = (await s.execute(
+                    select(WebhookTrigger).where(WebhookTrigger.id == uuid.UUID(trigger_id))
+                )).scalar_one()
+                row.cloud_endpoint_token = "fresh-token"
+                await s.commit()
+
+        revoked: list[str | None] = []
+
+        async def fake_revoke(trigger, session):
+            revoked.append(trigger.cloud_endpoint_token)
+
+        with patch("cloud_endpoints.revoke_webhook_trigger_in_cloud", new=fake_revoke), \
+             patch("cloud_endpoints.trigger_endpoint_lock",
+                   new=self._lock_that_mutates(reconciliation_replaces_the_token)):
+            resp = await client.delete(f"/api/webhook-triggers/{trigger_id}")
+
+        assert resp.status_code == 204
+        assert revoked == ["fresh-token"], (
+            f"delete must revoke the token the row currently holds, got {revoked}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_skips_cloud_registration_for_a_deleted_row(self, admin_client_with_session):
+        """Registering a row a concurrent delete removed would orphan an endpoint."""
+        from unittest.mock import patch
+        from models import WebhookTrigger
+        from sqlalchemy import delete as sa_delete
+
+        client, session_maker = admin_client_with_session
+
+        resp = await client.post("/api/webhook-triggers", json={
+            "name": "Race Update", "source": "jira", "filters": {}, "actions": {},
+        })
+        assert resp.status_code == 201
+        trigger_id = resp.json()["id"]
+
+        async def delete_wins_the_lock():
+            async with session_maker() as s:
+                await s.execute(
+                    sa_delete(WebhookTrigger).where(WebhookTrigger.id == uuid.UUID(trigger_id))
+                )
+                await s.commit()
+
+        registered: list[str] = []
+
+        async def fake_register(trigger, session):
+            registered.append(str(trigger.id))
+            return True
+
+        with patch("cloud_endpoints.register_webhook_trigger_with_cloud", new=fake_register), \
+             patch("cloud_endpoints.trigger_endpoint_lock",
+                   new=self._lock_that_mutates(delete_wins_the_lock)):
+            await client.put(f"/api/webhook-triggers/{trigger_id}", json={
+                "name": "Race Update Renamed",
+            })
+
+        assert registered == [], "a deleted row must not be registered with the cloud"

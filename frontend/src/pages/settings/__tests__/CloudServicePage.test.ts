@@ -728,3 +728,322 @@ describe('CloudServicePage', () => {
     })
   })
 })
+
+describe('CloudServicePage background endpoint refresh', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  const connected = {
+    status: 'connected',
+    tenant_id: 'tenant-abc',
+    email: 'user@example.com',
+    endpoints: [],
+  }
+
+  it('picks up a URL repaired by a reconnect without a reload', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' },
+    ])
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/dead')
+
+    // A reconciliation pass replaces the endpoint while the page is open.
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/fresh' },
+    ])
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+  })
+
+  it('stops offering Copy once reconciliation clears the URL', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' },
+    ])
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(true)
+
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira T', source: 'jira', cloud_webhook_url: null },
+    ])
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-registration-failed"]').exists()).toBe(true)
+  })
+
+  it('does not flash the loading skeleton on a background refresh', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const pending = vi.advanceTimersByTimeAsync(30000)
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+    await pending
+    await flushPromises()
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+  })
+
+  it('stops refreshing once the page is unmounted', async () => {
+    vi.stubGlobal('fetch', stubFetch(connected))
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const callsAtUnmount = mockFetchWebhookTriggers.mock.calls.length
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(120000)
+    await flushPromises()
+
+    expect(mockFetchWebhookTriggers.mock.calls.length).toBe(callsAtUnmount)
+  })
+})
+
+describe('CloudServicePage URL change notice', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  const changed = {
+    status: 'connected',
+    tenant_id: 'tenant-abc',
+    email: 'user@example.com',
+    endpoints: [],
+    endpoint_url_changes: [
+      {
+        trigger_id: 't1',
+        name: 'Jira Story',
+        source: 'jira',
+        previous_url: 'https://cloud.test/hook/old',
+        new_url: 'https://cloud.test/hook/new',
+        changed_at: 1789376449,
+      },
+    ],
+  }
+
+  async function mountWith(status: object, triggers: unknown[]) {
+    vi.stubGlobal('fetch', stubFetch(status))
+    mockFetchWebhookTriggers.mockResolvedValue(triggers)
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('tells the user to repoint the third-party webhook', async () => {
+    const wrapper = await mountWith(changed, [
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+    ])
+
+    const banner = wrapper.find('[data-testid="cloud-url-changed-banner"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('Jira')
+    expect(banner.text()).toContain('Jira Story')
+    expect(banner.text()).toContain('secret is unchanged')
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(true)
+  })
+
+  it('shows nothing when no URL changed', async () => {
+    const wrapper = await mountWith(
+      { status: 'connected', tenant_id: 'a', email: 'e', endpoints: [] },
+      [{ id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/x' }],
+    )
+
+    expect(wrapper.find('[data-testid="cloud-url-changed-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(false)
+  })
+
+  it('marks only the trigger whose URL changed', async () => {
+    const wrapper = await mountWith(changed, [
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+      { id: 't2', name: 'GH Other', source: 'github', cloud_webhook_url: 'https://cloud.test/hook/gh' },
+    ])
+
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t2"]').exists()).toBe(false)
+  })
+
+  it('dismisses the notice and calls the API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(changed) })
+    vi.stubGlobal('fetch', fetchMock)
+    mockFetchWebhookTriggers.mockResolvedValue([
+      { id: 't1', name: 'Jira Story', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/new' },
+    ])
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="dismiss-url-changed-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/cloud/endpoint-url-changes',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(wrapper.find('[data-testid="cloud-url-changed-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trigger-url-changed-t1"]').exists()).toBe(false)
+  })
+})
+
+describe('CloudServicePage overlapping refreshes', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockReset()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  it('a slow earlier refresh cannot overwrite a newer one', async () => {
+    // Drives the real 30s interval. The first background tick stalls on its
+    // status request while still holding the stale trigger list; the second
+    // completes with the repaired URL. When the stalled one finally lands it
+    // must not put the dead URL, and its Copy button, back on the page.
+    const base = { status: 'connected', tenant_id: 't', email: 'e', endpoints: [] }
+    const dead = [{ id: 't1', name: 'Jira', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/dead' }]
+    const fresh = [{ id: 't1', name: 'Jira', source: 'jira', cloud_webhook_url: 'https://cloud.test/hook/fresh' }]
+
+    let releaseSlow: (v: unknown) => void = () => {}
+    const slow = new Promise((r) => { releaseSlow = r })
+
+    // Stall the SECOND /api/cloud/status request specifically. Matching on call
+    // index instead would hit restoreDeviceGrant's fetch during mount, which
+    // would hang onMounted before the refresh interval is ever created.
+    let statusCall = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cloud/status')) {
+        statusCall += 1
+        if (statusCall === 2) await slow
+        return { ok: true, json: () => Promise.resolve(base) }
+      }
+      return { ok: true, json: () => Promise.resolve({}) }
+    }))
+
+    // What the trigger list currently says, flipped explicitly between ticks so
+    // the test does not depend on how many times the component calls it.
+    let currentTriggers = dead
+    mockFetchWebhookTriggers.mockImplementation(async () => currentTriggers)
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/dead')
+
+    // Tick 1: starts and stalls on its status response, holding the stale list.
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+
+    // The endpoint is repaired in the background.
+    currentTriggers = fresh
+
+    // Tick 2: completes with the repaired URL.
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+
+    // The stalled tick 1 now lands. Its own trigger fetch already resolved with
+    // the stale list, so an unsequenced write here would undo the repair.
+    currentTriggers = dead
+    releaseSlow(null)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="trigger-url-t1"]').text()).toContain('/hook/fresh')
+    expect(wrapper.find('[data-testid="copy-trigger-url-btn"]').exists()).toBe(true)
+  })
+})
+
+describe('CloudServicePage unmount during mount awaits', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    mockFetchWebhookTriggers.mockReset()
+    mockFetchWebhookTriggers.mockResolvedValue([])
+  })
+
+  it('does not leave a refresh interval running when unmounted mid-mount', async () => {
+    // onMounted awaits before installing the interval. Navigating away during
+    // those awaits runs onBeforeUnmount while endpointRefresh is still null, so
+    // an unguarded continuation installs a timer nothing will ever clear.
+    let releaseMount: (v: unknown) => void = () => {}
+    const held = new Promise((r) => { releaseMount = r })
+
+    let statusCall = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/cloud/status')) {
+        statusCall += 1
+        if (statusCall === 1) await held
+        return { ok: true, json: () => Promise.resolve({ status: 'connected', tenant_id: 't', email: 'e', endpoints: [] }) }
+      }
+      return { ok: true, json: () => Promise.resolve({}) }
+    }))
+
+    const router = makeRouter()
+    await router.push('/settings/cloud')
+    await router.isReady()
+    const wrapper = mount(CloudServicePage, { global: { plugins: [router] } })
+
+    // Unmount while onMounted is still awaiting its first status call.
+    wrapper.unmount()
+
+    // The mount continuation now runs.
+    releaseMount(null)
+    await flushPromises()
+
+    const callsAfterUnmount = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length
+    await vi.advanceTimersByTimeAsync(180000)
+    await flushPromises()
+
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterUnmount)
+  })
+})
