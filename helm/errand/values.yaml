@@ -13,7 +13,11 @@ server:
   # the server Deployment, which takes precedence over the database and makes
   # the field readonly in the UI for the life of the deployment.
   # maxConcurrentTasks: 3
-  maxTurns: "200"
+  # Default agent turn limit for tasks whose profile does not set one. Leave
+  # unset: the setting is then managed from the admin settings UI (database,
+  # falling back to the registry default of 200). Setting it here emits
+  # MAX_TURNS, which takes precedence and makes the field readonly in the UI.
+  # maxTurns: 200
   # Comma-separated origins permitted to call the API cross-origin. Empty is
   # correct for a standard deployment: the server serves its own frontend, so
   # the browser never makes a cross-origin request. Only needed if the

@@ -905,6 +905,12 @@ async def _read_settings(session: AsyncSession) -> dict:
         })
     settings["skills"] = skills_list
 
+    # Deployment-wide agent defaults, resolved env → DB → default so the runner
+    # gets exactly what GET /api/worker/defaults reports.
+    from settings_registry import resolve_setting_value
+    for key in ("max_turns", "reasoning_effort"):
+        settings[key], _source = await resolve_setting_value(session, key)
+
     return settings
 
 
@@ -1744,19 +1750,14 @@ class TaskManager:
         if task_runner_log_level:
             env_vars["LOG_LEVEL"] = task_runner_log_level
 
-        # Max turns: profile override > env var
-        profile_max_turns = settings.get("_profile_max_turns")
-        if profile_max_turns:
-            env_vars["MAX_TURNS"] = profile_max_turns
-        else:
-            max_turns = os.environ.get("MAX_TURNS", "")
-            if max_turns:
-                env_vars["MAX_TURNS"] = max_turns
-
-        # Reasoning effort from profile
-        profile_reasoning = settings.get("_profile_reasoning_effort")
-        if profile_reasoning:
-            env_vars["REASONING_EFFORT"] = profile_reasoning
+        # Max turns and reasoning effort: profile override > resolved global
+        # setting (env → DB → default, see _read_settings).
+        max_turns = settings.get("_profile_max_turns") or settings.get("max_turns")
+        if max_turns:
+            env_vars["MAX_TURNS"] = str(max_turns)
+        reasoning_effort = settings.get("_profile_reasoning_effort") or settings.get("reasoning_effort")
+        if reasoning_effort:
+            env_vars["REASONING_EFFORT"] = str(reasoning_effort)
 
         # LLM request timeout: profile override > global setting > built-in default.
         # The default is larger for a detected provider, because a local runtime's

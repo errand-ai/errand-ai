@@ -781,6 +781,32 @@ async def test_read_settings_with_max_context_tokens(db_session):
     assert settings["max_context_tokens"] == 90000
 
 
+async def test_read_settings_resolves_agent_defaults(db_session, monkeypatch):
+    """max_turns / reasoning_effort resolve env → DB → default, so an empty
+    database still yields the registry defaults the runner should receive."""
+    monkeypatch.delenv("MAX_TURNS", raising=False)
+    monkeypatch.delenv("REASONING_EFFORT", raising=False)
+
+    settings = await read_settings(db_session)
+    assert settings["max_turns"] == 200
+    assert settings["reasoning_effort"] == "medium"
+
+
+async def test_read_settings_agent_defaults_from_database_and_env(db_session, monkeypatch):
+    monkeypatch.delenv("MAX_TURNS", raising=False)
+    monkeypatch.setenv("REASONING_EFFORT", "high")
+    for key, value in (("max_turns", 75), ("reasoning_effort", "low")):
+        await db_session.execute(
+            text("INSERT INTO settings (key, value) VALUES (:key, :value)"),
+            {"key": key, "value": json.dumps(value)},
+        )
+    await db_session.commit()
+
+    settings = await read_settings(db_session)
+    assert settings["max_turns"] == 75
+    assert settings["reasoning_effort"] == "high"
+
+
 async def test_read_settings_rejects_non_positive_max_context_tokens(db_session):
     """A ceiling of zero would make every turn infinitely over budget."""
     await db_session.execute(
