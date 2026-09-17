@@ -4,20 +4,17 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import async_session, get_session
-from events import publish_event
-from llm import generate_title
-from models import SlackMessageRef, Task
+from models import SlackMessageRef
 from platforms.credentials import load_credentials
-from platforms.slack.blocks import help_blocks, task_created_blocks
+from platforms.slack import intake
+from platforms.slack.blocks import TASK_SPEC_ACTIONS, help_blocks
 from platforms.slack.client import SlackClient
 from platforms.slack.handlers import (
     handle_list,
@@ -27,9 +24,7 @@ from platforms.slack.handlers import (
     handle_status,
 )
 from platforms.slack.identity import resolve_slack_email
-from utils import _next_position
 from platforms.slack.verification import verify_slack_request
-from tags import add_tag
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +171,7 @@ async def slack_events(
 
 
 async def _handle_mention(event: dict) -> None:
-    """Process an app_mention event: create task, post confirmation, store message ref."""
+    """Process an app_mention event: start a draft and post it in the mention's thread."""
     text = event.get("text", "")
     user_id = event.get("user", "")
     channel = event.get("channel", "")
@@ -187,122 +182,11 @@ async def _handle_mention(event: dict) -> None:
         return  # Empty mention, silently ignore
 
     async with async_session() as session:
-        # Load credentials for bot token
-        credentials = await load_credentials("slack", session)
-        bot_token = credentials.get("bot_token", "") if credentials else ""
-
-        # Resolve user email
-        email = await resolve_slack_email(user_id, bot_token) if user_id and bot_token else None
-        user_email = email or f"slack:{user_id}"
-
-        # Generate title via LLM for longer inputs
-        words = input_text.split()
-        title = input_text
-        description = None
-        category = "immediate"
-        execute_at = None
-        tag_names: list[str] = []
-
-        if len(words) > 5:
-            llm_result = await generate_title(input_text, session, now=datetime.now(timezone.utc))
-            title = llm_result.title
-            description = input_text
-            category = llm_result.category or "immediate"
-            if llm_result.execute_at:
-                try:
-                    execute_at = datetime.fromisoformat(llm_result.execute_at)
-                except (ValueError, TypeError):
-                    pass  # LLM returned unparseable date; fall back to default scheduling
-            if llm_result.attempted and (
-                not llm_result.success or not llm_result.description
-            ):
-                # The classifier answered and the answer carried nothing usable
-                # — either it failed, or it succeeded with no description. Both
-                # are statements about the input, so both route to review. A
-                # classifier that was never reached is neither, and is not the
-                # user's to fix.
-                tag_names.append("Needs Info")
-        else:
-            tag_names.append("Needs Info")
-
-        if category == "immediate":
-            execute_at = datetime.now(timezone.utc)
-
-        # Create task
-        # Auto-routing, as `task-categorisation` requires of the capability and not
-        # merely of the web endpoint: a task carrying "Needs Info" goes to review.
-        # Both Slack intakes tagged and then created the task `pending`
-        # unconditionally, so the tag was displayed and never acted on — a task the
-        # classifier said it could not understand was queued and run anyway, while
-        # the board showed it as needing attention. Raised in review; the web path
-        # at `main.py` has always done this.
-        #
-        # Decided before the position is taken, because position is per-column: a
-        # review task numbered from the bottom of the pending column lands in an
-        # arbitrary place in its own. Also raised in review — introduced by the fix
-        # above, which was correct only for as long as the status was always
-        # `pending`.
-        status = "review" if "Needs Info" in tag_names else (
-            "pending" if category == "immediate" else "scheduled"
+        token = await intake.bot_token(session)
+        owner = await intake.slack_owner(user_id, token)
+        await intake.start_mention_draft(
+            session, input_text, owner, token, channel, event.get("ts", ""),
         )
-
-        position = await _next_position(session, status)
-
-        task = Task(
-            title=title,
-            description=description,
-            created_by=user_email,
-            category=category,
-            status=status,
-            position=position,
-            execute_at=execute_at,
-        )
-        session.add(task)
-        await session.flush()
-        await add_tag(session, task.id, "slack")
-        for tag_name in tag_names:
-            await add_tag(session, task.id, tag_name)
-        await session.commit()
-        await session.refresh(task)
-
-        # Notify WebSocket clients
-        all_tags = ["slack"] + tag_names
-        await publish_event("task_created", {
-            "id": str(task.id),
-            "title": task.title,
-            "description": task.description,
-            "status": task.status,
-            "position": task.position,
-            "category": task.category,
-            "execute_at": task.execute_at.isoformat() if task.execute_at else None,
-            "repeat_interval": task.repeat_interval,
-            "repeat_until": None,
-            "output": None,
-            "runner_logs": None,
-            "questions": None,
-            "retry_count": 0,
-            "tags": sorted(all_tags),
-            "created_at": task.created_at.isoformat() if task.created_at else None,
-            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
-            "created_by": task.created_by,
-            "updated_by": task.updated_by,
-        })
-
-        # Post confirmation to channel
-        try:
-            blocks_data = task_created_blocks(task)
-            resp = await _slack_client.post_message(bot_token, channel, blocks_data["blocks"])
-            if resp.get("ok"):
-                # Store message reference for later updates
-                msg_ref = SlackMessageRef(
-                    task_id=task.id,
-                    channel_id=resp.get("channel", channel),
-                    message_ts=resp["ts"],
-                )
-                session.add(msg_ref)
-                await session.commit()
-        except Exception:
-            logger.exception("Failed to post mention confirmation to channel %s", channel)
 
 
 async def process_slack_interaction(body: bytes, session: AsyncSession) -> dict:
@@ -328,6 +212,12 @@ async def process_slack_interaction(body: bytes, session: AsyncSession) -> dict:
         for action in actions:
             action_id = action.get("action_id")
             task_id = action.get("value", "")
+
+            if action_id in TASK_SPEC_ACTIONS:
+                # Acknowledged now, answered through response_url: a classifier
+                # call can take longer than Slack waits for this response.
+                asyncio.create_task(intake.handle_draft_action(payload, action))
+                break
 
             if action_id in ("task_status", "task_output"):
                 if action_id == "task_status":

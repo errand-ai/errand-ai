@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, Numeric, Table, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, JSON, Numeric, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -532,4 +532,57 @@ class EvalResult(Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "workload", "model", "rep", name="uq_eval_results_cell"),
+    )
+
+
+class TaskSpecDraft(Base):
+    """A task being clarified before it exists.
+
+    Owned by the identity tasks record in `created_by` (an email, or a fallback
+    when none resolves), so a draft started in Slack is the same person's draft
+    on the web. Ephemeral: `expires_at` moves forward on each answer, and an
+    expired draft is treated as absent and swept.
+    """
+
+    __tablename__ = "task_spec_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="web")  # 'web' | 'slack'
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    conversation: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    spec: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    questions: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    questions_unresolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="drafting")
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    external_channel_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external_message_ts: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    resolved_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('drafting', 'ready', 'confirmed', 'abandoned')",
+            name="ck_task_spec_drafts_status",
+        ),
     )

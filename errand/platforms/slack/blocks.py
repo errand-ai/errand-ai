@@ -192,3 +192,116 @@ def help_blocks() -> dict:
             },
         ],
     }
+
+
+# --- Task spec drafts (intake clarification) ---
+
+TASK_SPEC_SUBMIT = "task_spec_submit"
+TASK_SPEC_RUN = "task_spec_run"
+TASK_SPEC_CANCEL = "task_spec_cancel"
+TASK_SPEC_ACTIONS = (TASK_SPEC_SUBMIT, TASK_SPEC_RUN, TASK_SPEC_CANCEL)
+# Answers are read back from `state.values[<block_id>][TASK_SPEC_ANSWER]`.
+TASK_SPEC_QUESTION_BLOCK_PREFIX = "task_spec_q:"
+TASK_SPEC_ANSWER = "answer"
+
+
+def _plain(text: str, limit: int) -> dict:
+    return {"type": "plain_text", "text": text[:limit]}
+
+
+def _button(text: str, action_id: str, draft_id: str, style: str | None = None) -> dict:
+    button = {"type": "button", "text": _plain(text, 75), "action_id": action_id, "value": draft_id}
+    if style:
+        button["style"] = style
+    return button
+
+
+def _question_block(question: dict) -> dict:
+    if question.get("kind") == "choice" and question.get("choices"):
+        element = {
+            "type": "static_select",
+            "action_id": TASK_SPEC_ANSWER,
+            "placeholder": _plain("Choose one", 150),
+            "options": [
+                {"text": _plain(choice, 75), "value": choice[:150]}
+                for choice in question["choices"][:100]
+            ],
+        }
+    else:
+        element = {"type": "plain_text_input", "action_id": TASK_SPEC_ANSWER}
+    return {
+        "type": "input",
+        "block_id": f"{TASK_SPEC_QUESTION_BLOCK_PREFIX}{question['id']}"[:255],
+        "optional": True,
+        "label": _plain(question["text"], 2000),
+        "element": element,
+    }
+
+
+def _when(preview: dict) -> str:
+    if preview.get("category") == "immediate":
+        return "Now"
+    return preview.get("execute_at") or "Not set"
+
+
+def task_spec_draft_blocks(view: dict) -> list:
+    """The draft as it stands: questions to answer, or a preview to run.
+
+    `view` is `clarify.draft_view(...)`. Every state carries a way to run what
+    is there and a way to cancel.
+    """
+    draft_id = view["id"]
+    preview = view["spec_preview"]
+
+    if view["status"] == "drafting":
+        blocks = [
+            {"type": "header", "text": _plain("A few questions first", 150)},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"Before I set up *{preview['title']}*, I need to check:"[:3000]},
+            },
+            *[_question_block(q) for q in view["questions"]],
+            {
+                "type": "actions",
+                "elements": [
+                    _button("Submit", TASK_SPEC_SUBMIT, draft_id, "primary"),
+                    _button("Just run it", TASK_SPEC_RUN, draft_id),
+                    _button("Cancel", TASK_SPEC_CANCEL, draft_id, "danger"),
+                ],
+            },
+        ]
+        return blocks
+
+    fields = [
+        {"type": "mrkdwn", "text": f"*Title:*\n{preview['title']}"[:2000]},
+        {"type": "mrkdwn", "text": f"*Category:*\n{preview['category']}"},
+        {"type": "mrkdwn", "text": f"*When:*\n{_when(preview)}"[:2000]},
+    ]
+    if preview.get("repeat_interval"):
+        fields.append({"type": "mrkdwn", "text": f"*Repeats:*\n{preview['repeat_interval']}"[:2000]})
+    if preview.get("profile"):
+        fields.append({"type": "mrkdwn", "text": f"*Profile:*\n{preview['profile']}"[:2000]})
+
+    blocks = [
+        {"type": "header", "text": _plain("I'll do this — run it?", 150)},
+        {"type": "section", "fields": fields},
+        {"type": "section", "text": {"type": "mrkdwn", "text": preview["description"][:3000]}},
+    ]
+    if view.get("questions_unresolved") and view["questions"]:
+        still_open = "\n".join(f"• {q['text']}" for q in view["questions"])
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Still open — I'll use my best judgement:\n{still_open}"[:3000]}],
+        })
+    blocks.append({
+        "type": "actions",
+        "elements": [
+            _button("Run", TASK_SPEC_RUN, draft_id, "primary"),
+            _button("Cancel", TASK_SPEC_CANCEL, draft_id, "danger"),
+        ],
+    })
+    return blocks
+
+
+def task_spec_notice_blocks(message: str) -> list:
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": message[:3000]}}]

@@ -4,7 +4,6 @@ import { useTaskStore } from '../stores/tasks'
 import { useAuthStore } from '../stores/auth'
 import {
   TaskBoard,
-  TaskForm,
   TaskEditModal,
   TaskOutputModal,
   TaskLogViewer,
@@ -12,6 +11,7 @@ import {
   AudioRecorder,
 } from '@errand-ai/ui-components'
 import type { TaskData, TaskStatus } from '@errand-ai/ui-components'
+import TaskSpecIntake from './TaskSpecIntake.vue'
 
 const store = useTaskStore()
 const auth = useAuthStore()
@@ -93,11 +93,11 @@ onUnmounted(() => store.stop())
 
 <template>
   <div v-if="!auth.isViewer" class="mb-6 mx-auto max-w-7xl">
-    <TaskForm @task-created="onTaskCreated">
+    <TaskSpecIntake @task-created="onTaskCreated">
       <template #voice="{ onTranscription }">
         <AudioRecorder @transcription="onTranscription" />
       </template>
-    </TaskForm>
+    </TaskSpecIntake>
   </div>
   <p v-if="store.error" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ store.error }}</p>
 

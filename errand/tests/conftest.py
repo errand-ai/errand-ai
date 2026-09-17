@@ -313,6 +313,28 @@ CREATE TABLE IF NOT EXISTS model_metadata_cache (
 """
 
 
+_TASK_SPEC_DRAFTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_spec_drafts (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    input_text TEXT NOT NULL,
+    conversation JSON NOT NULL,
+    spec JSON NOT NULL,
+    questions JSON,
+    questions_unresolved BOOLEAN NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK (status IN ('drafting', 'ready', 'confirmed', 'abandoned')),
+    round INTEGER NOT NULL DEFAULT 0,
+    expires_at DATETIME NOT NULL,
+    external_channel_id TEXT,
+    external_message_ts TEXT,
+    resolved_task_id VARCHAR(36) REFERENCES tasks(id) ON DELETE SET NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+)
+"""
+
+
 async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_TASK_PROFILES_TABLE_SQL))
@@ -333,6 +355,7 @@ async def _create_tables(engine):
         await conn.execute(text(_PLUGINS_TABLE_SQL))
         await conn.execute(text(_EVAL_RUNS_TABLE_SQL))
         await conn.execute(text(_EVAL_RESULTS_TABLE_SQL))
+        await conn.execute(text(_TASK_SPEC_DRAFTS_TABLE_SQL))
 
 
 @pytest.fixture()

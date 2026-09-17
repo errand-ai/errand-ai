@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import asyncio
+import contextlib
 import json
 import logging
 
@@ -27,7 +28,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -38,7 +39,6 @@ from google_routes import router as google_router
 from onedrive_routes import router as onedrive_router
 from workspace_refresh_auth import require_workspace_bearer
 from database import async_session, engine, get_session
-from eval_marking import resolve_is_eval
 from events import init_valkey, close_valkey, publish_event, get_valkey, CHANNEL
 from llm import generate_title, ProfileInfo, transcribe_audio, VALID_CATEGORIES, TranscriptionNotConfiguredError, LLMClientNotConfiguredError
 from llm_providers import (
@@ -48,8 +48,9 @@ from llm_providers import (
     get_client_for_provider_sync,
 )
 from local_auth import router as local_auth_router
-from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile, task_tags
+from models import LlmProvider, LocalUser, PlatformCredential, Setting, Skill, SkillFile, Tag, Task, TaskProfile
 from utils import _next_position
+from task_creation import TaskResponse, create_task_from_fields, sync_tags as _sync_tags
 from settings_registry import (
     EXCLUDED_KEYS,
     MODEL_SETTING_KEYS,
@@ -83,6 +84,8 @@ from jira_credential_routes import router as jira_credential_router
 from webhook_receiver import router as webhook_receiver_router
 from email_poller import run_email_poller
 from scheduler import run_scheduler, release_lock
+import clarify
+from clarify import run_draft_sweeper
 from task_manager import TaskManager
 from telemetry import TelemetryReporter
 from version_checker import run_version_checker, get_version_info
@@ -354,6 +357,7 @@ async def lifespan(app: FastAPI):
     )
     version_checker_task = asyncio.create_task(run_version_checker())
     email_poller_task = asyncio.create_task(run_email_poller())
+    draft_sweeper_task = asyncio.create_task(run_draft_sweeper(async_session))
     telemetry_reporter = TelemetryReporter(async_session)
     await telemetry_reporter.start()
 
@@ -406,6 +410,7 @@ async def lifespan(app: FastAPI):
     external_updater_task.cancel()
     version_checker_task.cancel()
     email_poller_task.cancel()
+    draft_sweeper_task.cancel()
     plugin_poller_task.cancel()
     plugin_warm_task.cancel()
     await telemetry_reporter.stop()
@@ -703,69 +708,6 @@ class TaskUpdate(BaseModel):
             raise ValueError(f"Invalid category '{self.category}'. Must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
 
 
-class TaskResponse(BaseModel):
-    id: uuid.UUID
-    title: str
-    description: Optional[str] = None
-    status: str
-    position: int = 0
-    category: Optional[str] = None
-    execute_at: Optional[datetime] = None
-    repeat_interval: Optional[str] = None
-    repeat_until: Optional[datetime] = None
-    output: Optional[str] = None
-    runner_logs: Optional[str] = None
-    questions: Optional[list[str]] = None
-    retry_count: int = 0
-    heartbeat_at: Optional[datetime] = None
-    profile_id: Optional[uuid.UUID] = None
-    profile_name: Optional[str] = None
-    tags: list[str] = []
-    created_at: datetime
-    updated_at: datetime
-    created_by: Optional[str] = None
-    updated_by: Optional[str] = None
-    is_eval: bool = False
-    # What became of classification for this task. Not persisted: it describes
-    # how this creation went, not the task. Present so a caller can explain a
-    # degraded classification instead of leaving the user to infer it from a
-    # task that behaved oddly — `no_model_configured` in particular is a fault
-    # in the installation, and the user cannot fix it by editing their words.
-    classification: Optional[str] = None
-
-    model_config = {"from_attributes": True}
-
-    @classmethod
-    def from_task(
-        cls, task: Task, profile_name: str | None = None, classification: str | None = None
-    ) -> "TaskResponse":
-        return cls(
-            id=task.id,
-            title=task.title,
-            description=task.description,
-            status=task.status,
-            position=task.position,
-            category=task.category,
-            execute_at=task.execute_at,
-            repeat_interval=task.repeat_interval,
-            repeat_until=task.repeat_until,
-            output=task.output,
-            runner_logs=task.runner_logs,
-            questions=task.questions,
-            retry_count=task.retry_count,
-            heartbeat_at=task.heartbeat_at,
-            profile_id=task.profile_id,
-            profile_name=profile_name,
-            tags=sorted([t.name for t in task.tags]),
-            created_at=task.created_at,
-            updated_at=task.updated_at,
-            created_by=task.created_by,
-            updated_by=task.updated_by,
-            classification=classification,
-            is_eval=task.is_eval,
-        )
-
-
 class TagResponse(BaseModel):
     id: uuid.UUID
     name: str
@@ -788,27 +730,6 @@ async def list_tags(
     query = query.order_by(Tag.name).limit(10)
     result = await session.execute(query)
     return result.scalars().all()
-
-
-async def _sync_tags(session: AsyncSession, task: Task, tag_names: list[str]) -> None:
-    """Replace task's tags with the given names, creating any that don't exist."""
-    # Clear existing associations
-    await session.execute(delete(task_tags).where(task_tags.c.task_id == task.id))
-
-    if not tag_names:
-        return
-
-    # Find or create tags, then insert associations directly
-    for name in tag_names:
-        result = await session.execute(select(Tag).where(Tag.name == name))
-        tag = result.scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            session.add(tag)
-            await session.flush()
-        await session.execute(
-            task_tags.insert().values(task_id=task.id, tag_id=tag.id)
-        )
 
 
 @app.get("/api/tasks", response_model=list[TaskResponse])
@@ -914,11 +835,8 @@ async def create_task(
         except (ValueError, TypeError):
             pass
 
-    # For immediate tasks, backend sets execute_at to current server time
-    if category == "immediate":
-        execute_at = datetime.now(timezone.utc)
-
-    task = Task(
+    task = await create_task_from_fields(
+        session,
         title=title,
         description=description,
         category=category,
@@ -926,35 +844,113 @@ async def create_task(
         repeat_interval=repeat_interval,
         repeat_until=repeat_until,
         profile_id=resolved_profile_id,
-        is_eval=await resolve_is_eval(session, resolved_profile_id),
         created_by=_user.get("email"),
+        tag_names=tag_names,
+        classification=classification,
     )
-    session.add(task)
-    await session.flush()
-
-    if tag_names:
-        await _sync_tags(session, task, tag_names)
-
-    # Auto-routing based on category and tags
-    if "Needs Info" in tag_names:
-        task.status = "review"
-    elif category == "immediate":
-        task.status = "pending"
-    elif category in ("scheduled", "repeating"):
-        task.status = "scheduled"
-
-    # Assign position at the bottom of the target column
-    task.position = await _next_position(session, task.status)
-
-    await session.commit()
-    await session.refresh(task, ["tags", "profile"])
-    resp = TaskResponse.from_task(
+    return TaskResponse.from_task(
         task,
         profile_name=task.profile.name if task.profile else None,
         classification=classification,
     )
-    await publish_event("task_created", resp.model_dump(mode="json"))
-    return resp
+
+
+# --- Task spec drafts (intake clarification) ---
+
+
+class TaskSpecStart(BaseModel):
+    input: str = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _not_blank(self):
+        if not self.input.strip():
+            raise ValueError("input must not be blank")
+        return self
+
+
+class TaskSpecAnswer(BaseModel):
+    responses: dict[str, str] = Field(default_factory=dict)
+
+
+@contextlib.contextmanager
+def _draft_errors():
+    # A draft that is someone else's is reported exactly like one that does not
+    # exist: drafts are not disclosed.
+    try:
+        yield
+    except clarify.DraftNotFound:
+        raise HTTPException(status_code=404, detail="Task draft not found or expired")
+    except clarify.DraftFinished as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/task-specs")
+async def list_task_specs(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    rounds = await clarify.max_rounds(session)
+    drafts = await clarify.list_active(session, clarify.owner_identity(_user))
+    return [clarify.draft_view(d, rounds) for d in drafts]
+
+
+@app.post("/api/task-specs", status_code=201)
+async def start_task_spec(
+    body: TaskSpecStart,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    draft = await clarify.start(session, body.input, clarify.owner_identity(_user), source="web")
+    return clarify.draft_view(draft, await clarify.max_rounds(session))
+
+
+@app.get("/api/task-specs/{draft_id}")
+async def get_task_spec(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    with _draft_errors():
+        draft = await clarify.get(session, draft_id, clarify.owner_identity(_user))
+    return clarify.draft_view(draft, await clarify.max_rounds(session))
+
+
+@app.post("/api/task-specs/{draft_id}/answer")
+async def answer_task_spec(
+    draft_id: str,
+    body: TaskSpecAnswer,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    with _draft_errors():
+        draft = await clarify.answer(session, draft_id, clarify.owner_identity(_user), body.responses)
+    return clarify.draft_view(draft, await clarify.max_rounds(session))
+
+
+@app.post("/api/task-specs/{draft_id}/confirm", response_model=TaskResponse, status_code=201)
+async def confirm_task_spec(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    with _draft_errors():
+        task = await clarify.confirm(session, draft_id, clarify.owner_identity(_user))
+    return TaskResponse.from_task(
+        task,
+        profile_name=task.profile.name if task.profile else None,
+        classification="clarified",
+    )
+
+
+@app.post("/api/task-specs/{draft_id}/cancel")
+async def cancel_task_spec(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_editor),
+):
+    with _draft_errors():
+        draft = await clarify.cancel(session, draft_id, clarify.owner_identity(_user))
+    return clarify.draft_view(draft, await clarify.max_rounds(session))
 
 
 @app.get("/api/tasks/archived", response_model=list[TaskResponse])
@@ -1673,6 +1669,7 @@ def _validate_timezone(value) -> str | None:
 _SETTING_VALIDATORS = {
     "plugin_poll_interval_seconds": _validate_non_negative_int,
     "max_turns": _validate_positive_int,
+    "clarification_max_rounds": _validate_positive_int,
     "reasoning_effort": _validate_reasoning_effort,
     "task_runner_log_level": _validate_log_level,
     "timezone": _validate_timezone,
