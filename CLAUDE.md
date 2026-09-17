@@ -423,4 +423,4 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
 - Tests: 2514 errand + 165 task-runner + 38 evals (pytest) + 348 frontend (vitest) — CI `test` job gates all five build jobs. Run each Python suite from its own directory (`cd task-runner && pytest tests`); collected from the repo root, `task-runner/tests` comes up short.
-- 181 component specs in `openspec/specs/`
+- 184 component specs in `openspec/specs/`
