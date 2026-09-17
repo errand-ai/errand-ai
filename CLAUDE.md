@@ -66,6 +66,8 @@ openspec/
   changes/             # Active changes (created by openspec new)
 errand/
   main.py              # FastAPI app (API endpoints + static file serving)
+  clarify.py           # Intake clarification service (task spec drafts)
+  task_creation.py     # Shared Task-building helper (POST /api/tasks + draft confirm)
   task_manager.py      # Async TaskManager (runs as background task in server process)
   mcp_server.py        # MCP Streamable HTTP server (tools: new_task, task_status, etc.)
   auth.py              # OIDC config, JWT validation, role extraction
@@ -351,6 +353,17 @@ The built-in default behind `task_processing_timeout` is 30s, except for a provi
 - MCP SDK dependency cascade: upgrading `mcp` can require bumping `pydantic`, `PyJWT`, and `uvicorn` minimum versions — check for conflicts when updating.
 - Helm deploys Twitter secrets via `envFrom`/`secretRef` — K8s secret keys must match env var names exactly (e.g. `TWITTER_API_KEY`).
 
+## Task Intake (clarification drafts)
+
+Interactive task creation — the web "Add Task" box (`TaskSpecIntake.vue`), Slack `/task new` and `@`-mentions — goes through a `TaskSpecDraft` (`errand/clarify.py`, `/api/task-specs`) before any task exists. `POST /api/tasks` is unchanged and still classifies in one shot (API/MCP clients, "Needs Info" routing).
+
+- `generate_title(..., want_questions=True, history=...)` lets the classifier ask up to 3 outcome-changing questions; without those arguments the prompt is byte-for-byte the old one. `clarification_max_rounds` (default 2) caps answer rounds — at the cap the draft is forced `ready` with `questions_unresolved`.
+- **`TaskCreate` is `{input}` only**, so a confirmed draft cannot be re-posted to `POST /api/tasks` (it would re-classify). Both paths share `task_creation.create_task_from_fields`; `TaskResponse` and `sync_tags` live there too (re-imported by `main.py`) so `clarify` need not import `main`.
+- Drafts are owned by the `created_by` identity (email, else `sub`; Slack: resolved email, else `slack:<id>`), so a Slack draft is the same user's draft on the web. Another owner's draft is a 404; a confirmed/abandoned one is a 409. Confirm claims the draft with a conditional UPDATE, so a double-click cannot create two tasks.
+- **Slack answers arrive through `POST /slack/interactions`** (input blocks + Submit / Just run it / Cancel, `platforms/slack/intake.py`), because the app subscribes only to `app_mention` — plain thread replies never reach errand. Interactivity is therefore required for Slack task creation. Draft actions run as background tasks and reply via `response_url`: a classifier call can outlast Slack's 3s acknowledgement.
+- Models (e.g. gpt-oss) return the string `"null"` for unset fields; `clarify._spec_value` normalises it. The one-shot `POST /api/tasks` path does not, and can store `repeat_interval = 'null'`.
+- Expired drafts are abandoned and later deleted by `run_draft_sweeper` (lifespan, hourly).
+
 ## Slack outbound messaging
 
 The task-runner can post to Slack via two MCP tools on `errand/mcp_server.py`:
@@ -409,5 +422,5 @@ errand/.venv/bin/pip install -r errand/requirements.txt
 - Version: tracked in the `VERSION` file (single source of truth — do not hard-code it here) — bump per semver for main/release commits (CI enforces immutable tags on `main`; PR builds auto-version via the `github.run_number` suffix, so no per-commit bump is needed on a PR branch)
 - Sequential development: one change at a time, branch from main, PR to merge (see Development Workflow)
 - Deployed at: https://errand.devops-consultants.net
-- Tests: 2218 errand + 165 task-runner + 38 evals (pytest) + 275 frontend (vitest) — CI `test` job gates all five build jobs. Run each Python suite from its own directory (`cd task-runner && pytest tests`); collected from the repo root, `task-runner/tests` comes up short.
+- Tests: 2514 errand + 165 task-runner + 38 evals (pytest) + 348 frontend (vitest) — CI `test` job gates all five build jobs. Run each Python suite from its own directory (`cd task-runner && pytest tests`); collected from the repo root, `task-runner/tests` comes up short.
 - 181 component specs in `openspec/specs/`

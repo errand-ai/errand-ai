@@ -15,11 +15,6 @@ vi.mock('@errand-ai/ui-components', () => ({
     props: ['tasks', 'userRole', 'loading'],
     emits: ['task-update', 'task-edit', 'task-delete', 'view-output', 'view-live-logs', 'view-static-logs'],
   },
-  TaskForm: {
-    name: 'TaskForm',
-    template: '<div data-testid="task-form"><slot name="voice" :onTranscription="() => {}" /></div>',
-    emits: ['task-created'],
-  },
   TaskEditModal: {
     name: 'TaskEditModal',
     template: '<div data-testid="edit-modal" />',
@@ -57,6 +52,7 @@ vi.mock('../../composables/useApi', async () => {
     ...actual,
     fetchTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn().mockResolvedValue({}),
+    fetchTaskSpecs: vi.fn().mockResolvedValue([]),
     updateTask: vi.fn().mockResolvedValue({}),
     deleteTask: vi.fn().mockResolvedValue(undefined),
   }

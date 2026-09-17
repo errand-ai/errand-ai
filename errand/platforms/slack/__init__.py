@@ -13,6 +13,10 @@ Slack App Configuration Requirements:
 
   Interactivity & Shortcuts:
     - Request URL: https://<domain>/slack/interactions
+    - Required, not optional: `/task new` and mentions reply with a draft whose
+      answers and Run button arrive here, so without it no task can be created
+      from Slack. Behind NAT, use the errand-cloud relay, which forwards
+      interactivity as well as commands and events.
 
   Slash Commands:
     - /task → https://<domain>/slack/commands

@@ -13,10 +13,6 @@ vi.mock('@errand-ai/ui-components', () => ({
     template: '<div data-testid="task-board" />',
     props: ['tasks', 'userRole', 'loading'],
   },
-  TaskForm: {
-    name: 'TaskForm',
-    template: '<div data-testid="task-form"><slot name="voice" :onTranscription="() => {}" /></div>',
-  },
   TaskEditModal: { name: 'TaskEditModal', template: '<div />', props: ['task', 'readOnly'] },
   TaskOutputModal: { name: 'TaskOutputModal', template: '<div />', props: ['title', 'output'] },
   TaskLogViewer: { name: 'TaskLogViewer', template: '<div />', props: ['mode', 'taskId', 'logData', 'streamUrl'] },
@@ -42,6 +38,7 @@ vi.mock('../../composables/useApi', async () => {
     ...actual,
     fetchTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn().mockResolvedValue({}),
+    fetchTaskSpecs: vi.fn().mockResolvedValue([]),
     updateTask: vi.fn().mockResolvedValue({}),
     deleteTask: vi.fn().mockResolvedValue(undefined),
   }
@@ -96,7 +93,7 @@ function mountAsRole(role: string, tasks: TaskData[]) {
 describe('KanbanBoard RBAC — viewer restrictions', () => {
   it('viewer does not see the task creation form', () => {
     const { wrapper } = mountAsRole('viewer', makeTasks([{ title: 'A task' }]))
-    const form = wrapper.findComponent({ name: 'TaskForm' })
+    const form = wrapper.findComponent({ name: 'TaskSpecIntake' })
     expect(form.exists()).toBe(false)
   })
 
@@ -108,7 +105,7 @@ describe('KanbanBoard RBAC — viewer restrictions', () => {
 
   it('editor sees the task creation form', () => {
     const { wrapper } = mountAsRole('editor', makeTasks([{ title: 'A task' }]))
-    const form = wrapper.findComponent({ name: 'TaskForm' })
+    const form = wrapper.findComponent({ name: 'TaskSpecIntake' })
     expect(form.exists()).toBe(true)
   })
 
@@ -126,7 +123,7 @@ describe('KanbanBoard RBAC — viewer restrictions', () => {
 
   it('admin sees the task creation form', () => {
     const { wrapper } = mountAsRole('admin', makeTasks([{ title: 'A task' }]))
-    const form = wrapper.findComponent({ name: 'TaskForm' })
+    const form = wrapper.findComponent({ name: 'TaskSpecIntake' })
     expect(form.exists()).toBe(true)
   })
 })

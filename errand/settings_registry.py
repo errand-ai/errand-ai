@@ -27,6 +27,10 @@ SETTINGS_REGISTRY = {
     "max_turns": {"env_var": "MAX_TURNS", "sensitive": False, "default": 200},
     "reasoning_effort": {"env_var": "REASONING_EFFORT", "sensitive": False, "default": "medium"},
     "archive_after_days": {"env_var": None, "sensitive": False, "default": 3},
+    # How many times intake may answer-and-re-ask before a draft is forced to
+    # `ready` with its questions unresolved. Two keeps clarification to at most
+    # two rounds of questions; beyond that the loop feels stuck.
+    "clarification_max_rounds": {"env_var": None, "sensitive": False, "default": 2},
     "mcp_servers": {"env_var": None, "sensitive": False, "default": None},
     "mcp_api_key": {"env_var": None, "sensitive": True, "default": None},
     "ssh_public_key": {"env_var": None, "sensitive": False, "default": None},

@@ -139,6 +139,86 @@ export async function createTask(input: string): Promise<TaskData> {
   return res.json()
 }
 
+export interface TaskSpecQuestion {
+  id: string
+  text: string
+  kind: 'free_text' | 'choice'
+  choices?: string[]
+}
+
+export interface TaskSpecPreview {
+  title: string
+  description: string
+  category: string
+  execute_at: string | null
+  repeat_interval: string | null
+  repeat_until: string | null
+  profile: string | null
+}
+
+export interface TaskSpecTurn {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  ts: string
+}
+
+export interface TaskSpecDraft {
+  id: string
+  status: 'drafting' | 'ready' | 'confirmed' | 'abandoned'
+  source: string
+  input: string
+  questions: TaskSpecQuestion[]
+  questions_unresolved: boolean
+  spec_preview: TaskSpecPreview
+  round: number
+  max_rounds: number
+  conversation: TaskSpecTurn[]
+  created_at: string | null
+  expires_at: string
+  resolved_task_id: string | null
+}
+
+export class TaskSpecError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
+async function taskSpecRequest<T>(path: string, init: RequestInit, failure: string): Promise<T> {
+  const res = await authFetch(`${BASE}/task-specs${path}`, init)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new TaskSpecError(body.detail || `${failure}: ${res.status}`, res.status)
+  }
+  return res.json()
+}
+
+const jsonPost = (body?: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: body === undefined ? undefined : JSON.stringify(body),
+})
+
+export function fetchTaskSpecs(): Promise<TaskSpecDraft[]> {
+  return taskSpecRequest('', {}, 'Failed to load drafts')
+}
+
+export function startTaskSpec(input: string): Promise<TaskSpecDraft> {
+  return taskSpecRequest('', jsonPost({ input }), 'Failed to start task')
+}
+
+export function answerTaskSpec(id: string, responses: Record<string, string>): Promise<TaskSpecDraft> {
+  return taskSpecRequest(`/${encodeURIComponent(id)}/answer`, jsonPost({ responses }), 'Failed to send answers')
+}
+
+export function confirmTaskSpec(id: string): Promise<TaskData> {
+  return taskSpecRequest(`/${encodeURIComponent(id)}/confirm`, jsonPost(), 'Failed to create task')
+}
+
+export function cancelTaskSpec(id: string): Promise<TaskSpecDraft> {
+  return taskSpecRequest(`/${encodeURIComponent(id)}/cancel`, jsonPost(), 'Failed to cancel draft')
+}
+
 export async function updateTask(id: string, data: { title?: string; description?: string; status?: TaskStatus; position?: number; tags?: string[]; category?: string; execute_at?: string; repeat_interval?: string; repeat_until?: string; profile_id?: string | null }): Promise<TaskData> {
   const res = await authFetch(`${BASE}/tasks/${id}`, {
     method: 'PATCH',

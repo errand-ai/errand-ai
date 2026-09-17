@@ -15,96 +15,24 @@ from database import get_session
 from models import Task
 from platforms.slack.verification import verify_slack_request
 
-_TASKS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS tasks (
+
+_SLACK_MESSAGE_REFS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS slack_message_refs (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT,
-    status TEXT DEFAULT 'review' NOT NULL,
-    category TEXT DEFAULT 'immediate',
-    execute_at DATETIME,
-    repeat_interval TEXT,
-    repeat_until DATETIME,
-    position INTEGER DEFAULT 0 NOT NULL,
-    output TEXT,
-    runner_logs TEXT,
-    questions TEXT,
-    retry_count INTEGER DEFAULT 0 NOT NULL,
-    heartbeat_at DATETIME,
-    profile_id VARCHAR(36),
-    created_by TEXT,
-    updated_by TEXT,
-        encrypted_env TEXT,
-    is_eval BOOLEAN DEFAULT 0 NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
-)
-"""
-
-_SETTINGS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT NOT NULL PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
-)
-"""
-
-_TAGS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS tags (
-    id VARCHAR(36) NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
-)
-"""
-
-_TASK_TAGS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS task_tags (
-    task_id VARCHAR(36) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-    PRIMARY KEY (task_id, tag_id)
-)
-"""
-
-_PLATFORM_CREDENTIALS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS platform_credentials (
-    platform_id TEXT NOT NULL PRIMARY KEY,
-    encrypted_data TEXT NOT NULL,
-    status TEXT DEFAULT 'disconnected' NOT NULL,
-    last_verified_at DATETIME,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
-)
-"""
-
-
-_TASK_PROFILES_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS task_profiles (
-    id VARCHAR(36) NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    match_rules TEXT,
-    model TEXT,
-    system_prompt TEXT,
-    max_turns INTEGER,
-    reasoning_effort TEXT,
-    llm_timeout INTEGER,
-    mcp_servers TEXT,
-    litellm_mcp_servers TEXT,
-    skill_ids TEXT,
-            include_git_skills BOOLEAN NOT NULL DEFAULT 1,
-        enabled_plugins TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    task_id VARCHAR(36) NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL,
+    message_ts TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
 )
 """
 
 
 async def _create_tables(engine):
+    from tests.conftest import _create_tables as _create_shared_tables
+
+    await _create_shared_tables(engine)
     async with engine.begin() as conn:
-        await conn.execute(text(_TASK_PROFILES_TABLE_SQL))
-        await conn.execute(text(_TASKS_TABLE_SQL))
-        await conn.execute(text(_SETTINGS_TABLE_SQL))
-        await conn.execute(text(_TAGS_TABLE_SQL))
-        await conn.execute(text(_TASK_TAGS_TABLE_SQL))
-        await conn.execute(text(_PLATFORM_CREDENTIALS_TABLE_SQL))
+        await conn.execute(text(_SLACK_MESSAGE_REFS_TABLE_SQL))
 
 
 @pytest.fixture()
@@ -128,13 +56,22 @@ async def slack_client() -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[verify_slack_request] = override_verify
 
+    # Every intake now goes through the classifier. By default it understands
+    # the input exactly as written and has no questions, so the draft is ready
+    # at once; a test that wants another answer sets `classifier.side_effect`.
     with patch("platforms.slack.routes.load_credentials", new_callable=AsyncMock) as mock_creds, \
-         patch("platforms.slack.routes.resolve_slack_email", new_callable=AsyncMock) as mock_email:
+         patch("platforms.slack.routes.resolve_slack_email", new_callable=AsyncMock) as mock_email, \
+         patch("platforms.slack.intake.load_credentials", new=mock_creds), \
+         patch("platforms.slack.intake.resolve_slack_email", new=mock_email), \
+         patch("clarify.generate_title", new_callable=AsyncMock) as mock_classifier:
         mock_creds.return_value = {"bot_token": "xoxb-test", "signing_secret": "test_secret"}
         mock_email.return_value = "slack-user@example.com"
+        mock_classifier.side_effect = lambda text, *a, **kw: _llm(title=text, description=text)
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            ac.classifier = mock_classifier
+            ac.session_factory = test_session
             yield ac
 
     app.dependency_overrides.clear()
@@ -150,6 +87,12 @@ def _llm(**kw):
     return LLMResult(**base)
 
 
+QUESTIONS = [
+    {"id": "room", "text": "Which room?", "kind": "free_text"},
+    {"id": "time", "text": "Morning or afternoon?", "kind": "choice", "choices": ["Morning", "Afternoon"]},
+]
+
+
 async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U123", channel_id: str = ""):
     """Post a slash command to /slack/commands."""
     data = {"command": "/task", "text": text, "user_id": user_id}
@@ -158,11 +101,72 @@ async def _post_command(client: AsyncClient, text: str = "", user_id: str = "U12
     return await client.post("/slack/commands", data=data)
 
 
-def _extract_short_id(create_response) -> str:
-    """Extract the short task ID from a task_created_blocks response."""
-    fields = create_response.json()["blocks"][1]["fields"]
+def _button_value(blocks: list, action_id: str) -> str:
+    for block in blocks:
+        for element in block.get("elements", []) if block["type"] == "actions" else []:
+            if element["action_id"] == action_id:
+                return element["value"]
+    raise AssertionError(f"no {action_id} button in {blocks}")
+
+
+async def _act(client: AsyncClient, blocks: list, action_id: str, *, user_id="U123", channel_id="C1", values=None):
+    """Click a draft button; returns (replies posted to response_url, channel posts)."""
+    from platforms.slack import intake
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": user_id},
+        "channel": {"id": channel_id},
+        "response_url": "https://hooks.slack.test/response",
+        "state": {"values": values or {}},
+    }
+    action = {"action_id": action_id, "value": _button_value(blocks, action_id)}
+    with patch.object(intake, "_slack_client") as mock_client:
+        mock_client.post_response_url = AsyncMock()
+        mock_client.post_message = AsyncMock(return_value={"ok": True, "channel": channel_id, "ts": "111.222"})
+        await intake.handle_draft_action(payload, action, client.session_factory)
+    replies = [(c.args[1], c.kwargs) for c in mock_client.post_response_url.call_args_list]
+    return replies, mock_client.post_message.call_args_list
+
+
+async def _create_task(client: AsyncClient, text: str, **kw) -> list:
+    """`/task new` then Run; returns the task confirmation blocks."""
+    draft = await _post_command(client, text=f"new {text}", **kw)
+    replies, _ = await _act(client, draft.json()["blocks"], "task_spec_run")
+    blocks, options = replies[-1]
+    assert options["replace_original"] is True
+    return blocks
+
+
+def _extract_short_id(blocks: list) -> str:
+    """Extract the short task ID from task confirmation blocks."""
+    fields = blocks[1]["fields"]
     id_field = [f for f in fields if f["text"].startswith("*ID:*")][0]
     return id_field["text"].split("`")[1]
+
+
+async def _task_row(client: AsyncClient, title_fragment: str):
+    from sqlalchemy import select
+    from models import Tag, task_tags
+
+    async with client.session_factory() as session:
+        task = (await session.execute(
+            select(Task).where(Task.title.contains(title_fragment))
+        )).scalars().first()
+        if task is None:
+            return None, []
+        tags = (await session.execute(
+            select(Tag.name).join(task_tags, task_tags.c.tag_id == Tag.id)
+            .where(task_tags.c.task_id == task.id)
+        )).scalars().all()
+        return task, list(tags)
+
+
+async def _count(client: AsyncClient, model) -> int:
+    from sqlalchemy import func, select
+
+    async with client.session_factory() as session:
+        return (await session.execute(select(func.count()).select_from(model))).scalar_one()
 
 
 # --- Events endpoint ---
@@ -214,19 +218,29 @@ class TestCommandRouting:
         assert data["blocks"][0]["text"]["text"] == "Task Commands"
 
 
-# --- New command ---
+# --- New command: a draft first, a task only on Run ---
 
 
 class TestNewCommand:
     @pytest.mark.asyncio
-    async def test_create_task(self, slack_client):
+    async def test_new_returns_a_draft_and_creates_no_task(self, slack_client):
         response = await _post_command(slack_client, text="new Buy groceries")
         assert response.status_code == 200
         data = response.json()
         assert data["response_type"] == "ephemeral"
-        assert data["blocks"][0]["text"]["text"] == "Task Created"
+        assert data["blocks"][0]["text"]["text"] == "I'll do this — run it?"
         fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
         assert "Buy groceries" in fields_text
+        assert _button_value(data["blocks"], "task_spec_run")
+        assert await _count(slack_client, Task) == 0
+
+    @pytest.mark.asyncio
+    async def test_run_creates_task(self, slack_client):
+        blocks = await _create_task(slack_client, "Buy groceries")
+        assert blocks[0]["text"]["text"] == "Task Created"
+        fields_text = " ".join(f["text"] for f in blocks[1]["fields"])
+        assert "Buy groceries" in fields_text
+        assert await _count(slack_client, Task) == 1
 
     @pytest.mark.asyncio
     async def test_create_task_no_title(self, slack_client):
@@ -245,10 +259,114 @@ class TestNewCommand:
 
     @pytest.mark.asyncio
     async def test_created_by_email(self, slack_client):
-        response = await _post_command(slack_client, text="new Test task")
-        data = response.json()
-        context = data["blocks"][2]["elements"][0]["text"]
+        blocks = await _create_task(slack_client, "Test task")
+        context = blocks[2]["elements"][0]["text"]
         assert "slack-user@example.com" in context
+        task, _ = await _task_row(slack_client, "Test task")
+        assert task.created_by == "slack-user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_input_asks_with_input_blocks(self, slack_client):
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(title="Book Room", questions=QUESTIONS)
+        response = await _post_command(slack_client, text="new book the room")
+        blocks = response.json()["blocks"]
+        inputs = [b for b in blocks if b["type"] == "input"]
+        assert [b["block_id"] for b in inputs] == ["task_spec_q:room", "task_spec_q:time"]
+        assert inputs[0]["element"]["type"] == "plain_text_input"
+        assert inputs[1]["element"]["type"] == "static_select"
+        assert [o["value"] for o in inputs[1]["element"]["options"]] == ["Morning", "Afternoon"]
+        for action_id in ("task_spec_submit", "task_spec_run", "task_spec_cancel"):
+            assert _button_value(blocks, action_id)
+        assert await _count(slack_client, Task) == 0
+
+
+# --- Draft actions ---
+
+
+class TestDraftActions:
+    @pytest.mark.asyncio
+    async def test_submit_folds_answers_then_run(self, slack_client):
+        slack_client.classifier.side_effect = [
+            _llm(title="Book Room", questions=QUESTIONS),
+            _llm(title="Book Room", description="Book room 4 for the morning"),
+        ]
+        draft = (await _post_command(slack_client, text="new book the room")).json()["blocks"]
+
+        values = {
+            "task_spec_q:room": {"answer": {"type": "plain_text_input", "value": "Room 4"}},
+            "task_spec_q:time": {"answer": {"type": "static_select", "selected_option": {"value": "Morning"}}},
+        }
+        replies, _ = await _act(slack_client, draft, "task_spec_submit", values=values)
+        preview, options = replies[-1]
+        assert options["replace_original"] is True
+        assert preview[0]["text"]["text"] == "I'll do this — run it?"
+        history = slack_client.classifier.call_args.kwargs["history"]
+        assert history[-1]["content"] == "Which room? -> Room 4\nMorning or afternoon? -> Morning"
+
+        replies, _ = await _act(slack_client, preview, "task_spec_run")
+        assert replies[-1][0][0]["text"]["text"] == "Task Created"
+        task, tags = await _task_row(slack_client, "Book Room")
+        assert task.description == "Book room 4 for the morning"
+        assert task.status == "pending"
+        assert tags == ["slack"]
+
+    @pytest.mark.asyncio
+    async def test_other_user_cannot_advance(self, slack_client):
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(title="Book Room", questions=QUESTIONS)
+        draft = (await _post_command(slack_client, text="new book the room")).json()["blocks"]
+
+        with patch("platforms.slack.intake.resolve_slack_email", AsyncMock(return_value="mallory@example.com")):
+            for action_id in ("task_spec_submit", "task_spec_run", "task_spec_cancel"):
+                replies, _ = await _act(slack_client, draft, action_id, user_id="U999")
+                blocks, options = replies[-1]
+                assert options["replace_original"] is False
+                assert "Only the person who started this draft" in blocks[0]["text"]["text"]
+
+        assert await _count(slack_client, Task) == 0
+        assert slack_client.classifier.call_count == 1
+        from models import TaskSpecDraft
+        async with slack_client.session_factory() as session:
+            from sqlalchemy import select
+            stored = (await session.execute(select(TaskSpecDraft))).scalar_one()
+        assert (stored.status, stored.round) == ("drafting", 0)
+
+    @pytest.mark.asyncio
+    async def test_cancel_then_run_is_inactive(self, slack_client):
+        draft = (await _post_command(slack_client, text="new Buy groceries")).json()["blocks"]
+        replies, _ = await _act(slack_client, draft, "task_spec_cancel")
+        assert "cancelled" in replies[-1][0][0]["text"]["text"]
+        replies, _ = await _act(slack_client, draft, "task_spec_run")
+        assert "no longer active" in replies[-1][0][0]["text"]["text"]
+        assert replies[-1][1]["replace_original"] is True
+        assert await _count(slack_client, Task) == 0
+
+    @pytest.mark.asyncio
+    async def test_run_twice_creates_one_task(self, slack_client):
+        draft = (await _post_command(slack_client, text="new Buy groceries")).json()["blocks"]
+        await _act(slack_client, draft, "task_spec_run")
+        replies, _ = await _act(slack_client, draft, "task_spec_run")
+        assert "no longer active" in replies[-1][0][0]["text"]["text"]
+        assert await _count(slack_client, Task) == 1
+
+    @pytest.mark.asyncio
+    async def test_interactions_endpoint_dispatches_in_background(self, slack_client):
+        import json
+
+        payload = {
+            "type": "block_actions",
+            "user": {"id": "U123"},
+            "response_url": "https://hooks.slack.test/response",
+            "actions": [{"action_id": "task_spec_run", "value": "abc"}],
+        }
+        with patch("platforms.slack.routes.intake.handle_draft_action", new_callable=AsyncMock) as handler:
+            response = await slack_client.post("/slack/interactions", data={"payload": json.dumps(payload)})
+            import asyncio
+            await asyncio.sleep(0)
+        assert response.status_code == 200
+        handler.assert_awaited_once()
+        assert handler.call_args.args[1]["action_id"] == "task_spec_run"
 
 
 # --- Status command ---
@@ -257,8 +375,7 @@ class TestNewCommand:
 class TestStatusCommand:
     @pytest.mark.asyncio
     async def test_status_by_prefix(self, slack_client):
-        create_resp = await _post_command(slack_client, text="new Status test")
-        short_id = _extract_short_id(create_resp)
+        short_id = _extract_short_id(await _create_task(slack_client, "Status test"))
 
         response = await _post_command(slack_client, text=f"status {short_id}")
         assert response.status_code == 200
@@ -293,8 +410,8 @@ class TestListCommand:
 
     @pytest.mark.asyncio
     async def test_list_with_tasks(self, slack_client):
-        await _post_command(slack_client, text="new Task A")
-        await _post_command(slack_client, text="new Task B")
+        await _create_task(slack_client, "Task A")
+        await _create_task(slack_client, "Task B")
 
         response = await _post_command(slack_client, text="list")
         data = response.json()
@@ -304,16 +421,7 @@ class TestListCommand:
 
     @pytest.mark.asyncio
     async def test_list_with_status_filter(self, slack_client):
-        # A task that actually reaches `pending`. A short Slack input is tagged
-        # "Needs Info" and now parks in review, as `task-categorisation`
-        # requires of every intake — so it can no longer stand in for a queued
-        # task here.
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Pending task")
-            await _post_command(
-                slack_client,
-                text="new Pending task that is long enough to be classified properly",
-            )
+        await _create_task(slack_client, "Pending task")
 
         response = await _post_command(slack_client, text="list pending")
         data = response.json()
@@ -322,7 +430,7 @@ class TestListCommand:
 
     @pytest.mark.asyncio
     async def test_list_excludes_deleted(self, slack_client):
-        await _post_command(slack_client, text="new Some task")
+        await _create_task(slack_client, "Some task")
 
         response = await _post_command(slack_client, text="list deleted")
         data = response.json()
@@ -335,18 +443,10 @@ class TestListCommand:
 class TestRunCommand:
     @pytest.mark.asyncio
     async def test_run_already_pending(self, slack_client):
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Run test")
-            create_resp = await _post_command(
-                slack_client,
-                text="new Run test with an input long enough to be classified properly",
-            )
-        short_id = _extract_short_id(create_resp)
+        short_id = _extract_short_id(await _create_task(slack_client, "Run test"))
 
-        # A classified task reaches pending, so run should say it is already
-        # pending. Before both Slack intakes routed on the tag, a short input
-        # served here — it was tagged "Needs Info" and queued anyway, which is
-        # the defect, not a fixture.
+        # A confirmed immediate task reaches pending, so run should say it is
+        # already pending.
         response = await _post_command(slack_client, text=f"run {short_id}")
         data = response.json()
         assert ":warning:" in data["blocks"][0]["text"]["text"]
@@ -373,8 +473,7 @@ class TestRunCommand:
 class TestOutputCommand:
     @pytest.mark.asyncio
     async def test_output_no_output(self, slack_client):
-        create_resp = await _post_command(slack_client, text="new Output test")
-        short_id = _extract_short_id(create_resp)
+        short_id = _extract_short_id(await _create_task(slack_client, "Output test"))
 
         response = await _post_command(slack_client, text=f"output {short_id}")
         data = response.json()
@@ -394,8 +493,7 @@ class TestOutputCommand:
 class TestUUIDPrefixMatching:
     @pytest.mark.asyncio
     async def test_prefix_match(self, slack_client):
-        create_resp = await _post_command(slack_client, text="new Prefix test")
-        short_id = _extract_short_id(create_resp)
+        short_id = _extract_short_id(await _create_task(slack_client, "Prefix test"))
 
         # Use first 4 chars as prefix
         prefix = short_id[:4]
@@ -413,12 +511,10 @@ class TestUUIDPrefixMatching:
 
     @pytest.mark.asyncio
     async def test_full_uuid_match(self, slack_client):
-        # Create a task and get the full ID from the status response
-        create_resp = await _post_command(slack_client, text="new UUID test")
-        short_id = _extract_short_id(create_resp)
+        await _create_task(slack_client, "UUID test")
+        task, _ = await _task_row(slack_client, "UUID test")
 
-        # Get status by prefix to see the full ID in the response
-        status_resp = await _post_command(slack_client, text=f"status {short_id}")
+        status_resp = await _post_command(slack_client, text=f"status {task.id}")
         data = status_resp.json()
         assert data["blocks"][0]["text"]["text"] == "UUID test"
 
@@ -438,22 +534,18 @@ class TestSlackTag:
     @pytest.mark.asyncio
     async def test_new_command_adds_slack_tag(self, slack_client):
         """Tasks created via /task new should get a 'slack' tag."""
-        response = await _post_command(slack_client, text="new Tagged task")
-        assert response.status_code == 200
-        data = response.json()
-        # The response itself doesn't include tags, but we can verify the tag
-        # exists by checking the DB indirectly via the actions block
-        assert data["blocks"][0]["text"]["text"] == "Task Created"
+        await _create_task(slack_client, "Tagged task")
+        _, tags = await _task_row(slack_client, "Tagged task")
+        assert tags == ["slack"]
 
     @pytest.mark.asyncio
     async def test_new_command_creates_slack_tag_if_not_exists(self, slack_client):
         """First /task new should create the 'slack' tag, second should reuse it."""
-        response1 = await _post_command(slack_client, text="new First task")
-        assert response1.status_code == 200
-        response2 = await _post_command(slack_client, text="new Second task")
-        assert response2.status_code == 200
-        # Both should succeed without errors (tag reuse works)
-        assert response2.json()["blocks"][0]["text"]["text"] == "Task Created"
+        await _create_task(slack_client, "First task")
+        blocks = await _create_task(slack_client, "Second task")
+        assert blocks[0]["text"]["text"] == "Task Created"
+        _, tags = await _task_row(slack_client, "Second task")
+        assert tags == ["slack"]
 
 
 # --- Channel message for live updates ---
@@ -461,31 +553,29 @@ class TestSlackTag:
 
 class TestNewCommandChannelMessage:
     @pytest.mark.asyncio
-    async def test_posts_channel_message_when_channel_id_present(self, slack_client):
-        """When channel_id is provided, /task new should also post a visible channel message."""
-        with patch("platforms.slack.routes._slack_client") as mock_client:
-            mock_client.post_message = AsyncMock(
-                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
-            )
-            response = await _post_command(
-                slack_client, text="new Channel task", channel_id="C456"
-            )
-            assert response.status_code == 200
-            assert response.json()["blocks"][0]["text"]["text"] == "Task Created"
+    async def test_run_posts_channel_message_and_stores_ref(self, slack_client):
+        """The slash-command draft is ephemeral and cannot be updated later, so
+        Run posts a visible channel message and links it for status updates."""
+        from models import SlackMessageRef
 
-            # Background task posts to the channel
-            mock_client.post_message.assert_called_once()
-            call_args = mock_client.post_message.call_args
-            assert call_args[0][0] == "xoxb-test"  # bot token
-            assert call_args[0][1] == "C456"  # channel
-            assert isinstance(call_args[0][2], list)  # blocks
+        draft = (await _post_command(slack_client, text="new Channel task", channel_id="C456")).json()
+        _, posts = await _act(slack_client, draft["blocks"], "task_spec_run", channel_id="C456")
+
+        assert len(posts) == 1
+        assert posts[0].args[0] == "xoxb-test"
+        assert posts[0].args[1] == "C456"
+        assert isinstance(posts[0].args[2], list)
+        async with slack_client.session_factory() as session:
+            from sqlalchemy import select
+            ref = (await session.execute(select(SlackMessageRef))).scalar_one()
+        assert (ref.channel_id, ref.message_ts) == ("C456", "111.222")
 
     @pytest.mark.asyncio
-    async def test_no_channel_message_without_channel_id(self, slack_client):
-        """When no channel_id, no channel message is posted."""
+    async def test_new_posts_nothing_to_the_channel(self, slack_client):
+        """No task exists yet, so there is nothing to announce."""
         with patch("platforms.slack.routes._slack_client") as mock_client:
             mock_client.post_message = AsyncMock()
-            response = await _post_command(slack_client, text="new No channel task")
+            response = await _post_command(slack_client, text="new No channel task", channel_id="C456")
             assert response.status_code == 200
             mock_client.post_message.assert_not_called()
 
@@ -504,280 +594,120 @@ class TestNewCommandChannelMessage:
     @pytest.mark.asyncio
     async def test_task_id_stripped_from_response(self, slack_client):
         """The _task_id metadata field should not appear in the HTTP response."""
-        with patch("platforms.slack.routes._slack_client") as mock_client:
-            mock_client.post_message = AsyncMock(
-                return_value={"ok": True, "channel": "C456", "ts": "999.888"}
-            )
-            response = await _post_command(
-                slack_client, text="new Metadata test", channel_id="C456"
-            )
-            data = response.json()
-            assert "_task_id" not in data
+        response = await _post_command(slack_client, text="new Metadata test", channel_id="C456")
+        assert "_task_id" not in response.json()
 
 
-# --- LLM title generation ---
-
-
-class TestTitleGeneration:
-    @pytest.mark.asyncio
-    async def test_long_input_uses_llm_title(self, slack_client):
-        """Inputs >5 words should go through generate_title for a short title."""
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
-            from llm import LLMResult
-            mock_gen.return_value = LLMResult(
-                title="Deploy Staging App", category="immediate", success=True,
-                description="Deploy the new version of the app to staging",
-            )
-            response = await _post_command(
-                slack_client, text="new Deploy the new version of the app to staging"
-            )
-            assert response.status_code == 200
-            data = response.json()
-            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
-            assert "Deploy Staging App" in fields_text
-            mock_gen.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_short_input_skips_llm(self, slack_client):
-        """Inputs <=5 words should use text directly as title, no LLM call."""
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
-            response = await _post_command(slack_client, text="new Fix login bug")
-            assert response.status_code == 200
-            data = response.json()
-            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
-            assert "Fix login bug" in fields_text
-            mock_gen.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_long_input_sets_description(self, slack_client):
-        """For long inputs, the LLM-cleaned text becomes the description."""
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as mock_gen:
-            from llm import LLMResult
-            mock_gen.return_value = LLMResult(
-                title="Weekly Report", category="scheduled", success=True,
-                execute_at="2026-03-01T09:00:00Z",
-                description="Generate the weekly status report and send it to the team",
-            )
-            response = await _post_command(
-                slack_client, text="new Generate the weekly status report and send it to the team"
-            )
-            assert response.status_code == 200
-            # Verify title is the LLM-generated one
-            data = response.json()
-            fields_text = " ".join(f["text"] for f in data["blocks"][1]["fields"])
-            assert "Weekly Report" in fields_text
-
-
-# --- Cause-based routing on both Slack intakes ---
+# --- What the classifier's answer becomes on Slack ---
 #
-# Raised in review: both Slack intakes carry the same tag/route decision as the
-# web endpoint and neither had coverage for it, so a Slack-specific regression
-# could hide behind the web-path tests. Two independent facts are asserted at
-# once, deliberately — the tag, and the status the tag is supposed to cause.
-# Testing only the tag is what let both files tag `Needs Info` and then create
-# the task `pending` regardless, for as long as they have existed.
-
-
-async def _task_row(client: AsyncClient, title_fragment: str):
-    from sqlalchemy import select
-    from database import get_session as _gs
-    gen = app.dependency_overrides[_gs]()
-    session = await gen.__anext__()
-    try:
-        task = (await session.execute(
-            select(Task).where(Task.title.contains(title_fragment))
-        )).scalars().first()
-        if task is None:
-            return None, []
-        from models import Tag, task_tags
-        tags = (await session.execute(
-            select(Tag.name).join(task_tags, task_tags.c.tag_id == Tag.id)
-            .where(task_tags.c.task_id == task.id)
-        )).scalars().all()
-        return task, list(tags)
-    finally:
-        await gen.aclose()
+# A Slack task is only ever created from a draft the user has seen and run, so
+# none of these park the task under "Needs Info": whatever the classifier said,
+# the user chose to run what the preview showed.
 
 
 LONG = "please book the meeting room for the quarterly planning session tomorrow"
 
 
-class TestSlashCommandCauseRouting:
-    """`/task new <long input>` — the handlers.py intake."""
-
+class TestSlashCommandClassification:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("cause", ["no_model_configured", "request_failed"])
-    async def test_unreached_classifier_is_not_the_users_fault(self, slack_client, cause):
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Fallback", success=False, description=None, cause=cause)
-            await _post_command(slack_client, text=f"new {LONG}")
+    @pytest.mark.parametrize("cause", ["no_model_configured", "request_failed", "unusable_response"])
+    async def test_unusable_classifier_keeps_the_raw_input(self, slack_client, cause):
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(title="x", success=False, description=None, cause=cause)
+        await _create_task(slack_client, LONG)
 
-        task, tags = await _task_row(slack_client, "Fallback")
-        assert task is not None
-        assert "Needs Info" not in tags, "blamed the user for an unconfigured installation"
+        task, tags = await _task_row(slack_client, "please book the meeting room")
+        assert task.title == "please book the meeting room..."
+        assert "Needs Info" not in tags
         assert task.status == "pending"
-        # The raw input is kept: nothing was missing from what they wrote.
         assert task.description == LONG
 
     @pytest.mark.asyncio
-    async def test_an_unusable_answer_is_tagged_and_parked(self, slack_client):
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Unusable", success=False, description=None,
-                                   cause="unusable_response")
-            await _post_command(slack_client, text=f"new {LONG}")
-
-        task, tags = await _task_row(slack_client, "Unusable")
-        assert "Needs Info" in tags
-        assert task.status == "review", "tagged Needs Info but queued to run anyway"
-
-    @pytest.mark.asyncio
-    async def test_a_successful_answer_with_no_description_is_parked(self, slack_client):
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Empty", success=True, description=None)
-            await _post_command(slack_client, text=f"new {LONG}")
-
-        task, tags = await _task_row(slack_client, "Empty")
-        assert "Needs Info" in tags
-        assert task.status == "review"
-
-    @pytest.mark.asyncio
-    async def test_short_input_is_parked(self, slack_client):
-        """The classifier is deliberately not run, which is a judgement about
-        the input — so the tag is right, and so is the parking."""
-        await _post_command(slack_client, text="new fix it")
+    async def test_short_input_is_classified_too(self, slack_client):
+        await _create_task(slack_client, "fix it")
+        assert slack_client.classifier.await_count == 1
         task, tags = await _task_row(slack_client, "fix it")
-        assert "Needs Info" in tags
-        assert task.status == "review"
+        assert "Needs Info" not in tags
+        assert task.status == "pending"
 
     @pytest.mark.asyncio
     async def test_a_usable_answer_runs(self, slack_client):
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Good")
-            await _post_command(slack_client, text=f"new {LONG}")
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(title="Good")
+        await _create_task(slack_client, LONG)
 
         task, tags = await _task_row(slack_client, "Good")
-        assert "Needs Info" not in tags
+        assert tags == ["slack"]
         assert task.status == "pending"
         assert task.description == "cleaned"
 
-
-class TestSlackPositionIsPerColumn:
-    """Position is numbered per column, so it has to be taken after the status
-    is known. Raised in review, and introduced by the routing fix itself: while
-    every Slack task was `pending` the pending-filtered maximum was right by
-    accident, and the moment a task could land in `review` it stopped being.
-    """
-
     @pytest.mark.asyncio
-    async def test_a_parked_task_is_numbered_in_the_review_column(self, slack_client):
-        # Three tasks queued, so the pending column's bottom is well past 1.
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Queued")
-            for _ in range(3):
-                await _post_command(
-                    slack_client,
-                    text="new Queued task with an input long enough to be classified",
-                )
-
-        with patch("platforms.slack.handlers.generate_title", new_callable=AsyncMock) as gt:
-            gt.return_value = _llm(title="Parked", success=False, description=None,
-                                   cause="unusable_response")
-            await _post_command(
-                slack_client,
-                text="new Parked task with an input long enough to be classified",
-            )
-
-        parked, tags = await _task_row(slack_client, "Parked")
-        assert parked.status == "review"
-        assert "Needs Info" in tags
-        # First in its own column, not fourth from the pending one.
-        assert parked.position == 1, (
-            f"numbered {parked.position} from the pending column, so it lands "
-            "in an arbitrary place in review"
+    async def test_a_scheduled_answer_is_scheduled(self, slack_client):
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(
+            title="Weekly Report", category="scheduled", execute_at="2026-03-01T09:00:00+00:00",
         )
+        await _create_task(slack_client, LONG)
+        task, _ = await _task_row(slack_client, "Weekly Report")
+        assert task.status == "scheduled"
+        assert task.category == "scheduled"
 
 
-class TestMentionCauseRouting:
-    """`@errand <long input>` — the routes.py intake.
-
-    A second, separate implementation of the same decision. It reaches the
-    database through `async_session` directly rather than the request
-    dependency, which is why it needs its own factory patched and is also why
-    it drifted from the slash-command path unnoticed.
-    """
+class TestMentionDraft:
+    """`@errand <input>` — the draft is posted in the mention's thread."""
 
     @staticmethod
-    async def _mention(slack_client, text_body: str, llm=None):
-        from database import get_session as _gs
+    async def _mention(slack_client, text_body: str, post_result=None):
         import platforms.slack.routes as routes
+        from platforms.slack import intake
 
-        override = app.dependency_overrides[_gs]
-
-        class _Factory:
-            def __call__(self):
-                return self
-
-            async def __aenter__(self):
-                self._gen = override()
-                return await self._gen.__anext__()
-
-            async def __aexit__(self, *exc):
-                await self._gen.aclose()
-                return False
-
-        patches = [patch.object(routes, "async_session", _Factory())]
-        if llm is not None:
-            p = patch.object(routes, "generate_title", new_callable=AsyncMock)
-            patches.append(p)
-        started = [p.start() for p in patches]
-        if llm is not None:
-            started[1].return_value = llm
-        try:
-            await routes._handle_mention(
-                {"text": f"<@BOT> {text_body}", "user": "U123", "channel": "C1"}
+        with patch.object(routes, "async_session", slack_client.session_factory), \
+             patch.object(intake, "_slack_client") as mock_client:
+            mock_client.post_message = AsyncMock(
+                return_value=post_result or {"ok": True, "channel": "C1", "ts": "555.666"}
             )
-        finally:
-            for p in patches:
-                p.stop()
+            await routes._handle_mention(
+                {"text": f"<@BOT> {text_body}", "user": "U123", "channel": "C1", "ts": "444.333"}
+            )
+        return mock_client.post_message
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("cause", ["no_model_configured", "request_failed"])
-    async def test_unreached_classifier_is_not_the_users_fault(self, slack_client, cause):
-        await self._mention(slack_client, LONG,
-                            _llm(title="MFallback", success=False, description=None, cause=cause))
-        task, tags = await _task_row(slack_client, "MFallback")
-        assert task is not None
-        assert "Needs Info" not in tags
-        assert task.status == "pending"
-        assert task.description == LONG
+    async def test_draft_posted_in_thread_and_recorded(self, slack_client):
+        from models import TaskSpecDraft
+        from sqlalchemy import select
+
+        post = await self._mention(slack_client, LONG)
+        post.assert_awaited_once()
+        assert post.call_args.args[:2] == ("xoxb-test", "C1")
+        assert post.call_args.kwargs["thread_ts"] == "444.333"
+        assert await _count(slack_client, Task) == 0
+
+        async with slack_client.session_factory() as session:
+            draft = (await session.execute(select(TaskSpecDraft))).scalar_one()
+        assert (draft.owner_id, draft.source) == ("slack-user@example.com", "slack")
+        assert (draft.external_channel_id, draft.external_message_ts) == ("C1", "555.666")
 
     @pytest.mark.asyncio
-    async def test_an_unusable_answer_is_tagged_and_parked(self, slack_client):
-        await self._mention(slack_client, LONG,
-                            _llm(title="MUnusable", success=False, description=None,
-                                 cause="unusable_response"))
-        task, tags = await _task_row(slack_client, "MUnusable")
-        assert "Needs Info" in tags
-        assert task.status == "review", "tagged Needs Info but queued to run anyway"
+    async def test_run_links_the_thread_message(self, slack_client):
+        from models import SlackMessageRef
+        from sqlalchemy import select
+
+        post = await self._mention(slack_client, LONG)
+        blocks = post.call_args.args[2]
+        _, posts = await _act(slack_client, blocks, "task_spec_run")
+
+        assert posts == [], "the thread message is replaced, not duplicated"
+        async with slack_client.session_factory() as session:
+            ref = (await session.execute(select(SlackMessageRef))).scalar_one()
+        assert (ref.channel_id, ref.message_ts) == ("C1", "555.666")
+        task, tags = await _task_row(slack_client, "please book")
+        assert tags == ["slack"]
+        assert task.created_by == "slack-user@example.com"
 
     @pytest.mark.asyncio
-    async def test_a_successful_answer_with_no_description_is_parked(self, slack_client):
-        await self._mention(slack_client, LONG,
-                            _llm(title="MEmpty", success=True, description=None))
-        task, tags = await _task_row(slack_client, "MEmpty")
-        assert "Needs Info" in tags
-        assert task.status == "review"
+    async def test_empty_mention_starts_nothing(self, slack_client):
+        from models import TaskSpecDraft
 
-    @pytest.mark.asyncio
-    async def test_short_input_is_parked(self, slack_client):
-        await self._mention(slack_client, "fix the thing")
-        task, tags = await _task_row(slack_client, "fix the thing")
-        assert "Needs Info" in tags
-        assert task.status == "review"
-
-    @pytest.mark.asyncio
-    async def test_a_usable_answer_runs(self, slack_client):
-        await self._mention(slack_client, LONG, _llm(title="MGood"))
-        task, tags = await _task_row(slack_client, "MGood")
-        assert "Needs Info" not in tags
-        assert task.status == "pending"
+        post = await self._mention(slack_client, "")
+        post.assert_not_called()
+        assert await _count(slack_client, TaskSpecDraft) == 0

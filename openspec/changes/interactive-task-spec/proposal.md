@@ -8,34 +8,33 @@ This is a usability fix, not a model upgrade: two cheap local-model turns that p
 
 ## What Changes
 
-- Add a `TaskSpecDraft` persist model representing an in-progress, conversational intake: the original input, the question/answer conversation turns, the spec fields resolved so far, and a status (`drafting` → `ready` → `confirmed`/`abandoned`) with a 24h expiry.
-- Add a `clarify.py` service layer: `start(intput, owner)` → emits the first clarifying question (or short-circuits to a final spec when the input is already unambiguous); `answer(draft_id, responses)` → folds the answers back in and either asks again or returns a `{status, spec_preview}` ready to confirm. Enforces a configurable round cap (`clarification_max_rounds`, default 2) and an explicit "just run with what we have" escape on every turn.
-- Expose `GET/POST /api/task-specs` on the backend — a single API both the web frontend and the Slack inbound adapter call.
-- The web frontend gains a small intake dialog: description box → conversation panel (questions + answers) → a spec **preview card** ("I'll do X, scheduled Y, under profile Z") with a confirm step. Confirmed drafts **compile back to the existing `TaskCreate` shape** (`POST /api/tasks`), so no engine change is needed to run the resulting task.
-- The Slack slash-command / `@`-mention handler routes inbound text through the same draft flow instead of immediately creating a task: questions come back as block-kit buttons (plus free text), replies resolve in-thread, and confirm creates the task. Reuses the existing `errand-cloud` webhook → WebSocket tunnel delivery path.
+- Add a `TaskSpecDraft` persisted model representing an in-progress, conversational intake: the original input, the question/answer conversation turns, the spec fields resolved so far, and a status (`drafting` → `ready` → `confirmed`/`abandoned`) with a 24h inactivity expiry. Drafts are owned by the same identity recorded in `tasks.created_by` (the user's email), so a draft started in Slack is the same person's draft on the web.
+- Add a `clarify.py` service layer: `start(input, owner)` → emits the first clarifying questions (or short-circuits to a final spec when the input is already unambiguous); `answer(draft_id, responses)` → folds the answers back in and either asks again or returns a `{status, spec_preview}` ready to confirm; `confirm` and `cancel`. Enforces a configurable round cap (`clarification_max_rounds` setting, default 2) and an explicit "just run with what we have" escape on every turn.
+- Expose `/api/task-specs` on the backend (list, get, start, answer, confirm, cancel) — a single API the web frontend calls; the Slack adapter calls the same service layer.
+- The web frontend gains a small intake dialog: description box → conversation panel (questions + answers) → a spec **preview card** ("I'll do X, scheduled Y, under profile Z") with a confirm step.
+- Confirmed drafts create an ordinary task through a **shared task-creation helper** extracted from `POST /api/tasks` (`TaskCreate` carries only raw `input`, so re-posting it would re-classify and discard the resolved spec). The async engine is unchanged.
+- The Slack `/task new` command and `@`-mention handler route inbound text through the same draft flow instead of immediately creating a task: questions come back as a Block Kit message with input blocks (text inputs for free-text questions, selects for choice questions) and Submit / Just run it / Cancel buttons. Answers arrive through the existing `POST /slack/interactions` endpoint (and the cloud relay that already forwards it) — no new event subscriptions or OAuth scopes.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `task-spec-draft-model`: the persisted draft entity with conversation history, spec fields, status lifecycle, and expiry.
-- `task-spec-intake`: the clarification service — `start`/`answer`/resolve, round cap, escape hatch, spec preview.
-- `task-spec-api`: the `GET/POST /api/task-specs` surface contract (request/response shapes, auth, owner-scoping).
-- `task-spec-web-ui`: the intake/conversation flow in the frontend.
-- `task-spec-slack-adapter`: routing inbound Slack text through the draft flow and back to Slack with block-kit questions; uses the existing cloud tunnel.
+- `task-spec-draft-model`: the persisted draft entity with conversation history, spec fields, status lifecycle, owner scoping and expiry.
+- `task-spec-intake`: the clarification service (`start`/`answer`/`confirm`/`cancel`, round cap, escape hatch, spec preview) and the surfaces that use it — the `/api/task-specs` API, the web intake dialog, and the Slack adapter.
 
 ### Modified Capabilities
 
-- `structured-task-events`: the task-creation event stream gains a `spec_draft_created` / `spec_draft_confirmed` pair of events so a confirmed spec's transition into a real task is observable (the events already exist for task lifecycle; this is a new pair at the draft boundary).
-- `slack-inbound`: the existing slash-command/mention entrypoint gains a "clarify before create" mode (currently it creates immediately).
+- `slack-commands`: `/task new` starts a clarification draft instead of creating a task immediately.
+- `slack-mention-events`: an `app_mention` starts a clarification draft in-thread instead of creating a task immediately.
+- `slack-interactive-messages`: the interactions endpoint dispatches the draft actions (submit answers, just run, cancel).
 
 ## Impact
 
 - `errand/models.py`: new `TaskSpecDraft` table + Alembic migration.
 - `errand/clarify.py`: **new file** — the service layer.
-- `errand/main.py`: new routes `GET/POST /api/task-specs`; confirmed draft calls into the existing `create_task` path.
-- `errand/task_manager.py`: minimal — `create_task` already accepts `TaskCreate`; the draft resolves to it. No change to the async runner.
-- `errand/webhook_receiver.py` / `errand/integration_routes.py`: Slack inbound handler routes through `clarify.start`/`answer`.
+- `errand/llm.py`: `generate_title` gains optional `want_questions` / `history` parameters; `LLMResult` gains `questions`. The existing prompt is unchanged when they are not used.
+- `errand/main.py`: new `/api/task-specs` routes; the Task-building half of `create_task` moves into a reusable helper.
+- `errand/settings_registry.py`: new `clarification_max_rounds` setting.
+- `errand/platforms/slack/routes.py`, `handlers.py`, `blocks.py`: Slack intake routes through `clarify`.
 - `frontend/src/`: new intake dialog component + wiring into the existing task-creation entry point.
-- `openspec/config.yaml`: optional `clarification_max_rounds` setting.
-- No change to the task runner container, the sandbox, scheduling, or repeat machinery — the resolved draft is a plain `TaskCreate`.
+- No change to the task runner container, the sandbox, scheduling, or repeat machinery.

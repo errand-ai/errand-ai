@@ -55,15 +55,18 @@ class SlackClient:
                 logger.error("chat.postMessage failed: %s", data.get("error"))
             return data
 
-    async def post_response_url(self, response_url: str, blocks: list, *, ephemeral: bool = True) -> None:
+    async def post_response_url(
+        self, response_url: str, blocks: list, *, ephemeral: bool = True, replace_original: bool = False,
+    ) -> None:
         """Post a message to a Slack response_url (interaction follow-up).
 
         Unlike Slack API methods, response_url does not need a bearer token — the URL
-        itself is a one-time-use signed webhook.
+        itself is a one-time-use signed webhook. `replace_original` swaps the
+        message the interaction came from, ephemeral or not.
         """
         payload: dict = {
             "response_type": "ephemeral" if ephemeral else "in_channel",
-            "replace_original": False,
+            "replace_original": replace_original,
             "blocks": blocks,
         }
         async with httpx.AsyncClient() as client:
