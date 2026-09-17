@@ -24,6 +24,7 @@ from starlette.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select, text, update
@@ -56,6 +57,7 @@ from settings_registry import (
     ensure_hindsight_token,
     mask_sensitive_value,
     normalize_model_setting_value,
+    resolve_setting_value,
     resolve_settings,
 )
 from platforms import get_registry
@@ -1629,6 +1631,57 @@ async def transcribe_status(
 # --- Admin settings endpoints ---
 
 
+def _validate_non_negative_int(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "must be a non-negative integer"
+    return None
+
+
+def _validate_positive_int(value) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return "must be a positive integer"
+    return None
+
+
+def _validate_reasoning_effort(value) -> str | None:
+    if value not in VALID_REASONING_EFFORTS:
+        return f"must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
+    return None
+
+
+VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+def _validate_log_level(value) -> str | None:
+    if value not in VALID_LOG_LEVELS:
+        return f"must be one of: {', '.join(VALID_LOG_LEVELS)}"
+    return None
+
+
+def _validate_timezone(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return "must be an IANA time zone name"
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        return f"is not a known IANA time zone: {value!r}"
+    return None
+
+
+# Per-key write validation for PUT /api/settings. A validator returns a problem
+# description, or None when the value is acceptable.
+_SETTING_VALIDATORS = {
+    "plugin_poll_interval_seconds": _validate_non_negative_int,
+    "max_turns": _validate_positive_int,
+    "reasoning_effort": _validate_reasoning_effort,
+    "task_runner_log_level": _validate_log_level,
+    "timezone": _validate_timezone,
+}
+
+# Keys for which a null write deletes the stored override instead of storing it.
+_NULL_CLEARS_KEYS = {"max_turns", "reasoning_effort"}
+
+
 @app.get("/api/settings")
 async def get_settings(
     session: AsyncSession = Depends(get_session),
@@ -1648,12 +1701,6 @@ async def update_settings(
             continue  # Skills managed via /api/skills
         if key in EXCLUDED_KEYS:
             continue
-        if key == "plugin_poll_interval_seconds":
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise HTTPException(
-                    status_code=422,
-                    detail="plugin_poll_interval_seconds must be a non-negative integer",
-                )
         # Check if this key is env-sourced (readonly)
         meta = SETTINGS_REGISTRY.get(key)
         if meta and meta["env_var"]:
@@ -1671,6 +1718,14 @@ async def update_settings(
                     key, meta["env_var"], meta["env_var"],
                 )
                 continue
+        # Validate only values that will be written. An env-sourced key was
+        # skipped above whatever its value, so a client echoing back an env value
+        # this validator would reject cannot fail the save of the other keys.
+        validator = _SETTING_VALIDATORS.get(key)
+        if validator is not None and not (value is None and key in _NULL_CLEARS_KEYS):
+            problem = validator(value)
+            if problem:
+                raise HTTPException(status_code=422, detail=f"{key} {problem}")
         # A key that reads back masked can be round-tripped by any client doing
         # read-modify-write of the whole settings payload: it would GET
         # `erra****`, PUT it back unchanged, and silently replace the real secret
@@ -1705,6 +1760,13 @@ async def update_settings(
             value = normalize_model_setting_value(value)
         result = await session.execute(select(Setting).where(Setting.key == key))
         existing = result.scalar_one_or_none()
+        if value is None and key in _NULL_CLEARS_KEYS:
+            # The shared card sends null when the field is cleared. Storing a
+            # JSON null would only coerce back to the default via a warning, so
+            # drop the override and let the key resolve to env or default.
+            if existing:
+                await session.delete(existing)
+            continue
         if existing:
             existing.value = value
         else:
@@ -1753,11 +1815,21 @@ async def regenerate_mcp_key(
 
 
 @app.get("/api/worker/defaults")
-async def get_worker_defaults(_user: dict = Depends(require_admin)):
-    """Return runtime defaults for worker settings (env vars not visible in settings UI)."""
+async def get_worker_defaults(
+    session: AsyncSession = Depends(get_session),
+    _user: dict = Depends(require_admin),
+):
+    """Return the defaults a task gets when its profile leaves the field null.
+
+    Resolved exactly as the task manager resolves them (env → DB → default), so
+    the profile modal's "Deployment default" is the value actually applied.
+    Values stay strings to keep the response shape existing clients expect.
+    """
+    max_turns, _ = await resolve_setting_value(session, "max_turns")
+    reasoning_effort, _ = await resolve_setting_value(session, "reasoning_effort")
     return {
-        "max_turns": os.environ.get("MAX_TURNS", "") or None,
-        "reasoning_effort": os.environ.get("REASONING_EFFORT", "") or None,
+        "max_turns": str(max_turns) if max_turns is not None else None,
+        "reasoning_effort": reasoning_effort or None,
     }
 
 

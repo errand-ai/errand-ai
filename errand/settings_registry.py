@@ -19,6 +19,13 @@ SETTINGS_REGISTRY = {
     "transcription_model": {"env_var": None, "sensitive": False, "default": {"provider_id": None, "model": ""}},
     "task_runner_log_level": {"env_var": None, "sensitive": False, "default": "INFO"},
     "timezone": {"env_var": None, "sensitive": False, "default": "UTC"},
+    # Deployment-wide agent defaults, applied when a task's profile leaves the
+    # field null. The env vars predate the settings and still win, which is why
+    # the reference deployments no longer set MAX_TURNS: doing so would lock the
+    # field in the UI. 200 is what every shipped deployment used; `medium` is the
+    # task runner's own default.
+    "max_turns": {"env_var": "MAX_TURNS", "sensitive": False, "default": 200},
+    "reasoning_effort": {"env_var": "REASONING_EFFORT", "sensitive": False, "default": "medium"},
     "archive_after_days": {"env_var": None, "sensitive": False, "default": 3},
     "mcp_servers": {"env_var": None, "sensitive": False, "default": None},
     "mcp_api_key": {"env_var": None, "sensitive": True, "default": None},
