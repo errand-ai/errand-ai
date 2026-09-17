@@ -31,8 +31,8 @@
 
 - [x] 6.1 Run the full errand suite (`DATABASE_URL="sqlite+aiosqlite:///:memory:" errand/.venv/bin/python -m pytest errand/tests/`) and the frontend suite, and confirm both are green
 - [x] 6.2 With `docker compose -f testing/docker-compose.yml up --build`, check on `/settings/tasks` that every timeout is labelled, and that timezone, log level, max turns and reasoning effort save and survive a reload; check that the profile modal shows the edited max turns default; run one task and confirm from its container env or logs that `MAX_TURNS` / `REASONING_EFFORT` match the saved values
-- [ ] 6.3 After CI builds the PR, confirm that the ArgoCD `errand` app syncs healthy and repeat the `/settings/tasks` smoke check on the deployment
-- [ ] 6.4 Run `openspec archive restore-task-settings-fields -y`, stage only the change directory and the updated `openspec/specs/` files by explicit path, commit on the branch, and re-verify the redeployed post-archive build
+- [x] 6.3 After CI builds the PR, confirm that the ArgoCD `errand` app syncs healthy and repeat the `/settings/tasks` smoke check on the deployment
+- [x] 6.4 Run `openspec archive restore-task-settings-fields -y`, stage only the change directory and the updated `openspec/specs/` files by explicit path, commit on the branch, and re-verify the redeployed post-archive build
 
 ## Post-merge notes
 
