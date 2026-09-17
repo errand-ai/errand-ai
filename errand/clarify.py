@@ -38,6 +38,11 @@ class DraftFinished(Exception):
     """The draft can no longer be advanced (confirmed, abandoned, or nothing to answer)."""
 
 
+class DraftBusy(DraftFinished):
+    """Another answer to the same round got there first. The draft is still
+    live; this request simply lost the race."""
+
+
 def owner_identity(claims: dict) -> str:
     """The identity a web caller's drafts belong to: what `created_by` records."""
     return claims.get("email") or claims.get("sub") or ""
@@ -211,6 +216,25 @@ async def answer(session: AsyncSession, draft_id, owner: str, responses: dict) -
         if isinstance(value, str) and value.strip():
             lines.append(f"{question['text']} -> {value.strip()}")
     content = "\n".join(lines) or "(no answer given)"
+
+    # Claim this round before the slow classifier call, as `confirm` claims the
+    # draft: a second Submit (or a redelivered Slack action) would otherwise
+    # pass the same status check and the later commit would drop one answer.
+    # On Postgres the losing request waits on the row lock, then matches nothing.
+    claimed = await session.execute(
+        update(TaskSpecDraft)
+        .where(
+            TaskSpecDraft.id == draft.id,
+            TaskSpecDraft.status == "drafting",
+            TaskSpecDraft.round == draft.round,
+        )
+        .values(round=draft.round + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await session.rollback()
+        raise DraftBusy("This draft was just answered; reload it to see where it stands")
+
     draft.conversation = [*draft.conversation, _turn("user", content)]
     draft.round += 1
     draft.expires_at = _now() + DRAFT_TTL

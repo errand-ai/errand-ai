@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _slack_client = SlackClient()
 
 INACTIVE_NOTICE = ":information_source: This draft is no longer active. Start a new one with `/task new`."
+BUSY_NOTICE = ":hourglass_flowing_sand: Those answers are already being processed."
 NOT_YOURS_NOTICE = ":lock: Only the person who started this draft can answer or run it."
 
 
@@ -155,6 +156,9 @@ async def handle_draft_action(payload: dict, action: dict, session_factory=None)
                 await _reply(response_url, task_spec_notice_blocks(NOT_YOURS_NOTICE), replace=False)
             else:
                 await _reply(response_url, task_spec_notice_blocks(INACTIVE_NOTICE), replace=True)
+        except clarify.DraftBusy:
+            # The other request will replace the message; don't overwrite it.
+            await _reply(response_url, task_spec_notice_blocks(BUSY_NOTICE), replace=False)
         except clarify.DraftFinished:
             await _reply(response_url, task_spec_notice_blocks(INACTIVE_NOTICE), replace=True)
         except Exception:

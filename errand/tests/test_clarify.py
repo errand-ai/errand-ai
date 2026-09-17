@@ -123,6 +123,28 @@ async def test_answer_folds_answers_and_resolves(session):
     assert history[0]["role"] == "assistant"
 
 
+async def test_concurrent_answer_loses_the_race_without_dropping_the_first(session):
+    from sqlalchemy import update
+
+    with _classifier(_asking()) as classifier:
+        draft = await clarify.start(session, "Send me the quarterly numbers", OWNER)
+    # Another request has claimed round 0; this session still holds the old snapshot.
+    await session.execute(
+        update(TaskSpecDraft).where(TaskSpecDraft.id == draft.id).values(round=1)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    assert draft.round == 0
+
+    with _classifier(_ready()) as classifier:
+        with pytest.raises(clarify.DraftBusy):
+            await clarify.answer(session, draft.id, OWNER, {"source": "late"})
+    classifier.assert_not_called()
+    await session.refresh(draft)
+    assert draft.round == 1
+    assert [t["role"] for t in draft.conversation] == ["user", "assistant"]
+
+
 async def test_round_cap_forces_ready_with_questions_unresolved(session):
     with _classifier(_asking(), _asking(), _asking()):
         draft = await clarify.start(session, "Send me the quarterly numbers", OWNER)
@@ -153,13 +175,13 @@ async def test_other_owner_cannot_see_or_advance(session):
         draft = await clarify.start(session, "Send me the quarterly numbers", OWNER)
 
     for call in (
-        clarify.get(session, draft.id, "mallory@example.com"),
-        clarify.answer(session, draft.id, "mallory@example.com", {"source": "x"}),
-        clarify.confirm(session, draft.id, "mallory@example.com"),
-        clarify.cancel(session, draft.id, "mallory@example.com"),
+        lambda: clarify.get(session, draft.id, "mallory@example.com"),
+        lambda: clarify.answer(session, draft.id, "mallory@example.com", {"source": "x"}),
+        lambda: clarify.confirm(session, draft.id, "mallory@example.com"),
+        lambda: clarify.cancel(session, draft.id, "mallory@example.com"),
     ):
         with pytest.raises(clarify.DraftNotFound):
-            await call
+            await call()
     await session.refresh(draft)
     assert draft.status == "drafting"
     assert draft.round == 0

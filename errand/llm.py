@@ -158,7 +158,10 @@ def _normalise_questions(raw) -> list[dict] | None:
         qid = entry.get("id")
         qid = qid.strip() if isinstance(qid, str) and qid.strip() else ""
         if not qid or qid in seen:
-            qid = f"q{len(questions) + 1}"
+            n = len(questions) + 1
+            while f"q{n}" in seen:
+                n += 1
+            qid = f"q{n}"
         seen.add(qid)
         choices = entry.get("choices")
         choices = [c.strip() for c in choices if isinstance(c, str) and c.strip()] if isinstance(choices, list) else []

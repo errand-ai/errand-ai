@@ -333,6 +333,19 @@ class TestDraftActions:
         assert (stored.status, stored.round) == ("drafting", 0)
 
     @pytest.mark.asyncio
+    async def test_concurrent_submit_does_not_replace_the_message(self, slack_client):
+        import clarify
+
+        slack_client.classifier.side_effect = None
+        slack_client.classifier.return_value = _llm(title="Book Room", questions=QUESTIONS)
+        draft = (await _post_command(slack_client, text="new book the room")).json()["blocks"]
+        with patch("clarify.answer", AsyncMock(side_effect=clarify.DraftBusy("busy"))):
+            replies, _ = await _act(slack_client, draft, "task_spec_submit")
+        blocks, options = replies[-1]
+        assert options["replace_original"] is False
+        assert "already being processed" in blocks[0]["text"]["text"]
+
+    @pytest.mark.asyncio
     async def test_cancel_then_run_is_inactive(self, slack_client):
         draft = (await _post_command(slack_client, text="new Buy groceries")).json()["blocks"]
         replies, _ = await _act(slack_client, draft, "task_spec_cancel")

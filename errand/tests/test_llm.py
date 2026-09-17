@@ -800,6 +800,14 @@ def test_parse_llm_response_questions_normalised():
     ]
 
 
+def test_parse_llm_response_generated_ids_never_collide():
+    raw = json.dumps({"title": "T", "questions": [
+        {"id": "q2", "text": "a"}, {"text": "b"}, {"id": "q2", "text": "c"},
+    ]})
+    ids = [q["id"] for q in _parse_llm_response(raw).questions]
+    assert ids == ["q2", "q3", "q4"]
+
+
 def test_parse_llm_response_empty_questions_is_none():
     raw = json.dumps({"title": "T", "questions": []})
     assert _parse_llm_response(raw).questions is None
