@@ -1701,11 +1701,6 @@ async def update_settings(
             continue  # Skills managed via /api/skills
         if key in EXCLUDED_KEYS:
             continue
-        validator = _SETTING_VALIDATORS.get(key)
-        if validator is not None and not (value is None and key in _NULL_CLEARS_KEYS):
-            problem = validator(value)
-            if problem:
-                raise HTTPException(status_code=422, detail=f"{key} {problem}")
         # Check if this key is env-sourced (readonly)
         meta = SETTINGS_REGISTRY.get(key)
         if meta and meta["env_var"]:
@@ -1723,6 +1718,14 @@ async def update_settings(
                     key, meta["env_var"], meta["env_var"],
                 )
                 continue
+        # Validate only values that will be written. An env-sourced key was
+        # skipped above whatever its value, so a client echoing back an env value
+        # this validator would reject cannot fail the save of the other keys.
+        validator = _SETTING_VALIDATORS.get(key)
+        if validator is not None and not (value is None and key in _NULL_CLEARS_KEYS):
+            problem = validator(value)
+            if problem:
+                raise HTTPException(status_code=422, detail=f"{key} {problem}")
         # A key that reads back masked can be round-tripped by any client doing
         # read-modify-write of the whole settings payload: it would GET
         # `erra****`, PUT it back unchanged, and silently replace the real secret

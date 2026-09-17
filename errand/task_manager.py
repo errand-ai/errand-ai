@@ -909,7 +909,7 @@ async def _read_settings(session: AsyncSession) -> dict:
     # gets exactly what GET /api/worker/defaults reports.
     from settings_registry import resolve_setting_value
     for key in ("max_turns", "reasoning_effort"):
-        settings[key], _source = await resolve_setting_value(session, key)
+        settings[key], _ = await resolve_setting_value(session, key)
 
     return settings
 

@@ -403,3 +403,18 @@ async def test_worker_defaults_report_env_value(admin_client):
         resp = await admin_client.get("/api/worker/defaults")
 
     assert resp.json()["reasoning_effort"] == "high"
+
+
+async def test_invalid_env_value_echoed_back_does_not_block_other_keys(admin_client_with_session):
+    """Env values are never validated, so a client echoing one back must not 422
+    the whole save; the env-sourced key is refused and the others are stored."""
+    client, _ = admin_client_with_session
+    with patch.dict(os.environ, {"REASONING_EFFORT": "High"}):
+        resp = await client.put(
+            "/api/settings", json={"reasoning_effort": "High", "archive_after_days": 9}
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["archive_after_days"]["value"] == 9
+    assert data["reasoning_effort"]["readonly"] is True

@@ -36,7 +36,7 @@ The new field would be read-only in every reference deployment because the compo
 - *Alternative:* keep the defaults and accept locked fields. Rejected because it defeats the change.
 
 ### D4: Validation in `update_settings`, alongside the existing per-key check
-The existing inline `plugin_poll_interval_seconds` check becomes a small key → validator table covering `max_turns`, `reasoning_effort`, `task_runner_log_level` and `timezone`. `timezone` is validated with `zoneinfo.ZoneInfo(value)`, catching `ZoneInfoNotFoundError` and `ValueError`. Validation runs before the env-readonly check, so a bad value is rejected consistently whatever its source. `reasoning_effort` reuses `VALID_REASONING_EFFORTS` from the profile endpoints so the two cannot drift.
+The existing inline `plugin_poll_interval_seconds` check becomes a small key → validator table covering `max_turns`, `reasoning_effort`, `task_runner_log_level` and `timezone`. `timezone` is validated with `zoneinfo.ZoneInfo(value)`, catching `ZoneInfoNotFoundError` and `ValueError`. Validation runs after the env-readonly check. An env-sourced key is refused whatever its value, and environment values are not validated at read time, so validating first would let a client echoing back a misconfigured env value (for example `REASONING_EFFORT=High`) fail the save of every other key in the same request. `reasoning_effort` reuses `VALID_REASONING_EFFORTS` from the profile endpoints so the two cannot drift.
 
 ### D5: `/api/worker/defaults` keeps its response shape
 The endpoint returns strings (`"200"`, `"medium"`), as it does today. The library modal interpolates the value, so no library change is required for it. `null` becomes unreachable in practice, but the type stays `string | null`.
