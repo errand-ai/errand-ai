@@ -1,4 +1,4 @@
-FROM python:3.13-slim-trixie AS builder
+FROM python:3.14-slim-trixie AS builder
 WORKDIR /build
 COPY task-runner/requirements.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements.txt
