@@ -16,7 +16,7 @@
 # Pinned deliberately, never `latest-slim`. At the time of pinning the two are
 # the same digest (sha256:7635a157…); the pin is what stops an upstream release
 # silently changing what errand publishes. Renovate tracks this line.
-ARG HINDSIGHT_BASE_TAG=0.9.2-slim
+ARG HINDSIGHT_BASE_TAG=0.10.1-slim
 
 # ---------------------------------------------------------------------------
 # Stage 1: fetch the models, always on the build machine's own architecture.
