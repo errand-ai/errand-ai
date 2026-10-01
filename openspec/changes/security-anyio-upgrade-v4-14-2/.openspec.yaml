@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-01
+# Test-tooling dependency maintenance; no product behavior requirements change.
+skip_specs: true
