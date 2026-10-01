@@ -16,8 +16,11 @@
 - [ ] 3.1 Run `openspec validate security-anyio-upgrade-v4-14-2 --strict --no-interactive` and the documented main-spec guard `openspec validate --specs --no-interactive`; verify this change passes and disclose any unrelated pre-existing main-spec failures with exact output.
 - [ ] 3.2 Push the implementation and confirm its exact-head CI tests, images and chart builds and required Kubernetes deployment/smoke checks; verify the deployed build corresponds to that head and record evidence in the PR.
 - [ ] 3.3 Request Analyst documentation-impact review after implementation verification; verify a documented no-change decision or a Team Leader-to-Website handoff, without claiming confirmed production exposure.
-- [ ] 3.4 After preceding checks pass, mark their completion, archive with `openspec archive security-anyio-upgrade-v4-14-2 -y` on the implementation branch and commit it in the same PR; verify completed preparation tasks are checked, no invented flattened specs are introduced and the archive command succeeds. Complete the remaining final-build verification item in the archived task file before the final reviewed push, leaving no unchecked tasks in the final archive.
-- [ ] 3.5 Push the final post-archive commit, repeat CI and deployment verification against its exact head and resolve outstanding reviews; verify the final build is the one approved for merge. Mark this final checklist item in the archived task file before the final reviewed push and repeat checks if the resulting commit changes the head.
+- [ ] 3.4 After preceding checks pass, mark all checklist tasks complete, archive with `openspec archive security-anyio-upgrade-v4-14-2 -y` on the implementation branch and commit it in the same PR; verify no invented flattened specs are introduced and the archive command succeeds.
+
+## Post-archive pre-merge gate
+
+- Push the archive commit, repeat CI and deployment verification against its exact head, resolve outstanding reviews and record the evidence in the PR. Do not edit the frozen archived checklist to record this gate; repeat it if any subsequent commit changes the head.
 
 ## Post-merge notes
 
