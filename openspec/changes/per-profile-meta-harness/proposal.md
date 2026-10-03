@@ -40,4 +40,4 @@ Owning repository: `errand-ai/errand-ai`; CODEOWNERS assigns `*` to `rob.coward@
 - Team Leader: decide supersession, security/auth boundaries, release cohorts and cross-repository sequencing.
 - Website agent via Team Leader AFTER implementation verification: errand.sh profile selection, harness/model terminology, capability matrix, credential setup, limits and migration/rollback docs. This proposal does not update the website.
 
-No implementation, blanket support promise, arbitrary command/image execution UI, consumer subscription resale, global harness switch, archive, PR creation or deployment is in this deliverable.
+No implementation, blanket support promise, arbitrary command/image execution UI, consumer subscription resale, global harness switch, archive or deployment is in this deliverable.
