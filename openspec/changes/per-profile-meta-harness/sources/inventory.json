@@ -1,0 +1,344 @@
+[
+  {
+    "id": 1,
+    "requested_url": "https://code.claude.com/docs/en/headless",
+    "accessed_utc": "2026-10-03T14:54:19.196860+00:00",
+    "title": "Run Claude Code programmatically",
+    "snapshot": "source-01.md",
+    "sha256": "690dc57c8b1e90e0ffd4eaf2e87c88274130cca04094a0d2107d00855f90163b",
+    "abbreviated": true
+  },
+  {
+    "id": 2,
+    "requested_url": "https://code.claude.com/docs/en/cli-reference",
+    "accessed_utc": "2026-10-03T15:01:42.406138+00:00",
+    "title": "CLI reference - Claude Code Docs",
+    "snapshot": "source-02.md",
+    "sha256": "320a6f1f37e8b89d17b6375f7e3c842c7fd47e4e2a40d9c923075087cb56e4fe",
+    "abbreviated": false
+  },
+  {
+    "id": 3,
+    "requested_url": "https://code.claude.com/docs/en/legal-and-compliance",
+    "accessed_utc": "2026-10-03T15:01:42.447271+00:00",
+    "title": "Legal and compliance - Claude Code Docs",
+    "snapshot": "source-03.md",
+    "sha256": "e1e2685ff1f4baf8514e5ba3641ac2ffc5f33efd2f8ab24b038d3e9f82c2aa3d",
+    "abbreviated": false
+  },
+  {
+    "id": 4,
+    "requested_url": "https://code.claude.com/docs/en/setup",
+    "accessed_utc": "2026-10-03T15:03:00.837955+00:00",
+    "title": "Advanced setup",
+    "snapshot": "source-04.md",
+    "sha256": "44fcbe9efa05f43cdfb65a3332b7858c016f7f481a9e428c167c67e92715a05c",
+    "abbreviated": false
+  },
+  {
+    "id": 5,
+    "requested_url": "https://code.claude.com/docs/en/agent-sdk/cost-tracking",
+    "accessed_utc": "2026-10-03T15:03:00.851362+00:00",
+    "title": "Track cost and usage",
+    "snapshot": "source-05.md",
+    "sha256": "b5923d27a1974b6788431f330e42996a845674e5908013dd0fbeb9f1986bcf19",
+    "abbreviated": false
+  },
+  {
+    "id": 6,
+    "requested_url": "https://developers.openai.com/codex/noninteractive",
+    "accessed_utc": "2026-10-03T14:54:19.154416+00:00",
+    "title": "Non-interactive mode \u2013 Codex | OpenAI Developers",
+    "snapshot": "source-06.md",
+    "sha256": "d40d9167d7e27e2202226374006fe474e37b1d514ad0401f199ad22dc18fab6b",
+    "abbreviated": true
+  },
+  {
+    "id": 7,
+    "requested_url": "https://developers.openai.com/codex/app-server",
+    "accessed_utc": "2026-10-03T15:01:42.459615+00:00",
+    "title": "Codex App Server | ChatGPT Learn",
+    "snapshot": "source-07.md",
+    "sha256": "edd4c0f13b72c05da25cb76de90fe829ac48ed396105f3344e1e7be96f9f0c3a",
+    "abbreviated": false
+  },
+  {
+    "id": 8,
+    "requested_url": "https://developers.openai.com/codex/auth",
+    "accessed_utc": "2026-10-03T15:01:42.493937+00:00",
+    "title": "Authentication | ChatGPT Learn",
+    "snapshot": "source-08.md",
+    "sha256": "4a6d669237ea98f3a859ba14910cb582fef4cf1d8bdbeadd3ec175f810639da2",
+    "abbreviated": false
+  },
+  {
+    "id": 9,
+    "requested_url": "https://learn.chatgpt.com/docs/agent-approvals-security",
+    "accessed_utc": "2026-10-03T15:03:00.811216+00:00",
+    "title": "Agent approvals & security | ChatGPT Learn",
+    "snapshot": "source-09.md",
+    "sha256": "226701ca9208938dccdf85a736994aa78fe631667b84d940990e48c648129466",
+    "abbreviated": false
+  },
+  {
+    "id": 10,
+    "requested_url": "https://raw.githubusercontent.com/openai/codex/main/LICENSE",
+    "accessed_utc": "2026-10-03T15:03:00.823333+00:00",
+    "title": "",
+    "snapshot": "source-10.md",
+    "sha256": "8fb0b45f16039f8c38bb62f91c462965720121391680c680462aff37761b3f0b",
+    "abbreviated": false
+  },
+  {
+    "id": 11,
+    "requested_url": "https://api-docs.deepseek.com",
+    "accessed_utc": "2026-10-03T14:54:49.947134+00:00",
+    "title": "Your First API Call | DeepSeek API Docs",
+    "snapshot": "source-11.md",
+    "sha256": "207ea3c8ecd047d96e62326c144ade27021998aad3af5d1de0767a3ed131003b",
+    "abbreviated": false
+  },
+  {
+    "id": 12,
+    "requested_url": "https://deepseek-harness.github.io/deepseek-harness/en/guide/python-sdk",
+    "accessed_utc": "2026-10-03T14:55:08.014218+00:00",
+    "title": "Get started with the Python SDK",
+    "snapshot": "source-12.md",
+    "sha256": "6121c9f0aa00cacb056cdff414a8641d40d7c949b3fce5cfea4a79d8761b126a",
+    "abbreviated": false
+  },
+  {
+    "id": 13,
+    "requested_url": "https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/master/SAFETY.md",
+    "accessed_utc": "2026-10-03T14:55:25.012009+00:00",
+    "title": "",
+    "snapshot": "source-13.md",
+    "sha256": "a2b5ae6fbbf91fd79b93d2938bde858aa6eaf0b02ede306f548b32ca064f2db9",
+    "abbreviated": false
+  },
+  {
+    "id": 14,
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/rpc.md",
+    "accessed_utc": "2026-10-03T14:55:08.346952+00:00",
+    "title": "",
+    "snapshot": "source-14.md",
+    "sha256": "2866a4b1715e9c9d4da4a3e54df075b4d13d340d58e48f39532fcc43b9de6678",
+    "abbreviated": false
+  },
+  {
+    "id": 15,
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/mcp.md",
+    "accessed_utc": "2026-10-03T14:55:25.033545+00:00",
+    "title": "",
+    "snapshot": "source-15.md",
+    "sha256": "d1dfda7ffbb14ce13c8d22e735f62177e077623aaca574ae5c9aef4e013d2a04",
+    "abbreviated": false
+  },
+  {
+    "id": 16,
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/security.md",
+    "accessed_utc": "2026-10-03T14:56:18.809888+00:00",
+    "title": "",
+    "snapshot": "source-16.md",
+    "sha256": "53ca03dd6794dc987c319412dbdf5638887efa886d656b32c967cddaa67eb046",
+    "abbreviated": false
+  },
+  {
+    "id": 17,
+    "requested_url": "https://huggingface.co/microsoft/phi-4",
+    "accessed_utc": "2026-10-03T14:55:53.872516+00:00",
+    "title": "microsoft/phi-4 \u00b7 Hugging Face",
+    "snapshot": "source-17.md",
+    "sha256": "cd5500a667d569efa9f87792d8f9b33b8cff0a7da2d67b44fbcd95c5b3a0cc49",
+    "abbreviated": false
+  },
+  {
+    "id": 18,
+    "requested_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server",
+    "accessed_utc": "2026-10-03T14:55:12.440797+00:00",
+    "title": "API Server | Hermes Agent",
+    "snapshot": "source-18.md",
+    "sha256": "7359a7d7d02f9f9760cafe7df670ee5624224ae0601a30f596e739007fbef639",
+    "abbreviated": true
+  },
+  {
+    "id": 19,
+    "requested_url": "https://opencode.ai/v2/docs/api",
+    "accessed_utc": "2026-10-03T15:02:59.972004+00:00",
+    "title": "API | OpenCode",
+    "snapshot": "source-19.md",
+    "sha256": "070d708aa38093386e62e31c17cf1c22e22c01104d9bdb78b6391f55a17ed742",
+    "abbreviated": false
+  },
+  {
+    "id": 20,
+    "requested_url": "https://geminicli.com/docs/cli/headless",
+    "accessed_utc": "2026-10-03T14:56:47.850315+00:00",
+    "title": "Headless mode reference | Gemini CLI",
+    "snapshot": "source-20.md",
+    "sha256": "243b69b405cf8c09755e1ace1149e18f540b9020014c292ed27e1e1d283f3398",
+    "abbreviated": true
+  },
+  {
+    "id": 21,
+    "requested_url": "https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli",
+    "accessed_utc": "2026-10-03T15:03:00.172630+00:00",
+    "title": "An important update: Transitioning Gemini CLI to Antigravity CLI",
+    "snapshot": "source-21.md",
+    "sha256": "02ed49317852da761ee590acdb43eeb4bbd158a0d2c8fadbd4763e24c7f2e7b1",
+    "abbreviated": false
+  },
+  {
+    "id": 22,
+    "requested_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration",
+    "accessed_utc": "2026-10-03T14:55:12.500805+00:00",
+    "title": "Programmatic Integration | Hermes Agent",
+    "snapshot": "source-22.md",
+    "sha256": "53ef300006b49455f5eda542fe100734ef16fbf7c2aefe6fdeea0fddd2a50898",
+    "abbreviated": true
+  },
+  {
+    "id": 23,
+    "requested_url": "https://hermes-agent.nousresearch.com/docs/developer-guide/acp-internals",
+    "accessed_utc": "2026-10-03T14:55:12.479774+00:00",
+    "title": "ACP Internals | Hermes Agent",
+    "snapshot": "source-23.md",
+    "sha256": "d47f6d736c02c78d093af8d1b1ce3b62b0d5917343758a6123b609e427d0024f",
+    "abbreviated": true
+  },
+  {
+    "id": 24,
+    "requested_url": "https://hermes-agent.nousresearch.com/docs/reference/cli-commands",
+    "accessed_utc": "2026-10-03T14:55:12.468593+00:00",
+    "title": "CLI Commands Reference | Hermes Agent",
+    "snapshot": "source-24.md",
+    "sha256": "d81cb50b90daf15a9c9d0e776f11f4880ed2c983a53e3a5b7af6fe97f7dca1d6",
+    "abbreviated": true
+  },
+  {
+    "id": 25,
+    "requested_url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/README.md",
+    "accessed_utc": "2026-10-03T14:55:08.306026+00:00",
+    "title": "",
+    "snapshot": "source-25.md",
+    "sha256": "9ce560f2c99bf857d74eb1a37cd95d8768e4382ca8f0ce080a06372e818d87c4",
+    "abbreviated": false
+  },
+  {
+    "id": 26,
+    "requested_url": "https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/approval",
+    "accessed_utc": "2026-10-03T14:56:54.970174+00:00",
+    "title": "User Approval | DeepSeek Harness",
+    "snapshot": "source-26.md",
+    "sha256": "ec51e522e16d778e2b1370efcbf85fcd33b417a2b4e9373fd309ae6102dfd167",
+    "abbreviated": false
+  },
+  {
+    "id": 27,
+    "requested_url": "https://deepseek-harness.github.io/deepseek-harness/en/guide/providers",
+    "accessed_utc": "2026-10-03T14:55:08.080509+00:00",
+    "title": "Configure models | DeepSeek Harness",
+    "snapshot": "source-27.md",
+    "sha256": "df5ff6f4317f3efd2c7b27232b6e2ccaa8a9c68a120600edecafe61920fb1dac",
+    "abbreviated": false
+  },
+  {
+    "id": 28,
+    "requested_url": "https://opencode.ai/docs/cli",
+    "accessed_utc": "2026-10-03T14:54:58.213075+00:00",
+    "title": "CLI | OpenCode",
+    "snapshot": "source-28.md",
+    "sha256": "215b7e4abca94baa9b4c7e913c17e30629d1c8cb6a523c289e5491443231ba9b",
+    "abbreviated": true
+  },
+  {
+    "id": 29,
+    "requested_url": "https://opencode.ai/docs/permissions",
+    "accessed_utc": "2026-10-03T14:55:12.648741+00:00",
+    "title": "Permissions | OpenCode",
+    "snapshot": "source-29.md",
+    "sha256": "789f75927cd5a15da1051566e51c0be48ad74e02d7d2afc1d2033da31d7886b0",
+    "abbreviated": false
+  },
+  {
+    "id": 30,
+    "requested_url": "https://opencode.ai/docs/mcp-servers",
+    "accessed_utc": "2026-10-03T14:55:12.682379+00:00",
+    "title": "MCP servers | OpenCode",
+    "snapshot": "source-30.md",
+    "sha256": "87e8ebfe20632f21b88aa93c231489b15450e705cba631bbe9e808f861242294",
+    "abbreviated": false
+  },
+  {
+    "id": 31,
+    "requested_url": "https://raw.githubusercontent.com/anomalyco/opencode/dev/LICENSE",
+    "accessed_utc": "2026-10-03T14:55:46.223199+00:00",
+    "title": "(no title)",
+    "snapshot": "source-31.md",
+    "sha256": "b80160d9b7f0e8f10245c59f2dae07542b5dbe38989497d560b9d855c0dbff7a",
+    "abbreviated": false
+  },
+  {
+    "id": 32,
+    "requested_url": "https://geminicli.com/docs/get-started/authentication",
+    "accessed_utc": "2026-10-03T14:56:47.884176+00:00",
+    "title": "Gemini CLI authentication setup | Gemini CLI",
+    "snapshot": "source-32.md",
+    "sha256": "024be5fe6724a788857819b98ddc05cbd5025ff057f9c44c9f69a82e8a894d6b",
+    "abbreviated": true
+  },
+  {
+    "id": 33,
+    "requested_url": "https://geminicli.com/docs/resources/quota-and-pricing",
+    "accessed_utc": "2026-10-03T14:55:12.791627+00:00",
+    "title": "Gemini CLI: Quotas and pricing | Gemini CLI",
+    "snapshot": "source-33.md",
+    "sha256": "be6b2439bc2e46d169f5bb70aa9ec295fbe86b106f240eca1cf12c772d3508fb",
+    "abbreviated": false
+  },
+  {
+    "id": 34,
+    "requested_url": "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/LICENSE",
+    "accessed_utc": "2026-10-03T14:55:45.889386+00:00",
+    "title": "Gemini Cli",
+    "snapshot": "source-34.md",
+    "sha256": "732cbcf03d52c1abbf8a133e7673e34f2e7a1ccd2f25960969a74bea166c7fae",
+    "abbreviated": false
+  },
+  {
+    "id": 35,
+    "requested_url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/LICENSE",
+    "accessed_utc": "2026-10-03T15:23:11.209502+00:00",
+    "title": "meta-hermes-license.txt",
+    "snapshot": "source-35.md",
+    "sha256": "6eccc7b0d2675f820e69ddf25cd9635f5323fb8a1718744cbd2fb999f82fff16",
+    "abbreviated": false
+  },
+  {
+    "id": 36,
+    "requested_url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/README.md",
+    "accessed_utc": "2026-10-03T15:23:11.583504+00:00",
+    "title": "meta-hermes-readme.md",
+    "snapshot": "source-36.md",
+    "sha256": "1eb91e1bff99132497bca928a38df819c40994ba54c1950f329b2b8d550e5263",
+    "abbreviated": false
+  },
+  {
+    "id": 37,
+    "requested_url": "https://learn.chatgpt.com/docs/non-interactive-mode",
+    "accessed_utc": "2026-10-03T15:03:00.771839+00:00",
+    "title": "Non-interactive mode | ChatGPT Learn",
+    "snapshot": "source-37.md",
+    "sha256": "cc1e3d393b2cba160172307d5fea4c1939b3bd1b3e6faf1becb2438485c1e153",
+    "abbreviated": false
+  },
+  {
+    "id": 38,
+    "requested_url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+    "accessed_utc": "2026-10-03T14:56:33.038563+00:00",
+    "title": "MCP (Model Context Protocol) | Hermes Agent",
+    "snapshot": "source-38.md",
+    "sha256": "5c930b260d0052c46a3e21b8ad74260781cb52cee063336067e0c32ae0f8e37d",
+    "abbreviated": false
+  }
+]
