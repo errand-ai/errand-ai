@@ -59,7 +59,7 @@ RUN --mount=type=secret,id=github_token \
     rm -rf /tmp/gws-src /tmp/gws-src.tar.gz
 
 # Stage 2: Download Python wheels (runs natively, downloads wheels for target platform)
-FROM --platform=$BUILDPLATFORM python:3.13 AS build
+FROM --platform=$BUILDPLATFORM python:3.14 AS build
 ARG TARGETPLATFORM
 WORKDIR /app
 COPY errand/requirements.txt .
@@ -94,7 +94,7 @@ RUN <<EOF
 EOF
 
 # Stage 3: Final image (target platform — minimal QEMU usage: apt-get + pip install from local wheels)
-FROM python:3.13-slim
+FROM python:3.14-slim
 ARG APP_VERSION="dev"
 ENV APP_VERSION=$APP_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client && rm -rf /var/lib/apt/lists/*
