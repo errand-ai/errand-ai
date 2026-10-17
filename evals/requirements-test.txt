@@ -2,4 +2,4 @@
 # (mcp_client.py), so the pure-logic tests run without it.
 pytest==9.1.1
 anyio==4.13.0
-PyYAML==6.0.2
+PyYAML==6.0.3
