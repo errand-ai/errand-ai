@@ -1,5 +1,5 @@
 # Shared-workspace gateway: rclone serve nfs against a Drive/OneDrive folder.
-FROM rclone/rclone:1.68
+FROM rclone/rclone:1.75
 
 # python3 backs the startup reconcile (cache_reconcile.py), run by the entrypoint
 # before serving. The rclone image is Alpine-based.
