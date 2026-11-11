@@ -14,7 +14,7 @@
 ## 3. Pre-merge verification and archive
 
 - [x] 3.1 Run `openspec validate security-anyio-upgrade-v4-14-2 --strict --no-interactive` and the documented main-spec guard `openspec validate --specs --no-interactive`; verify this change passes and disclose any unrelated pre-existing main-spec failures with exact output.
-- [ ] 3.2 Push the implementation and confirm its exact-head CI tests, images and chart builds and required Kubernetes deployment/smoke checks; verify the deployed build corresponds to that head and record evidence in the PR.
+- [x] 3.2 Push the implementation and confirm its exact-head CI tests, images and chart builds and required Kubernetes deployment/smoke checks; verify the deployed build corresponds to that head and record evidence in the PR.
 - [ ] 3.3 Request Analyst documentation-impact review after implementation verification; verify a documented no-change decision or a Team Leader-to-Website handoff, without claiming confirmed production exposure.
 - [ ] 3.4 After preceding checks pass, mark all checklist tasks complete, archive with `openspec archive security-anyio-upgrade-v4-14-2 -y` on the implementation branch and commit it in the same PR; verify no invented flattened specs are introduced and the archive command succeeds.
 
